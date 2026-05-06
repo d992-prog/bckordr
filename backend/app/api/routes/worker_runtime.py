@@ -162,7 +162,20 @@ async def acknowledge_task(
     task = await db.get(WorkerTask, task_id)
     if task is None or task.worker_id != worker.id:
         raise HTTPException(status_code=404, detail="Task not found")
-    task.acknowledged_at = utcnow()
+    now = utcnow()
+    task.acknowledged_at = now
+    if task.status == "queued":
+        task.status = "running"
+        task.started_at = task.started_at or now
+
+    run = await db.get(AttackRun, task.attack_run_id)
+    domain = await db.get(DropDomain, task.domain_id)
+    if run is not None and run.status == "planned":
+        run.status = "running"
+        run.started_at = run.started_at or now
+    if domain is not None and domain.status in {"scheduled", "queued", "ready"}:
+        domain.status = "attacking"
+
     db.add(
         AttackEvent(
             attack_run_id=task.attack_run_id,
