@@ -232,6 +232,30 @@ async def _load_domain_override_rules_and_phases(
     return rules, phases
 
 
+async def _load_zone_rules_and_phases(
+    db: AsyncSession,
+    zone_strategy_id: int,
+) -> tuple[list[ZoneRule], list[ZoneRulePhase]]:
+    rules = (
+        await db.execute(
+            select(ZoneRule)
+            .where(ZoneRule.zone_strategy_id == zone_strategy_id, ZoneRule.is_enabled.is_(True))
+            .order_by(ZoneRule.priority.desc(), ZoneRule.id.asc())
+        )
+    ).scalars().all()
+    rule_ids = [rule.id for rule in rules]
+    phases: list[ZoneRulePhase] = []
+    if rule_ids:
+        phases = (
+            await db.execute(
+                select(ZoneRulePhase)
+                .where(ZoneRulePhase.zone_rule_id.in_(rule_ids))
+                .order_by(ZoneRulePhase.sort_order.asc(), ZoneRulePhase.id.asc())
+            )
+        ).scalars().all()
+    return rules, phases
+
+
 async def _apply_domain_readiness(db: AsyncSession, domain: DropDomain) -> None:
     zone_strategy = None
     if domain.zone_strategy_id:
@@ -250,8 +274,7 @@ async def _apply_domain_readiness(db: AsyncSession, domain: DropDomain) -> None:
     if domain.strategy_mode == "manual_override" and domain_override is not None:
         rules, phases = await _load_domain_override_rules_and_phases(db, domain_override.id)
     elif zone_strategy is not None:
-        rules = []
-        phases = []
+        rules, phases = await _load_zone_rules_and_phases(db, zone_strategy.id)
     if zone_strategy is not None or domain_override is not None:
         effective_strategy = resolve_effective_strategy(
             domain,

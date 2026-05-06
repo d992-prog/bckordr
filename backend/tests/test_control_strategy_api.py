@@ -8,9 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from app.api.deps import require_admin
-from app.api.routes.control import router as control_router
+from app.api.routes.control import _apply_domain_readiness, router as control_router
 from app.db.base import Base
-from app.db.models import DropDomain
+from app.db.models import ContactProfile, DropDomain, RegistrarAccount, ZoneRule, ZoneStrategy
 from app.db.session import get_db
 from app.schemas.control import (
     ContactProfileCreateRequest,
@@ -165,6 +165,91 @@ async def test_domain_override_api_supports_create_rule_phase_and_preview():
         assert payload["strategy_id"] == override_id
         assert payload["resolution_mode"] == "priority"
         assert payload["windows"][0]["rule_id"] == rule_id
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_apply_domain_readiness_marks_inherited_zone_strategy_ready_when_rule_exists():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
+        contact = ContactProfile(
+            label="Default contact",
+            given_name="Alice",
+            family_name="Doe",
+            email="alice@example.org",
+            phone="+33123456789",
+            street_address="5 rue neuve",
+            city="Paris",
+            zip_code="75001",
+            country_code="FR",
+            is_default=True,
+        )
+        session.add(contact)
+        await session.flush()
+
+        account = RegistrarAccount(
+            name="Gandi account",
+            registrar_slug="gandi",
+            api_token="token",
+            default_contact_profile_id=contact.id,
+            is_active=True,
+        )
+        session.add(account)
+        await session.flush()
+
+        strategy = ZoneStrategy(
+            zone="fr",
+            name="France Default",
+            timezone_name="Europe/Paris",
+            rule_resolution_mode="priority",
+            default_registrar_slug="gandi",
+            is_active=True,
+        )
+        session.add(strategy)
+        await session.flush()
+
+        rule = ZoneRule(
+            zone_strategy_id=strategy.id,
+            name="FR hourly",
+            schedule_type="hourly",
+            minute=31,
+            second=59,
+            window_duration_seconds=61,
+            priority=100,
+            is_enabled=True,
+        )
+        session.add(rule)
+        await session.flush()
+
+        domain = DropDomain(
+            fqdn="dryrun-20260506-01.fr",
+            zone="fr",
+            timezone_name="Europe/Paris",
+            registrar_slug="gandi",
+            zone_strategy_id=strategy.id,
+            strategy_mode="inherit_zone",
+            registrar_account_id=account.id,
+            contact_profile_id=contact.id,
+            drop_date=date(2026, 5, 6),
+            attack_enabled=True,
+        )
+        session.add(domain)
+        await session.flush()
+
+        await _apply_domain_readiness(session, domain)
+
+        assert domain.status == "ready"
+        assert domain.readiness_reasons is None
 
     await engine.dispose()
 
