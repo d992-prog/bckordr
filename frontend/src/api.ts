@@ -269,6 +269,30 @@ export type ContactProfile = {
   updated_at: string;
 };
 
+export type ContactProfilePrefill = {
+  label: string;
+  person_type: string;
+  given_name: string;
+  family_name: string;
+  organization_name: string | null;
+  email: string;
+  phone: string;
+  mobile: string | null;
+  fax: string | null;
+  lang: string | null;
+  street_address: string;
+  city: string;
+  state: string | null;
+  zip_code: string;
+  country_code: string;
+  data_obfuscated: boolean | null;
+  mail_obfuscated: boolean | null;
+  icann_contract_accept: boolean | null;
+  extra_parameters: string | null;
+  is_default: boolean;
+  notes: string | null;
+};
+
 export type AttackRun = {
   id: number;
   domain_id: number;
@@ -516,6 +540,10 @@ export const api = {
       `/control/registrar-accounts/${id}/validate`,
       { method: "POST" },
     ),
+  prefillContactFromRegistrarAccount: (id: number) =>
+    request<ContactProfilePrefill>(`/control/registrar-accounts/${id}/prefill-contact`, {
+      method: "POST",
+    }),
   deleteRegistrarAccount: (id: number) =>
     request<{ detail: string }>(`/control/registrar-accounts/${id}`, { method: "DELETE" }),
 

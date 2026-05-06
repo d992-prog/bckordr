@@ -4,6 +4,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +35,7 @@ from app.schemas.control import (
     AttackStartRequest,
     AttackStopRequest,
     ContactProfileCreateRequest,
+    ContactProfilePrefillResponse,
     ContactProfileResponse,
     ContactProfileUpdateRequest,
     ControlOverviewResponse,
@@ -85,6 +87,7 @@ from app.services.attack_runtime import (
 from app.services.audit import add_audit_log
 from app.services.domain_parser import normalize_domain, parse_upload
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
+from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.strategy_runtime import (
     evaluate_domain_readiness,
     is_domain_due_today,
@@ -1335,6 +1338,32 @@ async def validate_registrar_account(
         last_validation_message=account.last_validation_message,
         last_validated_at=account.last_validated_at,
     )
+
+
+@router.post("/registrar-accounts/{account_id}/prefill-contact", response_model=ContactProfilePrefillResponse)
+async def prefill_contact_from_registrar_account(
+    account_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> ContactProfilePrefillResponse:
+    del admin
+    account = await db.get(RegistrarAccount, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Registrar account not found")
+    if account.registrar_slug != "gandi":
+        raise HTTPException(status_code=400, detail=f"Prefill is not implemented for {account.registrar_slug}")
+    try:
+        payload = await build_gandi_contact_prefill(account, get_settings())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Gandi prefill failed with HTTP {exc.response.status_code}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Gandi prefill request failed: {exc}") from exc
+    return ContactProfilePrefillResponse(**payload)
 
 
 @router.delete("/registrar-accounts/{account_id}", response_model=MessageResponse)

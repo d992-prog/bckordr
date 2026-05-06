@@ -5,6 +5,7 @@ import {
   AttackEvent,
   AttackRun,
   ContactProfile,
+  ContactProfilePrefill,
   DiagnosticTelegramSettings,
   DomainOverrideRule,
   DomainOverrideRulePhase,
@@ -995,6 +996,17 @@ export default function App() {
     }
   }
 
+  async function prefillContactFromAccount(account: RegistrarAccount) {
+    try {
+      const payload = await api.prefillContactFromRegistrarAccount(account.id);
+      applyPrefilledContact(payload);
+      setTab("contacts");
+      setToast({ type: "success", text: `Contact draft imported from ${account.name}` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка prefill из Gandi" });
+    }
+  }
+
   async function dryRunDomain(domain: DropDomain) {
     try {
       const payload = await api.dryRunDomain(domain.id);
@@ -1047,6 +1059,32 @@ export default function App() {
       return "ready";
     }
     return domain.readiness_reasons;
+  }
+
+  function applyPrefilledContact(payload: ContactProfilePrefill) {
+    setContactForm({
+      label: payload.label,
+      personType: payload.person_type,
+      givenName: payload.given_name,
+      familyName: payload.family_name,
+      organizationName: payload.organization_name ?? "",
+      email: payload.email,
+      phone: payload.phone,
+      mobile: payload.mobile ?? "",
+      fax: payload.fax ?? "",
+      lang: payload.lang ?? "fr",
+      streetAddress: payload.street_address,
+      city: payload.city,
+      state: payload.state ?? "",
+      zipCode: payload.zip_code,
+      countryCode: payload.country_code,
+      dataObfuscated: payload.data_obfuscated ?? false,
+      mailObfuscated: payload.mail_obfuscated ?? false,
+      icannContractAccept: payload.icann_contract_accept ?? true,
+      extraParameters: payload.extra_parameters ?? "",
+      isDefault: payload.is_default,
+      notes: payload.notes ?? "",
+    });
   }
 
   function renderDomains() {
@@ -1579,6 +1617,7 @@ export default function App() {
                 </div>
                 <div className="actions">
                   <button type="button" className="ghost" onClick={() => void validateAccount(account.id)}>Проверить</button>
+                  <button type="button" className="ghost" onClick={() => void prefillContactFromAccount(account)}>Prefill contact</button>
                   <button type="button" className="danger" onClick={() => void deleteItem("account", account.id)}>Удалить</button>
                 </div>
               </article>

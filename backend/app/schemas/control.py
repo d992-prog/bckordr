@@ -314,6 +314,30 @@ class ContactProfileResponse(ContactProfileBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ContactProfilePrefillResponse(BaseModel):
+    label: str
+    person_type: str = "individual"
+    given_name: str = ""
+    family_name: str = ""
+    organization_name: str | None = None
+    email: str = ""
+    phone: str = ""
+    mobile: str | None = None
+    fax: str | None = None
+    lang: str | None = None
+    street_address: str = ""
+    city: str = ""
+    state: str | None = None
+    zip_code: str = ""
+    country_code: str = "FR"
+    data_obfuscated: bool | None = None
+    mail_obfuscated: bool | None = None
+    icann_contract_accept: bool | None = None
+    extra_parameters: str | None = None
+    is_default: bool = False
+    notes: str | None = None
+
+
 class RegistrarAccountBase(BaseModel):
     name: str = Field(min_length=2, max_length=128)
     registrar_slug: str = "gandi"

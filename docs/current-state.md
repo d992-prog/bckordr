@@ -144,12 +144,18 @@ Architecture goal:
   - `POST /api/control/domains/{id}/dry-run`
   - `POST /api/control/domains/dry-run/batch`
   - persists dry-run status/message/http code/check timestamp on the domain
+- Control-side contact prefill from Gandi now exists:
+  - `POST /api/control/registrar-accounts/{id}/prefill-contact`
+  - fetches a contact draft from Gandi `user-info`
+  - optionally enriches from `organization/organizations/{sharing_id}`
+  - supports both production and sandbox through `api_base_url`
 - Frontend now exposes:
   - Gandi account `api_base_url`
   - Gandi-specific contact fields
   - domain `registration_extra_parameters`
   - per-domain `Dry run` action
   - batch `Dry run due today` action
+  - account-level `Prefill contact`
 
 ## Current Limits
 

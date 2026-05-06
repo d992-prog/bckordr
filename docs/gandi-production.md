@@ -64,6 +64,35 @@ Behavior:
 
 Use this before first live runs with a real PAT.
 
+## Contact Prefill
+
+There is now a control endpoint for importing a contact draft from Gandi:
+
+- `POST /api/control/registrar-accounts/{id}/prefill-contact`
+
+Behavior:
+
+- reads Gandi `organization/user-info`
+- if `sharing_id` is set, also tries `organization/organizations/{sharing_id}`
+- returns a draft for the contact form, it does not silently overwrite an existing saved contact
+
+This is intended to reduce manual typing and mistakes, not to remove human review.
+
+## Sandbox
+
+Sandbox is useful exactly as a training and integration-check environment.
+
+If account `api_base_url` is set to sandbox, for example:
+
+- `https://api.sandbox.gandi.net/v5/domain/domains`
+
+then:
+
+- domain `Dry run` uses sandbox
+- contact `Prefill` uses sandbox organization endpoints on the same host root
+
+This gives a safer way to validate request shape and API wiring before using production.
+
 ## Important Behavioral Choice
 
 The system currently treats an accepted-but-still-pending Gandi create request as a stop-worthy result.
