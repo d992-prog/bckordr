@@ -1,0 +1,18 @@
+[Unit]
+Description=FR Domain Drop Monitor
+After=network.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/fr-domain-drop-monitor/backend
+EnvironmentFile=/opt/fr-domain-drop-monitor/backend/.env
+ExecStart=/opt/fr-domain-drop-monitor/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

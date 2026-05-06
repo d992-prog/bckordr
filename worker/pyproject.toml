@@ -1,0 +1,19 @@
+[project]
+name = "domain-drop-catcher-worker"
+version = "0.1.0"
+description = "Worker agent for domain drop catcher"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.28.0",
+  "pydantic-settings>=2.8.0",
+  "psutil>=7.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.9.10",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

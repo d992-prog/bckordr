@@ -1,0 +1,30 @@
+[project]
+name = "domain-drop-catcher-control"
+version = "0.1.0"
+description = "Control backend for distributed domain drop catching"
+requires-python = ">=3.11"
+dependencies = [
+  "asyncpg>=0.30.0",
+  "dnspython>=2.7.0",
+  "fastapi>=0.116.0",
+  "greenlet>=3.1.1",
+  "httpx[socks]>=0.28.0",
+  "itsdangerous>=2.2.0",
+  "openpyxl>=3.1.5",
+  "pydantic-settings>=2.8.0",
+  "python-multipart>=0.0.20",
+  "sqlalchemy[asyncio]>=2.0.38",
+  "uvicorn[standard]>=0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "aiosqlite>=0.22.0",
+  "pytest>=8.3.4",
+  "pytest-asyncio>=0.25.3",
+  "ruff>=0.9.10",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

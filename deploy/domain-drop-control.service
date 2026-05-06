@@ -1,0 +1,18 @@
+[Unit]
+Description=Domain Drop Catcher Control
+After=network.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/domain-drop-catcher/backend
+EnvironmentFile=/opt/domain-drop-catcher/backend/.env
+ExecStart=/opt/domain-drop-catcher/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

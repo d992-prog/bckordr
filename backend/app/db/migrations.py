@@ -1,0 +1,154 @@
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+
+MIGRATIONS = (
+    "CREATE TABLE IF NOT EXISTS app_settings (id SERIAL PRIMARY KEY, key VARCHAR(128) UNIQUE NOT NULL, value TEXT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())",
+    "ALTER TABLE domains DROP CONSTRAINT IF EXISTS domains_domain_key",
+    "DROP INDEX IF EXISTS ix_domains_domain",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS owner_id INTEGER NULL REFERENCES users(id) ON DELETE CASCADE",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS scheduler_mode VARCHAR(32) DEFAULT 'continuous'",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS pattern_slow_interval DOUBLE PRECISION DEFAULT 60.0",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS pattern_fast_interval DOUBLE PRECISION DEFAULT 0.5",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS pattern_window_start_minute INTEGER DEFAULT 31",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS pattern_window_end_minute INTEGER DEFAULT 34",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS confirmation_threshold INTEGER DEFAULT 3",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS available_recheck_enabled BOOLEAN DEFAULT false",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS available_recheck_interval DOUBLE PRECISION DEFAULT 1800.0",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS last_cycle_started_at TIMESTAMPTZ NULL",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS worker_heartbeat_at TIMESTAMPTZ NULL",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS last_success_at TIMESTAMPTZ NULL",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS available_at TIMESTAMPTZ NULL",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS last_seen_owner TEXT NULL",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS last_seen_rdap_status TEXT NULL",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS last_owner_change_at TIMESTAMPTZ NULL",
+    "ALTER TABLE domains ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER DEFAULT 0",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_domains_owner_domain ON domains(owner_id, domain)",
+    "ALTER TABLE proxies ADD COLUMN IF NOT EXISTS owner_id INTEGER NULL REFERENCES users(id) ON DELETE CASCADE",
+    "ALTER TABLE logs ADD COLUMN IF NOT EXISTS owner_id INTEGER NULL REFERENCES users(id) ON DELETE CASCADE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS max_domains INTEGER NULL",
+    """
+    CREATE TABLE IF NOT EXISTS zone_strategies (
+        id SERIAL PRIMARY KEY,
+        zone VARCHAR(32) NOT NULL,
+        name VARCHAR(128) UNIQUE NOT NULL,
+        timezone_name VARCHAR(64) NOT NULL DEFAULT 'UTC',
+        rule_resolution_mode VARCHAR(32) NOT NULL DEFAULT 'priority',
+        default_min_guaranteed_rps DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+        default_registrar_slug VARCHAR(64) NOT NULL DEFAULT 'gandi',
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        notes TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_zone_strategies_zone ON zone_strategies(zone)",
+    """
+    CREATE TABLE IF NOT EXISTS zone_rules (
+        id SERIAL PRIMARY KEY,
+        zone_strategy_id INTEGER NOT NULL REFERENCES zone_strategies(id) ON DELETE CASCADE,
+        name VARCHAR(128) NOT NULL,
+        is_enabled BOOLEAN NOT NULL DEFAULT true,
+        priority INTEGER NOT NULL DEFAULT 100,
+        schedule_type VARCHAR(32) NOT NULL DEFAULT 'hourly',
+        hour INTEGER NULL,
+        minute INTEGER NOT NULL DEFAULT 31,
+        second INTEGER NOT NULL DEFAULT 59,
+        weekdays VARCHAR(64) NULL,
+        specific_date DATE NULL,
+        window_duration_seconds INTEGER NOT NULL DEFAULT 61,
+        execution_profile_mode VARCHAR(32) NOT NULL DEFAULT 'flat',
+        notes TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_zone_rules_zone_strategy_id ON zone_rules(zone_strategy_id)",
+    """
+    CREATE TABLE IF NOT EXISTS zone_rule_phases (
+        id SERIAL PRIMARY KEY,
+        zone_rule_id INTEGER NOT NULL REFERENCES zone_rules(id) ON DELETE CASCADE,
+        name VARCHAR(64) NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        start_offset_seconds INTEGER NOT NULL DEFAULT 0,
+        duration_seconds INTEGER NOT NULL DEFAULT 0,
+        rps_mode VARCHAR(32) NOT NULL DEFAULT 'percent',
+        rps_value DOUBLE PRECISION NOT NULL DEFAULT 100.0,
+        stop_on_success BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_zone_rule_phases_zone_rule_id ON zone_rule_phases(zone_rule_id)",
+    """
+    CREATE TABLE IF NOT EXISTS domain_rule_overrides (
+        id SERIAL PRIMARY KEY,
+        timezone_name VARCHAR(64) NOT NULL DEFAULT 'UTC',
+        rule_resolution_mode VARCHAR(32) NOT NULL DEFAULT 'priority',
+        default_min_guaranteed_rps DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+        notes TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS domain_override_rules (
+        id SERIAL PRIMARY KEY,
+        domain_rule_override_id INTEGER NOT NULL REFERENCES domain_rule_overrides(id) ON DELETE CASCADE,
+        name VARCHAR(128) NOT NULL,
+        is_enabled BOOLEAN NOT NULL DEFAULT true,
+        priority INTEGER NOT NULL DEFAULT 100,
+        schedule_type VARCHAR(32) NOT NULL DEFAULT 'hourly',
+        hour INTEGER NULL,
+        minute INTEGER NOT NULL DEFAULT 31,
+        second INTEGER NOT NULL DEFAULT 59,
+        weekdays VARCHAR(64) NULL,
+        specific_date DATE NULL,
+        window_duration_seconds INTEGER NOT NULL DEFAULT 61,
+        execution_profile_mode VARCHAR(32) NOT NULL DEFAULT 'flat',
+        notes TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_domain_override_rules_domain_rule_override_id ON domain_override_rules(domain_rule_override_id)",
+    """
+    CREATE TABLE IF NOT EXISTS domain_override_phases (
+        id SERIAL PRIMARY KEY,
+        domain_override_rule_id INTEGER NOT NULL REFERENCES domain_override_rules(id) ON DELETE CASCADE,
+        name VARCHAR(64) NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        start_offset_seconds INTEGER NOT NULL DEFAULT 0,
+        duration_seconds INTEGER NOT NULL DEFAULT 0,
+        rps_mode VARCHAR(32) NOT NULL DEFAULT 'percent',
+        rps_value DOUBLE PRECISION NOT NULL DEFAULT 100.0,
+        stop_on_success BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_domain_override_phases_domain_override_rule_id ON domain_override_phases(domain_override_rule_id)",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS zone_strategy_id INTEGER NULL REFERENCES zone_strategies(id) ON DELETE SET NULL",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS domain_rule_override_id INTEGER NULL REFERENCES domain_rule_overrides(id) ON DELETE SET NULL",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS strategy_mode VARCHAR(32) DEFAULT 'inherit_zone'",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS override_min_guaranteed_rps DOUBLE PRECISION NULL",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS readiness_reasons TEXT NULL",
+    "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS mobile VARCHAR(64) NULL",
+    "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS fax VARCHAR(64) NULL",
+    "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS lang VARCHAR(16) NULL",
+    "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS data_obfuscated BOOLEAN NULL",
+    "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS mail_obfuscated BOOLEAN NULL",
+    "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS icann_contract_accept BOOLEAN NULL",
+    "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS extra_parameters TEXT NULL",
+    "ALTER TABLE registrar_accounts ADD COLUMN IF NOT EXISTS api_base_url VARCHAR(255) NULL",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS registration_extra_parameters TEXT NULL",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS dry_run_status VARCHAR(32) NULL",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS dry_run_http_status INTEGER NULL",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS dry_run_message TEXT NULL",
+)
+
+
+async def run_startup_migrations(engine: AsyncEngine) -> None:
+    async with engine.begin() as conn:
+        for statement in MIGRATIONS:
+            await conn.execute(text(statement))
