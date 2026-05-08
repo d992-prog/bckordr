@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     login_rate_limit_attempts: int = Field(default=5, alias="LOGIN_RATE_LIMIT_ATTEMPTS")
     login_lock_minutes: int = Field(default=15, alias="LOGIN_LOCK_MINUTES")
     cors_origins: str = Field(default="*", alias="CORS_ORIGINS")
+    worker_runtime_allowlist_path: str | None = Field(default=None, alias="WORKER_RUNTIME_ALLOWLIST_PATH")
+    worker_runtime_allowlist_reload_command: str | None = Field(
+        default=None,
+        alias="WORKER_RUNTIME_ALLOWLIST_RELOAD_COMMAND",
+    )
     max_upload_bytes: int = 5 * 1024 * 1024
 
     model_config = SettingsConfigDict(

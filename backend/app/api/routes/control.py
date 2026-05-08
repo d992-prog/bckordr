@@ -94,6 +94,7 @@ from app.services.strategy_runtime import (
     preview_strategy_windows,
     resolve_effective_strategy,
 )
+from app.services.worker_allowlist import sync_worker_runtime_allowlist
 from app.services.security import generate_session_token
 from app.services.registrars import validate_registrar_account_remote
 from app.core.config import get_settings
@@ -1232,6 +1233,7 @@ async def create_worker(
         details=f"name={payload.name} target_rps={payload.target_rps}",
     )
     await db.commit()
+    await sync_worker_runtime_allowlist(db, get_settings())
     await db.refresh(worker)
     return WorkerNodeResponse.model_validate(worker)
 
@@ -1257,6 +1259,7 @@ async def update_worker(
         details=f"worker_id={worker_id}",
     )
     await db.commit()
+    await sync_worker_runtime_allowlist(db, get_settings())
     await db.refresh(worker)
     return WorkerNodeResponse.model_validate(worker)
 
@@ -1273,6 +1276,7 @@ async def delete_worker(
         raise HTTPException(status_code=404, detail="Worker not found")
     await db.delete(worker)
     await db.commit()
+    await sync_worker_runtime_allowlist(db, get_settings())
     return MessageResponse(detail="Worker deleted")
 
 

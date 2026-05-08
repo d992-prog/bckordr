@@ -131,6 +131,7 @@ Architecture goal:
   - progress reporting
   - result reporting
   - simulate mode with latency/jitter/success-rate knobs
+  - queued task acknowledgement now transitions task/run/domain into active runtime states
 - Worker Gandi integration now supports:
   - `Authorization: Bearer <PAT>`
   - account-level or worker-level `api_base_url`
@@ -149,6 +150,10 @@ Architecture goal:
   - fetches a contact draft from Gandi `user-info`
   - optionally enriches from `organization/organizations/{sharing_id}`
   - supports both production and sandbox through `api_base_url`
+- Control can now maintain a worker runtime IP allowlist:
+  - uses worker `ip_address` values as allowlist entries
+  - generates an nginx include file for `/api/worker-runtime/`
+  - can optionally execute a configured reload command after worker CRUD changes
 - Frontend now exposes:
   - Gandi account `api_base_url`
   - Gandi-specific contact fields
@@ -166,11 +171,12 @@ Architecture goal:
 - `owner/admin/bill/tech` are currently cloned from one contact profile, not managed separately.
 - TLD-specific `extra_parameters` are supported as raw JSON text, not as a rich typed UI model.
 - UI is operational and usable, but still not a final polished admin product.
+- Worker runtime IP allowlist enforcement is implemented on the control side, but nginx/origin deployment still must be configured on the server.
 
 ## Most Recent Verified Checks
 
 At the latest verified point:
-- `python -m pytest tests -q -p no:cacheprovider` in `backend` -> `47 passed`
+- `python -m pytest tests -q -p no:cacheprovider` in `backend` -> `54 passed`
 - `npm run build` in `frontend` -> passed
 - `python -c "from app.main import app; print(app.title)"` in `backend` -> passed
 - `python -c "from app.runner import WorkerRunner; from app.gandi import build_registration_request, register_domain; print('worker-import-ok')"` in `worker` -> passed

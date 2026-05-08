@@ -234,7 +234,7 @@ async def test_worker_runtime_harness_covers_live_rps_update_and_success_flow():
         async def fake_attempt(self, client, live_task):
             observed_planned_rps.append(live_task.planned_rps)
             if len(observed_planned_rps) == 1:
-                await asyncio.sleep(0.65)
+                await asyncio.sleep(1.1)
                 return 503, 12.0, "retry"
             await asyncio.sleep(0.05)
             return 200, 8.0, "registered"
@@ -242,7 +242,7 @@ async def test_worker_runtime_harness_covers_live_rps_update_and_success_flow():
         runner._attempt_register = MethodType(fake_attempt, runner)
 
         async def bump_task_rps():
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.05)
             async with session_factory() as session:
                 primary_task = await session.get(WorkerTask, ids["primary_task_id"])
                 assert primary_task is not None

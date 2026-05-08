@@ -99,6 +99,13 @@ OWNER_LOGIN=owner
 OWNER_PASSWORD=change-me-owner-password
 ```
 
+Optional worker runtime allowlist knobs for nginx-managed origin protection:
+
+```env
+WORKER_RUNTIME_ALLOWLIST_PATH=/etc/nginx/includes/domain-drop-worker-allowlist.conf
+WORKER_RUNTIME_ALLOWLIST_RELOAD_COMMAND=systemctl reload nginx
+```
+
 Run control API:
 
 ```bash
