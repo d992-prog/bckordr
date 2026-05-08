@@ -38,7 +38,7 @@ class WorkerRunner:
         self.settings = settings
         self.control = ControlClient(settings)
         self._stop = False
-        self._last_server_time: datetime | None = None
+        self._clock_offset_ms = 0
         self._current_rps = 0.0
         self._current_capacity_rps = 0.0
         self._simulate_random = random.Random(settings.simulate_random_seed)
@@ -71,16 +71,17 @@ class WorkerRunner:
             "ip_address": None,
             "region": None,
         }
+        request_started_at = datetime.now(timezone.utc)
         response = await self.control.heartbeat(payload)
+        response_received_at = datetime.now(timezone.utc)
         server_time = response.get("server_time")
         if server_time:
-            self._last_server_time = datetime.fromisoformat(server_time.replace("Z", "+00:00"))
+            server_time_utc = datetime.fromisoformat(server_time.replace("Z", "+00:00"))
+            request_midpoint = request_started_at + (response_received_at - request_started_at) / 2
+            self._clock_offset_ms = int(abs((server_time_utc - request_midpoint).total_seconds() * 1000))
 
     def _clock_drift_ms(self) -> int:
-        if self._last_server_time is None:
-            return 0
-        now = datetime.now(timezone.utc)
-        return int((now - self._last_server_time).total_seconds() * 1000)
+        return self._clock_offset_ms
 
     @staticmethod
     def _runtime_limits(planned_rps: float) -> tuple[float, int]:

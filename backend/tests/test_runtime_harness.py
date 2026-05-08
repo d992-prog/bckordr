@@ -192,6 +192,71 @@ async def _seed_runtime_state(session_factory: async_sessionmaker[AsyncSession])
 
 
 @pytest.mark.asyncio
+async def test_worker_heartbeat_reports_clock_offset_instead_of_elapsed_time(monkeypatch: pytest.MonkeyPatch):
+    class StubControlClient:
+        def __init__(self, responses: list[str]) -> None:
+            self._responses = list(responses)
+            self.payloads: list[dict] = []
+
+        async def heartbeat(self, payload: dict) -> dict:
+            self.payloads.append(dict(payload))
+            return {"server_time": self._responses.pop(0)}
+
+        async def close(self) -> None:
+            return None
+
+    settings = WorkerSettings(
+        CONTROL_BASE_URL="http://control.test",
+        WORKER_ID=1,
+        CONTROL_TOKEN="worker-token",
+        POLL_INTERVAL_SECONDS=2.0,
+        HEARTBEAT_INTERVAL_SECONDS=5.0,
+        REQUEST_TIMEOUT_SECONDS=2.0,
+        CONNECT_TIMEOUT_SECONDS=1.0,
+        SIMULATE_MODE=False,
+    )
+    runner = WorkerRunner(settings)
+    await runner.control.client.aclose()
+
+    real_datetime = WorkerRunner._heartbeat.__globals__["datetime"]
+    scripted_now = iter(
+        [
+            real_datetime(2026, 5, 8, 12, 0, 0, 0, tzinfo=timezone.utc),
+            real_datetime(2026, 5, 8, 12, 0, 0, 100000, tzinfo=timezone.utc),
+            real_datetime(2026, 5, 8, 12, 0, 0, 200000, tzinfo=timezone.utc),
+            real_datetime(2026, 5, 8, 12, 0, 0, 300000, tzinfo=timezone.utc),
+        ]
+    )
+
+    class FakeDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            current = next(scripted_now)
+            if tz is None:
+                return current.replace(tzinfo=None)
+            return current.astimezone(tz)
+
+        @staticmethod
+        def fromisoformat(value: str):
+            return real_datetime.fromisoformat(value)
+
+    stub_control = StubControlClient(
+        [
+            "2026-05-08T12:00:00.060000+00:00",
+            "2026-05-08T12:00:00.260000+00:00",
+        ]
+    )
+    runner.control = stub_control
+    monkeypatch.setitem(WorkerRunner._heartbeat.__globals__, "datetime", FakeDateTime)
+
+    await runner._heartbeat(status="ready")
+    await runner._heartbeat(status="ready")
+
+    assert stub_control.payloads[0]["clock_drift_ms"] == 0
+    assert stub_control.payloads[1]["clock_drift_ms"] == 10
+
+
+@pytest.mark.asyncio
 async def test_worker_runtime_harness_covers_live_rps_update_and_success_flow():
     engine, session_factory = await _make_test_session_factory()
     try:
