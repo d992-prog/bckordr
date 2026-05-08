@@ -171,6 +171,30 @@ const DEFAULT_CONTACT_FORM = {
   notes: "",
 };
 
+function makeWorkerForm(worker?: WorkerNode | null) {
+  if (!worker) {
+    return { ...DEFAULT_WORKER_FORM };
+  }
+  return {
+    name: worker.name,
+    registrarSlug: worker.registrar_slug,
+    assignedRegistrarAccountId: worker.assigned_registrar_account_id ? String(worker.assigned_registrar_account_id) : "",
+    apiBaseUrl: worker.api_base_url ?? "",
+    controlToken: worker.control_token ?? "",
+    status: worker.status,
+    ipAddress: worker.ip_address ?? "",
+    region: worker.region ?? "",
+    maxRps: String(worker.max_rps),
+    targetRps: String(worker.target_rps),
+    currentRps: String(worker.current_rps),
+    currentCapacityRps: String(worker.current_capacity_rps),
+    cpuLoad: String(worker.cpu_load),
+    ramUsagePercent: String(worker.ram_usage_percent),
+    clockDriftMs: String(worker.clock_drift_ms),
+    notes: worker.notes ?? "",
+  };
+}
+
 function formatDateTime(value: string | null) {
   if (!value) {
     return "—";
@@ -254,6 +278,7 @@ export default function App() {
   const [domainOverrideRuleForm, setDomainOverrideRuleForm] = useState(DEFAULT_DOMAIN_OVERRIDE_RULE_FORM);
   const [domainOverridePhaseForm, setDomainOverridePhaseForm] = useState(DEFAULT_DOMAIN_OVERRIDE_PHASE_FORM);
   const [workerForm, setWorkerForm] = useState(DEFAULT_WORKER_FORM);
+  const [editingWorkerId, setEditingWorkerId] = useState<number | null>(null);
   const [accountForm, setAccountForm] = useState(DEFAULT_ACCOUNT_FORM);
   const [contactForm, setContactForm] = useState(DEFAULT_CONTACT_FORM);
   const [passwordForm, setPasswordForm] = useState({ current_password: "", new_password: "" });
@@ -801,31 +826,47 @@ export default function App() {
 
   async function submitWorker(event: FormEvent) {
     event.preventDefault();
+    const payload = {
+      name: workerForm.name,
+      registrar_slug: workerForm.registrarSlug,
+      assigned_registrar_account_id: parseNumber(workerForm.assignedRegistrarAccountId),
+      api_base_url: workerForm.apiBaseUrl || null,
+      control_token: workerForm.controlToken || null,
+      status: workerForm.status,
+      ip_address: workerForm.ipAddress || null,
+      region: workerForm.region || null,
+      max_rps: Number(workerForm.maxRps),
+      target_rps: Number(workerForm.targetRps),
+      current_rps: Number(workerForm.currentRps),
+      current_capacity_rps: Number(workerForm.currentCapacityRps),
+      cpu_load: Number(workerForm.cpuLoad),
+      ram_usage_percent: Number(workerForm.ramUsagePercent),
+      clock_drift_ms: Number(workerForm.clockDriftMs),
+      notes: workerForm.notes || null,
+    };
     try {
-      await api.createWorker({
-        name: workerForm.name,
-        registrar_slug: workerForm.registrarSlug,
-        assigned_registrar_account_id: parseNumber(workerForm.assignedRegistrarAccountId),
-        api_base_url: workerForm.apiBaseUrl || null,
-        control_token: workerForm.controlToken || null,
-        status: workerForm.status,
-        ip_address: workerForm.ipAddress || null,
-        region: workerForm.region || null,
-        max_rps: Number(workerForm.maxRps),
-        target_rps: Number(workerForm.targetRps),
-        current_rps: Number(workerForm.currentRps),
-        current_capacity_rps: Number(workerForm.currentCapacityRps),
-        cpu_load: Number(workerForm.cpuLoad),
-        ram_usage_percent: Number(workerForm.ramUsagePercent),
-        clock_drift_ms: Number(workerForm.clockDriftMs),
-        notes: workerForm.notes || null,
-      });
-      setWorkerForm(DEFAULT_WORKER_FORM);
+      if (editingWorkerId) {
+        await api.updateWorker(editingWorkerId, payload);
+      } else {
+        await api.createWorker(payload);
+      }
+      setWorkerForm(makeWorkerForm());
+      setEditingWorkerId(null);
       await loadAll();
-      setToast({ type: "success", text: "Worker добавлен" });
+      setToast({ type: "success", text: editingWorkerId ? "Worker обновлен" : "Worker добавлен" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления worker" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : editingWorkerId ? "Ошибка обновления worker" : "Ошибка добавления worker" });
     }
+  }
+
+  function startEditWorker(worker: WorkerNode) {
+    setEditingWorkerId(worker.id);
+    setWorkerForm(makeWorkerForm(worker));
+  }
+
+  function resetWorkerForm() {
+    setEditingWorkerId(null);
+    setWorkerForm(makeWorkerForm());
   }
 
   async function submitAccount(event: FormEvent) {
@@ -1488,7 +1529,7 @@ export default function App() {
     return (
       <section className="grid two">
         <div className="card">
-          <h2>Добавить worker</h2>
+          <h2>{editingWorkerId ? `Редактировать worker #${editingWorkerId}` : "Добавить worker"}</h2>
           <form className="form" onSubmit={submitWorker}>
             <div className="form two-columns">
               <label><span>Имя</span><input value={workerForm.name} onChange={(event) => setWorkerForm((current) => ({ ...current, name: event.target.value }))} /></label>
@@ -1514,7 +1555,10 @@ export default function App() {
               <label><span>Clock drift ms</span><input value={workerForm.clockDriftMs} onChange={(event) => setWorkerForm((current) => ({ ...current, clockDriftMs: event.target.value }))} /></label>
             </div>
             <label><span>Notes</span><textarea rows={3} value={workerForm.notes} onChange={(event) => setWorkerForm((current) => ({ ...current, notes: event.target.value }))} /></label>
-            <button type="submit">Сохранить worker</button>
+            <div className="actions">
+              <button type="submit">{editingWorkerId ? "Обновить worker" : "Сохранить worker"}</button>
+              {editingWorkerId ? <button type="button" className="ghost" onClick={resetWorkerForm}>Отмена</button> : null}
+            </div>
           </form>
         </div>
 
@@ -1557,6 +1601,7 @@ export default function App() {
                   <div><span>Control token</span><strong>{worker.control_token ?? "auto-generate on create"}</strong></div>
                 </div>
                 <div className="actions">
+                  <button type="button" className="ghost" onClick={() => startEditWorker(worker)}>Редактировать</button>
                   <button type="button" className="ghost" onClick={() => void toggleWorker(worker)}>{worker.is_enabled ? "Выключить" : "Включить"}</button>
                   <button type="button" className="danger" onClick={() => void deleteItem("worker", worker.id)}>Удалить</button>
                 </div>
