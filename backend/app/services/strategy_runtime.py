@@ -92,7 +92,6 @@ def match_rule_windows(domain, *, strategy, rules, now: datetime) -> list[RuleWi
     for rule in rules:
         if not getattr(rule, "is_enabled", True):
             continue
-        schedule_type = getattr(rule, "schedule_type", "hourly")
         start_at = _resolve_rule_start(localized_now.date(), localized_now, rule, tz)
         if start_at is None:
             continue

@@ -176,8 +176,10 @@ Architecture goal:
 ## Most Recent Verified Checks
 
 At the latest verified point:
-- `python -m pytest tests -q -p no:cacheprovider` in `backend` -> `54 passed`
-- `npm run build` in `frontend` -> passed
+- `python -m pytest tests -q -p no:cacheprovider` in `backend` -> `55 passed`
+- `python -m ruff check app tests` in `backend` -> passed
+- `python -m ruff check app` in `worker` -> passed
+- `npm --prefix frontend run build` -> passed
 - `python -c "from app.main import app; print(app.title)"` in `backend` -> passed
 - `python -c "from app.runner import WorkerRunner; from app.gandi import build_registration_request, register_domain; print('worker-import-ok')"` in `worker` -> passed
 
