@@ -98,6 +98,7 @@ from app.services.domain_parser import normalize_domain, parse_upload
 from app.services.discovery import (
     DiscoveryObservationInput,
     apply_discovery_observation,
+    check_discovery_domain_rdap,
     infer_zone,
     normalize_discovery_domain,
 )
@@ -1357,6 +1358,42 @@ async def create_discovery_observation(
             status_codes=json.dumps(payload.status_codes, ensure_ascii=True) if payload.status_codes else None,
             raw_response=payload.raw_response,
             error=payload.error,
+        )
+    )
+    await db.commit()
+    await db.refresh(domain)
+    return DiscoveryDomainResponse.model_validate(domain)
+
+
+@router.post("/discovery/domains/{domain_id}/check", response_model=DiscoveryDomainResponse)
+async def check_discovery_domain_now(
+    domain_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> DiscoveryDomainResponse:
+    del admin
+    domain = await db.get(DiscoveryDomain, domain_id)
+    if domain is None:
+        raise HTTPException(status_code=404, detail="Discovery domain not found")
+
+    observation = await check_discovery_domain_rdap(
+        domain,
+        bootstrap_url=get_settings().discovery_rdap_bootstrap_url,
+        timeout_seconds=get_settings().discovery_timeout_seconds,
+    )
+    apply_discovery_observation(domain, observation)
+    db.add(
+        DiscoveryObservation(
+            discovery_domain_id=domain.id,
+            source=observation.source,
+            observed_at=observation.observed_at,
+            http_status=observation.http_status,
+            latency_ms=observation.latency_ms,
+            lifecycle_stage=observation.lifecycle_stage,
+            availability_status=observation.availability_status,
+            status_codes=json.dumps(observation.status_codes, ensure_ascii=True) if observation.status_codes else None,
+            raw_response=observation.raw_response,
+            error=observation.error,
         )
     )
     await db.commit()

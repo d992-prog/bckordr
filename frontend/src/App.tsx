@@ -690,6 +690,16 @@ export default function App() {
     }
   }
 
+  async function checkDiscoveryDomainNow(domainId: number) {
+    try {
+      const domain = await api.checkDiscoveryDomain(domainId);
+      await loadAll();
+      setToast({ type: "success", text: `Discovery check: ${domain.fqdn} -> ${domain.status}` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка discovery check" });
+    }
+  }
+
   async function submitStrategy(event: FormEvent) {
     event.preventDefault();
     try {
@@ -1331,6 +1341,7 @@ export default function App() {
                     <td>{formatDateTime(domain.next_check_at)}</td>
                     <td>
                       <div className="actions">
+                        <button type="button" onClick={() => void checkDiscoveryDomainNow(domain.id)}>Check now</button>
                         <button type="button" className="ghost" onClick={() => setDiscoveryObservationForm((current) => ({ ...current, domainId: String(domain.id) }))}>Observation</button>
                         <button type="button" className="danger" onClick={() => void deleteItem("discovery", domain.id)}>Удалить</button>
                       </div>

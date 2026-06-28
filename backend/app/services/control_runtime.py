@@ -5,7 +5,9 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.config import Settings
 from app.db.base import utcnow
+from app.services.app_settings import get_diagnostic_telegram_settings
 from app.services.attack_runtime import (
     autoplan_due_attack_runs,
     rebalance_worker_pool,
@@ -14,6 +16,8 @@ from app.services.attack_runtime import (
     recompute_worker_domain_counts,
     supervise_worker_pool,
 )
+from app.services.discovery import process_due_discovery_domains
+from app.services.notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -26,14 +30,27 @@ class ControlRuntimeOrchestrator:
         interval_seconds: float = 1.0,
         worker_supervisor_interval_seconds: float = 15.0,
         worker_stall_threshold_seconds: int = 45,
+        settings: Settings | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._interval_seconds = max(interval_seconds, 0.25)
         self._worker_supervisor_interval_seconds = max(worker_supervisor_interval_seconds, 0.25)
         self._worker_stall_threshold_seconds = max(int(worker_stall_threshold_seconds), 1)
+        self._settings = settings
+        self._discovery_enabled = settings.discovery_enabled if settings else True
+        self._discovery_scheduler_interval_seconds = (
+            max(settings.discovery_scheduler_interval_seconds, 0.25) if settings else 5.0
+        )
+        self._discovery_batch_size = max(settings.discovery_batch_size, 1) if settings else 10
+        self._discovery_timeout_seconds = max(settings.discovery_timeout_seconds, 0.25) if settings else 5.0
+        self._discovery_rdap_bootstrap_url = (
+            settings.discovery_rdap_bootstrap_url if settings else "https://data.iana.org/rdap/dns.json"
+        )
+        self._notifier = TelegramNotifier(settings) if settings else None
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._last_worker_supervision_at = None
+        self._last_discovery_at = None
 
     async def bootstrap(self) -> None:
         if self._task is not None and not self._task.done():
@@ -82,7 +99,36 @@ class ControlRuntimeOrchestrator:
             await rebalance_worker_pool(session, now=now)
             await recompute_worker_domain_counts(session)
             await recompute_run_statistics(session)
+            if (
+                self._discovery_enabled
+                and (
+                    self._last_discovery_at is None
+                    or (now - self._last_discovery_at).total_seconds() >= self._discovery_scheduler_interval_seconds
+                )
+            ):
+                await process_due_discovery_domains(
+                    session,
+                    now=now,
+                    batch_size=self._discovery_batch_size,
+                    bootstrap_url=self._discovery_rdap_bootstrap_url,
+                    timeout_seconds=self._discovery_timeout_seconds,
+                    notify=lambda message: self._send_discovery_notification(session, message),
+                )
+                self._last_discovery_at = now
             await session.commit()
+
+    async def _send_discovery_notification(self, session: AsyncSession, message: str) -> None:
+        if self._notifier is None:
+            return
+        token, chat_id = await get_diagnostic_telegram_settings(session)
+        if not token or not chat_id:
+            return
+        await self._notifier.send_diagnostic(
+            "Drop discovery",
+            message,
+            token=token,
+            chat_id=chat_id,
+        )
 
     async def _run_loop(self) -> None:
         while not self._stop_event.is_set():

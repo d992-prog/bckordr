@@ -16,7 +16,10 @@ from app.services.discovery import (
     DiscoveryObservationInput,
     apply_discovery_observation,
     calculate_next_check_at,
+    check_discovery_domain_rdap,
     normalize_lifecycle_stage,
+    process_due_discovery_domains,
+    resolve_rdap_domain_url,
 )
 
 
@@ -24,6 +27,47 @@ def test_discovery_normalizes_epp_statuses():
     assert normalize_lifecycle_stage(["clientTransferProhibited", "redemptionPeriod"]) == "redemption"
     assert normalize_lifecycle_stage(["pendingDelete"]) == "pending_delete"
     assert normalize_lifecycle_stage([], http_status=404) == "not_found"
+
+
+def test_discovery_resolves_rdap_url_from_iana_bootstrap():
+    bootstrap = {
+        "services": [
+            [["org"], ["https://rdap.publicinterestregistry.example/rdap/"]],
+            [["com", "net"], ["https://rdap.verisign.example/com/v1/"]],
+        ]
+    }
+
+    assert (
+        resolve_rdap_domain_url("example.com", bootstrap)
+        == "https://rdap.verisign.example/com/v1/domain/example.com"
+    )
+
+
+@pytest.mark.asyncio
+async def test_discovery_rdap_check_updates_domain_and_records_observation():
+    previous_seen = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    domain = DiscoveryDomain(fqdn="example.com", zone="com", last_checked_at=previous_seen)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(
+                200,
+                json={"services": [[["com"], ["https://rdap.registry.example/"]]]},
+            )
+        if str(request.url) == "https://rdap.registry.example/domain/example.com":
+            return httpx.Response(200, json={"status": ["pendingDelete"]})
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        observation = await check_discovery_domain_rdap(domain, client=client)
+
+    apply_discovery_observation(domain, observation)
+
+    assert observation.source == "rdap"
+    assert observation.http_status == 200
+    assert observation.lifecycle_stage == "pending_delete"
+    assert domain.status == "pending_delete"
+    assert domain.predicted_drop_start_at == previous_seen + timedelta(days=5)
 
 
 def test_pending_delete_observation_creates_drop_range():
@@ -102,5 +146,55 @@ async def test_discovery_api_imports_and_lists_domains():
         assert [item["fqdn"] for item in payload] == ["example.com", "test.org"]
         assert payload[0]["zone"] == "com"
         assert payload[0]["status"] == "tracking"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_process_due_discovery_domains_persists_observation_and_notification():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        session.add(DiscoveryDomain(fqdn="example.com", zone="com", next_check_at=now))
+        await session.commit()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["com"], ["https://rdap.registry.example/"]]]})
+        if str(request.url) == "https://rdap.registry.example/domain/example.com":
+            return httpx.Response(200, json={"status": ["pendingDelete"]})
+        return httpx.Response(404)
+
+    notifications: list[str] = []
+
+    async with session_factory() as session:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            processed = await process_due_discovery_domains(
+                session,
+                now=now,
+                batch_size=5,
+                client=client,
+                notify=notifications.append,
+            )
+        await session.commit()
+
+    async with session_factory() as session:
+        domain = await session.get(DiscoveryDomain, 1)
+
+    assert processed == 1
+    assert domain is not None
+    assert domain.status == "pending_delete"
+    assert domain.next_check_at == (now + timedelta(minutes=10)).replace(tzinfo=None)
+    assert notifications
+    assert "pendingDelete" in notifications[0]
 
     await engine.dispose()

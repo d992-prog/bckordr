@@ -33,6 +33,14 @@ class Settings(BaseSettings):
         alias="CONTROL_SCHEDULER_INTERVAL_SECONDS",
     )
     worker_stall_threshold_seconds: int = Field(default=45, alias="WORKER_STALL_THRESHOLD_SECONDS")
+    discovery_enabled: bool = Field(default=True, alias="DISCOVERY_ENABLED")
+    discovery_scheduler_interval_seconds: float = Field(default=5.0, alias="DISCOVERY_SCHEDULER_INTERVAL_SECONDS")
+    discovery_batch_size: int = Field(default=10, alias="DISCOVERY_BATCH_SIZE")
+    discovery_timeout_seconds: float = Field(default=5.0, alias="DISCOVERY_TIMEOUT_SECONDS")
+    discovery_rdap_bootstrap_url: str = Field(
+        default="https://data.iana.org/rdap/dns.json",
+        alias="DISCOVERY_RDAP_BOOTSTRAP_URL",
+    )
     max_proxy_attempts_per_cycle: int = Field(default=3, alias="MAX_PROXY_ATTEMPTS_PER_CYCLE")
     normal_check_interval: float = Field(default=1.5, alias="NORMAL_CHECK_INTERVAL")
     burst_check_interval: float = Field(default=0.35, alias="BURST_CHECK_INTERVAL")

@@ -38,6 +38,7 @@ async def lifespan(app: FastAPI):
         interval_seconds=settings.control_scheduler_interval_seconds,
         worker_supervisor_interval_seconds=settings.worker_supervisor_interval_seconds,
         worker_stall_threshold_seconds=settings.worker_stall_threshold_seconds,
+        settings=settings,
     )
     app.state.monitoring = monitoring
     await monitoring.bootstrap()

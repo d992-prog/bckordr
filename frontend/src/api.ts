@@ -530,6 +530,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  checkDiscoveryDomain: (id: number) =>
+    request<DiscoveryDomain>(`/control/discovery/domains/${id}/check`, {
+      method: "POST",
+    }),
   getDiscoveryZoneStats: () => request<DiscoveryZoneStats[]>("/control/discovery/zone-stats"),
   deleteDiscoveryDomain: (id: number) =>
     request<{ detail: string }>(`/control/discovery/domains/${id}`, { method: "DELETE" }),
