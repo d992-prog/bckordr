@@ -7,6 +7,8 @@ import {
   ContactProfile,
   ContactProfilePrefill,
   DiagnosticTelegramSettings,
+  DiscoveryDomain,
+  DiscoveryZoneStats,
   DomainOverrideRule,
   DomainOverrideRulePhase,
   DomainOverrideSettings,
@@ -23,7 +25,7 @@ import {
 } from "./api";
 
 type Toast = { type: "success" | "error"; text: string } | null;
-type Tab = "domains" | "strategies" | "workers" | "accounts" | "contacts" | "attacks" | "settings";
+type Tab = "domains" | "discovery" | "strategies" | "workers" | "accounts" | "contacts" | "attacks" | "settings";
 
 const DEFAULT_DOMAIN_FORM = {
   domainsText: "",
@@ -44,6 +46,24 @@ const DEFAULT_DOMAIN_FORM = {
   windowStartSecond: "59",
   windowDurationSeconds: "61",
   notes: "",
+};
+
+const DEFAULT_DISCOVERY_FORM = {
+  domainsText: "",
+  zone: "",
+  checkIntervalSeconds: "21600",
+  sourceMode: "rdap",
+  notes: "",
+};
+
+const DEFAULT_DISCOVERY_OBSERVATION_FORM = {
+  domainId: "",
+  lifecycleStage: "pending_delete",
+  availabilityStatus: "",
+  httpStatus: "200",
+  statusCodes: "pendingDelete",
+  rawResponse: "",
+  error: "",
 };
 
 const DEFAULT_STRATEGY_FORM = {
@@ -255,6 +275,8 @@ export default function App() {
   const [rulePhases, setRulePhases] = useState<Record<number, ZoneRulePhase[]>>({});
   const [strategyPreview, setStrategyPreview] = useState<StrategyPreview | null>(null);
   const [domains, setDomains] = useState<DropDomain[]>([]);
+  const [discoveryDomains, setDiscoveryDomains] = useState<DiscoveryDomain[]>([]);
+  const [discoveryZoneStats, setDiscoveryZoneStats] = useState<DiscoveryZoneStats[]>([]);
   const [workers, setWorkers] = useState<WorkerNode[]>([]);
   const [accounts, setAccounts] = useState<RegistrarAccount[]>([]);
   const [contacts, setContacts] = useState<ContactProfile[]>([]);
@@ -264,6 +286,8 @@ export default function App() {
 
   const [loginForm, setLoginForm] = useState({ username: "", password: "", remember_me: true });
   const [domainForm, setDomainForm] = useState(DEFAULT_DOMAIN_FORM);
+  const [discoveryForm, setDiscoveryForm] = useState(DEFAULT_DISCOVERY_FORM);
+  const [discoveryObservationForm, setDiscoveryObservationForm] = useState(DEFAULT_DISCOVERY_OBSERVATION_FORM);
   const [strategyForm, setStrategyForm] = useState(DEFAULT_STRATEGY_FORM);
   const [ruleForm, setRuleForm] = useState(DEFAULT_RULE_FORM);
   const [phaseForm, setPhaseForm] = useState(DEFAULT_PHASE_FORM);
@@ -390,6 +414,8 @@ export default function App() {
         overviewData,
         strategiesData,
         domainsData,
+        discoveryDomainsData,
+        discoveryZoneStatsData,
         workersData,
         accountsData,
         contactsData,
@@ -401,6 +427,8 @@ export default function App() {
         api.getOverview(),
         api.getZoneStrategies(),
         api.getDomains(),
+        api.getDiscoveryDomains(),
+        api.getDiscoveryZoneStats(),
         api.getWorkers(),
         api.getRegistrarAccounts(),
         api.getContactProfiles(),
@@ -412,6 +440,8 @@ export default function App() {
       setOverview(overviewData);
       setStrategies(strategiesData);
       setDomains(domainsData);
+      setDiscoveryDomains(discoveryDomainsData);
+      setDiscoveryZoneStats(discoveryZoneStatsData);
       setWorkers(workersData);
       setAccounts(accountsData);
       setContacts(contactsData);
@@ -512,6 +542,8 @@ export default function App() {
     setOverview(null);
     setStrategies([]);
     setDomains([]);
+    setDiscoveryDomains([]);
+    setDiscoveryZoneStats([]);
     setWorkers([]);
     setAccounts([]);
     setContacts([]);
@@ -610,6 +642,51 @@ export default function App() {
       });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления доменов" });
+    }
+  }
+
+  async function submitDiscoveryDomains(event: FormEvent) {
+    event.preventDefault();
+    try {
+      const result = await api.importDiscoveryDomains({
+        domains: splitDomains(discoveryForm.domainsText),
+        zone: discoveryForm.zone || null,
+        check_interval_seconds: Number(discoveryForm.checkIntervalSeconds),
+        source_mode: discoveryForm.sourceMode,
+        notes: discoveryForm.notes || null,
+      });
+      setDiscoveryForm(DEFAULT_DISCOVERY_FORM);
+      await loadAll();
+      setToast({
+        type: "success",
+        text: `Discovery добавлено: ${result.inserted.length}${result.skipped.length ? `, пропущено: ${result.skipped.join(", ")}` : ""}`,
+      });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка discovery import" });
+    }
+  }
+
+  async function submitDiscoveryObservation(event: FormEvent) {
+    event.preventDefault();
+    const domainId = Number(discoveryObservationForm.domainId);
+    if (!domainId) {
+      setToast({ type: "error", text: "Выбери discovery-домен" });
+      return;
+    }
+    try {
+      await api.createDiscoveryObservation(domainId, {
+        source: "manual",
+        http_status: parseNumber(discoveryObservationForm.httpStatus),
+        lifecycle_stage: discoveryObservationForm.lifecycleStage || null,
+        availability_status: discoveryObservationForm.availabilityStatus || null,
+        status_codes: splitDomains(discoveryObservationForm.statusCodes),
+        raw_response: discoveryObservationForm.rawResponse || null,
+        error: discoveryObservationForm.error || null,
+      });
+      await loadAll();
+      setToast({ type: "success", text: "Discovery observation сохранен" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка discovery observation" });
     }
   }
 
@@ -1074,10 +1151,13 @@ export default function App() {
     }
   }
 
-  async function deleteItem(kind: "domain" | "worker" | "account" | "contact", id: number) {
+  async function deleteItem(kind: "domain" | "discovery" | "worker" | "account" | "contact", id: number) {
     try {
       if (kind === "domain") {
         await api.deleteDomain(id);
+      }
+      if (kind === "discovery") {
+        await api.deleteDiscoveryDomain(id);
       }
       if (kind === "worker") {
         await api.deleteWorker(id);
@@ -1126,6 +1206,143 @@ export default function App() {
       isDefault: payload.is_default,
       notes: payload.notes ?? "",
     });
+  }
+
+  function renderDiscovery() {
+    return (
+      <section className="grid two">
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>Drop Discovery</h2>
+              <p className="muted">
+                Это аналитический контур: он фиксирует lifecycle/availability, считает вероятное окно дропа и не запускает регистрацию.
+              </p>
+            </div>
+            <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
+          </div>
+          <form className="form" onSubmit={submitDiscoveryDomains}>
+            <label>
+              <span>Домены для наблюдения</span>
+              <textarea
+                rows={6}
+                value={discoveryForm.domainsText}
+                onChange={(event) => setDiscoveryForm((current) => ({ ...current, domainsText: event.target.value }))}
+                placeholder="example.com&#10;example.net&#10;example.org"
+              />
+            </label>
+            <div className="form two-columns">
+              <label><span>Zone override</span><input value={discoveryForm.zone} onChange={(event) => setDiscoveryForm((current) => ({ ...current, zone: event.target.value }))} placeholder="empty = from domain" /></label>
+              <label><span>Base interval sec</span><input value={discoveryForm.checkIntervalSeconds} onChange={(event) => setDiscoveryForm((current) => ({ ...current, checkIntervalSeconds: event.target.value }))} /></label>
+              <label><span>Source mode</span><input value={discoveryForm.sourceMode} onChange={(event) => setDiscoveryForm((current) => ({ ...current, sourceMode: event.target.value }))} /></label>
+              <label><span>Notes</span><input value={discoveryForm.notes} onChange={(event) => setDiscoveryForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+            </div>
+            <button type="submit">Добавить в discovery</button>
+          </form>
+        </div>
+
+        <div className="card">
+          <h2>Manual observation</h2>
+          <p className="muted">Для первичного теста можно вручную зафиксировать RDAP/EPP статус. Автоматический checker будет следующим слоем.</p>
+          <form className="form" onSubmit={submitDiscoveryObservation}>
+            <label>
+              <span>Discovery domain</span>
+              <select value={discoveryObservationForm.domainId} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, domainId: event.target.value }))}>
+                <option value="">Выбери домен</option>
+                {discoveryDomains.map((domain) => <option key={domain.id} value={domain.id}>{domain.fqdn} | {domain.status}</option>)}
+              </select>
+            </label>
+            <div className="form two-columns">
+              <label>
+                <span>Lifecycle stage</span>
+                <select value={discoveryObservationForm.lifecycleStage} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, lifecycleStage: event.target.value }))}>
+                  <option value="registered">registered</option>
+                  <option value="redemption">redemption</option>
+                  <option value="pending_delete">pending_delete</option>
+                  <option value="not_found">not_found</option>
+                  <option value="unknown">unknown</option>
+                </select>
+              </label>
+              <label>
+                <span>Availability</span>
+                <select value={discoveryObservationForm.availabilityStatus} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, availabilityStatus: event.target.value }))}>
+                  <option value="">unknown</option>
+                  <option value="taken">taken</option>
+                  <option value="available">available</option>
+                </select>
+              </label>
+              <label><span>HTTP status</span><input value={discoveryObservationForm.httpStatus} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, httpStatus: event.target.value }))} /></label>
+              <label><span>Status codes</span><input value={discoveryObservationForm.statusCodes} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, statusCodes: event.target.value }))} placeholder="pendingDelete redemptionPeriod" /></label>
+            </div>
+            <label><span>Raw response / note</span><textarea rows={3} value={discoveryObservationForm.rawResponse} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, rawResponse: event.target.value }))} /></label>
+            <label><span>Error</span><input value={discoveryObservationForm.error} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, error: event.target.value }))} /></label>
+            <button type="submit">Сохранить observation</button>
+          </form>
+        </div>
+
+        <div className="card full-span">
+          <h2>Zone discovery summary</h2>
+          <div className="key-value compact">
+            {discoveryZoneStats.length === 0 ? <div><span>Нет данных</span><strong>0</strong></div> : null}
+            {discoveryZoneStats.map((item) => (
+              <div key={item.zone}>
+                <span>.{item.zone}</span>
+                <strong>{item.total} total | {item.pending_delete} pending | {item.predicted} predicted | {item.available} available</strong>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card full-span">
+          <h2>Discovery domains</h2>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Domain</th>
+                  <th>Status</th>
+                  <th>Lifecycle</th>
+                  <th>Drop window</th>
+                  <th>Availability</th>
+                  <th>Next check</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {discoveryDomains.map((domain) => (
+                  <tr key={domain.id}>
+                    <td><strong>{domain.fqdn}</strong><div className="row-hint">.{domain.zone} | {domain.source_mode}</div></td>
+                    <td><span className={statusClass(domain.status)}>{domain.status}</span></td>
+                    <td>
+                      <div>{domain.last_lifecycle_stage ?? "—"}</div>
+                      <div className="row-hint">codes: {domain.last_status_codes ?? "—"}</div>
+                      <div className="row-hint">checked: {formatDateTime(domain.last_checked_at)}</div>
+                    </td>
+                    <td>
+                      <div>{formatDateTime(domain.predicted_drop_start_at)}</div>
+                      <div className="row-hint">to {formatDateTime(domain.predicted_drop_end_at)}</div>
+                      <div className="row-hint">pending first: {formatDateTime(domain.first_seen_pending_delete_at)}</div>
+                    </td>
+                    <td>
+                      <div>{domain.last_availability ?? "unknown"}</div>
+                      <div className="row-hint">available first: {formatDateTime(domain.available_first_seen_at)}</div>
+                      {domain.last_error ? <div className="row-hint">error: {domain.last_error}</div> : null}
+                    </td>
+                    <td>{formatDateTime(domain.next_check_at)}</td>
+                    <td>
+                      <div className="actions">
+                        <button type="button" className="ghost" onClick={() => setDiscoveryObservationForm((current) => ({ ...current, domainId: String(domain.id) }))}>Observation</button>
+                        <button type="button" className="danger" onClick={() => void deleteItem("discovery", domain.id)}>Удалить</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    );
   }
 
   function renderDomains() {
@@ -2206,7 +2423,7 @@ export default function App() {
 
       <div className="toolbar">
         <div className="tab-strip">
-          {(["domains", "strategies", "workers", "accounts", "contacts", "attacks", "settings"] as Tab[]).map((item) => (
+          {(["domains", "discovery", "strategies", "workers", "accounts", "contacts", "attacks", "settings"] as Tab[]).map((item) => (
             <button key={item} type="button" className={tab === item ? "ghost active-chip" : "ghost"} onClick={() => setTab(item)}>
               {item}
             </button>
@@ -2221,6 +2438,7 @@ export default function App() {
       {toast ? <div className={`toast ${toast.type}`}>{toast.text}</div> : null}
 
       {tab === "domains" ? renderDomains() : null}
+      {tab === "discovery" ? renderDiscovery() : null}
       {tab === "strategies" ? renderStrategies() : null}
       {tab === "workers" ? renderWorkers() : null}
       {tab === "accounts" ? renderAccounts() : null}

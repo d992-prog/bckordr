@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime
+import json
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
@@ -17,6 +18,8 @@ from app.db.models import (
     DomainOverridePhase,
     DomainOverrideRule,
     DomainRuleOverride,
+    DiscoveryDomain,
+    DiscoveryObservation,
     DropDomain,
     RegistrarAccount,
     User,
@@ -47,6 +50,13 @@ from app.schemas.control import (
     DomainOverrideSettingsCreateRequest,
     DomainDryRunBatchRequest,
     DomainDryRunBatchResponse,
+    DiscoveryDomainBulkCreateRequest,
+    DiscoveryDomainCreateRequest,
+    DiscoveryDomainImportResponse,
+    DiscoveryDomainResponse,
+    DiscoveryObservationCreateRequest,
+    DiscoveryObservationResponse,
+    DiscoveryZoneStatsResponse,
     DomainOverrideSettingsResponse,
     DomainOverrideSettingsUpdateRequest,
     DomainDryRunResponse,
@@ -85,6 +95,12 @@ from app.services.attack_runtime import (
 )
 from app.services.audit import add_audit_log
 from app.services.domain_parser import normalize_domain, parse_upload
+from app.services.discovery import (
+    DiscoveryObservationInput,
+    apply_discovery_observation,
+    infer_zone,
+    normalize_discovery_domain,
+)
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.strategy_runtime import (
@@ -343,6 +359,61 @@ async def _insert_domains_from_bulk(
 
     return DomainImportResponse(
         inserted=[DropDomainResponse.model_validate(domain) for domain in inserted],
+        skipped=skipped,
+    )
+
+
+async def _insert_discovery_domains_from_bulk(
+    payload: DiscoveryDomainBulkCreateRequest,
+    db: AsyncSession,
+) -> DiscoveryDomainImportResponse:
+    inserted: list[DiscoveryDomain] = []
+    skipped: list[str] = []
+    normalized_inputs: list[str] = []
+
+    for raw in payload.domains:
+        try:
+            normalized_inputs.append(normalize_discovery_domain(raw))
+        except ValueError:
+            skipped.append(raw)
+
+    existing_domains = {
+        item
+        for item in (
+            await db.execute(
+                select(DiscoveryDomain.fqdn).where(DiscoveryDomain.fqdn.in_(normalized_inputs))
+            )
+        ).scalars().all()
+    }
+
+    for raw in payload.domains:
+        try:
+            normalized = normalize_discovery_domain(raw)
+        except ValueError:
+            continue
+        if normalized in existing_domains:
+            skipped.append(normalized)
+            continue
+
+        now = utcnow()
+        domain = DiscoveryDomain(
+            fqdn=normalized,
+            zone=(payload.zone or infer_zone(normalized)).lower(),
+            check_interval_seconds=payload.check_interval_seconds,
+            source_mode=payload.source_mode,
+            notes=payload.notes,
+            next_check_at=now,
+        )
+        db.add(domain)
+        inserted.append(domain)
+        existing_domains.add(normalized)
+
+    await db.commit()
+    for domain in inserted:
+        await db.refresh(domain)
+
+    return DiscoveryDomainImportResponse(
+        inserted=[DiscoveryDomainResponse.model_validate(domain) for domain in inserted],
         skipped=skipped,
     )
 
@@ -1202,6 +1273,159 @@ async def delete_domain(
     await db.delete(domain)
     await db.commit()
     return MessageResponse(detail="Domain deleted")
+
+
+@router.get("/discovery/domains", response_model=list[DiscoveryDomainResponse])
+async def list_discovery_domains(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[DiscoveryDomainResponse]:
+    del admin
+    result = await db.execute(select(DiscoveryDomain).order_by(DiscoveryDomain.fqdn.asc()))
+    return [DiscoveryDomainResponse.model_validate(domain) for domain in result.scalars().all()]
+
+
+@router.post("/discovery/domains", response_model=DiscoveryDomainImportResponse, status_code=status.HTTP_201_CREATED)
+async def create_discovery_domain(
+    payload: DiscoveryDomainCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> DiscoveryDomainImportResponse:
+    del admin
+    return await _insert_discovery_domains_from_bulk(
+        DiscoveryDomainBulkCreateRequest(
+            domains=[payload.fqdn],
+            zone=payload.zone,
+            check_interval_seconds=payload.check_interval_seconds,
+            source_mode=payload.source_mode,
+            notes=payload.notes,
+        ),
+        db,
+    )
+
+
+@router.post(
+    "/discovery/domains/import",
+    response_model=DiscoveryDomainImportResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def import_discovery_domains(
+    payload: DiscoveryDomainBulkCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> DiscoveryDomainImportResponse:
+    del admin
+    return await _insert_discovery_domains_from_bulk(payload, db)
+
+
+@router.post(
+    "/discovery/domains/{domain_id}/observations",
+    response_model=DiscoveryDomainResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_discovery_observation(
+    domain_id: int,
+    payload: DiscoveryObservationCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> DiscoveryDomainResponse:
+    del admin
+    domain = await db.get(DiscoveryDomain, domain_id)
+    if domain is None:
+        raise HTTPException(status_code=404, detail="Discovery domain not found")
+
+    observed_at = utcnow()
+    observation_input = DiscoveryObservationInput(
+        source=payload.source,
+        observed_at=observed_at,
+        http_status=payload.http_status,
+        lifecycle_stage=payload.lifecycle_stage,
+        availability_status=payload.availability_status,
+        status_codes=payload.status_codes,
+        raw_response=payload.raw_response,
+        error=payload.error,
+    )
+    apply_discovery_observation(domain, observation_input)
+    db.add(
+        DiscoveryObservation(
+            discovery_domain_id=domain.id,
+            source=payload.source,
+            observed_at=observed_at,
+            http_status=payload.http_status,
+            lifecycle_stage=domain.last_lifecycle_stage,
+            availability_status=payload.availability_status,
+            status_codes=json.dumps(payload.status_codes, ensure_ascii=True) if payload.status_codes else None,
+            raw_response=payload.raw_response,
+            error=payload.error,
+        )
+    )
+    await db.commit()
+    await db.refresh(domain)
+    return DiscoveryDomainResponse.model_validate(domain)
+
+
+@router.get(
+    "/discovery/domains/{domain_id}/observations",
+    response_model=list[DiscoveryObservationResponse],
+)
+async def list_discovery_observations(
+    domain_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[DiscoveryObservationResponse]:
+    del admin
+    domain_exists = await db.scalar(select(DiscoveryDomain.id).where(DiscoveryDomain.id == domain_id).limit(1))
+    if domain_exists is None:
+        raise HTTPException(status_code=404, detail="Discovery domain not found")
+    result = await db.execute(
+        select(DiscoveryObservation)
+        .where(DiscoveryObservation.discovery_domain_id == domain_id)
+        .order_by(DiscoveryObservation.observed_at.desc(), DiscoveryObservation.id.desc())
+        .limit(200)
+    )
+    return [DiscoveryObservationResponse.model_validate(item) for item in result.scalars().all()]
+
+
+@router.get("/discovery/zone-stats", response_model=list[DiscoveryZoneStatsResponse])
+async def list_discovery_zone_stats(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[DiscoveryZoneStatsResponse]:
+    del admin
+    result = await db.execute(
+        select(
+            DiscoveryDomain.zone,
+            func.count(DiscoveryDomain.id),
+            func.sum(case((DiscoveryDomain.status == "pending_delete", 1), else_=0)),
+            func.sum(case((DiscoveryDomain.status == "available", 1), else_=0)),
+            func.sum(case((DiscoveryDomain.predicted_drop_start_at.is_not(None), 1), else_=0)),
+        ).group_by(DiscoveryDomain.zone)
+    )
+    return [
+        DiscoveryZoneStatsResponse(
+            zone=row[0],
+            total=int(row[1] or 0),
+            pending_delete=int(row[2] or 0),
+            available=int(row[3] or 0),
+            predicted=int(row[4] or 0),
+        )
+        for row in result.all()
+    ]
+
+
+@router.delete("/discovery/domains/{domain_id}", response_model=MessageResponse)
+async def delete_discovery_domain(
+    domain_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> MessageResponse:
+    del admin
+    domain = await db.get(DiscoveryDomain, domain_id)
+    if domain is None:
+        raise HTTPException(status_code=404, detail="Discovery domain not found")
+    await db.delete(domain)
+    await db.commit()
+    return MessageResponse(detail="Discovery domain deleted")
 
 
 @router.get("/workers", response_model=list[WorkerNodeResponse])

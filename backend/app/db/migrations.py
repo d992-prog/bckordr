@@ -145,6 +145,55 @@ MIGRATIONS = (
     "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS dry_run_status VARCHAR(32) NULL",
     "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS dry_run_http_status INTEGER NULL",
     "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS dry_run_message TEXT NULL",
+    """
+    CREATE TABLE IF NOT EXISTS discovery_domains (
+        id SERIAL PRIMARY KEY,
+        fqdn VARCHAR(255) UNIQUE NOT NULL,
+        zone VARCHAR(32) NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'tracking',
+        is_enabled BOOLEAN NOT NULL DEFAULT true,
+        check_interval_seconds INTEGER NOT NULL DEFAULT 21600,
+        source_mode VARCHAR(32) NOT NULL DEFAULT 'rdap',
+        last_lifecycle_stage VARCHAR(32) NULL,
+        last_status_codes TEXT NULL,
+        last_availability VARCHAR(32) NULL,
+        last_checked_at TIMESTAMPTZ NULL,
+        next_check_at TIMESTAMPTZ NULL,
+        first_seen_redemption_at TIMESTAMPTZ NULL,
+        last_seen_redemption_at TIMESTAMPTZ NULL,
+        pending_delete_previous_seen_at TIMESTAMPTZ NULL,
+        first_seen_pending_delete_at TIMESTAMPTZ NULL,
+        last_seen_pending_delete_at TIMESTAMPTZ NULL,
+        predicted_drop_start_at TIMESTAMPTZ NULL,
+        predicted_drop_end_at TIMESTAMPTZ NULL,
+        available_first_seen_at TIMESTAMPTZ NULL,
+        last_error TEXT NULL,
+        notes TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_discovery_domains_fqdn ON discovery_domains(fqdn)",
+    "CREATE INDEX IF NOT EXISTS ix_discovery_domains_zone ON discovery_domains(zone)",
+    "CREATE INDEX IF NOT EXISTS ix_discovery_domains_status ON discovery_domains(status)",
+    "CREATE INDEX IF NOT EXISTS ix_discovery_domains_next_check_at ON discovery_domains(next_check_at)",
+    """
+    CREATE TABLE IF NOT EXISTS discovery_observations (
+        id SERIAL PRIMARY KEY,
+        discovery_domain_id INTEGER NOT NULL REFERENCES discovery_domains(id) ON DELETE CASCADE,
+        source VARCHAR(32) NOT NULL,
+        observed_at TIMESTAMPTZ DEFAULT NOW(),
+        http_status INTEGER NULL,
+        latency_ms INTEGER NULL,
+        lifecycle_stage VARCHAR(32) NULL,
+        availability_status VARCHAR(32) NULL,
+        status_codes TEXT NULL,
+        raw_response TEXT NULL,
+        error TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_discovery_observations_discovery_domain_id ON discovery_observations(discovery_domain_id)",
 )
 
 

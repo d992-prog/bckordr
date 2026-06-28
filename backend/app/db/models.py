@@ -643,6 +643,70 @@ class DropDomain(Base):
     domain_rule_override: Mapped[DomainRuleOverride | None] = relationship()
 
 
+class DiscoveryDomain(Base):
+    __tablename__ = "discovery_domains"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fqdn: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    zone: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="tracking", server_default="tracking", index=True)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    check_interval_seconds: Mapped[int] = mapped_column(Integer, default=21600, server_default="21600")
+    source_mode: Mapped[str] = mapped_column(String(32), default="rdap", server_default="rdap")
+    last_lifecycle_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_status_codes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_availability: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    first_seen_redemption_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_redemption_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pending_delete_previous_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_seen_pending_delete_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_pending_delete_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    predicted_drop_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    predicted_drop_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    available_first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+
+class DiscoveryObservation(Base):
+    __tablename__ = "discovery_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    discovery_domain_id: Mapped[int] = mapped_column(
+        ForeignKey("discovery_domains.id", ondelete="CASCADE"),
+        index=True,
+    )
+    source: Mapped[str] = mapped_column(String(32))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lifecycle_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    availability_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status_codes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+
+    discovery_domain: Mapped[DiscoveryDomain] = relationship()
+
+
 class AttackRun(Base):
     __tablename__ = "attack_runs"
 

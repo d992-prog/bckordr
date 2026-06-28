@@ -561,6 +561,91 @@ class DomainDryRunBatchResponse(BaseModel):
     results: list[DomainDryRunResponse]
 
 
+class DiscoveryDomainCreateRequest(BaseModel):
+    fqdn: str = Field(min_length=3, max_length=255)
+    zone: str | None = Field(default=None, min_length=2, max_length=32)
+    check_interval_seconds: int = Field(default=21600, ge=10, le=86400)
+    source_mode: str = Field(default="rdap", min_length=2, max_length=32)
+    notes: str | None = None
+
+
+class DiscoveryDomainBulkCreateRequest(BaseModel):
+    domains: list[str] = Field(min_length=1)
+    zone: str | None = Field(default=None, min_length=2, max_length=32)
+    check_interval_seconds: int = Field(default=21600, ge=10, le=86400)
+    source_mode: str = Field(default="rdap", min_length=2, max_length=32)
+    notes: str | None = None
+
+
+class DiscoveryObservationCreateRequest(BaseModel):
+    source: str = Field(default="manual", min_length=2, max_length=32)
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    lifecycle_stage: str | None = Field(default=None, max_length=32)
+    availability_status: str | None = Field(default=None, max_length=32)
+    status_codes: list[str] = Field(default_factory=list)
+    raw_response: str | None = None
+    error: str | None = None
+
+
+class DiscoveryDomainResponse(BaseModel):
+    id: int
+    fqdn: str
+    zone: str
+    status: str
+    is_enabled: bool
+    check_interval_seconds: int
+    source_mode: str
+    last_lifecycle_stage: str | None
+    last_status_codes: str | None
+    last_availability: str | None
+    last_checked_at: datetime | None
+    next_check_at: datetime | None
+    first_seen_redemption_at: datetime | None
+    last_seen_redemption_at: datetime | None
+    pending_delete_previous_seen_at: datetime | None
+    first_seen_pending_delete_at: datetime | None
+    last_seen_pending_delete_at: datetime | None
+    predicted_drop_start_at: datetime | None
+    predicted_drop_end_at: datetime | None
+    available_first_seen_at: datetime | None
+    last_error: str | None
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DiscoveryDomainImportResponse(BaseModel):
+    inserted: list[DiscoveryDomainResponse]
+    skipped: list[str]
+
+
+class DiscoveryObservationResponse(BaseModel):
+    id: int
+    discovery_domain_id: int
+    source: str
+    observed_at: datetime
+    http_status: int | None
+    latency_ms: int | None
+    lifecycle_stage: str | None
+    availability_status: str | None
+    status_codes: str | None
+    raw_response: str | None
+    error: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DiscoveryZoneStatsResponse(BaseModel):
+    zone: str
+    total: int
+    pending_delete: int
+    available: int
+    predicted: int
+
+
 class AttackStartRequest(BaseModel):
     domain_ids: list[int] | None = None
     force_rebuild: bool = False

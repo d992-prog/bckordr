@@ -92,6 +92,46 @@ export type DomainImportResponse = {
   skipped: string[];
 };
 
+export type DiscoveryDomain = {
+  id: number;
+  fqdn: string;
+  zone: string;
+  status: string;
+  is_enabled: boolean;
+  check_interval_seconds: number;
+  source_mode: string;
+  last_lifecycle_stage: string | null;
+  last_status_codes: string | null;
+  last_availability: string | null;
+  last_checked_at: string | null;
+  next_check_at: string | null;
+  first_seen_redemption_at: string | null;
+  last_seen_redemption_at: string | null;
+  pending_delete_previous_seen_at: string | null;
+  first_seen_pending_delete_at: string | null;
+  last_seen_pending_delete_at: string | null;
+  predicted_drop_start_at: string | null;
+  predicted_drop_end_at: string | null;
+  available_first_seen_at: string | null;
+  last_error: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DiscoveryDomainImportResponse = {
+  inserted: DiscoveryDomain[];
+  skipped: string[];
+};
+
+export type DiscoveryZoneStats = {
+  zone: string;
+  total: number;
+  pending_delete: number;
+  available: number;
+  predicted: number;
+};
+
 export type ZoneStrategy = {
   id: number;
   zone: string;
@@ -479,6 +519,20 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   deleteDomain: (id: number) => request<{ detail: string }>(`/control/domains/${id}`, { method: "DELETE" }),
+  getDiscoveryDomains: () => request<DiscoveryDomain[]>("/control/discovery/domains"),
+  importDiscoveryDomains: (payload: Record<string, unknown>) =>
+    request<DiscoveryDomainImportResponse>("/control/discovery/domains/import", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  createDiscoveryObservation: (id: number, payload: Record<string, unknown>) =>
+    request<DiscoveryDomain>(`/control/discovery/domains/${id}/observations`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getDiscoveryZoneStats: () => request<DiscoveryZoneStats[]>("/control/discovery/zone-stats"),
+  deleteDiscoveryDomain: (id: number) =>
+    request<{ detail: string }>(`/control/discovery/domains/${id}`, { method: "DELETE" }),
   getDomainOverride: (domainId: number) => request<DomainOverrideSettings>(`/control/domains/${domainId}/override`),
   createDomainOverride: (domainId: number, payload: Record<string, unknown>) =>
     request<DomainOverrideSettings>(`/control/domains/${domainId}/override`, {
