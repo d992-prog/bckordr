@@ -1,0 +1,107 @@
+# Candidate Harvester
+
+Standalone tool for finding a small set of low-value domains that are already in a useful pre-pending lifecycle stage.
+
+It is intentionally not connected to the control server. Run it on a powerful host machine, inspect the CSV, then paste selected domains into the control panel `discovery` tab.
+
+## Goal
+
+The tool does not try to process a whole TLD in the control server. It streams large files, filters low-value domains, checks RDAP for a limited number of candidates, and writes only domains with accepted lifecycle statuses.
+
+Default accepted lifecycle:
+
+```text
+redemption
+```
+
+This is the best starting point because it gives pre-`pendingDelete` evidence. Domains that are already `pendingDelete` can be collected too, but they are lower-confidence samples for drop-window learning.
+
+## Run
+
+From repository root:
+
+```bash
+python tools/candidate_harvester/candidate_harvester.py --input ./allzonefiles/expired-com.txt --tld com --output candidates-com.csv --output-txt candidates-com.txt --limit-output 50 --max-rdap-checks 5000 --concurrency 20
+```
+
+For `.net`:
+
+```bash
+python tools/candidate_harvester/candidate_harvester.py --input ./allzonefiles/expired-net.txt --tld net --output candidates-net.csv --output-txt candidates-net.txt --limit-output 50 --max-rdap-checks 5000 --concurrency 20
+```
+
+For `.org`:
+
+```bash
+python tools/candidate_harvester/candidate_harvester.py --input ./allzonefiles/expired-org.txt --tld org --output candidates-org.csv --output-txt candidates-org.txt --limit-output 50 --max-rdap-checks 5000 --concurrency 20
+```
+
+## Inputs
+
+Supported input types:
+
+```text
+.txt
+.csv
+.gz
+.zip
+directory with any of the above
+```
+
+The parser streams line by line and extracts domains from common formats, including plain domains, CSV rows, and URLs.
+
+## Safe Defaults
+
+Recommended first run:
+
+```text
+--limit-output 20
+--max-rdap-checks 1000
+--concurrency 10
+```
+
+Scale up only after confirming RDAP responses are stable and the source list is correct.
+
+## Output
+
+CSV columns:
+
+```text
+domain,tld,lifecycle,status_codes,http_status,checked_at,score,reason,error
+```
+
+TXT output contains domains only and is convenient for pasting into the control panel.
+
+## Useful Options
+
+Collect only reliable pre-pending samples:
+
+```bash
+--accept-lifecycle redemption
+```
+
+Also collect domains already in `pendingDelete`:
+
+```bash
+--accept-lifecycle redemption pending_delete
+```
+
+Raise low-value strictness:
+
+```bash
+--min-score 70
+```
+
+Lower it if too few candidates are found:
+
+```bash
+--min-score 50
+```
+
+## Workflow
+
+1. Download/export AllZonefiles lists on the host machine.
+2. Run this harvester per TLD.
+3. Open the CSV and keep only safe-looking research candidates.
+4. Paste domains from the TXT into control panel `discovery`.
+5. Let control track RDAP until `pendingDelete`, then observe the predicted drop day.
