@@ -37,6 +37,7 @@ Safe defaults used by `quick.py`:
 --limit-output 20
 --max-rdap-checks 1000
 --concurrency 10
+--progress-interval 5
 ```
 
 For `.net`:
@@ -106,6 +107,30 @@ domain,tld,lifecycle,status_codes,http_status,checked_at,score,reason,error
 ```
 
 TXT output contains domains only and is convenient for pasting into the control panel.
+
+## Progress Log
+
+During a run the tool prints progress every 5 seconds:
+
+```text
+progress lines=120000 parsed=118900 filtered=340 rdap=300/340 written=7/20 speed_lines_s=24000 speed_rdap_s=12.4
+```
+
+Meaning:
+
+```text
+lines      input lines read
+parsed     valid domains extracted
+filtered   domains that passed low-value filter
+rdap       completed/submitted RDAP checks
+written    accepted candidates written to CSV/TXT
+```
+
+Change interval:
+
+```bash
+python tools/candidate_harvester/candidate_harvester.py ... --progress-interval 2
+```
 
 ## Useful Options
 

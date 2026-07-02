@@ -34,6 +34,18 @@ class HarvesterResult:
     error: str | None = None
 
 
+@dataclass
+class ProgressStats:
+    scanned_lines: int = 0
+    parsed_domains: int = 0
+    filtered_candidates: int = 0
+    submitted_rdap: int = 0
+    completed_rdap: int = 0
+    written_candidates: int = 0
+    started_at: float = 0.0
+    last_log_at: float = 0.0
+
+
 def normalize_domain(line: str) -> str | None:
     match = DOMAIN_PATTERN.search(line.strip())
     if not match:
@@ -114,15 +126,19 @@ def resolve_rdap_domain_url(fqdn: str, bootstrap_payload: dict) -> str:
     raise ValueError(f"No RDAP endpoint for .{zone}")
 
 
-def iter_domains(inputs: list[Path]) -> Iterable[str]:
+def iter_domains(inputs: list[Path], stats: ProgressStats | None = None) -> Iterable[str]:
     for input_path in inputs:
         paths = sorted(input_path.rglob("*")) if input_path.is_dir() else [input_path]
         for path in paths:
             if not path.is_file():
                 continue
             for line in _iter_lines(path):
+                if stats:
+                    stats.scanned_lines += 1
                 domain = normalize_domain(line)
                 if domain:
+                    if stats:
+                        stats.parsed_domains += 1
                     yield domain
 
 
@@ -205,6 +221,7 @@ def run(args: argparse.Namespace) -> int:
     written = 0
     futures = []
     started_at = time.monotonic()
+    stats = ProgressStats(started_at=started_at, last_log_at=started_at)
 
     with open(args.output, "w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(
@@ -226,36 +243,46 @@ def run(args: argparse.Namespace) -> int:
         txt_file = open(args.output_txt, "w", encoding="utf-8") if args.output_txt else None
         try:
             with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-                for domain in iter_domains(inputs):
+                for domain in iter_domains(inputs, stats):
+                    _log_progress(stats, args, force=False)
                     if submitted >= args.max_rdap_checks or written >= args.limit_output:
                         break
                     if not should_consider_domain(domain, tld=args.tld, min_score=args.min_score):
                         continue
+                    stats.filtered_candidates += 1
                     futures.append(executor.submit(check_rdap, domain, bootstrap, timeout=args.rdap_timeout))
                     submitted += 1
+                    stats.submitted_rdap = submitted
                     if len(futures) >= args.concurrency * 4:
-                        written += _drain_futures(
+                        batch_written = _drain_futures(
                             futures,
                             writer,
                             txt_file,
+                            stats,
                             accepted_lifecycles=accepted_lifecycles,
                             remaining=args.limit_output - written,
                         )
+                        written += batch_written
+                        stats.written_candidates = written
                         futures = []
 
                 if futures and written < args.limit_output:
-                    written += _drain_futures(
+                    batch_written = _drain_futures(
                         futures,
                         writer,
                         txt_file,
+                        stats,
                         accepted_lifecycles=accepted_lifecycles,
                         remaining=args.limit_output - written,
                     )
+                    written += batch_written
+                    stats.written_candidates = written
         finally:
             if txt_file:
                 txt_file.close()
 
     elapsed = max(time.monotonic() - started_at, 0.001)
+    _log_progress(stats, args, force=True)
     print(f"submitted_rdap_checks={submitted}")
     print(f"written_candidates={written}")
     print(f"elapsed_seconds={elapsed:.2f}")
@@ -279,6 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rdap-timeout", type=float, default=8.0, help="Per-domain RDAP timeout seconds.")
     parser.add_argument("--bootstrap-url", default=IANA_RDAP_BOOTSTRAP_URL, help="IANA RDAP bootstrap URL.")
     parser.add_argument("--bootstrap-timeout", type=float, default=15.0, help="RDAP bootstrap timeout seconds.")
+    parser.add_argument("--progress-interval", type=float, default=5.0, help="Progress log interval seconds.")
     return parser
 
 
@@ -314,15 +342,17 @@ def _drain_futures(
     futures,
     writer: csv.DictWriter,
     txt_file,
+    stats: ProgressStats,
     *,
     accepted_lifecycles: set[str],
     remaining: int,
 ) -> int:
     written = 0
     for future in as_completed(futures):
-        if written >= remaining:
-            break
+        stats.completed_rdap += 1
         result = future.result()
+        if written >= remaining:
+            continue
         if result.lifecycle not in accepted_lifecycles:
             continue
         writer.writerow(result.__dict__)
@@ -330,6 +360,27 @@ def _drain_futures(
             txt_file.write(f"{result.domain}\n")
         written += 1
     return written
+
+
+def _log_progress(stats: ProgressStats, args: argparse.Namespace, *, force: bool) -> None:
+    now = time.monotonic()
+    if not force and now - stats.last_log_at < args.progress_interval:
+        return
+    stats.last_log_at = now
+    elapsed = max(now - stats.started_at, 0.001)
+    lines_per_second = stats.scanned_lines / elapsed
+    rdap_per_second = stats.completed_rdap / elapsed
+    print(
+        "progress "
+        f"lines={stats.scanned_lines} "
+        f"parsed={stats.parsed_domains} "
+        f"filtered={stats.filtered_candidates} "
+        f"rdap={stats.completed_rdap}/{stats.submitted_rdap} "
+        f"written={stats.written_candidates}/{args.limit_output} "
+        f"speed_lines_s={lines_per_second:.0f} "
+        f"speed_rdap_s={rdap_per_second:.1f}",
+        flush=True,
+    )
 
 
 def _normalize_status_code(value: str) -> str:

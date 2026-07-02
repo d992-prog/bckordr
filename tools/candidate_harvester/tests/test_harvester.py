@@ -1,5 +1,7 @@
 from candidate_harvester import (
+    ProgressStats,
     classify_lifecycle,
+    iter_domains,
     low_value_score,
     normalize_domain,
     resolve_rdap_domain_url,
@@ -63,3 +65,13 @@ def test_quick_args_build_safe_default_command():
         "--concurrency",
         "10",
     ]
+
+
+def test_iter_domains_updates_progress_stats(tmp_path):
+    input_file = tmp_path / "domains.txt"
+    input_file.write_text("example.com\nnot a domain\nsample.net\n", encoding="utf-8")
+    stats = ProgressStats()
+
+    assert list(iter_domains([input_file], stats)) == ["example.com", "sample.net"]
+    assert stats.scanned_lines == 3
+    assert stats.parsed_domains == 2
