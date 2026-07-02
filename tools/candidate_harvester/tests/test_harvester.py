@@ -1,14 +1,18 @@
+from types import SimpleNamespace
+
 from candidate_harvester import (
     ProgressStats,
     classify_lifecycle,
     build_diagnosis,
+    collect_reservoir_candidates,
     iter_domains,
     low_value_score,
     normalize_domain,
     resolve_rdap_domain_url,
     should_consider_domain,
 )
-from quick import build_args
+from quick import build_args as build_quick_args
+from redemption_scan import build_args as build_redemption_args
 
 
 def test_normalize_domain_extracts_fqdn_from_common_lines():
@@ -48,7 +52,7 @@ def test_classify_lifecycle_prefers_redemption_before_pending_delete():
 
 
 def test_quick_args_build_safe_default_command():
-    args = build_args([".com", "expired-com.txt"])
+    args = build_quick_args([".com", "expired-com.txt"])
 
     assert args == [
         "--input",
@@ -76,6 +80,36 @@ def test_iter_domains_updates_progress_stats(tmp_path):
     assert list(iter_domains([input_file], stats)) == ["example.com", "sample.net"]
     assert stats.scanned_lines == 3
     assert stats.parsed_domains == 2
+
+
+def test_reservoir_candidates_sample_across_input(tmp_path):
+    input_file = tmp_path / "domains.txt"
+    input_file.write_text("\n".join(f"x7q9-z11820{i}.com" for i in range(100)), encoding="utf-8")
+    stats = ProgressStats()
+    args = SimpleNamespace(
+        tld="com",
+        min_score=40,
+        reservoir_size=10,
+        random_seed=7,
+        progress_interval=9999,
+        limit_output=10,
+    )
+
+    sample = collect_reservoir_candidates([input_file], args, stats)
+
+    assert len(sample) == 10
+    assert stats.scanned_lines == 100
+    assert stats.filtered_candidates == 100
+    assert sample != [f"x7q9-z11820{i}.com" for i in range(10)]
+
+
+def test_redemption_scan_args_use_reservoir_mode():
+    args = build_redemption_args(["com", "com.2026-07-02.txt"])
+
+    assert "--sample-mode" in args
+    assert "reservoir" in args
+    assert "--max-rdap-checks" in args
+    assert "50000" in args
 
 
 def test_build_diagnosis_explains_zero_candidates():

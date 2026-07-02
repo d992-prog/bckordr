@@ -5,6 +5,7 @@ import collections
 import csv
 import gzip
 import json
+import random
 import re
 import sys
 import time
@@ -245,13 +246,14 @@ def run(args: argparse.Namespace) -> int:
         txt_file = open(args.output_txt, "w", encoding="utf-8") if args.output_txt else None
         try:
             with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-                for domain in iter_domains(inputs, stats):
-                    _log_progress(stats, args, force=False)
+                if args.sample_mode == "reservoir":
+                    domain_source = collect_reservoir_candidates(inputs, args, stats)
+                else:
+                    domain_source = _iter_first_filtered_candidates(inputs, args, stats)
+
+                for domain in domain_source:
                     if submitted >= args.max_rdap_checks or written >= args.limit_output:
                         break
-                    if not should_consider_domain(domain, tld=args.tld, min_score=args.min_score):
-                        continue
-                    stats.filtered_candidates += 1
                     futures.append(executor.submit(check_rdap, domain, bootstrap, timeout=args.rdap_timeout))
                     submitted += 1
                     stats.submitted_rdap = submitted
@@ -312,6 +314,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bootstrap-url", default=IANA_RDAP_BOOTSTRAP_URL, help="IANA RDAP bootstrap URL.")
     parser.add_argument("--bootstrap-timeout", type=float, default=15.0, help="RDAP bootstrap timeout seconds.")
     parser.add_argument("--progress-interval", type=float, default=5.0, help="Progress log interval seconds.")
+    parser.add_argument(
+        "--sample-mode",
+        choices=["first", "reservoir"],
+        default="first",
+        help="first checks early filtered domains; reservoir samples across the whole file before RDAP checks.",
+    )
+    parser.add_argument("--reservoir-size", type=int, default=50000, help="Reservoir sample size for --sample-mode reservoir.")
+    parser.add_argument("--random-seed", type=int, default=42, help="Stable random seed for reservoir sampling.")
     return parser
 
 
@@ -321,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     args.concurrency = max(1, args.concurrency)
     args.limit_output = max(1, args.limit_output)
     args.max_rdap_checks = max(1, args.max_rdap_checks)
+    args.reservoir_size = max(1, args.reservoir_size)
     return run(args)
 
 
@@ -368,6 +379,43 @@ def _drain_futures(
             txt_file.write(f"{result.domain}\n")
         written += 1
     return written
+
+
+def collect_reservoir_candidates(
+    inputs: list[Path],
+    args: argparse.Namespace,
+    stats: ProgressStats,
+) -> list[str]:
+    rng = random.Random(args.random_seed)
+    sample: list[str] = []
+    filtered_seen = 0
+    for domain in iter_domains(inputs, stats):
+        _log_progress(stats, args, force=False)
+        if not should_consider_domain(domain, tld=args.tld, min_score=args.min_score):
+            continue
+        stats.filtered_candidates += 1
+        filtered_seen += 1
+        if len(sample) < args.reservoir_size:
+            sample.append(domain)
+            continue
+        index = rng.randrange(filtered_seen)
+        if index < args.reservoir_size:
+            sample[index] = domain
+    _log_progress(stats, args, force=True)
+    return sample
+
+
+def _iter_first_filtered_candidates(
+    inputs: list[Path],
+    args: argparse.Namespace,
+    stats: ProgressStats,
+) -> Iterable[str]:
+    for domain in iter_domains(inputs, stats):
+        _log_progress(stats, args, force=False)
+        if not should_consider_domain(domain, tld=args.tld, min_score=args.min_score):
+            continue
+        stats.filtered_candidates += 1
+        yield domain
 
 
 def build_diagnosis(

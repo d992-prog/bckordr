@@ -52,6 +52,49 @@ For `.org`:
 python tools/candidate_harvester/quick.py org ./allzonefiles/expired-org.txt
 ```
 
+## Full Zonefile Redemption Scan
+
+For a huge full zonefile like:
+
+```text
+com.2026-07-02.txt
+```
+
+use the dedicated redemption scanner:
+
+```bash
+python tools/candidate_harvester/redemption_scan.py com ./zonefiles/com.2026-07-02.txt
+```
+
+This mode:
+
+```text
+1. Streams the whole file.
+2. Keeps a fixed-size random reservoir of low-value candidates.
+3. RDAP-checks that reservoir.
+4. Writes only domains currently in redemptionPeriod.
+```
+
+Default deep scan limits:
+
+```text
+--sample-mode reservoir
+--reservoir-size 50000
+--max-rdap-checks 50000
+--concurrency 30
+--limit-output 50
+--min-score 45
+```
+
+Output:
+
+```text
+redemption-candidates-com.csv
+redemption-candidates-com.txt
+```
+
+If the diagnosis says `lifecycles=registered=...`, then checked domains are active by RDAP. Increase `--max-rdap-checks` / `--reservoir-size`, lower `--min-score`, or use a better pre-expired source.
+
 Advanced run:
 
 From repository root:
