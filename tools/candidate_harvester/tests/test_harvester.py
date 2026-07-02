@@ -1,6 +1,7 @@
 from candidate_harvester import (
     ProgressStats,
     classify_lifecycle,
+    build_diagnosis,
     iter_domains,
     low_value_score,
     normalize_domain,
@@ -75,3 +76,23 @@ def test_iter_domains_updates_progress_stats(tmp_path):
     assert list(iter_domains([input_file], stats)) == ["example.com", "sample.net"]
     assert stats.scanned_lines == 3
     assert stats.parsed_domains == 2
+
+
+def test_build_diagnosis_explains_zero_candidates():
+    stats = ProgressStats(
+        scanned_lines=1000,
+        parsed_domains=990,
+        filtered_candidates=200,
+        submitted_rdap=200,
+        completed_rdap=200,
+        written_candidates=0,
+    )
+    diagnosis = build_diagnosis(
+        stats,
+        lifecycle_counts={"registered": 198, "error": 2},
+        accepted_lifecycles={"redemption"},
+    )
+
+    assert "RDAP checks worked" in diagnosis
+    assert "accepted lifecycle was not seen" in diagnosis
+    assert "registered=198" in diagnosis

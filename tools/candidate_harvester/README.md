@@ -132,6 +132,16 @@ Change interval:
 python tools/candidate_harvester/candidate_harvester.py ... --progress-interval 2
 ```
 
+At the end the tool prints a diagnosis:
+
+```text
+diagnosis:
+lifecycles=registered=1000
+RDAP checks worked, but accepted lifecycle was not seen...
+```
+
+If `lifecycles` is mostly `registered`, the source file is probably a full zonefile, not an expired/pre-delete candidate list.
+
 ## Useful Options
 
 Collect only reliable pre-pending samples:

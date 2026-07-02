@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
 import gzip
 import json
@@ -222,6 +223,7 @@ def run(args: argparse.Namespace) -> int:
     futures = []
     started_at = time.monotonic()
     stats = ProgressStats(started_at=started_at, last_log_at=started_at)
+    lifecycle_counts: collections.Counter[str] = collections.Counter()
 
     with open(args.output, "w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(
@@ -259,6 +261,7 @@ def run(args: argparse.Namespace) -> int:
                             writer,
                             txt_file,
                             stats,
+                            lifecycle_counts,
                             accepted_lifecycles=accepted_lifecycles,
                             remaining=args.limit_output - written,
                         )
@@ -272,6 +275,7 @@ def run(args: argparse.Namespace) -> int:
                         writer,
                         txt_file,
                         stats,
+                        lifecycle_counts,
                         accepted_lifecycles=accepted_lifecycles,
                         remaining=args.limit_output - written,
                     )
@@ -289,6 +293,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"output={args.output}")
     if args.output_txt:
         print(f"output_txt={args.output_txt}")
+    print(build_diagnosis(stats, lifecycle_counts=dict(lifecycle_counts), accepted_lifecycles=accepted_lifecycles))
     return 0
 
 
@@ -343,6 +348,7 @@ def _drain_futures(
     writer: csv.DictWriter,
     txt_file,
     stats: ProgressStats,
+    lifecycle_counts: collections.Counter[str],
     *,
     accepted_lifecycles: set[str],
     remaining: int,
@@ -354,12 +360,47 @@ def _drain_futures(
         if written >= remaining:
             continue
         if result.lifecycle not in accepted_lifecycles:
+            lifecycle_counts[result.lifecycle] += 1
             continue
+        lifecycle_counts[result.lifecycle] += 1
         writer.writerow(result.__dict__)
         if txt_file:
             txt_file.write(f"{result.domain}\n")
         written += 1
     return written
+
+
+def build_diagnosis(
+    stats: ProgressStats,
+    *,
+    lifecycle_counts: dict[str, int],
+    accepted_lifecycles: set[str],
+) -> str:
+    parts = [
+        "diagnosis:",
+        f"lifecycles={_format_counts(lifecycle_counts)}",
+    ]
+    if stats.parsed_domains == 0:
+        parts.append("No valid domains were parsed. Check file format/path.")
+    elif stats.filtered_candidates == 0:
+        parts.append("No domains passed the low-value filter. Lower --min-score or check TLD.")
+    elif stats.submitted_rdap == 0:
+        parts.append("No RDAP checks were submitted. Check --max-rdap-checks and filter settings.")
+    elif stats.completed_rdap == 0:
+        parts.append("RDAP checks were submitted but did not complete. Check network/timeouts.")
+    elif stats.written_candidates == 0:
+        seen_accepted = any(lifecycle_counts.get(item, 0) for item in accepted_lifecycles)
+        if not seen_accepted:
+            parts.append(
+                "RDAP checks worked, but accepted lifecycle was not seen. "
+                "For a full zonefile this usually means checked domains are still registered; "
+                "try an expired list or temporarily add --accept-lifecycle registered pending_delete redemption for debugging."
+            )
+        else:
+            parts.append("Accepted lifecycle was seen, but output limit/write path should be checked.")
+    else:
+        parts.append("Candidates were found. Paste the TXT output into control discovery.")
+    return "\n".join(parts)
 
 
 def _log_progress(stats: ProgressStats, args: argparse.Namespace, *, force: bool) -> None:
@@ -385,6 +426,12 @@ def _log_progress(stats: ProgressStats, args: argparse.Namespace, *, force: bool
 
 def _normalize_status_code(value: str) -> str:
     return "".join(character for character in value.lower() if character.isalnum())
+
+
+def _format_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
 
 
 if __name__ == "__main__":
