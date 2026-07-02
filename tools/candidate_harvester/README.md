@@ -18,6 +18,41 @@ This is the best starting point because it gives pre-`pendingDelete` evidence. D
 
 ## Run
 
+Simple safe run:
+
+```bash
+python tools/candidate_harvester/quick.py com ./allzonefiles/expired-com.txt
+```
+
+This creates:
+
+```text
+candidates-com.csv
+candidates-com.txt
+```
+
+Safe defaults used by `quick.py`:
+
+```text
+--limit-output 20
+--max-rdap-checks 1000
+--concurrency 10
+```
+
+For `.net`:
+
+```bash
+python tools/candidate_harvester/quick.py net ./allzonefiles/expired-net.txt
+```
+
+For `.org`:
+
+```bash
+python tools/candidate_harvester/quick.py org ./allzonefiles/expired-org.txt
+```
+
+Advanced run:
+
 From repository root:
 
 ```bash

@@ -5,6 +5,7 @@ from candidate_harvester import (
     resolve_rdap_domain_url,
     should_consider_domain,
 )
+from quick import build_args
 
 
 def test_normalize_domain_extracts_fqdn_from_common_lines():
@@ -41,3 +42,24 @@ def test_classify_lifecycle_prefers_redemption_before_pending_delete():
     assert classify_lifecycle(["clientTransferProhibited", "redemptionPeriod"], 200) == "redemption"
     assert classify_lifecycle(["pendingDelete"], 200) == "pending_delete"
     assert classify_lifecycle([], 404) == "not_found"
+
+
+def test_quick_args_build_safe_default_command():
+    args = build_args([".com", "expired-com.txt"])
+
+    assert args == [
+        "--input",
+        "expired-com.txt",
+        "--tld",
+        "com",
+        "--output",
+        "candidates-com.csv",
+        "--output-txt",
+        "candidates-com.txt",
+        "--limit-output",
+        "20",
+        "--max-rdap-checks",
+        "1000",
+        "--concurrency",
+        "10",
+    ]
