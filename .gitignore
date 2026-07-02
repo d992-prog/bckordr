@@ -7,3 +7,7 @@ dist/
 build/
 .env
 *.pyc
+candidates-*.csv
+candidates-*.txt
+redemption-candidates-*.csv
+redemption-candidates-*.txt

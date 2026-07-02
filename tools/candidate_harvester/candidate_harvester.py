@@ -10,7 +10,7 @@ import re
 import sys
 import time
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -264,6 +264,7 @@ def run(args: argparse.Namespace) -> int:
                             txt_file,
                             stats,
                             lifecycle_counts,
+                            args,
                             accepted_lifecycles=accepted_lifecycles,
                             remaining=args.limit_output - written,
                         )
@@ -278,6 +279,7 @@ def run(args: argparse.Namespace) -> int:
                         txt_file,
                         stats,
                         lifecycle_counts,
+                        args,
                         accepted_lifecycles=accepted_lifecycles,
                         remaining=args.limit_output - written,
                     )
@@ -360,24 +362,30 @@ def _drain_futures(
     txt_file,
     stats: ProgressStats,
     lifecycle_counts: collections.Counter[str],
+    args: argparse.Namespace,
     *,
     accepted_lifecycles: set[str],
     remaining: int,
 ) -> int:
     written = 0
-    for future in as_completed(futures):
-        stats.completed_rdap += 1
-        result = future.result()
-        if written >= remaining:
+    pending = set(futures)
+    while pending:
+        done, pending = wait(pending, timeout=args.progress_interval, return_when=FIRST_COMPLETED)
+        if not done:
+            _log_progress(stats, args, force=True)
             continue
-        if result.lifecycle not in accepted_lifecycles:
+        for future in done:
+            stats.completed_rdap += 1
+            result = future.result()
             lifecycle_counts[result.lifecycle] += 1
-            continue
-        lifecycle_counts[result.lifecycle] += 1
-        writer.writerow(result.__dict__)
-        if txt_file:
-            txt_file.write(f"{result.domain}\n")
-        written += 1
+            if written >= remaining or result.lifecycle not in accepted_lifecycles:
+                continue
+            writer.writerow(result.__dict__)
+            if txt_file:
+                txt_file.write(f"{result.domain}\n")
+            written += 1
+            stats.written_candidates += 1
+        _log_progress(stats, args, force=False)
     return written
 
 
