@@ -13,6 +13,7 @@ from candidate_harvester import (
 )
 from quick import build_args as build_quick_args
 from redemption_scan import build_args as build_redemption_args
+from redemption_scan_fast import build_args as build_fast_redemption_args
 
 
 def test_normalize_domain_extracts_fqdn_from_common_lines():
@@ -110,6 +111,19 @@ def test_redemption_scan_args_use_reservoir_mode():
     assert "reservoir" in args
     assert "--max-rdap-checks" in args
     assert "50000" in args
+
+
+def test_fast_redemption_scan_args_use_aggressive_limits():
+    args = build_fast_redemption_args(["com", "com.2026-07-02.txt"])
+
+    assert "--sample-mode" in args
+    assert "reservoir" in args
+    assert "--concurrency" in args
+    assert "100" in args
+    assert "--max-rdap-checks" in args
+    assert "200000" in args
+    assert "--reservoir-size" in args
+    assert "200000" in args
 
 
 def test_build_diagnosis_explains_zero_candidates():

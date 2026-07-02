@@ -66,6 +66,25 @@ use the dedicated redemption scanner:
 python tools/candidate_harvester/redemption_scan.py com ./zonefiles/com.2026-07-02.txt
 ```
 
+Fast machine preset:
+
+```bash
+python tools/candidate_harvester/redemption_scan_fast.py com ./zonefiles/com.2026-07-02.txt
+```
+
+Fast preset defaults:
+
+```text
+--sample-mode reservoir
+--reservoir-size 200000
+--max-rdap-checks 200000
+--concurrency 100
+--limit-output 100
+--min-score 35
+```
+
+Use the fast preset only on a strong machine and be ready to reduce concurrency if RDAP starts returning errors/timeouts.
+
 This mode:
 
 ```text
