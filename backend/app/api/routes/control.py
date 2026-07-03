@@ -101,6 +101,7 @@ from app.services.discovery import (
     check_discovery_domain_rdap,
     infer_zone,
     normalize_discovery_domain,
+    stagger_initial_check_at,
 )
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
@@ -387,27 +388,31 @@ async def _insert_discovery_domains_from_bulk(
         ).scalars().all()
     }
 
+    seen_domains = set(existing_domains)
+    new_domains: list[str] = []
     for raw in payload.domains:
         try:
             normalized = normalize_discovery_domain(raw)
         except ValueError:
             continue
-        if normalized in existing_domains:
+        if normalized in seen_domains:
             skipped.append(normalized)
             continue
+        new_domains.append(normalized)
+        seen_domains.add(normalized)
 
-        now = utcnow()
+    base_check_at = utcnow()
+    for index, normalized in enumerate(new_domains):
         domain = DiscoveryDomain(
             fqdn=normalized,
             zone=(payload.zone or infer_zone(normalized)).lower(),
             check_interval_seconds=payload.check_interval_seconds,
             source_mode=payload.source_mode,
             notes=payload.notes,
-            next_check_at=now,
+            next_check_at=stagger_initial_check_at(base_check_at, index=index, total=len(new_domains)),
         )
         db.add(domain)
         inserted.append(domain)
-        existing_domains.add(normalized)
 
     await db.commit()
     for domain in inserted:

@@ -107,6 +107,18 @@ def test_discovery_uses_ten_second_interval_on_predicted_drop_day():
     assert calculate_next_check_at(domain, now) == now + timedelta(seconds=10)
 
 
+def test_discovery_uses_fifteen_minute_interval_for_redemption_domains():
+    now = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+    domain = DiscoveryDomain(
+        fqdn="sample.com",
+        zone="com",
+        status="redemption",
+        last_lifecycle_stage="redemption",
+    )
+
+    assert calculate_next_check_at(domain, now) == now + timedelta(minutes=15)
+
+
 @pytest.mark.asyncio
 async def test_discovery_api_imports_and_lists_domains():
     engine = create_async_engine(
@@ -146,6 +158,9 @@ async def test_discovery_api_imports_and_lists_domains():
         assert [item["fqdn"] for item in payload] == ["example.com", "test.org"]
         assert payload[0]["zone"] == "com"
         assert payload[0]["status"] == "tracking"
+        first_check = datetime.fromisoformat(payload[0]["next_check_at"])
+        second_check = datetime.fromisoformat(payload[1]["next_check_at"])
+        assert abs((second_check - first_check).total_seconds()) >= 200
 
     await engine.dispose()
 
@@ -193,7 +208,7 @@ async def test_process_due_discovery_domains_persists_observation_and_notificati
     assert processed == 1
     assert domain is not None
     assert domain.status == "pending_delete"
-    assert domain.next_check_at == (now + timedelta(minutes=10)).replace(tzinfo=None)
+    assert domain.next_check_at == (now + timedelta(minutes=5)).replace(tzinfo=None)
     assert notifications
     assert "pendingDelete" in notifications[0]
 

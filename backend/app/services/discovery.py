@@ -14,9 +14,10 @@ from app.db.models import DiscoveryDomain, DiscoveryObservation
 IANA_RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json"
 PENDING_DELETE_DURATION = timedelta(days=5)
 DROP_DAY_SCAN_INTERVAL = timedelta(seconds=10)
-REDEMPTION_SCAN_INTERVAL = timedelta(hours=1)
+REDEMPTION_SCAN_INTERVAL = timedelta(minutes=15)
 DEFAULT_SCAN_INTERVAL = timedelta(hours=6)
-PENDING_DELETE_SCAN_INTERVAL = timedelta(minutes=10)
+PENDING_DELETE_SCAN_INTERVAL = timedelta(minutes=5)
+INITIAL_DISCOVERY_IMPORT_SPREAD = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -212,11 +213,33 @@ def calculate_next_check_at(domain: DiscoveryDomain, now: datetime) -> datetime 
     ):
         return now + DROP_DAY_SCAN_INTERVAL
 
+    configured_interval = getattr(domain, "check_interval_seconds", None)
     if domain.last_lifecycle_stage == "redemption":
-        return now + REDEMPTION_SCAN_INTERVAL
+        domain_interval = (
+            timedelta(seconds=max(int(configured_interval), 10)) if configured_interval else REDEMPTION_SCAN_INTERVAL
+        )
+        return now + min(domain_interval, REDEMPTION_SCAN_INTERVAL)
     if domain.status == "pending_delete":
-        return now + PENDING_DELETE_SCAN_INTERVAL
-    return now + DEFAULT_SCAN_INTERVAL
+        domain_interval = (
+            timedelta(seconds=max(int(configured_interval), 10)) if configured_interval else PENDING_DELETE_SCAN_INTERVAL
+        )
+        return now + min(domain_interval, PENDING_DELETE_SCAN_INTERVAL)
+    domain_interval = timedelta(seconds=max(int(configured_interval), 10)) if configured_interval else DEFAULT_SCAN_INTERVAL
+    return now + min(domain_interval, DEFAULT_SCAN_INTERVAL)
+
+
+def stagger_initial_check_at(
+    now: datetime,
+    *,
+    index: int,
+    total: int,
+    spread: timedelta = INITIAL_DISCOVERY_IMPORT_SPREAD,
+) -> datetime:
+    if total <= 1:
+        return now
+    safe_index = max(index, 0)
+    slot_seconds = spread.total_seconds() / total
+    return now + timedelta(seconds=slot_seconds * safe_index)
 
 
 def apply_discovery_observation(
