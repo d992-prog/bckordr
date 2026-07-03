@@ -132,6 +132,21 @@ export type DiscoveryZoneStats = {
   predicted: number;
 };
 
+export type DiscoveryObservation = {
+  id: number;
+  discovery_domain_id: number;
+  source: string;
+  observed_at: string;
+  http_status: number | null;
+  latency_ms: number | null;
+  lifecycle_stage: string | null;
+  availability_status: string | null;
+  status_codes: string | null;
+  raw_response: string | null;
+  error: string | null;
+  created_at: string;
+};
+
 export type ZoneStrategy = {
   id: number;
   zone: string;
@@ -530,6 +545,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  getDiscoveryObservations: (id: number) =>
+    request<DiscoveryObservation[]>(`/control/discovery/domains/${id}/observations`),
   checkDiscoveryDomain: (id: number) =>
     request<DiscoveryDomain>(`/control/discovery/domains/${id}/check`, {
       method: "POST",

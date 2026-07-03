@@ -233,6 +233,10 @@ button {
   overflow-x: auto;
 }
 
+.timeline-summary {
+  margin-bottom: 16px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -604,6 +608,24 @@ button.danger {
   margin-top: 6px;
   font-size: 0.85rem;
   color: var(--muted);
+}
+
+.code-inline {
+  display: inline-block;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+  font-family: "Courier New", monospace;
+  font-size: 0.86rem;
+}
+
+.clipped-text {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .error-text {

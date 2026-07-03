@@ -8,6 +8,7 @@ import {
   ContactProfilePrefill,
   DiagnosticTelegramSettings,
   DiscoveryDomain,
+  DiscoveryObservation,
   DiscoveryZoneStats,
   DomainOverrideRule,
   DomainOverrideRulePhase,
@@ -276,6 +277,8 @@ export default function App() {
   const [strategyPreview, setStrategyPreview] = useState<StrategyPreview | null>(null);
   const [domains, setDomains] = useState<DropDomain[]>([]);
   const [discoveryDomains, setDiscoveryDomains] = useState<DiscoveryDomain[]>([]);
+  const [selectedDiscoveryDomainId, setSelectedDiscoveryDomainId] = useState<number | null>(null);
+  const [discoveryObservations, setDiscoveryObservations] = useState<DiscoveryObservation[]>([]);
   const [discoveryZoneStats, setDiscoveryZoneStats] = useState<DiscoveryZoneStats[]>([]);
   const [workers, setWorkers] = useState<WorkerNode[]>([]);
   const [accounts, setAccounts] = useState<RegistrarAccount[]>([]);
@@ -332,6 +335,10 @@ export default function App() {
   const matchingDomainStrategies = useMemo(
     () => strategies.filter((item) => item.zone.toLowerCase() === domainForm.zone.trim().toLowerCase()),
     [domainForm.zone, strategies],
+  );
+  const selectedDiscoveryDomain = useMemo(
+    () => discoveryDomains.find((item) => item.id === selectedDiscoveryDomainId) ?? null,
+    [discoveryDomains, selectedDiscoveryDomainId],
   );
 
   useEffect(() => {
@@ -684,6 +691,9 @@ export default function App() {
         error: discoveryObservationForm.error || null,
       });
       await loadAll();
+      if (selectedDiscoveryDomainId === domainId) {
+        await loadDiscoveryTimeline(domainId);
+      }
       setToast({ type: "success", text: "Discovery observation сохранен" });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка discovery observation" });
@@ -694,9 +704,22 @@ export default function App() {
     try {
       const domain = await api.checkDiscoveryDomain(domainId);
       await loadAll();
+      if (selectedDiscoveryDomainId === domainId) {
+        await loadDiscoveryTimeline(domainId);
+      }
       setToast({ type: "success", text: `Discovery check: ${domain.fqdn} -> ${domain.status}` });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка discovery check" });
+    }
+  }
+
+  async function loadDiscoveryTimeline(domainId: number) {
+    try {
+      const observations = await api.getDiscoveryObservations(domainId);
+      setSelectedDiscoveryDomainId(domainId);
+      setDiscoveryObservations(observations);
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка загрузки discovery timeline" });
     }
   }
 
@@ -1304,6 +1327,86 @@ export default function App() {
         </div>
 
         <div className="card full-span">
+          <div className="card-head">
+            <div>
+              <h2>Discovery timeline</h2>
+              <p className="muted">
+                История RDAP/manual observations по выбранному домену. Это основной журнал для вычисления перехода redemption {"->"} pendingDelete {"->"} available.
+              </p>
+            </div>
+            {selectedDiscoveryDomain ? (
+              <button type="button" className="ghost" onClick={() => void loadDiscoveryTimeline(selectedDiscoveryDomain.id)}>
+                Обновить timeline
+              </button>
+            ) : null}
+          </div>
+          {selectedDiscoveryDomain ? (
+            <>
+              <div className="key-value compact timeline-summary">
+                <div>
+                  <span>Domain</span>
+                  <strong>{selectedDiscoveryDomain.fqdn}</strong>
+                </div>
+                <div>
+                  <span>Current status</span>
+                  <strong>{selectedDiscoveryDomain.status} | {selectedDiscoveryDomain.last_lifecycle_stage ?? "unknown"}</strong>
+                </div>
+                <div>
+                  <span>Pending range</span>
+                  <strong>{formatDateTime(selectedDiscoveryDomain.pending_delete_previous_seen_at)} {"->"} {formatDateTime(selectedDiscoveryDomain.first_seen_pending_delete_at)}</strong>
+                </div>
+                <div>
+                  <span>Predicted drop</span>
+                  <strong>{formatDateTime(selectedDiscoveryDomain.predicted_drop_start_at)} {"->"} {formatDateTime(selectedDiscoveryDomain.predicted_drop_end_at)}</strong>
+                </div>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Observed</th>
+                      <th>Source</th>
+                      <th>Lifecycle</th>
+                      <th>Status codes</th>
+                      <th>HTTP / latency</th>
+                      <th>Error / raw</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {discoveryObservations.length === 0 ? (
+                      <tr>
+                        <td colSpan={6}>Истории пока нет. Нажми Check now или дождись автоматического RDAP-чека.</td>
+                      </tr>
+                    ) : null}
+                    {discoveryObservations.map((observation) => (
+                      <tr key={observation.id}>
+                        <td>{formatDateTime(observation.observed_at)}</td>
+                        <td>{observation.source}</td>
+                        <td>
+                          <div>{observation.lifecycle_stage ?? "unknown"}</div>
+                          <div className="row-hint">availability: {observation.availability_status ?? "unknown"}</div>
+                        </td>
+                        <td><span className="code-inline">{observation.status_codes ?? "—"}</span></td>
+                        <td>
+                          <div>{observation.http_status ?? "—"}</div>
+                          <div className="row-hint">{observation.latency_ms ? `${observation.latency_ms} ms` : "latency: —"}</div>
+                        </td>
+                        <td>
+                          {observation.error ? <div className="row-hint">error: {observation.error}</div> : null}
+                          {observation.raw_response ? <div className="row-hint clipped-text">{observation.raw_response}</div> : <div className="row-hint">raw: —</div>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <p className="muted">Выбери домен через кнопку Timeline в таблице ниже.</p>
+          )}
+        </div>
+
+        <div className="card full-span">
           <h2>Discovery domains</h2>
           <div className="table-wrap">
             <table>
@@ -1342,6 +1445,7 @@ export default function App() {
                     <td>
                       <div className="actions">
                         <button type="button" onClick={() => void checkDiscoveryDomainNow(domain.id)}>Check now</button>
+                        <button type="button" className="ghost" onClick={() => void loadDiscoveryTimeline(domain.id)}>Timeline</button>
                         <button type="button" className="ghost" onClick={() => setDiscoveryObservationForm((current) => ({ ...current, domainId: String(domain.id) }))}>Observation</button>
                         <button type="button" className="danger" onClick={() => void deleteItem("discovery", domain.id)}>Удалить</button>
                       </div>
