@@ -17,6 +17,7 @@ DROP_DAY_SCAN_INTERVAL = timedelta(seconds=10)
 REDEMPTION_SCAN_INTERVAL = timedelta(minutes=15)
 DEFAULT_SCAN_INTERVAL = timedelta(hours=6)
 PENDING_DELETE_SCAN_INTERVAL = timedelta(minutes=5)
+ERROR_RETRY_INTERVAL = timedelta(minutes=3)
 INITIAL_DISCOVERY_IMPORT_SPREAD = timedelta(minutes=15)
 
 
@@ -205,6 +206,9 @@ async def process_due_discovery_domains(
 def calculate_next_check_at(domain: DiscoveryDomain, now: datetime) -> datetime | None:
     if domain.is_enabled is False or domain.status in {"available", "ignored"}:
         return None
+
+    if domain.status == "error":
+        return now + ERROR_RETRY_INTERVAL
 
     if (
         domain.status == "pending_delete"

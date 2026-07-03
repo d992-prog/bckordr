@@ -144,6 +144,18 @@ def test_discovery_uses_fifteen_minute_interval_for_redemption_domains():
     assert calculate_next_check_at(domain, now) == now + timedelta(minutes=15)
 
 
+def test_discovery_retries_error_domains_quickly():
+    now = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+    domain = DiscoveryDomain(
+        fqdn="sample.com",
+        zone="com",
+        status="error",
+        last_error="temporary rdap timeout",
+    )
+
+    assert calculate_next_check_at(domain, now) == now + timedelta(minutes=3)
+
+
 @pytest.mark.asyncio
 async def test_discovery_api_imports_and_lists_domains():
     engine = create_async_engine(
