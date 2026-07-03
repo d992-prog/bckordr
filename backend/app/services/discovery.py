@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zlib
 from time import perf_counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,7 @@ REDEMPTION_SCAN_INTERVAL = timedelta(minutes=15)
 DEFAULT_SCAN_INTERVAL = timedelta(hours=6)
 PENDING_DELETE_SCAN_INTERVAL = timedelta(minutes=5)
 ERROR_RETRY_INTERVAL = timedelta(minutes=3)
+ERROR_RETRY_JITTER = timedelta(minutes=1)
 INITIAL_DISCOVERY_IMPORT_SPREAD = timedelta(minutes=15)
 
 
@@ -208,7 +210,11 @@ def calculate_next_check_at(domain: DiscoveryDomain, now: datetime) -> datetime 
         return None
 
     if domain.status == "error":
-        return now + ERROR_RETRY_INTERVAL
+        return now + _stable_jittered_interval(
+            getattr(domain, "fqdn", ""),
+            base=ERROR_RETRY_INTERVAL,
+            jitter=ERROR_RETRY_JITTER,
+        )
 
     if (
         domain.status == "pending_delete"
@@ -245,6 +251,14 @@ def stagger_initial_check_at(
     safe_index = max(index, 0)
     slot_seconds = spread.total_seconds() / total
     return now + timedelta(seconds=slot_seconds * safe_index)
+
+
+def _stable_jittered_interval(key: str, *, base: timedelta, jitter: timedelta) -> timedelta:
+    jitter_seconds = max(int(jitter.total_seconds()), 0)
+    if jitter_seconds <= 0:
+        return base
+    checksum = zlib.crc32(key.encode("utf-8"))
+    return base + timedelta(seconds=checksum % (jitter_seconds + 1))
 
 
 def apply_discovery_observation(

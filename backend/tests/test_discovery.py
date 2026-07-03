@@ -153,7 +153,23 @@ def test_discovery_retries_error_domains_quickly():
         last_error="temporary rdap timeout",
     )
 
-    assert calculate_next_check_at(domain, now) == now + timedelta(minutes=3)
+    retry_at = calculate_next_check_at(domain, now)
+
+    assert retry_at is not None
+    assert timedelta(minutes=3) <= retry_at - now <= timedelta(minutes=4)
+
+
+def test_discovery_spreads_error_retry_with_stable_jitter():
+    now = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+    first = DiscoveryDomain(fqdn="alpha-example.com", zone="com", status="error")
+    second = DiscoveryDomain(fqdn="beta-example.com", zone="com", status="error")
+
+    first_delay = calculate_next_check_at(first, now) - now
+    second_delay = calculate_next_check_at(second, now) - now
+
+    assert timedelta(minutes=3) <= first_delay <= timedelta(minutes=4)
+    assert timedelta(minutes=3) <= second_delay <= timedelta(minutes=4)
+    assert first_delay != second_delay
 
 
 @pytest.mark.asyncio
