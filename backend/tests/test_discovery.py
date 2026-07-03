@@ -70,6 +70,31 @@ async def test_discovery_rdap_check_updates_domain_and_records_observation():
     assert domain.predicted_drop_start_at == previous_seen + timedelta(days=5)
 
 
+@pytest.mark.asyncio
+async def test_discovery_rdap_check_parses_rdap_json_content_type():
+    domain = DiscoveryDomain(fqdn="example.com", zone="com")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(
+                200,
+                json={"services": [[["com"], ["https://rdap.registry.example/"]]]},
+            )
+        if str(request.url) == "https://rdap.registry.example/domain/example.com":
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/rdap+json"},
+                json={"status": ["redemptionPeriod"]},
+            )
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        observation = await check_discovery_domain_rdap(domain, client=client)
+
+    assert observation.lifecycle_stage == "redemption"
+    assert observation.status_codes == ["redemptionPeriod"]
+
+
 def test_pending_delete_observation_creates_drop_range():
     previous_seen = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
     observed_at = datetime(2026, 6, 1, 12, 15, tzinfo=timezone.utc)

@@ -228,7 +228,8 @@ function formatDateTime(value: string | null) {
   if (!value) {
     return "—";
   }
-  return new Intl.DateTimeFormat("ru-RU", {
+  const formatted = new Intl.DateTimeFormat("ru-RU", {
+    timeZone: "Europe/Moscow",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -236,6 +237,7 @@ function formatDateTime(value: string | null) {
     minute: "2-digit",
     second: "2-digit",
   }).format(new Date(value));
+  return `${formatted} MSK`;
 }
 
 function statusClass(value: string) {

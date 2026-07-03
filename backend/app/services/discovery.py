@@ -93,7 +93,8 @@ async def check_discovery_domain_rdap(
         latency_ms = int((perf_counter() - started_at) * 1000)
         status_codes: list[str] = []
         raw_response = rdap_response.text
-        if rdap_response.headers.get("content-type", "").startswith("application/json"):
+        content_type = rdap_response.headers.get("content-type", "").lower()
+        if "json" in content_type:
             payload = rdap_response.json()
             status_codes = [str(item) for item in payload.get("status", []) if item]
         lifecycle_stage = normalize_lifecycle_stage(status_codes, http_status=rdap_response.status_code)
