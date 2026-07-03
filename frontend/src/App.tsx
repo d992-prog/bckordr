@@ -67,6 +67,14 @@ const DEFAULT_DISCOVERY_OBSERVATION_FORM = {
   error: "",
 };
 
+const DEFAULT_DISCOVERY_FILTERS = {
+  query: "",
+  zone: "",
+  status: "",
+  lifecycle: "",
+  pageSize: "25",
+};
+
 const DEFAULT_STRATEGY_FORM = {
   zone: "fr",
   name: "France Default",
@@ -291,6 +299,8 @@ export default function App() {
   const [domainForm, setDomainForm] = useState(DEFAULT_DOMAIN_FORM);
   const [discoveryForm, setDiscoveryForm] = useState(DEFAULT_DISCOVERY_FORM);
   const [discoveryObservationForm, setDiscoveryObservationForm] = useState(DEFAULT_DISCOVERY_OBSERVATION_FORM);
+  const [discoveryFilters, setDiscoveryFilters] = useState(DEFAULT_DISCOVERY_FILTERS);
+  const [discoveryPage, setDiscoveryPage] = useState(1);
   const [strategyForm, setStrategyForm] = useState(DEFAULT_STRATEGY_FORM);
   const [ruleForm, setRuleForm] = useState(DEFAULT_RULE_FORM);
   const [phaseForm, setPhaseForm] = useState(DEFAULT_PHASE_FORM);
@@ -339,6 +349,43 @@ export default function App() {
   const selectedDiscoveryDomain = useMemo(
     () => discoveryDomains.find((item) => item.id === selectedDiscoveryDomainId) ?? null,
     [discoveryDomains, selectedDiscoveryDomainId],
+  );
+  const discoveryZoneOptions = useMemo(
+    () => [...new Set(discoveryDomains.map((item) => item.zone).filter(Boolean))].sort(),
+    [discoveryDomains],
+  );
+  const discoveryStatusOptions = useMemo(
+    () => [...new Set(discoveryDomains.map((item) => item.status).filter(Boolean))].sort(),
+    [discoveryDomains],
+  );
+  const discoveryLifecycleOptions = useMemo(
+    () => [...new Set(discoveryDomains.map((item) => item.last_lifecycle_stage).filter(Boolean))].sort() as string[],
+    [discoveryDomains],
+  );
+  const filteredDiscoveryDomains = useMemo(() => {
+    const query = discoveryFilters.query.trim().toLowerCase();
+    return discoveryDomains.filter((domain) => {
+      if (query && !domain.fqdn.toLowerCase().includes(query)) {
+        return false;
+      }
+      if (discoveryFilters.zone && domain.zone !== discoveryFilters.zone) {
+        return false;
+      }
+      if (discoveryFilters.status && domain.status !== discoveryFilters.status) {
+        return false;
+      }
+      if (discoveryFilters.lifecycle && domain.last_lifecycle_stage !== discoveryFilters.lifecycle) {
+        return false;
+      }
+      return true;
+    });
+  }, [discoveryDomains, discoveryFilters]);
+  const discoveryPageSize = Math.max(Number(discoveryFilters.pageSize) || 25, 1);
+  const discoveryTotalPages = Math.max(Math.ceil(filteredDiscoveryDomains.length / discoveryPageSize), 1);
+  const activeDiscoveryPage = Math.min(discoveryPage, discoveryTotalPages);
+  const paginatedDiscoveryDomains = filteredDiscoveryDomains.slice(
+    (activeDiscoveryPage - 1) * discoveryPageSize,
+    activeDiscoveryPage * discoveryPageSize,
   );
 
   useEffect(() => {
@@ -1407,7 +1454,91 @@ export default function App() {
         </div>
 
         <div className="card full-span">
-          <h2>Discovery domains</h2>
+          <div className="card-head">
+            <div>
+              <h2>Discovery domains</h2>
+              <p className="muted">
+                Показано {paginatedDiscoveryDomains.length} из {filteredDiscoveryDomains.length}; всего в discovery {discoveryDomains.length}.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                setDiscoveryFilters(DEFAULT_DISCOVERY_FILTERS);
+                setDiscoveryPage(1);
+              }}
+            >
+              Сбросить фильтры
+            </button>
+          </div>
+          <div className="filter-panel">
+            <label>
+              <span>Поиск</span>
+              <input
+                value={discoveryFilters.query}
+                onChange={(event) => {
+                  setDiscoveryFilters((current) => ({ ...current, query: event.target.value }));
+                  setDiscoveryPage(1);
+                }}
+                placeholder="domain.com"
+              />
+            </label>
+            <label>
+              <span>Zone</span>
+              <select
+                value={discoveryFilters.zone}
+                onChange={(event) => {
+                  setDiscoveryFilters((current) => ({ ...current, zone: event.target.value }));
+                  setDiscoveryPage(1);
+                }}
+              >
+                <option value="">All zones</option>
+                {discoveryZoneOptions.map((zone) => <option key={zone} value={zone}>.{zone}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Status</span>
+              <select
+                value={discoveryFilters.status}
+                onChange={(event) => {
+                  setDiscoveryFilters((current) => ({ ...current, status: event.target.value }));
+                  setDiscoveryPage(1);
+                }}
+              >
+                <option value="">All statuses</option>
+                {discoveryStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Lifecycle</span>
+              <select
+                value={discoveryFilters.lifecycle}
+                onChange={(event) => {
+                  setDiscoveryFilters((current) => ({ ...current, lifecycle: event.target.value }));
+                  setDiscoveryPage(1);
+                }}
+              >
+                <option value="">All lifecycles</option>
+                {discoveryLifecycleOptions.map((lifecycle) => <option key={lifecycle} value={lifecycle}>{lifecycle}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Page size</span>
+              <select
+                value={discoveryFilters.pageSize}
+                onChange={(event) => {
+                  setDiscoveryFilters((current) => ({ ...current, pageSize: event.target.value }));
+                  setDiscoveryPage(1);
+                }}
+              >
+                <option value="10">10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -1422,7 +1553,12 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {discoveryDomains.map((domain) => (
+                {paginatedDiscoveryDomains.length === 0 ? (
+                  <tr>
+                    <td colSpan={7}>По этим фильтрам доменов нет.</td>
+                  </tr>
+                ) : null}
+                {paginatedDiscoveryDomains.map((domain) => (
                   <tr key={domain.id}>
                     <td><strong>{domain.fqdn}</strong><div className="row-hint">.{domain.zone} | {domain.source_mode}</div></td>
                     <td><span className={statusClass(domain.status)}>{domain.status}</span></td>
@@ -1454,6 +1590,27 @@ export default function App() {
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="pagination-bar">
+            <button
+              type="button"
+              className="ghost"
+              disabled={activeDiscoveryPage <= 1}
+              onClick={() => setDiscoveryPage((current) => Math.max(current - 1, 1))}
+            >
+              Назад
+            </button>
+            <span>
+              Страница {activeDiscoveryPage} / {discoveryTotalPages}
+            </span>
+            <button
+              type="button"
+              className="ghost"
+              disabled={activeDiscoveryPage >= discoveryTotalPages}
+              onClick={() => setDiscoveryPage((current) => Math.min(current + 1, discoveryTotalPages))}
+            >
+              Вперед
+            </button>
           </div>
         </div>
       </section>
