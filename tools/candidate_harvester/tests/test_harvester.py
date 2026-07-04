@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from candidate_harvester import (
     HarvesterResult,
     ProgressStats,
+    _write_redemption_debug,
     classify_lifecycle,
     build_diagnosis,
     collect_reservoir_candidates,
@@ -99,6 +100,35 @@ def test_result_is_accepted_requires_pending_delete_window_for_redemption():
     assert not result_is_accepted(too_late, args, accepted_lifecycles={"redemption"})
 
 
+def test_redemption_debug_writer_records_redemption_even_outside_window(tmp_path):
+    output = tmp_path / "debug.csv"
+    result = HarvesterResult(
+        domain="late-delete.net",
+        tld="net",
+        lifecycle="redemption",
+        status_codes="redemptionPeriod",
+        http_status=200,
+        checked_at="2026-07-04T12:00:00+00:00",
+        redemption_anchor_at="2026-07-03T00:00:00+00:00",
+        predicted_pending_delete_at="2026-08-02T00:00:00+00:00",
+        days_to_pending_delete=28.5,
+        score=60,
+        reason="long",
+    )
+    stats = ProgressStats()
+    args = SimpleNamespace(redemption_debug_limit=10)
+
+    import csv
+
+    with output.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(result.__dict__.keys()))
+        writer.writeheader()
+        _write_redemption_debug(result, writer, stats, args)
+
+    assert stats.written_redemption_debug == 1
+    assert "late-delete.net" in output.read_text(encoding="utf-8")
+
+
 def test_quick_args_build_safe_default_command():
     args = build_quick_args([".com", "expired-com.txt"])
 
@@ -169,6 +199,8 @@ def test_fast_redemption_scan_args_use_aggressive_limits():
     assert "100" in args
     assert "--limit-output" in args
     assert "20" in args
+    assert "--redemption-debug-output" in args
+    assert "redemption-candidates-com-fast-redemption-debug.csv" in args
     assert "--pending-delete-min-days" in args
     assert "1" in args
     assert "--pending-delete-max-days" in args

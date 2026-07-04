@@ -47,8 +47,25 @@ class ProgressStats:
     submitted_rdap: int = 0
     completed_rdap: int = 0
     written_candidates: int = 0
+    written_redemption_debug: int = 0
     started_at: float = 0.0
     last_log_at: float = 0.0
+
+
+RESULT_FIELDNAMES = [
+    "domain",
+    "tld",
+    "lifecycle",
+    "status_codes",
+    "http_status",
+    "checked_at",
+    "redemption_anchor_at",
+    "predicted_pending_delete_at",
+    "days_to_pending_delete",
+    "score",
+    "reason",
+    "error",
+]
 
 
 def normalize_domain(line: str) -> str | None:
@@ -251,26 +268,14 @@ def run(args: argparse.Namespace) -> int:
     lifecycle_counts: collections.Counter[str] = collections.Counter()
 
     with open(args.output, "w", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(
-            csv_file,
-            fieldnames=[
-                "domain",
-                "tld",
-                "lifecycle",
-                "status_codes",
-                "http_status",
-                "checked_at",
-                "redemption_anchor_at",
-                "predicted_pending_delete_at",
-                "days_to_pending_delete",
-                "score",
-                "reason",
-                "error",
-            ],
-        )
+        writer = csv.DictWriter(csv_file, fieldnames=RESULT_FIELDNAMES)
         writer.writeheader()
 
         txt_file = open(args.output_txt, "w", encoding="utf-8") if args.output_txt else None
+        debug_file = open(args.redemption_debug_output, "w", newline="", encoding="utf-8") if args.redemption_debug_output else None
+        debug_writer = csv.DictWriter(debug_file, fieldnames=RESULT_FIELDNAMES) if debug_file else None
+        if debug_writer:
+            debug_writer.writeheader()
         try:
             with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
                 if args.sample_mode == "reservoir":
@@ -293,6 +298,7 @@ def run(args: argparse.Namespace) -> int:
                             lifecycle_counts,
                             args,
                             accepted_lifecycles=accepted_lifecycles,
+                            debug_writer=debug_writer,
                             remaining=args.limit_output - written,
                         )
                         written += batch_written
@@ -308,6 +314,7 @@ def run(args: argparse.Namespace) -> int:
                         lifecycle_counts,
                         args,
                         accepted_lifecycles=accepted_lifecycles,
+                        debug_writer=debug_writer,
                         remaining=args.limit_output - written,
                     )
                     written += batch_written
@@ -315,6 +322,8 @@ def run(args: argparse.Namespace) -> int:
         finally:
             if txt_file:
                 txt_file.close()
+            if debug_file:
+                debug_file.close()
 
     elapsed = max(time.monotonic() - started_at, 0.001)
     _log_progress(stats, args, force=True)
@@ -324,6 +333,9 @@ def run(args: argparse.Namespace) -> int:
     print(f"output={args.output}")
     if args.output_txt:
         print(f"output_txt={args.output_txt}")
+    if args.redemption_debug_output:
+        print(f"redemption_debug_output={args.redemption_debug_output}")
+        print(f"written_redemption_debug={stats.written_redemption_debug}")
     print(build_diagnosis(stats, lifecycle_counts=dict(lifecycle_counts), accepted_lifecycles=accepted_lifecycles))
     return 0
 
@@ -334,6 +346,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tld", required=True, help="Target TLD, for example com, net, org.")
     parser.add_argument("--output", required=True, help="CSV output path.")
     parser.add_argument("--output-txt", default=None, help="Optional TXT output with domains only.")
+    parser.add_argument(
+        "--redemption-debug-output",
+        default=None,
+        help="Optional CSV with every redemption RDAP hit, even when it misses the pendingDelete date window.",
+    )
+    parser.add_argument(
+        "--redemption-debug-limit",
+        type=int,
+        default=1000,
+        help="Maximum redemption rows to write to --redemption-debug-output.",
+    )
     parser.add_argument("--limit-output", type=int, default=50, help="Stop after this many accepted candidates.")
     parser.add_argument("--max-rdap-checks", type=int, default=5000, help="Maximum RDAP checks per run.")
     parser.add_argument("--concurrency", type=int, default=20, help="Parallel RDAP checks.")
@@ -373,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     args.limit_output = max(1, args.limit_output)
     args.max_rdap_checks = max(1, args.max_rdap_checks)
     args.reservoir_size = max(1, args.reservoir_size)
+    args.redemption_debug_limit = max(1, args.redemption_debug_limit)
     return run(args)
 
 
@@ -404,6 +428,7 @@ def _drain_futures(
     args: argparse.Namespace,
     *,
     accepted_lifecycles: set[str],
+    debug_writer: csv.DictWriter | None,
     remaining: int,
 ) -> int:
     written = 0
@@ -417,6 +442,7 @@ def _drain_futures(
             stats.completed_rdap += 1
             result = future.result()
             lifecycle_counts[result.lifecycle] += 1
+            _write_redemption_debug(result, debug_writer, stats, args)
             if written >= remaining or not result_is_accepted(result, args, accepted_lifecycles=accepted_lifecycles):
                 continue
             writer.writerow(result.__dict__)
@@ -426,6 +452,22 @@ def _drain_futures(
             stats.written_candidates += 1
         _log_progress(stats, args, force=False)
     return written
+
+
+def _write_redemption_debug(
+    result: HarvesterResult,
+    debug_writer: csv.DictWriter | None,
+    stats: ProgressStats,
+    args: argparse.Namespace,
+) -> None:
+    if debug_writer is None:
+        return
+    if result.lifecycle != "redemption":
+        return
+    if stats.written_redemption_debug >= args.redemption_debug_limit:
+        return
+    debug_writer.writerow(result.__dict__)
+    stats.written_redemption_debug += 1
 
 
 def result_is_accepted(
@@ -541,6 +583,7 @@ def _log_progress(stats: ProgressStats, args: argparse.Namespace, *, force: bool
         f"filtered={stats.filtered_candidates} "
         f"rdap={stats.completed_rdap}/{stats.submitted_rdap} "
         f"written={stats.written_candidates}/{args.limit_output} "
+        f"redemption_debug={stats.written_redemption_debug} "
         f"speed_lines_s={lines_per_second:.0f} "
         f"speed_rdap_s={rdap_per_second:.1f}",
         flush=True,

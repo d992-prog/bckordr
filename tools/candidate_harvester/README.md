@@ -83,6 +83,7 @@ Fast preset defaults:
 --min-score 35
 --pending-delete-min-days 1
 --pending-delete-max-days 2
+--redemption-debug-output redemption-candidates-<tld>-fast-redemption-debug.csv
 ```
 
 Use the fast preset only on a strong machine and be ready to reduce concurrency if RDAP starts returning errors/timeouts.
@@ -114,6 +115,7 @@ Output:
 ```text
 redemption-candidates-com.csv
 redemption-candidates-com.txt
+redemption-candidates-com-fast-redemption-debug.csv
 ```
 
 If the diagnosis says `lifecycles=registered=...`, then checked domains are active by RDAP. Increase `--max-rdap-checks` / `--reservoir-size`, lower `--min-score`, or use a better pre-expired source.
@@ -175,6 +177,8 @@ domain,tld,lifecycle,status_codes,http_status,checked_at,redemption_anchor_at,pr
 ```
 
 TXT output contains domains only and is convenient for pasting into the control panel.
+
+The redemption debug CSV contains every `redemptionPeriod` hit, even if it does not match the pendingDelete date window. Use it to understand whether candidates are too early, too late, or missing RDAP `last changed`.
 
 ## Progress Log
 

@@ -33,6 +33,8 @@ def build_args(argv: list[str]) -> list[str]:
         str(Path(f"{output_prefix}.csv")),
         "--output-txt",
         str(Path(f"{output_prefix}.txt")),
+        "--redemption-debug-output",
+        str(Path(f"{output_prefix}-redemption-debug.csv")),
         "--limit-output",
         DEFAULT_LIMIT_OUTPUT,
         "--pending-delete-min-days",
