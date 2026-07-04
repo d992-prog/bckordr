@@ -240,6 +240,16 @@ function formatDateTime(value: string | null) {
   return `${formatted} MSK`;
 }
 
+function formatRedemptionAnchorSource(value: string | null) {
+  if (value === "rdap_updated_at") {
+    return "дата обновления из RDAP/WHOIS";
+  }
+  if (value === "first_seen_redemption_at") {
+    return "первое обнаружение redemption";
+  }
+  return "—";
+}
+
 function statusClass(value: string) {
   if (["ready", "success", "scheduled"].includes(value)) {
     return "status available";
@@ -1401,19 +1411,19 @@ export default function App() {
                   <strong>{selectedDiscoveryDomain.status} | {selectedDiscoveryDomain.last_lifecycle_stage ?? "unknown"}</strong>
                 </div>
                 <div>
-                  <span>Redemption anchor</span>
-                  <strong>{formatDateTime(selectedDiscoveryDomain.redemption_anchor_at)} | {selectedDiscoveryDomain.redemption_anchor_source ?? "—"}</strong>
+                  <span>От какой даты считаем</span>
+                  <strong>{formatDateTime(selectedDiscoveryDomain.redemption_anchor_at)} | {formatRedemptionAnchorSource(selectedDiscoveryDomain.redemption_anchor_source)}</strong>
                 </div>
                 <div>
-                  <span>Predicted pendingDelete</span>
+                  <span>Предполагаемый pendingDelete</span>
                   <strong>{formatDateTime(selectedDiscoveryDomain.predicted_pending_delete_at)}</strong>
                 </div>
                 <div>
-                  <span>Pending range</span>
+                  <span>Фактический pendingDelete</span>
                   <strong>{formatDateTime(selectedDiscoveryDomain.pending_delete_previous_seen_at)} {"->"} {formatDateTime(selectedDiscoveryDomain.first_seen_pending_delete_at)}</strong>
                 </div>
                 <div>
-                  <span>Predicted drop</span>
+                  <span>Предполагаемый drop</span>
                   <strong>{formatDateTime(selectedDiscoveryDomain.predicted_drop_start_at)} {"->"} {formatDateTime(selectedDiscoveryDomain.predicted_drop_end_at)}</strong>
                 </div>
               </div>
@@ -1556,8 +1566,8 @@ export default function App() {
                   <th>Domain</th>
                   <th>Status</th>
                   <th>Lifecycle</th>
-                  <th>Pending forecast</th>
-                  <th>Drop window</th>
+                  <th>Прогноз pendingDelete</th>
+                  <th>Прогноз drop</th>
                   <th>Availability</th>
                   <th>Next check</th>
                   <th>Actions</th>
@@ -1580,13 +1590,13 @@ export default function App() {
                     </td>
                     <td>
                       <div>{formatDateTime(domain.predicted_pending_delete_at)}</div>
-                      <div className="row-hint">anchor: {formatDateTime(domain.redemption_anchor_at)}</div>
-                      <div className="row-hint">source: {domain.redemption_anchor_source ?? "—"}</div>
+                      <div className="row-hint">считаем от: {formatDateTime(domain.redemption_anchor_at)}</div>
+                      <div className="row-hint">источник: {formatRedemptionAnchorSource(domain.redemption_anchor_source)}</div>
                     </td>
                     <td>
                       <div>{formatDateTime(domain.predicted_drop_start_at)}</div>
                       <div className="row-hint">to {formatDateTime(domain.predicted_drop_end_at)}</div>
-                      <div className="row-hint">pending first: {formatDateTime(domain.first_seen_pending_delete_at)}</div>
+                      <div className="row-hint">pendingDelete увидели: {formatDateTime(domain.first_seen_pending_delete_at)}</div>
                     </td>
                     <td>
                       <div>{domain.last_availability ?? "unknown"}</div>
