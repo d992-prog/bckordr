@@ -251,6 +251,12 @@ button {
   font-size: 0.9rem;
 }
 
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
 .timeline-summary {
   margin-bottom: 16px;
 }
@@ -676,7 +682,8 @@ button:disabled {
   .grid.two,
   .admin-grid,
   .auth-grid,
-  .filter-panel {
+  .filter-panel,
+  .form-grid {
     grid-template-columns: 1fr;
   }
 

@@ -4,9 +4,11 @@ import asyncio
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import select
 
 from app.core.config import Settings
 from app.db.base import utcnow
+from app.db.models import ZoneScanJob
 from app.services.app_settings import get_diagnostic_telegram_settings
 from app.services.attack_runtime import (
     autoplan_due_attack_runs,
@@ -19,6 +21,7 @@ from app.services.attack_runtime import (
 )
 from app.services.discovery import process_due_discovery_domains
 from app.services.notifier import TelegramNotifier
+from app.services.zone_scanner import run_zone_scan_job
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +53,7 @@ class ControlRuntimeOrchestrator:
         self._notifier = TelegramNotifier(settings) if settings else None
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._zone_scan_tasks: dict[int, asyncio.Task[None]] = {}
         self._last_worker_supervision_at = None
         self._last_discovery_at = None
 
@@ -122,6 +126,7 @@ class ControlRuntimeOrchestrator:
                 )
                 self._last_discovery_at = now
             await session.commit()
+            await self._start_zone_scan_jobs_if_needed()
 
     async def _send_discovery_notification(self, session: AsyncSession, message: str) -> None:
         if self._notifier is None:
@@ -135,6 +140,31 @@ class ControlRuntimeOrchestrator:
             token=token,
             chat_id=chat_id,
         )
+
+    async def _start_zone_scan_jobs_if_needed(self) -> None:
+        if self._settings is None:
+            return
+        self._zone_scan_tasks = {
+            job_id: task for job_id, task in self._zone_scan_tasks.items() if not task.done()
+        }
+        max_jobs = max(int(self._settings.zone_scan_max_concurrent_jobs), 1)
+        if len(self._zone_scan_tasks) >= max_jobs:
+            return
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(ZoneScanJob.id)
+                .where(ZoneScanJob.status.in_(["queued", "downloading", "scanning"]))
+                .order_by(ZoneScanJob.created_at.asc(), ZoneScanJob.id.asc())
+                .limit(max_jobs - len(self._zone_scan_tasks))
+            )
+            job_ids = [int(item) for item in result.scalars().all()]
+        for job_id in job_ids:
+            if job_id in self._zone_scan_tasks:
+                continue
+            self._zone_scan_tasks[job_id] = asyncio.create_task(
+                run_zone_scan_job(self._session_factory, job_id=job_id, settings=self._settings),
+                name=f"zone-scan-job-{job_id}",
+            )
 
     async def _run_loop(self) -> None:
         while not self._stop_event.is_set():

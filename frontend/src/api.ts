@@ -135,6 +135,72 @@ export type DiscoveryZoneStats = {
   predicted: number;
 };
 
+export type AllZonefilesSettings = {
+  configured: boolean;
+  base_url: string;
+};
+
+export type AllZonefilesTestResult = {
+  ok: boolean;
+  message: string;
+  zones_count: number | null;
+};
+
+export type ZoneScanJob = {
+  id: number;
+  zone: string;
+  source_type: string;
+  source_date: string | null;
+  status: string;
+  file_name: string | null;
+  file_path: string | null;
+  download_url: string | null;
+  file_size_bytes: number | null;
+  downloaded_bytes: number;
+  scanned_lines: number;
+  parsed_domains: number;
+  filtered_candidates: number;
+  submitted_rdap: number;
+  completed_rdap: number;
+  found_candidates: number;
+  error_count: number;
+  min_score: number;
+  limit_output: number;
+  max_rdap_checks: number;
+  concurrency: number;
+  rdap_timeout_seconds: number;
+  pending_delete_min_days: number | null;
+  pending_delete_max_days: number | null;
+  reservoir_size: number;
+  random_seed: number;
+  keep_file: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ZoneScanCandidate = {
+  id: number;
+  job_id: number;
+  fqdn: string;
+  zone: string;
+  lifecycle_stage: string;
+  status_codes: string | null;
+  http_status: number | null;
+  checked_at: string;
+  redemption_anchor_at: string | null;
+  predicted_pending_delete_at: string | null;
+  days_to_pending_delete: number | null;
+  score: number;
+  reason: string | null;
+  error: string | null;
+  discovery_domain_id: number | null;
+  is_ignored: boolean;
+  created_at: string;
+};
+
 export type DiscoveryObservation = {
   id: number;
   discovery_domain_id: number;
@@ -557,6 +623,42 @@ export const api = {
   getDiscoveryZoneStats: () => request<DiscoveryZoneStats[]>("/control/discovery/zone-stats"),
   deleteDiscoveryDomain: (id: number) =>
     request<{ detail: string }>(`/control/discovery/domains/${id}`, { method: "DELETE" }),
+
+  getAllZonefilesSettings: () => request<AllZonefilesSettings>("/control/zone-scanner/settings"),
+  updateAllZonefilesSettings: (payload: { api_token: string | null }) =>
+    request<AllZonefilesSettings>("/control/zone-scanner/settings", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  testAllZonefilesSettings: () =>
+    request<AllZonefilesTestResult>("/control/zone-scanner/settings/test", {
+      method: "POST",
+    }),
+  getZoneScanJobs: () => request<ZoneScanJob[]>("/control/zone-scanner/jobs"),
+  createZoneScanJob: (payload: Record<string, unknown>) =>
+    request<ZoneScanJob>("/control/zone-scanner/jobs", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  cancelZoneScanJob: (id: number) =>
+    request<ZoneScanJob>(`/control/zone-scanner/jobs/${id}/cancel`, {
+      method: "POST",
+    }),
+  deleteZoneScanJobFile: (id: number) =>
+    request<{ detail: string }>(`/control/zone-scanner/jobs/${id}/file`, { method: "DELETE" }),
+  deleteZoneScanJob: (id: number) => request<{ detail: string }>(`/control/zone-scanner/jobs/${id}`, { method: "DELETE" }),
+  getZoneScanCandidates: (jobId?: number | null) =>
+    request<ZoneScanCandidate[]>(
+      `/control/zone-scanner/candidates${jobId ? `?job_id=${encodeURIComponent(String(jobId))}` : ""}`,
+    ),
+  addZoneScanCandidateToDiscovery: (id: number) =>
+    request<DiscoveryDomain>(`/control/zone-scanner/candidates/${id}/add-to-discovery`, {
+      method: "POST",
+    }),
+  ignoreZoneScanCandidate: (id: number) =>
+    request<ZoneScanCandidate>(`/control/zone-scanner/candidates/${id}/ignore`, {
+      method: "POST",
+    }),
   getDomainOverride: (domainId: number) => request<DomainOverrideSettings>(`/control/domains/${domainId}/override`),
   createDomainOverride: (domainId: number, payload: Record<string, unknown>) =>
     request<DomainOverrideSettings>(`/control/domains/${domainId}/override`, {

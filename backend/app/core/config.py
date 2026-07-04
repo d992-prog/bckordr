@@ -41,6 +41,9 @@ class Settings(BaseSettings):
         default="https://data.iana.org/rdap/dns.json",
         alias="DISCOVERY_RDAP_BOOTSTRAP_URL",
     )
+    allzonefiles_base_url: str = Field(default="https://allzonefiles.io/api/v1", alias="ALLZONEFILES_BASE_URL")
+    zone_scan_storage_dir: str = Field(default="/opt/domain-drop-catcher/data/zonefiles", alias="ZONE_SCAN_STORAGE_DIR")
+    zone_scan_max_concurrent_jobs: int = Field(default=1, alias="ZONE_SCAN_MAX_CONCURRENT_JOBS")
     max_proxy_attempts_per_cycle: int = Field(default=3, alias="MAX_PROXY_ATTEMPTS_PER_CYCLE")
     normal_check_interval: float = Field(default=1.5, alias="NORMAL_CHECK_INTERVAL")
     burst_check_interval: float = Field(default=0.35, alias="BURST_CHECK_INTERVAL")

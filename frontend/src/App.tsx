@@ -4,6 +4,7 @@ import {
   api,
   AttackEvent,
   AttackRun,
+  AllZonefilesSettings,
   ContactProfile,
   ContactProfilePrefill,
   DiagnosticTelegramSettings,
@@ -20,13 +21,24 @@ import {
   StrategyPreview,
   WorkerNode,
   WorkerTask,
+  ZoneScanCandidate,
+  ZoneScanJob,
   ZoneRule,
   ZoneRulePhase,
   ZoneStrategy,
 } from "./api";
 
 type Toast = { type: "success" | "error"; text: string } | null;
-type Tab = "domains" | "discovery" | "strategies" | "workers" | "accounts" | "contacts" | "attacks" | "settings";
+type Tab =
+  | "domains"
+  | "discovery"
+  | "scanner"
+  | "strategies"
+  | "workers"
+  | "accounts"
+  | "contacts"
+  | "attacks"
+  | "settings";
 
 const DEFAULT_DOMAIN_FORM = {
   domainsText: "",
@@ -73,6 +85,22 @@ const DEFAULT_DISCOVERY_FILTERS = {
   status: "",
   lifecycle: "",
   pageSize: "25",
+};
+
+const DEFAULT_ZONE_SCAN_FORM = {
+  zone: "com",
+  sourceType: "zone_latest",
+  sourceDate: "",
+  minScore: "35",
+  limitOutput: "20",
+  maxRdapChecks: "300000",
+  concurrency: "100",
+  rdapTimeoutSeconds: "5",
+  pendingDeleteMinDays: "1",
+  pendingDeleteMaxDays: "2",
+  reservoirSize: "300000",
+  randomSeed: "42",
+  keepFile: true,
 };
 
 const DEFAULT_STRATEGY_FORM = {
@@ -277,6 +305,23 @@ function formatRps(value: number | null | undefined) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
 
+function formatBytes(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = value / 1024;
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  return `${amount.toFixed(amount >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
 function splitDomains(value: string) {
   return value
     .split(/[\r\n,;\t ]+/)
@@ -300,6 +345,10 @@ export default function App() {
   const [selectedDiscoveryDomainId, setSelectedDiscoveryDomainId] = useState<number | null>(null);
   const [discoveryObservations, setDiscoveryObservations] = useState<DiscoveryObservation[]>([]);
   const [discoveryZoneStats, setDiscoveryZoneStats] = useState<DiscoveryZoneStats[]>([]);
+  const [allZonefilesSettings, setAllZonefilesSettings] = useState<AllZonefilesSettings | null>(null);
+  const [zoneScanJobs, setZoneScanJobs] = useState<ZoneScanJob[]>([]);
+  const [zoneScanCandidates, setZoneScanCandidates] = useState<ZoneScanCandidate[]>([]);
+  const [selectedZoneScanJobId, setSelectedZoneScanJobId] = useState<number | null>(null);
   const [workers, setWorkers] = useState<WorkerNode[]>([]);
   const [accounts, setAccounts] = useState<RegistrarAccount[]>([]);
   const [contacts, setContacts] = useState<ContactProfile[]>([]);
@@ -313,6 +362,8 @@ export default function App() {
   const [discoveryObservationForm, setDiscoveryObservationForm] = useState(DEFAULT_DISCOVERY_OBSERVATION_FORM);
   const [discoveryFilters, setDiscoveryFilters] = useState(DEFAULT_DISCOVERY_FILTERS);
   const [discoveryPage, setDiscoveryPage] = useState(1);
+  const [allZonefilesTokenForm, setAllZonefilesTokenForm] = useState("");
+  const [zoneScanForm, setZoneScanForm] = useState(DEFAULT_ZONE_SCAN_FORM);
   const [strategyForm, setStrategyForm] = useState(DEFAULT_STRATEGY_FORM);
   const [ruleForm, setRuleForm] = useState(DEFAULT_RULE_FORM);
   const [phaseForm, setPhaseForm] = useState(DEFAULT_PHASE_FORM);
@@ -482,6 +533,9 @@ export default function App() {
         domainsData,
         discoveryDomainsData,
         discoveryZoneStatsData,
+        allZonefilesSettingsData,
+        zoneScanJobsData,
+        zoneScanCandidatesData,
         workersData,
         accountsData,
         contactsData,
@@ -495,6 +549,9 @@ export default function App() {
         api.getDomains(),
         api.getDiscoveryDomains(),
         api.getDiscoveryZoneStats(),
+        api.getAllZonefilesSettings(),
+        api.getZoneScanJobs(),
+        api.getZoneScanCandidates(),
         api.getWorkers(),
         api.getRegistrarAccounts(),
         api.getContactProfiles(),
@@ -508,6 +565,9 @@ export default function App() {
       setDomains(domainsData);
       setDiscoveryDomains(discoveryDomainsData);
       setDiscoveryZoneStats(discoveryZoneStatsData);
+      setAllZonefilesSettings(allZonefilesSettingsData);
+      setZoneScanJobs(zoneScanJobsData);
+      setZoneScanCandidates(zoneScanCandidatesData);
       setWorkers(workersData);
       setAccounts(accountsData);
       setContacts(contactsData);
@@ -610,6 +670,10 @@ export default function App() {
     setDomains([]);
     setDiscoveryDomains([]);
     setDiscoveryZoneStats([]);
+    setAllZonefilesSettings(null);
+    setZoneScanJobs([]);
+    setZoneScanCandidates([]);
+    setSelectedZoneScanJobId(null);
     setWorkers([]);
     setAccounts([]);
     setContacts([]);
@@ -779,6 +843,123 @@ export default function App() {
       setDiscoveryObservations(observations);
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка загрузки discovery timeline" });
+    }
+  }
+
+  async function saveAllZonefilesToken(event: FormEvent) {
+    event.preventDefault();
+    try {
+      const settings = await api.updateAllZonefilesSettings({ api_token: allZonefilesTokenForm || null });
+      setAllZonefilesSettings(settings);
+      setAllZonefilesTokenForm("");
+      setToast({ type: "success", text: settings.configured ? "AllZonefiles token сохранен" : "AllZonefiles token очищен" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка сохранения AllZonefiles token" });
+    }
+  }
+
+  async function testAllZonefilesToken() {
+    try {
+      const result = await api.testAllZonefilesSettings();
+      setToast({
+        type: result.ok ? "success" : "error",
+        text: `${result.message}${result.zones_count !== null ? `; zones=${result.zones_count}` : ""}`,
+      });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка проверки AllZonefiles" });
+    }
+  }
+
+  async function submitZoneScanJob(event: FormEvent) {
+    event.preventDefault();
+    try {
+      await api.createZoneScanJob({
+        zone: zoneScanForm.zone,
+        source_type: zoneScanForm.sourceType,
+        source_date: zoneScanForm.sourceDate || null,
+        min_score: Number(zoneScanForm.minScore),
+        limit_output: Number(zoneScanForm.limitOutput),
+        max_rdap_checks: Number(zoneScanForm.maxRdapChecks),
+        concurrency: Number(zoneScanForm.concurrency),
+        rdap_timeout_seconds: Number(zoneScanForm.rdapTimeoutSeconds),
+        pending_delete_min_days: zoneScanForm.pendingDeleteMinDays === "" ? null : Number(zoneScanForm.pendingDeleteMinDays),
+        pending_delete_max_days: zoneScanForm.pendingDeleteMaxDays === "" ? null : Number(zoneScanForm.pendingDeleteMaxDays),
+        reservoir_size: Number(zoneScanForm.reservoirSize),
+        random_seed: Number(zoneScanForm.randomSeed),
+        keep_file: zoneScanForm.keepFile,
+      });
+      await loadAll();
+      setToast({ type: "success", text: "Zone scan job создан; сервер начнет выполнение автоматически" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка запуска zone scan" });
+    }
+  }
+
+  async function refreshZoneScanner(jobId: number | null = selectedZoneScanJobId) {
+    try {
+      const [jobs, candidates] = await Promise.all([api.getZoneScanJobs(), api.getZoneScanCandidates(jobId)]);
+      setZoneScanJobs(jobs);
+      setZoneScanCandidates(candidates);
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обновления scanner" });
+    }
+  }
+
+  async function cancelZoneScanJob(jobId: number) {
+    try {
+      await api.cancelZoneScanJob(jobId);
+      await refreshZoneScanner();
+      setToast({ type: "success", text: `Job #${jobId} остановлен` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка остановки job" });
+    }
+  }
+
+  async function deleteZoneScanFile(jobId: number) {
+    try {
+      await api.deleteZoneScanJobFile(jobId);
+      await refreshZoneScanner();
+      setToast({ type: "success", text: `Файл job #${jobId} удален` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления файла" });
+    }
+  }
+
+  async function deleteZoneScanJob(jobId: number) {
+    try {
+      await api.deleteZoneScanJob(jobId);
+      if (selectedZoneScanJobId === jobId) {
+        setSelectedZoneScanJobId(null);
+      }
+      await refreshZoneScanner(null);
+      setToast({ type: "success", text: `Job #${jobId} удален` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления job" });
+    }
+  }
+
+  async function selectZoneScanJob(jobId: number | null) {
+    setSelectedZoneScanJobId(jobId);
+    await refreshZoneScanner(jobId);
+  }
+
+  async function addZoneScanCandidateToDiscovery(candidateId: number) {
+    try {
+      const domain = await api.addZoneScanCandidateToDiscovery(candidateId);
+      await loadAll();
+      setToast({ type: "success", text: `${domain.fqdn} добавлен в Discovery` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления в Discovery" });
+    }
+  }
+
+  async function ignoreZoneScanCandidate(candidateId: number) {
+    try {
+      await api.ignoreZoneScanCandidate(candidateId);
+      await refreshZoneScanner();
+      setToast({ type: "success", text: "Кандидат скрыт" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка ignore candidate" });
     }
   }
 
@@ -1637,6 +1818,211 @@ export default function App() {
             >
               Вперед
             </button>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  function renderZoneScanner() {
+    const selectedJob = selectedZoneScanJobId ? zoneScanJobs.find((job) => job.id === selectedZoneScanJobId) ?? null : null;
+    return (
+      <section className="grid two">
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>AllZonefiles</h2>
+              <p className="muted">
+                API: {allZonefilesSettings?.base_url ?? "—"}; token: {allZonefilesSettings?.configured ? "configured" : "not configured"}
+              </p>
+            </div>
+            <button type="button" className="ghost" onClick={() => void testAllZonefilesToken()}>Test connection</button>
+          </div>
+          <form className="form" onSubmit={saveAllZonefilesToken}>
+            <label>
+              <span>API token</span>
+              <input
+                type="password"
+                value={allZonefilesTokenForm}
+                onChange={(event) => setAllZonefilesTokenForm(event.target.value)}
+                placeholder={allZonefilesSettings?.configured ? "Новый token или пусто для очистки" : "allzfio_..."}
+              />
+            </label>
+            <button type="submit">Сохранить token</button>
+          </form>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>Новый scan job</h2>
+              <p className="muted">Файл скачивается на сервер и читается потоково из .gz.</p>
+            </div>
+          </div>
+          <form className="form" onSubmit={submitZoneScanJob}>
+            <div className="form-grid">
+              <label><span>Zone</span><input value={zoneScanForm.zone} onChange={(event) => setZoneScanForm((current) => ({ ...current, zone: event.target.value }))} /></label>
+              <label>
+                <span>Source</span>
+                <select value={zoneScanForm.sourceType} onChange={(event) => setZoneScanForm((current) => ({ ...current, sourceType: event.target.value }))}>
+                  <option value="zone_latest">Latest zonefile</option>
+                  <option value="zone_historic">Historic zonefile</option>
+                  <option value="expired_latest">Latest expired list</option>
+                  <option value="expired_historic">Historic expired list</option>
+                </select>
+              </label>
+              <label><span>Date</span><input type="date" value={zoneScanForm.sourceDate} onChange={(event) => setZoneScanForm((current) => ({ ...current, sourceDate: event.target.value }))} /></label>
+              <label><span>Min score</span><input value={zoneScanForm.minScore} onChange={(event) => setZoneScanForm((current) => ({ ...current, minScore: event.target.value }))} /></label>
+              <label><span>Limit output</span><input value={zoneScanForm.limitOutput} onChange={(event) => setZoneScanForm((current) => ({ ...current, limitOutput: event.target.value }))} /></label>
+              <label><span>Max RDAP</span><input value={zoneScanForm.maxRdapChecks} onChange={(event) => setZoneScanForm((current) => ({ ...current, maxRdapChecks: event.target.value }))} /></label>
+              <label><span>Concurrency</span><input value={zoneScanForm.concurrency} onChange={(event) => setZoneScanForm((current) => ({ ...current, concurrency: event.target.value }))} /></label>
+              <label><span>RDAP timeout</span><input value={zoneScanForm.rdapTimeoutSeconds} onChange={(event) => setZoneScanForm((current) => ({ ...current, rdapTimeoutSeconds: event.target.value }))} /></label>
+              <label><span>Pending min days</span><input value={zoneScanForm.pendingDeleteMinDays} onChange={(event) => setZoneScanForm((current) => ({ ...current, pendingDeleteMinDays: event.target.value }))} /></label>
+              <label><span>Pending max days</span><input value={zoneScanForm.pendingDeleteMaxDays} onChange={(event) => setZoneScanForm((current) => ({ ...current, pendingDeleteMaxDays: event.target.value }))} /></label>
+              <label><span>Reservoir size</span><input value={zoneScanForm.reservoirSize} onChange={(event) => setZoneScanForm((current) => ({ ...current, reservoirSize: event.target.value }))} /></label>
+              <label><span>Random seed</span><input value={zoneScanForm.randomSeed} onChange={(event) => setZoneScanForm((current) => ({ ...current, randomSeed: event.target.value }))} /></label>
+            </div>
+            <label className="checkbox">
+              <input type="checkbox" checked={zoneScanForm.keepFile} onChange={(event) => setZoneScanForm((current) => ({ ...current, keepFile: event.target.checked }))} />
+              <span>Оставить скачанный .gz файл после scan</span>
+            </label>
+            <button type="submit">Start server scan</button>
+          </form>
+        </div>
+
+        <div className="card full-span">
+          <div className="card-head">
+            <div>
+              <h2>Scan jobs</h2>
+              <p className="muted">Выбери job, чтобы отфильтровать кандидатов. Активные jobs продолжают работать на сервере.</p>
+            </div>
+            <button type="button" className="ghost" onClick={() => void refreshZoneScanner()}>Обновить</button>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Zone</th>
+                  <th>Status</th>
+                  <th>File</th>
+                  <th>Progress</th>
+                  <th>RDAP</th>
+                  <th>Found</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {zoneScanJobs.length === 0 ? (
+                  <tr><td colSpan={8}>Scan jobs пока нет.</td></tr>
+                ) : null}
+                {zoneScanJobs.map((job) => (
+                  <tr key={job.id}>
+                    <td>#{job.id}</td>
+                    <td>
+                      <strong>.{job.zone}</strong>
+                      <div className="row-hint">{job.source_type}{job.source_date ? ` / ${job.source_date}` : ""}</div>
+                    </td>
+                    <td>
+                      <span className={statusClass(job.status)}>{job.status}</span>
+                      {job.last_error ? <div className="row-hint">error: {job.last_error}</div> : null}
+                    </td>
+                    <td>
+                      <div>{job.file_name ?? "—"}</div>
+                      <div className="row-hint">{formatBytes(job.downloaded_bytes)} / {formatBytes(job.file_size_bytes)}</div>
+                    </td>
+                    <td>
+                      <div>lines: {job.scanned_lines.toLocaleString("ru-RU")}</div>
+                      <div className="row-hint">filtered: {job.filtered_candidates.toLocaleString("ru-RU")}</div>
+                    </td>
+                    <td>
+                      <div>{job.completed_rdap.toLocaleString("ru-RU")} / {job.submitted_rdap.toLocaleString("ru-RU")}</div>
+                      <div className="row-hint">max: {job.max_rdap_checks.toLocaleString("ru-RU")}; threads: {job.concurrency}</div>
+                    </td>
+                    <td>
+                      <strong>{job.found_candidates}</strong>
+                      <div className="row-hint">errors: {job.error_count}</div>
+                    </td>
+                    <td>
+                      <div className="actions">
+                        <button type="button" onClick={() => void selectZoneScanJob(job.id)}>Candidates</button>
+                        <button type="button" className="ghost" onClick={() => void cancelZoneScanJob(job.id)}>Stop</button>
+                        <button type="button" className="ghost" onClick={() => void deleteZoneScanFile(job.id)}>Delete file</button>
+                        <button type="button" className="danger" onClick={() => void deleteZoneScanJob(job.id)}>Удалить</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card full-span">
+          <div className="card-head">
+            <div>
+              <h2>Found candidates</h2>
+              <p className="muted">
+                {selectedJob ? `Job #${selectedJob.id}, .${selectedJob.zone}` : "Все последние кандидаты"}; показано {zoneScanCandidates.length}.
+              </p>
+            </div>
+            <button type="button" className="ghost" onClick={() => void selectZoneScanJob(null)}>Показать все</button>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Domain</th>
+                  <th>Lifecycle</th>
+                  <th>Pending forecast</th>
+                  <th>Score</th>
+                  <th>Checked</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {zoneScanCandidates.length === 0 ? (
+                  <tr><td colSpan={6}>Кандидаты пока не найдены.</td></tr>
+                ) : null}
+                {zoneScanCandidates.map((candidate) => (
+                  <tr key={candidate.id}>
+                    <td>
+                      <strong>{candidate.fqdn}</strong>
+                      <div className="row-hint">job #{candidate.job_id} | .{candidate.zone}</div>
+                    </td>
+                    <td>
+                      <span className={statusClass(candidate.lifecycle_stage)}>{candidate.lifecycle_stage}</span>
+                      <div className="row-hint">{candidate.status_codes ?? "codes: —"}</div>
+                    </td>
+                    <td>
+                      <div>{formatDateTime(candidate.predicted_pending_delete_at)}</div>
+                      <div className="row-hint">anchor: {formatDateTime(candidate.redemption_anchor_at)}</div>
+                      <div className="row-hint">days: {candidate.days_to_pending_delete ?? "—"}</div>
+                    </td>
+                    <td>
+                      <strong>{candidate.score}</strong>
+                      <div className="row-hint">{candidate.reason ?? "—"}</div>
+                    </td>
+                    <td>
+                      <div>{formatDateTime(candidate.checked_at)}</div>
+                      <div className="row-hint">HTTP: {candidate.http_status ?? "—"}</div>
+                    </td>
+                    <td>
+                      <div className="actions">
+                        <button
+                          type="button"
+                          disabled={Boolean(candidate.discovery_domain_id)}
+                          onClick={() => void addZoneScanCandidateToDiscovery(candidate.id)}
+                        >
+                          {candidate.discovery_domain_id ? "In Discovery" : "Add to Discovery"}
+                        </button>
+                        <button type="button" className="ghost" onClick={() => void ignoreZoneScanCandidate(candidate.id)}>Ignore</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -2721,7 +3107,7 @@ export default function App() {
 
       <div className="toolbar">
         <div className="tab-strip">
-          {(["domains", "discovery", "strategies", "workers", "accounts", "contacts", "attacks", "settings"] as Tab[]).map((item) => (
+          {(["domains", "discovery", "scanner", "strategies", "workers", "accounts", "contacts", "attacks", "settings"] as Tab[]).map((item) => (
             <button key={item} type="button" className={tab === item ? "ghost active-chip" : "ghost"} onClick={() => setTab(item)}>
               {item}
             </button>
@@ -2737,6 +3123,7 @@ export default function App() {
 
       {tab === "domains" ? renderDomains() : null}
       {tab === "discovery" ? renderDiscovery() : null}
+      {tab === "scanner" ? renderZoneScanner() : null}
       {tab === "strategies" ? renderStrategies() : null}
       {tab === "workers" ? renderWorkers() : null}
       {tab === "accounts" ? renderAccounts() : null}

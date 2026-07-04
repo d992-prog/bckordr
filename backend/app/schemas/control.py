@@ -649,6 +649,96 @@ class DiscoveryZoneStatsResponse(BaseModel):
     predicted: int
 
 
+class AllZonefilesSettingsResponse(BaseModel):
+    configured: bool
+    base_url: str
+
+
+class AllZonefilesSettingsUpdateRequest(BaseModel):
+    api_token: str | None = Field(default=None, max_length=512)
+
+
+class AllZonefilesTestResponse(BaseModel):
+    ok: bool
+    message: str
+    zones_count: int | None = None
+
+
+class ZoneScanJobCreateRequest(BaseModel):
+    zone: str = Field(min_length=2, max_length=32)
+    source_type: str = Field(default="zone_latest", pattern="^(zone_latest|zone_historic|expired_latest|expired_historic)$")
+    source_date: date | None = None
+    min_score: int = Field(default=35, ge=0, le=100)
+    limit_output: int = Field(default=20, ge=1, le=500)
+    max_rdap_checks: int = Field(default=300000, ge=1, le=2000000)
+    concurrency: int = Field(default=100, ge=1, le=500)
+    rdap_timeout_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
+    pending_delete_min_days: float | None = Field(default=1.0, ge=-30.0, le=365.0)
+    pending_delete_max_days: float | None = Field(default=2.0, ge=-30.0, le=365.0)
+    reservoir_size: int = Field(default=300000, ge=1, le=2000000)
+    random_seed: int = Field(default=42, ge=0)
+    keep_file: bool = True
+
+
+class ZoneScanJobResponse(BaseModel):
+    id: int
+    zone: str
+    source_type: str
+    source_date: date | None
+    status: str
+    file_name: str | None
+    file_path: str | None
+    download_url: str | None
+    file_size_bytes: int | None
+    downloaded_bytes: int
+    scanned_lines: int
+    parsed_domains: int
+    filtered_candidates: int
+    submitted_rdap: int
+    completed_rdap: int
+    found_candidates: int
+    error_count: int
+    min_score: int
+    limit_output: int
+    max_rdap_checks: int
+    concurrency: int
+    rdap_timeout_seconds: float
+    pending_delete_min_days: float | None
+    pending_delete_max_days: float | None
+    reservoir_size: int
+    random_seed: int
+    keep_file: bool
+    started_at: datetime | None
+    finished_at: datetime | None
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ZoneScanCandidateResponse(BaseModel):
+    id: int
+    job_id: int
+    fqdn: str
+    zone: str
+    lifecycle_stage: str
+    status_codes: str | None
+    http_status: int | None
+    checked_at: datetime
+    redemption_anchor_at: datetime | None
+    predicted_pending_delete_at: datetime | None
+    days_to_pending_delete: float | None
+    score: int
+    reason: str | None
+    error: str | None
+    discovery_domain_id: int | None
+    is_ignored: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class AttackStartRequest(BaseModel):
     domain_ids: list[int] | None = None
     force_rebuild: bool = False

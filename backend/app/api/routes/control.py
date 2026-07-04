@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime
 import json
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -25,6 +26,8 @@ from app.db.models import (
     User,
     WorkerNode,
     WorkerTask,
+    ZoneScanCandidate,
+    ZoneScanJob,
     ZoneRule,
     ZoneRulePhase,
     ZoneStrategy,
@@ -36,6 +39,9 @@ from app.schemas.control import (
     AttackRunResponse,
     AttackStartRequest,
     AttackStopRequest,
+    AllZonefilesSettingsResponse,
+    AllZonefilesSettingsUpdateRequest,
+    AllZonefilesTestResponse,
     ContactProfileCreateRequest,
     ContactProfilePrefillResponse,
     ContactProfileResponse,
@@ -73,6 +79,9 @@ from app.schemas.control import (
     WorkerNodeResponse,
     WorkerNodeUpdateRequest,
     WorkerTaskResponse,
+    ZoneScanCandidateResponse,
+    ZoneScanJobCreateRequest,
+    ZoneScanJobResponse,
     ZoneStrategyCreateRequest,
     ZoneRuleCreateRequest,
     ZoneRulePhaseCreateRequest,
@@ -114,6 +123,14 @@ from app.services.strategy_runtime import (
 from app.services.worker_allowlist import sync_worker_runtime_allowlist
 from app.services.security import generate_session_token
 from app.services.registrars import validate_registrar_account_remote
+from app.services.zone_scanner import (
+    add_zone_scan_candidate_to_discovery,
+    build_allzonefiles_download_url,
+    get_allzonefiles_token,
+    ignore_zone_scan_candidate,
+    set_allzonefiles_token,
+    test_allzonefiles_connection,
+)
 from app.core.config import get_settings
 
 router = APIRouter(prefix="/control", tags=["control"])
@@ -1468,6 +1485,220 @@ async def delete_discovery_domain(
     await db.delete(domain)
     await db.commit()
     return MessageResponse(detail="Discovery domain deleted")
+
+
+@router.get("/zone-scanner/settings", response_model=AllZonefilesSettingsResponse)
+async def get_zone_scanner_settings(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> AllZonefilesSettingsResponse:
+    del admin
+    token = await get_allzonefiles_token(db)
+    settings = get_settings()
+    return AllZonefilesSettingsResponse(configured=bool(token), base_url=settings.allzonefiles_base_url)
+
+
+@router.post("/zone-scanner/settings", response_model=AllZonefilesSettingsResponse)
+async def update_zone_scanner_settings(
+    payload: AllZonefilesSettingsUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> AllZonefilesSettingsResponse:
+    await set_allzonefiles_token(db, payload.api_token)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="allzonefiles_settings_update",
+        details="token_configured=true" if payload.api_token else "token_configured=false",
+    )
+    await db.commit()
+    settings = get_settings()
+    return AllZonefilesSettingsResponse(configured=bool(payload.api_token), base_url=settings.allzonefiles_base_url)
+
+
+@router.post("/zone-scanner/settings/test", response_model=AllZonefilesTestResponse)
+async def test_zone_scanner_settings(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> AllZonefilesTestResponse:
+    del admin
+    token = await get_allzonefiles_token(db)
+    if not token:
+        raise HTTPException(status_code=400, detail="AllZonefiles API token is not configured")
+    ok, message, zones_count = await test_allzonefiles_connection(
+        token=token,
+        base_url=get_settings().allzonefiles_base_url,
+    )
+    return AllZonefilesTestResponse(ok=ok, message=message, zones_count=zones_count)
+
+
+@router.get("/zone-scanner/jobs", response_model=list[ZoneScanJobResponse])
+async def list_zone_scan_jobs(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[ZoneScanJobResponse]:
+    del admin
+    result = await db.execute(select(ZoneScanJob).order_by(ZoneScanJob.created_at.desc(), ZoneScanJob.id.desc()).limit(100))
+    return [ZoneScanJobResponse.model_validate(job) for job in result.scalars().all()]
+
+
+@router.post("/zone-scanner/jobs", response_model=ZoneScanJobResponse, status_code=status.HTTP_201_CREATED)
+async def create_zone_scan_job(
+    payload: ZoneScanJobCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> ZoneScanJobResponse:
+    token = await get_allzonefiles_token(db)
+    if not token:
+        raise HTTPException(status_code=400, detail="AllZonefiles API token is not configured")
+    settings = get_settings()
+    try:
+        download_url = build_allzonefiles_download_url(
+            base_url=settings.allzonefiles_base_url,
+            source_type=payload.source_type,
+            zone=payload.zone,
+            source_date=payload.source_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    job = ZoneScanJob(
+        zone=payload.zone.lower().lstrip("."),
+        source_type=payload.source_type,
+        source_date=payload.source_date,
+        download_url=download_url,
+        min_score=payload.min_score,
+        limit_output=payload.limit_output,
+        max_rdap_checks=payload.max_rdap_checks,
+        concurrency=payload.concurrency,
+        rdap_timeout_seconds=payload.rdap_timeout_seconds,
+        pending_delete_min_days=payload.pending_delete_min_days,
+        pending_delete_max_days=payload.pending_delete_max_days,
+        reservoir_size=payload.reservoir_size,
+        random_seed=payload.random_seed,
+        keep_file=payload.keep_file,
+    )
+    db.add(job)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="zone_scan_job_create",
+        details=f"zone={job.zone} source_type={job.source_type} max_rdap_checks={job.max_rdap_checks}",
+    )
+    await db.commit()
+    await db.refresh(job)
+    return ZoneScanJobResponse.model_validate(job)
+
+
+@router.post("/zone-scanner/jobs/{job_id}/cancel", response_model=ZoneScanJobResponse)
+async def cancel_zone_scan_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> ZoneScanJobResponse:
+    del admin
+    job = await db.get(ZoneScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Zone scan job not found")
+    if job.status not in {"completed", "failed"}:
+        job.status = "cancelled"
+        job.finished_at = utcnow()
+    await db.commit()
+    await db.refresh(job)
+    return ZoneScanJobResponse.model_validate(job)
+
+
+@router.delete("/zone-scanner/jobs/{job_id}/file", response_model=MessageResponse)
+async def delete_zone_scan_job_file(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> MessageResponse:
+    del admin
+    job = await db.get(ZoneScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Zone scan job not found")
+    if not job.file_path:
+        return MessageResponse(detail="No file to delete")
+    path = Path(job.file_path)
+    if path.exists() and path.is_file():
+        path.unlink()
+    job.file_path = None
+    job.file_name = None
+    await db.commit()
+    return MessageResponse(detail="Zone scan file deleted")
+
+
+@router.delete("/zone-scanner/jobs/{job_id}", response_model=MessageResponse)
+async def delete_zone_scan_job(
+    job_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> MessageResponse:
+    del admin
+    job = await db.get(ZoneScanJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Zone scan job not found")
+    if job.status in {"downloading", "scanning"}:
+        raise HTTPException(status_code=400, detail="Cancel running job before deleting it")
+    if job.file_path:
+        path = Path(job.file_path)
+        if path.exists() and path.is_file():
+            path.unlink()
+    await db.delete(job)
+    await db.commit()
+    return MessageResponse(detail="Zone scan job deleted")
+
+
+@router.get("/zone-scanner/candidates", response_model=list[ZoneScanCandidateResponse])
+async def list_zone_scan_candidates(
+    job_id: int | None = None,
+    include_ignored: bool = False,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[ZoneScanCandidateResponse]:
+    del admin
+    query = select(ZoneScanCandidate)
+    if job_id is not None:
+        query = query.where(ZoneScanCandidate.job_id == job_id)
+    if not include_ignored:
+        query = query.where(ZoneScanCandidate.is_ignored.is_(False))
+    query = query.order_by(ZoneScanCandidate.created_at.desc(), ZoneScanCandidate.id.desc()).limit(500)
+    result = await db.execute(query)
+    return [ZoneScanCandidateResponse.model_validate(candidate) for candidate in result.scalars().all()]
+
+
+@router.post("/zone-scanner/candidates/{candidate_id}/add-to-discovery", response_model=DiscoveryDomainResponse)
+async def add_zone_scan_candidate_to_discovery_endpoint(
+    candidate_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> DiscoveryDomainResponse:
+    del admin
+    try:
+        domain = await add_zone_scan_candidate_to_discovery(db, candidate_id=candidate_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await db.commit()
+    await db.refresh(domain)
+    return DiscoveryDomainResponse.model_validate(domain)
+
+
+@router.post("/zone-scanner/candidates/{candidate_id}/ignore", response_model=ZoneScanCandidateResponse)
+async def ignore_zone_scan_candidate_endpoint(
+    candidate_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> ZoneScanCandidateResponse:
+    del admin
+    try:
+        candidate = await ignore_zone_scan_candidate(db, candidate_id=candidate_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await db.commit()
+    await db.refresh(candidate)
+    return ZoneScanCandidateResponse.model_validate(candidate)
 
 
 @router.get("/workers", response_model=list[WorkerNodeResponse])

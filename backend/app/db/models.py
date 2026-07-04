@@ -710,6 +710,86 @@ class DiscoveryObservation(Base):
     discovery_domain: Mapped[DiscoveryDomain] = relationship()
 
 
+class ZoneScanJob(Base):
+    __tablename__ = "zone_scan_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    zone: Mapped[str] = mapped_column(String(32), index=True)
+    source_type: Mapped[str] = mapped_column(String(32), default="zone_latest", server_default="zone_latest")
+    source_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", server_default="queued", index=True)
+    file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    download_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    downloaded_bytes: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    scanned_lines: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    parsed_domains: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    filtered_candidates: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    submitted_rdap: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    completed_rdap: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    found_candidates: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    error_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    min_score: Mapped[int] = mapped_column(Integer, default=35, server_default="35")
+    limit_output: Mapped[int] = mapped_column(Integer, default=20, server_default="20")
+    max_rdap_checks: Mapped[int] = mapped_column(Integer, default=300000, server_default="300000")
+    concurrency: Mapped[int] = mapped_column(Integer, default=100, server_default="100")
+    rdap_timeout_seconds: Mapped[float] = mapped_column(Float, default=5.0, server_default="5.0")
+    pending_delete_min_days: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pending_delete_max_days: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reservoir_size: Mapped[int] = mapped_column(Integer, default=300000, server_default="300000")
+    random_seed: Mapped[int] = mapped_column(Integer, default=42, server_default="42")
+    keep_file: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+
+class ZoneScanCandidate(Base):
+    __tablename__ = "zone_scan_candidates"
+    __table_args__ = (UniqueConstraint("job_id", "fqdn", name="uq_zone_scan_candidates_job_fqdn"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("zone_scan_jobs.id", ondelete="CASCADE"), index=True)
+    fqdn: Mapped[str] = mapped_column(String(255), index=True)
+    zone: Mapped[str] = mapped_column(String(32), index=True)
+    lifecycle_stage: Mapped[str] = mapped_column(String(32), index=True)
+    status_codes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    redemption_anchor_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    predicted_pending_delete_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    days_to_pending_delete: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    discovery_domain_id: Mapped[int | None] = mapped_column(
+        ForeignKey("discovery_domains.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    is_ignored: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+
+    job: Mapped[ZoneScanJob] = relationship()
+    discovery_domain: Mapped[DiscoveryDomain | None] = relationship()
+
+
 class AttackRun(Base):
     __tablename__ = "attack_runs"
 
