@@ -14,6 +14,7 @@ from app.db.models import DiscoveryDomain, DiscoveryObservation
 
 IANA_RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json"
 PENDING_DELETE_DURATION = timedelta(days=5)
+REDEMPTION_DURATION = timedelta(days=30)
 DROP_DAY_SCAN_INTERVAL = timedelta(seconds=10)
 REDEMPTION_SCAN_INTERVAL = timedelta(minutes=15)
 DEFAULT_SCAN_INTERVAL = timedelta(hours=6)
@@ -32,6 +33,7 @@ class DiscoveryObservationInput:
     lifecycle_stage: str | None = None
     availability_status: str | None = None
     status_codes: list[str] = field(default_factory=list)
+    rdap_updated_at: datetime | None = None
     raw_response: str | None = None
     error: str | None = None
 
@@ -100,6 +102,9 @@ async def check_discovery_domain_rdap(
         if "json" in content_type:
             payload = rdap_response.json()
             status_codes = [str(item) for item in payload.get("status", []) if item]
+            rdap_updated_at = extract_rdap_updated_at(payload)
+        else:
+            rdap_updated_at = None
         lifecycle_stage = normalize_lifecycle_stage(status_codes, http_status=rdap_response.status_code)
         availability_status = "available" if lifecycle_stage == "not_found" else "taken"
         return DiscoveryObservationInput(
@@ -110,6 +115,7 @@ async def check_discovery_domain_rdap(
             lifecycle_stage=lifecycle_stage,
             availability_status=availability_status,
             status_codes=status_codes,
+            rdap_updated_at=rdap_updated_at,
             raw_response=raw_response[:10000],
         )
     except Exception as exc:
@@ -283,11 +289,22 @@ def apply_discovery_observation(
         domain.status = "redemption"
         domain.first_seen_redemption_at = domain.first_seen_redemption_at or observed_at
         domain.last_seen_redemption_at = observed_at
+        anchor_at, anchor_source = resolve_redemption_anchor(domain, observation, observed_at)
+        domain.redemption_anchor_at = domain.redemption_anchor_at or anchor_at
+        domain.redemption_anchor_source = domain.redemption_anchor_source or anchor_source
+        if domain.predicted_pending_delete_at is None:
+            domain.predicted_pending_delete_at = domain.redemption_anchor_at + REDEMPTION_DURATION
+        if domain.predicted_drop_start_at is None:
+            domain.predicted_drop_start_at = domain.predicted_pending_delete_at + PENDING_DELETE_DURATION
+        if domain.predicted_drop_end_at is None:
+            domain.predicted_drop_end_at = domain.predicted_drop_start_at
     elif lifecycle_stage == "pending_delete":
         domain.status = "pending_delete"
         if domain.first_seen_pending_delete_at is None:
             domain.pending_delete_previous_seen_at = previous_checked_at or observed_at
             domain.first_seen_pending_delete_at = observed_at
+            if domain.predicted_pending_delete_at is None:
+                domain.predicted_pending_delete_at = domain.pending_delete_previous_seen_at
             domain.predicted_drop_start_at = domain.pending_delete_previous_seen_at + PENDING_DELETE_DURATION
             domain.predicted_drop_end_at = observed_at + PENDING_DELETE_DURATION
         domain.last_seen_pending_delete_at = observed_at
@@ -308,6 +325,47 @@ def _ensure_aware(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value
+
+
+def extract_rdap_updated_at(payload: dict) -> datetime | None:
+    events = payload.get("events", [])
+    if not isinstance(events, list):
+        return None
+    preferred_actions = {"last changed", "last update", "last update of rdap database"}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_date = event.get("eventDate")
+        if not isinstance(event_date, str):
+            continue
+        parsed = _parse_rdap_datetime(event_date)
+        if parsed is None:
+            continue
+        action = str(event.get("eventAction", "")).strip().lower()
+        if action in preferred_actions:
+            return parsed
+    return None
+
+
+def resolve_redemption_anchor(
+    domain: DiscoveryDomain,
+    observation: DiscoveryObservationInput,
+    observed_at: datetime,
+) -> tuple[datetime, str]:
+    if observation.rdap_updated_at is not None:
+        candidate = _ensure_aware(observation.rdap_updated_at)
+        if candidate <= observed_at:
+            return candidate, "rdap_updated_at"
+    if domain.first_seen_redemption_at is not None:
+        return _ensure_aware(domain.first_seen_redemption_at), "first_seen_redemption_at"
+    return observed_at, "first_seen_redemption_at"
+
+
+def _parse_rdap_datetime(value: str) -> datetime | None:
+    try:
+        return _ensure_aware(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except ValueError:
+        return None
 
 
 def _normalize_status_code(value: str) -> str:

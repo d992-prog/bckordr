@@ -17,6 +17,7 @@ from app.services.discovery import (
     apply_discovery_observation,
     calculate_next_check_at,
     check_discovery_domain_rdap,
+    extract_rdap_updated_at,
     normalize_lifecycle_stage,
     process_due_discovery_domains,
     resolve_rdap_domain_url,
@@ -41,6 +42,17 @@ def test_discovery_resolves_rdap_url_from_iana_bootstrap():
         resolve_rdap_domain_url("example.com", bootstrap)
         == "https://rdap.verisign.example/com/v1/domain/example.com"
     )
+
+
+def test_discovery_extracts_rdap_updated_at_from_last_changed_event():
+    payload = {
+        "events": [
+            {"eventAction": "registration", "eventDate": "2024-05-20T14:44:28Z"},
+            {"eventAction": "last changed", "eventDate": "2026-07-02T09:14:52Z"},
+        ]
+    }
+
+    assert extract_rdap_updated_at(payload) == datetime(2026, 7, 2, 9, 14, 52, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio
@@ -117,6 +129,32 @@ def test_pending_delete_observation_creates_drop_range():
     assert domain.pending_delete_previous_seen_at == previous_seen
     assert domain.predicted_drop_start_at == previous_seen + timedelta(days=5)
     assert domain.predicted_drop_end_at == observed_at + timedelta(days=5)
+
+
+def test_redemption_observation_predicts_pending_delete_and_drop_from_rdap_updated_at():
+    observed_at = datetime(2026, 7, 4, 12, 35, 37, tzinfo=timezone.utc)
+    updated_at = datetime(2026, 7, 3, 7, 55, 16, tzinfo=timezone.utc)
+    domain = DiscoveryDomain(fqdn="greenhousepost.net", zone="net")
+
+    apply_discovery_observation(
+        domain,
+        DiscoveryObservationInput(
+            source="rdap",
+            observed_at=observed_at,
+            http_status=200,
+            lifecycle_stage="redemption",
+            availability_status="taken",
+            status_codes=["redemptionPeriod"],
+            rdap_updated_at=updated_at,
+        ),
+    )
+
+    assert domain.status == "redemption"
+    assert domain.redemption_anchor_at == updated_at
+    assert domain.redemption_anchor_source == "rdap_updated_at"
+    assert domain.predicted_pending_delete_at == updated_at + timedelta(days=30)
+    assert domain.predicted_drop_start_at == updated_at + timedelta(days=35)
+    assert domain.predicted_drop_end_at == updated_at + timedelta(days=35)
 
 
 def test_discovery_uses_ten_second_interval_on_predicted_drop_day():

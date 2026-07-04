@@ -107,6 +107,9 @@ export type DiscoveryDomain = {
   next_check_at: string | null;
   first_seen_redemption_at: string | null;
   last_seen_redemption_at: string | null;
+  redemption_anchor_at: string | null;
+  redemption_anchor_source: string | null;
+  predicted_pending_delete_at: string | null;
   pending_delete_previous_seen_at: string | null;
   first_seen_pending_delete_at: string | null;
   last_seen_pending_delete_at: string | null;

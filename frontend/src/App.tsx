@@ -1401,6 +1401,14 @@ export default function App() {
                   <strong>{selectedDiscoveryDomain.status} | {selectedDiscoveryDomain.last_lifecycle_stage ?? "unknown"}</strong>
                 </div>
                 <div>
+                  <span>Redemption anchor</span>
+                  <strong>{formatDateTime(selectedDiscoveryDomain.redemption_anchor_at)} | {selectedDiscoveryDomain.redemption_anchor_source ?? "—"}</strong>
+                </div>
+                <div>
+                  <span>Predicted pendingDelete</span>
+                  <strong>{formatDateTime(selectedDiscoveryDomain.predicted_pending_delete_at)}</strong>
+                </div>
+                <div>
                   <span>Pending range</span>
                   <strong>{formatDateTime(selectedDiscoveryDomain.pending_delete_previous_seen_at)} {"->"} {formatDateTime(selectedDiscoveryDomain.first_seen_pending_delete_at)}</strong>
                 </div>
@@ -1548,6 +1556,7 @@ export default function App() {
                   <th>Domain</th>
                   <th>Status</th>
                   <th>Lifecycle</th>
+                  <th>Pending forecast</th>
                   <th>Drop window</th>
                   <th>Availability</th>
                   <th>Next check</th>
@@ -1557,7 +1566,7 @@ export default function App() {
               <tbody>
                 {paginatedDiscoveryDomains.length === 0 ? (
                   <tr>
-                    <td colSpan={7}>По этим фильтрам доменов нет.</td>
+                    <td colSpan={8}>По этим фильтрам доменов нет.</td>
                   </tr>
                 ) : null}
                 {paginatedDiscoveryDomains.map((domain) => (
@@ -1568,6 +1577,11 @@ export default function App() {
                       <div>{domain.last_lifecycle_stage ?? "—"}</div>
                       <div className="row-hint">codes: {domain.last_status_codes ?? "—"}</div>
                       <div className="row-hint">checked: {formatDateTime(domain.last_checked_at)}</div>
+                    </td>
+                    <td>
+                      <div>{formatDateTime(domain.predicted_pending_delete_at)}</div>
+                      <div className="row-hint">anchor: {formatDateTime(domain.redemption_anchor_at)}</div>
+                      <div className="row-hint">source: {domain.redemption_anchor_source ?? "—"}</div>
                     </td>
                     <td>
                       <div>{formatDateTime(domain.predicted_drop_start_at)}</div>

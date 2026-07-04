@@ -602,6 +602,9 @@ class DiscoveryDomainResponse(BaseModel):
     next_check_at: datetime | None
     first_seen_redemption_at: datetime | None
     last_seen_redemption_at: datetime | None
+    redemption_anchor_at: datetime | None
+    redemption_anchor_source: str | None
+    predicted_pending_delete_at: datetime | None
     pending_delete_previous_seen_at: datetime | None
     first_seen_pending_delete_at: datetime | None
     last_seen_pending_delete_at: datetime | None

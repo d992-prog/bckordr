@@ -161,6 +161,9 @@ MIGRATIONS = (
         next_check_at TIMESTAMPTZ NULL,
         first_seen_redemption_at TIMESTAMPTZ NULL,
         last_seen_redemption_at TIMESTAMPTZ NULL,
+        redemption_anchor_at TIMESTAMPTZ NULL,
+        redemption_anchor_source VARCHAR(64) NULL,
+        predicted_pending_delete_at TIMESTAMPTZ NULL,
         pending_delete_previous_seen_at TIMESTAMPTZ NULL,
         first_seen_pending_delete_at TIMESTAMPTZ NULL,
         last_seen_pending_delete_at TIMESTAMPTZ NULL,
@@ -177,6 +180,9 @@ MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_discovery_domains_zone ON discovery_domains(zone)",
     "CREATE INDEX IF NOT EXISTS ix_discovery_domains_status ON discovery_domains(status)",
     "CREATE INDEX IF NOT EXISTS ix_discovery_domains_next_check_at ON discovery_domains(next_check_at)",
+    "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS redemption_anchor_at TIMESTAMPTZ NULL",
+    "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS redemption_anchor_source VARCHAR(64) NULL",
+    "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS predicted_pending_delete_at TIMESTAMPTZ NULL",
     """
     CREATE TABLE IF NOT EXISTS discovery_observations (
         id SERIAL PRIMARY KEY,
