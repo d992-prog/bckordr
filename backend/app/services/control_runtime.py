@@ -10,6 +10,7 @@ from app.db.base import utcnow
 from app.services.app_settings import get_diagnostic_telegram_settings
 from app.services.attack_runtime import (
     autoplan_due_attack_runs,
+    finalize_expired_attack_runs,
     rebalance_worker_pool,
     refresh_active_task_targets,
     recompute_run_statistics,
@@ -94,6 +95,11 @@ class ControlRuntimeOrchestrator:
                     stall_threshold_seconds=self._worker_stall_threshold_seconds,
                 )
                 self._last_worker_supervision_at = now
+            await finalize_expired_attack_runs(
+                session,
+                now=now,
+                bootstrap_url=self._discovery_rdap_bootstrap_url,
+            )
             await autoplan_due_attack_runs(session, now=now)
             await refresh_active_task_targets(session, now=now)
             await rebalance_worker_pool(session, now=now)

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,12 +17,14 @@ from app.db.models import (
     DomainOverrideRule,
     DomainRuleOverride,
     DropDomain,
+    DiscoveryDomain,
     WorkerNode,
     WorkerTask,
     ZoneRule,
     ZoneRulePhase,
     ZoneStrategy,
 )
+from app.services.discovery import IANA_RDAP_BOOTSTRAP_URL, check_discovery_domain_rdap
 from app.services.strategy_runtime import (
     is_domain_due_today,
     resolve_effective_strategy,
@@ -29,6 +32,12 @@ from app.services.strategy_runtime import (
 )
 
 AUTOPLAN_ELIGIBLE_STATUSES = {"ready", "queued", "scheduled", "attacking"}
+POST_WINDOW_RDAP_CONFIRMATION_THRESHOLD = 3
+POST_WINDOW_RDAP_CHECK_INTERVAL_SECONDS = 60
+POST_WINDOW_RDAP_CHECK_EVENT_TYPES = {
+    "post_window_rdap_registered",
+    "post_window_rdap_inconclusive",
+}
 
 
 @dataclass(slots=True)
@@ -710,6 +719,179 @@ async def supervise_worker_pool(
 
     await session.flush()
     return affected_task_count
+
+
+def _coerce_aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=ZoneInfo("UTC"))
+    return value.astimezone(ZoneInfo("UTC"))
+
+
+def _count_consecutive_registered_checks(events: list[AttackEvent]) -> int:
+    count = 0
+    for event in sorted(events, key=lambda item: item.created_at or datetime.min, reverse=True):
+        if event.event_type == "post_window_rdap_registered":
+            count += 1
+            continue
+        if event.event_type == "post_window_rdap_inconclusive":
+            break
+    return count
+
+
+async def finalize_expired_attack_runs(
+    session: AsyncSession,
+    *,
+    now: datetime | None = None,
+    client: httpx.AsyncClient | None = None,
+    bootstrap_url: str = IANA_RDAP_BOOTSTRAP_URL,
+    confirmation_threshold: int = POST_WINDOW_RDAP_CONFIRMATION_THRESHOLD,
+    check_interval_seconds: int = POST_WINDOW_RDAP_CHECK_INTERVAL_SECONDS,
+) -> int:
+    effective_now = now or utcnow()
+    confirmation_threshold = max(1, int(confirmation_threshold))
+    check_interval_seconds = max(0, int(check_interval_seconds))
+    runs = (
+        await session.execute(
+            select(AttackRun, DropDomain)
+            .join(DropDomain, DropDomain.id == AttackRun.domain_id)
+            .where(
+                AttackRun.status.in_(["planned", "running", "verifying"]),
+                AttackRun.planned_end_at < effective_now,
+                DropDomain.attack_enabled.is_(True),
+                DropDomain.success_at.is_(None),
+            )
+            .order_by(AttackRun.planned_end_at.asc(), AttackRun.id.asc())
+        )
+    ).all()
+    if not runs:
+        return 0
+
+    close_client = client is None
+    http_client = client or httpx.AsyncClient(timeout=5.0)
+    processed = 0
+    try:
+        for run, domain in runs:
+            if run.status in {"planned", "running"}:
+                run.status = "verifying"
+                domain.status = "verifying"
+                active_tasks = (
+                    await session.execute(
+                        select(WorkerTask).where(
+                            WorkerTask.attack_run_id == run.id,
+                            WorkerTask.status.in_(["queued", "planned", "running"]),
+                        )
+                    )
+                ).scalars().all()
+                for task in active_tasks:
+                    task.status = "cancelled"
+                    task.finished_at = effective_now
+                    task.stop_reason = "Attack window expired; post-window RDAP verification started"
+                session.add(
+                    AttackEvent(
+                        attack_run_id=run.id,
+                        domain_id=domain.id,
+                        level="warning",
+                        event_type="attack_window_expired",
+                        message=f"Attack window expired for {domain.fqdn}; starting post-window RDAP verification",
+                        created_at=effective_now,
+                    )
+                )
+
+            check_events = (
+                await session.execute(
+                    select(AttackEvent)
+                    .where(
+                        AttackEvent.attack_run_id == run.id,
+                        AttackEvent.event_type.in_(POST_WINDOW_RDAP_CHECK_EVENT_TYPES),
+                    )
+                    .order_by(AttackEvent.created_at.desc(), AttackEvent.id.desc())
+                )
+            ).scalars().all()
+            last_check_at = _coerce_aware_utc(check_events[0].created_at) if check_events else None
+            if last_check_at is not None and (effective_now - last_check_at).total_seconds() < check_interval_seconds:
+                continue
+
+            observation = await check_discovery_domain_rdap(
+                DiscoveryDomain(fqdn=domain.fqdn, zone=domain.zone),
+                client=http_client,
+                bootstrap_url=bootstrap_url,
+            )
+            is_registered_taken = (
+                observation.error is None
+                and observation.http_status == 200
+                and observation.lifecycle_stage == "registered"
+                and observation.availability_status == "taken"
+            )
+            event_type = "post_window_rdap_registered" if is_registered_taken else "post_window_rdap_inconclusive"
+            level = "warning" if is_registered_taken else "info"
+            message = (
+                f"Post-window RDAP check for {domain.fqdn}: "
+                f"lifecycle={observation.lifecycle_stage} availability={observation.availability_status} "
+                f"http={observation.http_status or 'n/a'}"
+            )
+            if observation.error:
+                message = f"{message} error={observation.error}"
+            session.add(
+                AttackEvent(
+                    attack_run_id=run.id,
+                    domain_id=domain.id,
+                    level=level,
+                    event_type=event_type,
+                    message=message,
+                    created_at=effective_now,
+                )
+            )
+            processed += 1
+
+            consecutive_registered = _count_consecutive_registered_checks(check_events)
+            consecutive_registered = consecutive_registered + 1 if is_registered_taken else 0
+            total_checks = len(check_events) + 1
+            if consecutive_registered >= confirmation_threshold:
+                reason = "Post-window RDAP safety check confirmed domain is already registered"
+                run.status = "failed"
+                run.finished_at = effective_now
+                run.stop_reason = reason
+                domain.status = "failed"
+                domain.attack_enabled = False
+                domain.readiness_reasons = reason
+                session.add(
+                    AttackEvent(
+                        attack_run_id=run.id,
+                        domain_id=domain.id,
+                        level="error",
+                        event_type="post_window_domain_taken",
+                        message=f"{domain.fqdn} disabled after {consecutive_registered} consecutive RDAP registered/taken confirmations",
+                        created_at=effective_now,
+                    )
+                )
+                continue
+
+            if total_checks >= confirmation_threshold and not is_registered_taken:
+                reason = "Post-window RDAP safety checks were inconclusive; domain remains enabled"
+                run.status = "failed"
+                run.finished_at = effective_now
+                run.stop_reason = reason
+                domain.status = "queued"
+                domain.readiness_reasons = reason
+                session.add(
+                    AttackEvent(
+                        attack_run_id=run.id,
+                        domain_id=domain.id,
+                        level="info",
+                        event_type="post_window_rdap_released",
+                        message=f"{domain.fqdn} remains enabled after inconclusive post-window RDAP checks",
+                        created_at=effective_now,
+                    )
+                )
+    finally:
+        if close_client:
+            await http_client.aclose()
+
+    await recompute_worker_domain_counts(session)
+    await recompute_run_statistics(session)
+    return processed
 
 
 async def recompute_worker_domain_counts(session: AsyncSession) -> None:
