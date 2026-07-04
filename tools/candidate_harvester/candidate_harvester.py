@@ -260,9 +260,6 @@ def run(args: argparse.Namespace) -> int:
     bootstrap = fetch_bootstrap(args.bootstrap_url, timeout=args.bootstrap_timeout)
     inputs = [Path(item) for item in args.input]
     accepted_lifecycles = set(args.accept_lifecycle)
-    submitted = 0
-    written = 0
-    futures = []
     started_at = time.monotonic()
     stats = ProgressStats(started_at=started_at, last_log_at=started_at)
     lifecycle_counts: collections.Counter[str] = collections.Counter()
@@ -283,42 +280,18 @@ def run(args: argparse.Namespace) -> int:
                 else:
                     domain_source = _iter_first_filtered_candidates(inputs, args, stats)
 
-                for domain in domain_source:
-                    if submitted >= args.max_rdap_checks or written >= args.limit_output:
-                        break
-                    futures.append(executor.submit(check_rdap, domain, bootstrap, timeout=args.rdap_timeout))
-                    submitted += 1
-                    stats.submitted_rdap = submitted
-                    if len(futures) >= args.concurrency * 4:
-                        batch_written = _drain_futures(
-                            futures,
-                            writer,
-                            txt_file,
-                            stats,
-                            lifecycle_counts,
-                            args,
-                            accepted_lifecycles=accepted_lifecycles,
-                            debug_writer=debug_writer,
-                            remaining=args.limit_output - written,
-                        )
-                        written += batch_written
-                        stats.written_candidates = written
-                        futures = []
-
-                if futures and written < args.limit_output:
-                    batch_written = _drain_futures(
-                        futures,
-                        writer,
-                        txt_file,
-                        stats,
-                        lifecycle_counts,
-                        args,
-                        accepted_lifecycles=accepted_lifecycles,
-                        debug_writer=debug_writer,
-                        remaining=args.limit_output - written,
-                    )
-                    written += batch_written
-                    stats.written_candidates = written
+                submitted, written = _run_rdap_pool(
+                    domain_source,
+                    executor,
+                    bootstrap,
+                    writer,
+                    txt_file,
+                    stats,
+                    lifecycle_counts,
+                    args,
+                    accepted_lifecycles=accepted_lifecycles,
+                    debug_writer=debug_writer,
+                )
         finally:
             if txt_file:
                 txt_file.close()
@@ -419,7 +392,67 @@ def _iter_lines(path: Path) -> Iterable[str]:
         yield from handle
 
 
-def _drain_futures(
+def _run_rdap_pool(
+    domain_source: Iterable[str],
+    executor: ThreadPoolExecutor,
+    bootstrap: dict,
+    writer: csv.DictWriter,
+    txt_file,
+    stats: ProgressStats,
+    lifecycle_counts: collections.Counter[str],
+    args: argparse.Namespace,
+    *,
+    accepted_lifecycles: set[str],
+    debug_writer: csv.DictWriter | None,
+):
+    submitted = 0
+    written = 0
+    pending = set()
+    domains = iter(domain_source)
+    source_exhausted = False
+    target_pending = max(1, args.concurrency)
+
+    def submit_next() -> bool:
+        nonlocal source_exhausted, submitted
+        if source_exhausted or submitted >= args.max_rdap_checks:
+            return False
+        try:
+            domain = next(domains)
+        except StopIteration:
+            source_exhausted = True
+            return False
+        pending.add(executor.submit(check_rdap, domain, bootstrap, timeout=args.rdap_timeout))
+        submitted += 1
+        stats.submitted_rdap = submitted
+        return True
+
+    while len(pending) < target_pending and submit_next():
+        pass
+
+    while pending:
+        done, pending = wait(pending, timeout=args.progress_interval, return_when=FIRST_COMPLETED)
+        if not done:
+            _log_progress(stats, args, force=True)
+            continue
+        written += _process_completed_futures(
+            done,
+            writer,
+            txt_file,
+            stats,
+            lifecycle_counts,
+            args,
+            accepted_lifecycles=accepted_lifecycles,
+            debug_writer=debug_writer,
+            remaining=args.limit_output - written,
+        )
+        stats.written_candidates = written
+        while written < args.limit_output and len(pending) < target_pending and submit_next():
+            pass
+        _log_progress(stats, args, force=False)
+    return submitted, written
+
+
+def _process_completed_futures(
     futures,
     writer: csv.DictWriter,
     txt_file,
@@ -432,25 +465,17 @@ def _drain_futures(
     remaining: int,
 ) -> int:
     written = 0
-    pending = set(futures)
-    while pending:
-        done, pending = wait(pending, timeout=args.progress_interval, return_when=FIRST_COMPLETED)
-        if not done:
-            _log_progress(stats, args, force=True)
+    for future in futures:
+        stats.completed_rdap += 1
+        result = future.result()
+        lifecycle_counts[result.lifecycle] += 1
+        _write_redemption_debug(result, debug_writer, stats, args)
+        if written >= remaining or not result_is_accepted(result, args, accepted_lifecycles=accepted_lifecycles):
             continue
-        for future in done:
-            stats.completed_rdap += 1
-            result = future.result()
-            lifecycle_counts[result.lifecycle] += 1
-            _write_redemption_debug(result, debug_writer, stats, args)
-            if written >= remaining or not result_is_accepted(result, args, accepted_lifecycles=accepted_lifecycles):
-                continue
-            writer.writerow(result.__dict__)
-            if txt_file:
-                txt_file.write(f"{result.domain}\n")
-            written += 1
-            stats.written_candidates += 1
-        _log_progress(stats, args, force=False)
+        writer.writerow(result.__dict__)
+        if txt_file:
+            txt_file.write(f"{result.domain}\n")
+        written += 1
     return written
 
 

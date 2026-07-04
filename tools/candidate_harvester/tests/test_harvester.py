@@ -1,5 +1,7 @@
 from types import SimpleNamespace
+from threading import Event, Thread
 
+import candidate_harvester
 from candidate_harvester import (
     HarvesterResult,
     ProgressStats,
@@ -18,6 +20,7 @@ from candidate_harvester import (
 from quick import build_args as build_quick_args
 from redemption_scan import build_args as build_redemption_args
 from redemption_scan_fast import build_args as build_fast_redemption_args
+from redemption_scan_turbo import build_args as build_turbo_redemption_args
 
 
 def test_normalize_domain_extracts_fqdn_from_common_lines():
@@ -129,6 +132,68 @@ def test_redemption_debug_writer_records_redemption_even_outside_window(tmp_path
     assert "late-delete.net" in output.read_text(encoding="utf-8")
 
 
+def test_rdap_pool_submits_next_domain_after_first_completion(monkeypatch, tmp_path):
+    slow_tail_can_finish = Event()
+    ninth_task_started = Event()
+    submitted_domains: list[str] = []
+
+    def fake_check_rdap(domain, bootstrap, *, timeout):
+        submitted_domains.append(domain)
+        if domain == "slow-8.com":
+            ninth_task_started.set()
+        if domain == "slow-7.com":
+            slow_tail_can_finish.wait(timeout=5)
+        return HarvesterResult(
+            domain=domain,
+            tld="com",
+            lifecycle="registered",
+            status_codes="active",
+            http_status=200,
+            checked_at="2026-07-04T12:00:00+00:00",
+            redemption_anchor_at=None,
+            predicted_pending_delete_at=None,
+            days_to_pending_delete=None,
+            score=60,
+            reason="long",
+        )
+
+    args = SimpleNamespace(
+        bootstrap_url="unused",
+        bootstrap_timeout=1,
+        input=["unused.txt"],
+        output=tmp_path / "out.csv",
+        output_txt=None,
+        redemption_debug_output=None,
+        concurrency=2,
+        sample_mode="reservoir",
+        max_rdap_checks=9,
+        limit_output=20,
+        accept_lifecycle=["redemption"],
+        rdap_timeout=1,
+        progress_interval=0.05,
+        pending_delete_min_days=None,
+        pending_delete_max_days=None,
+    )
+
+    monkeypatch.setattr(candidate_harvester, "fetch_bootstrap", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        candidate_harvester,
+        "collect_reservoir_candidates",
+        lambda inputs, args, stats: [*[f"fast-{index}.com" for index in range(7)], "slow-7.com", "slow-8.com"],
+    )
+    monkeypatch.setattr(candidate_harvester, "check_rdap", fake_check_rdap)
+
+    run_thread = Thread(target=candidate_harvester.run, args=(args,))
+    run_thread.start()
+
+    assert ninth_task_started.wait(timeout=1)
+
+    slow_tail_can_finish.set()
+    run_thread.join(timeout=5)
+    assert not run_thread.is_alive()
+    assert "slow-8.com" in submitted_domains
+
+
 def test_quick_args_build_safe_default_command():
     args = build_quick_args([".com", "expired-com.txt"])
 
@@ -209,6 +274,29 @@ def test_fast_redemption_scan_args_use_aggressive_limits():
     assert "200000" in args
     assert "--reservoir-size" in args
     assert "200000" in args
+
+
+def test_turbo_redemption_scan_args_use_high_parallel_limits():
+    args = build_turbo_redemption_args(["com", "com.2026-07-02.txt"])
+
+    assert "--sample-mode" in args
+    assert "reservoir" in args
+    assert "--concurrency" in args
+    assert "300" in args
+    assert "--rdap-timeout" in args
+    assert "4" in args
+    assert "--limit-output" in args
+    assert "20" in args
+    assert "--redemption-debug-output" in args
+    assert "redemption-candidates-com-turbo-redemption-debug.csv" in args
+    assert "--pending-delete-min-days" in args
+    assert "1" in args
+    assert "--pending-delete-max-days" in args
+    assert "2" in args
+    assert "--max-rdap-checks" in args
+    assert "300000" in args
+    assert "--reservoir-size" in args
+    assert "300000" in args
 
 
 def test_build_diagnosis_explains_zero_candidates():

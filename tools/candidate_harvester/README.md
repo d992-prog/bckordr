@@ -72,6 +72,12 @@ Fast machine preset:
 python tools/candidate_harvester/redemption_scan_fast.py com ./zonefiles/com.2026-07-02.txt
 ```
 
+Turbo preset for a strong host and stable network:
+
+```bash
+python tools/candidate_harvester/redemption_scan_turbo.py com ./zonefiles/com.2026-07-02.txt
+```
+
 Fast preset defaults:
 
 ```text
@@ -88,12 +94,29 @@ Fast preset defaults:
 
 Use the fast preset only on a strong machine and be ready to reduce concurrency if RDAP starts returning errors/timeouts.
 
+Turbo preset defaults:
+
+```text
+--sample-mode reservoir
+--reservoir-size 300000
+--max-rdap-checks 300000
+--concurrency 300
+--rdap-timeout 4
+--limit-output 20
+--min-score 35
+--pending-delete-min-days 1
+--pending-delete-max-days 2
+--redemption-debug-output redemption-candidates-<tld>-turbo-redemption-debug.csv
+```
+
+Use `turbo` only when `fast` is stable. If errors/timeouts grow, switch back to `fast` or lower `--concurrency`.
+
 This mode:
 
 ```text
 1. Streams the whole file.
 2. Keeps a fixed-size random reservoir of low-value candidates.
-3. RDAP-checks that reservoir.
+3. RDAP-checks that reservoir with a continuously refilled worker pool.
 4. Reads RDAP `last changed` / `last update`.
 5. Computes `predicted_pending_delete_at = rdap_updated_at + 30 days`.
 6. Writes only domains whose predicted pendingDelete is 1-2 days away.
@@ -116,6 +139,7 @@ Output:
 redemption-candidates-com.csv
 redemption-candidates-com.txt
 redemption-candidates-com-fast-redemption-debug.csv
+redemption-candidates-com-turbo-redemption-debug.csv
 ```
 
 If the diagnosis says `lifecycles=registered=...`, then checked domains are active by RDAP. Increase `--max-rdap-checks` / `--reservoir-size`, lower `--min-score`, or use a better pre-expired source.
