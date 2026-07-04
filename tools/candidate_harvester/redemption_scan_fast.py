@@ -5,11 +5,13 @@ from pathlib import Path
 
 from candidate_harvester import main
 
-DEFAULT_LIMIT_OUTPUT = "100"
+DEFAULT_LIMIT_OUTPUT = "20"
 DEFAULT_MAX_RDAP_CHECKS = "200000"
 DEFAULT_CONCURRENCY = "100"
 DEFAULT_MIN_SCORE = "35"
 DEFAULT_RESERVOIR_SIZE = "200000"
+DEFAULT_PENDING_DELETE_MIN_DAYS = "1"
+DEFAULT_PENDING_DELETE_MAX_DAYS = "2"
 
 
 def build_args(argv: list[str]) -> list[str]:
@@ -33,6 +35,10 @@ def build_args(argv: list[str]) -> list[str]:
         str(Path(f"{output_prefix}.txt")),
         "--limit-output",
         DEFAULT_LIMIT_OUTPUT,
+        "--pending-delete-min-days",
+        DEFAULT_PENDING_DELETE_MIN_DAYS,
+        "--pending-delete-max-days",
+        DEFAULT_PENDING_DELETE_MAX_DAYS,
         "--max-rdap-checks",
         DEFAULT_MAX_RDAP_CHECKS,
         "--concurrency",

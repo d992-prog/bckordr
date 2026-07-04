@@ -14,7 +14,7 @@ Default accepted lifecycle:
 redemption
 ```
 
-This is the best starting point because it gives pre-`pendingDelete` evidence. Domains that are already `pendingDelete` can be collected too, but they are lower-confidence samples for drop-window learning.
+This is the best starting point because it gives pre-`pendingDelete` evidence. For fast drop-window research, filter redemption domains by their projected `pendingDelete` date instead of waiting weeks.
 
 ## Run
 
@@ -79,8 +79,10 @@ Fast preset defaults:
 --reservoir-size 200000
 --max-rdap-checks 200000
 --concurrency 100
---limit-output 100
+--limit-output 20
 --min-score 35
+--pending-delete-min-days 1
+--pending-delete-max-days 2
 ```
 
 Use the fast preset only on a strong machine and be ready to reduce concurrency if RDAP starts returning errors/timeouts.
@@ -91,7 +93,9 @@ This mode:
 1. Streams the whole file.
 2. Keeps a fixed-size random reservoir of low-value candidates.
 3. RDAP-checks that reservoir.
-4. Writes only domains currently in redemptionPeriod.
+4. Reads RDAP `last changed` / `last update`.
+5. Computes `predicted_pending_delete_at = rdap_updated_at + 30 days`.
+6. Writes only domains whose predicted pendingDelete is 1-2 days away.
 ```
 
 Default deep scan limits:
@@ -113,6 +117,8 @@ redemption-candidates-com.txt
 ```
 
 If the diagnosis says `lifecycles=registered=...`, then checked domains are active by RDAP. Increase `--max-rdap-checks` / `--reservoir-size`, lower `--min-score`, or use a better pre-expired source.
+
+If `.org` returns mostly `unknown`, the source is usually not useful for this method: many `.org` zonefile entries have no actionable RDAP lifecycle status, and domains in redemption may already be absent from the zonefile. Use an expired/pre-delete source for `.org`, or run a small debug scan with `--accept-lifecycle registered unknown redemption pending_delete` to inspect raw CSV behavior.
 
 Advanced run:
 
@@ -165,7 +171,7 @@ Scale up only after confirming RDAP responses are stable and the source list is 
 CSV columns:
 
 ```text
-domain,tld,lifecycle,status_codes,http_status,checked_at,score,reason,error
+domain,tld,lifecycle,status_codes,http_status,checked_at,redemption_anchor_at,predicted_pending_delete_at,days_to_pending_delete,score,reason,error
 ```
 
 TXT output contains domains only and is convenient for pasting into the control panel.
@@ -218,6 +224,18 @@ Also collect domains already in `pendingDelete`:
 --accept-lifecycle redemption pending_delete
 ```
 
+Find redemption domains expected to enter `pendingDelete` in 1-2 days:
+
+```bash
+--pending-delete-min-days 1 --pending-delete-max-days 2
+```
+
+Widen the window if no candidates are found:
+
+```bash
+--pending-delete-min-days 0 --pending-delete-max-days 7
+```
+
 Raise low-value strictness:
 
 ```bash
@@ -236,4 +254,4 @@ Lower it if too few candidates are found:
 2. Run this harvester per TLD.
 3. Open the CSV and keep only safe-looking research candidates.
 4. Paste domains from the TXT into control panel `discovery`.
-5. Let control track RDAP until `pendingDelete`, then observe the predicted drop day.
+5. Prefer domains whose predicted `pendingDelete` is soon, so control can observe the transition within days.

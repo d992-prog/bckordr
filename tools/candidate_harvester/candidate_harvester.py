@@ -12,7 +12,7 @@ import time
 import zipfile
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 from urllib.error import HTTPError, URLError
@@ -31,6 +31,9 @@ class HarvesterResult:
     status_codes: str
     http_status: int | None
     checked_at: str
+    redemption_anchor_at: str | None
+    predicted_pending_delete_at: str | None
+    days_to_pending_delete: float | None
     score: int
     reason: str
     error: str | None = None
@@ -151,7 +154,8 @@ def fetch_bootstrap(url: str = IANA_RDAP_BOOTSTRAP_URL, timeout: float = 15.0) -
 
 
 def check_rdap(domain: str, bootstrap: dict, *, timeout: float = 8.0) -> HarvesterResult:
-    checked_at = datetime.now(timezone.utc).isoformat()
+    checked_at_dt = datetime.now(timezone.utc)
+    checked_at = checked_at_dt.isoformat()
     score = low_value_score(domain)
     reason = describe_score(domain)
     try:
@@ -162,6 +166,17 @@ def check_rdap(domain: str, bootstrap: dict, *, timeout: float = 8.0) -> Harvest
             payload = json.loads(response.read().decode("utf-8", errors="replace"))
         status_codes = [str(item) for item in payload.get("status", []) if item]
         lifecycle = classify_lifecycle(status_codes, http_status)
+        redemption_anchor_at = extract_rdap_updated_at(payload)
+        predicted_pending_delete_at = (
+            redemption_anchor_at + timedelta(days=30)
+            if lifecycle == "redemption" and redemption_anchor_at is not None
+            else None
+        )
+        days_to_pending_delete = (
+            (predicted_pending_delete_at - checked_at_dt).total_seconds() / 86400
+            if predicted_pending_delete_at is not None
+            else None
+        )
         return HarvesterResult(
             domain=domain,
             tld=domain.rsplit(".", 1)[-1],
@@ -169,6 +184,9 @@ def check_rdap(domain: str, bootstrap: dict, *, timeout: float = 8.0) -> Harvest
             status_codes=" ".join(status_codes),
             http_status=http_status,
             checked_at=checked_at,
+            redemption_anchor_at=redemption_anchor_at.isoformat() if redemption_anchor_at else None,
+            predicted_pending_delete_at=predicted_pending_delete_at.isoformat() if predicted_pending_delete_at else None,
+            days_to_pending_delete=round(days_to_pending_delete, 4) if days_to_pending_delete is not None else None,
             score=score,
             reason=reason,
         )
@@ -181,6 +199,9 @@ def check_rdap(domain: str, bootstrap: dict, *, timeout: float = 8.0) -> Harvest
             status_codes="",
             http_status=exc.code,
             checked_at=checked_at,
+            redemption_anchor_at=None,
+            predicted_pending_delete_at=None,
+            days_to_pending_delete=None,
             score=score,
             reason=reason,
             error=str(exc) if lifecycle != "not_found" else None,
@@ -193,6 +214,9 @@ def check_rdap(domain: str, bootstrap: dict, *, timeout: float = 8.0) -> Harvest
             status_codes="",
             http_status=None,
             checked_at=checked_at,
+            redemption_anchor_at=None,
+            predicted_pending_delete_at=None,
+            days_to_pending_delete=None,
             score=score,
             reason=reason,
             error=str(exc),
@@ -236,6 +260,9 @@ def run(args: argparse.Namespace) -> int:
                 "status_codes",
                 "http_status",
                 "checked_at",
+                "redemption_anchor_at",
+                "predicted_pending_delete_at",
+                "days_to_pending_delete",
                 "score",
                 "reason",
                 "error",
@@ -312,6 +339,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--concurrency", type=int, default=20, help="Parallel RDAP checks.")
     parser.add_argument("--min-score", type=int, default=60, help="Low-value score threshold from 0 to 100.")
     parser.add_argument("--accept-lifecycle", nargs="+", default=["redemption"], help="Lifecycle values to write.")
+    parser.add_argument(
+        "--pending-delete-min-days",
+        type=float,
+        default=None,
+        help="Only write redemption candidates whose predicted pendingDelete is at least this many days away.",
+    )
+    parser.add_argument(
+        "--pending-delete-max-days",
+        type=float,
+        default=None,
+        help="Only write redemption candidates whose predicted pendingDelete is at most this many days away.",
+    )
     parser.add_argument("--rdap-timeout", type=float, default=8.0, help="Per-domain RDAP timeout seconds.")
     parser.add_argument("--bootstrap-url", default=IANA_RDAP_BOOTSTRAP_URL, help="IANA RDAP bootstrap URL.")
     parser.add_argument("--bootstrap-timeout", type=float, default=15.0, help="RDAP bootstrap timeout seconds.")
@@ -378,7 +417,7 @@ def _drain_futures(
             stats.completed_rdap += 1
             result = future.result()
             lifecycle_counts[result.lifecycle] += 1
-            if written >= remaining or result.lifecycle not in accepted_lifecycles:
+            if written >= remaining or not result_is_accepted(result, args, accepted_lifecycles=accepted_lifecycles):
                 continue
             writer.writerow(result.__dict__)
             if txt_file:
@@ -387,6 +426,29 @@ def _drain_futures(
             stats.written_candidates += 1
         _log_progress(stats, args, force=False)
     return written
+
+
+def result_is_accepted(
+    result: HarvesterResult,
+    args: argparse.Namespace,
+    *,
+    accepted_lifecycles: set[str],
+) -> bool:
+    if result.lifecycle not in accepted_lifecycles:
+        return False
+    min_days = getattr(args, "pending_delete_min_days", None)
+    max_days = getattr(args, "pending_delete_max_days", None)
+    if min_days is None and max_days is None:
+        return True
+    if result.lifecycle != "redemption":
+        return True
+    if result.days_to_pending_delete is None:
+        return False
+    if min_days is not None and result.days_to_pending_delete < float(min_days):
+        return False
+    if max_days is not None and result.days_to_pending_delete > float(max_days):
+        return False
+    return True
 
 
 def collect_reservoir_candidates(
@@ -452,6 +514,11 @@ def build_diagnosis(
                 "For a full zonefile this usually means checked domains are still registered; "
                 "try an expired list or temporarily add --accept-lifecycle registered pending_delete redemption for debugging."
             )
+        elif getattr(stats, "written_candidates", 0) == 0:
+            parts.append(
+                "Accepted lifecycle was seen, but no candidate matched the pendingDelete date window. "
+                "Widen --pending-delete-min-days/--pending-delete-max-days or increase --max-rdap-checks."
+            )
         else:
             parts.append("Accepted lifecycle was seen, but output limit/write path should be checked.")
     else:
@@ -482,6 +549,36 @@ def _log_progress(stats: ProgressStats, args: argparse.Namespace, *, force: bool
 
 def _normalize_status_code(value: str) -> str:
     return "".join(character for character in value.lower() if character.isalnum())
+
+
+def extract_rdap_updated_at(payload: dict) -> datetime | None:
+    events = payload.get("events", [])
+    if not isinstance(events, list):
+        return None
+    preferred_actions = {"last changed", "last update", "last update of rdap database"}
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        action = str(event.get("eventAction", "")).strip().lower()
+        if action not in preferred_actions:
+            continue
+        event_date = event.get("eventDate")
+        if not isinstance(event_date, str):
+            continue
+        parsed = _parse_rdap_datetime(event_date)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_rdap_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _format_counts(counts: dict[str, int]) -> str:

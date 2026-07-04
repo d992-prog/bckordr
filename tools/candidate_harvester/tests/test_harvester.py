@@ -1,13 +1,16 @@
 from types import SimpleNamespace
 
 from candidate_harvester import (
+    HarvesterResult,
     ProgressStats,
     classify_lifecycle,
     build_diagnosis,
     collect_reservoir_candidates,
+    extract_rdap_updated_at,
     iter_domains,
     low_value_score,
     normalize_domain,
+    result_is_accepted,
     resolve_rdap_domain_url,
     should_consider_domain,
 )
@@ -50,6 +53,50 @@ def test_classify_lifecycle_prefers_redemption_before_pending_delete():
     assert classify_lifecycle(["clientTransferProhibited", "redemptionPeriod"], 200) == "redemption"
     assert classify_lifecycle(["pendingDelete"], 200) == "pending_delete"
     assert classify_lifecycle([], 404) == "not_found"
+
+
+def test_extract_rdap_updated_at_uses_last_changed_event():
+    payload = {
+        "events": [
+            {"eventAction": "registration", "eventDate": "2025-05-22T19:11:40Z"},
+            {"eventAction": "last changed", "eventDate": "2026-07-03T07:55:56Z"},
+        ]
+    }
+
+    assert extract_rdap_updated_at(payload).isoformat() == "2026-07-03T07:55:56+00:00"
+
+
+def test_result_is_accepted_requires_pending_delete_window_for_redemption():
+    args = SimpleNamespace(pending_delete_min_days=1.0, pending_delete_max_days=2.0)
+    matching = HarvesterResult(
+        domain="soon-delete.net",
+        tld="net",
+        lifecycle="redemption",
+        status_codes="redemptionPeriod",
+        http_status=200,
+        checked_at="2026-07-04T12:00:00+00:00",
+        redemption_anchor_at="2026-06-06T00:00:00+00:00",
+        predicted_pending_delete_at="2026-07-06T00:00:00+00:00",
+        days_to_pending_delete=1.5,
+        score=60,
+        reason="long",
+    )
+    too_late = HarvesterResult(
+        domain="late-delete.net",
+        tld="net",
+        lifecycle="redemption",
+        status_codes="redemptionPeriod",
+        http_status=200,
+        checked_at="2026-07-04T12:00:00+00:00",
+        redemption_anchor_at="2026-07-03T00:00:00+00:00",
+        predicted_pending_delete_at="2026-08-02T00:00:00+00:00",
+        days_to_pending_delete=28.5,
+        score=60,
+        reason="long",
+    )
+
+    assert result_is_accepted(matching, args, accepted_lifecycles={"redemption"})
+    assert not result_is_accepted(too_late, args, accepted_lifecycles={"redemption"})
 
 
 def test_quick_args_build_safe_default_command():
@@ -120,6 +167,12 @@ def test_fast_redemption_scan_args_use_aggressive_limits():
     assert "reservoir" in args
     assert "--concurrency" in args
     assert "100" in args
+    assert "--limit-output" in args
+    assert "20" in args
+    assert "--pending-delete-min-days" in args
+    assert "1" in args
+    assert "--pending-delete-max-days" in args
+    assert "2" in args
     assert "--max-rdap-checks" in args
     assert "200000" in args
     assert "--reservoir-size" in args
