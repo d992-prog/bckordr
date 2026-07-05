@@ -87,10 +87,17 @@ const DEFAULT_DISCOVERY_FILTERS = {
   pageSize: "25",
 };
 
+function formatUtcDateDaysAgo(daysAgo: number): string {
+  const now = new Date();
+  const utcMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  utcMidnight.setUTCDate(utcMidnight.getUTCDate() - daysAgo);
+  return utcMidnight.toISOString().slice(0, 10);
+}
+
 const DEFAULT_ZONE_SCAN_FORM = {
   zone: "com",
-  sourceType: "zone_latest",
-  sourceDate: "",
+  sourceType: "zone_historic",
+  sourceDate: formatUtcDateDaysAgo(28),
   minScore: "35",
   limitOutput: "20",
   maxRdapChecks: "300000",
@@ -100,7 +107,7 @@ const DEFAULT_ZONE_SCAN_FORM = {
   pendingDeleteMaxDays: "2",
   reservoirSize: "300000",
   randomSeed: "42",
-  keepFile: true,
+  keepFile: false,
 };
 
 const DEFAULT_STRATEGY_FORM = {
@@ -873,25 +880,57 @@ export default function App() {
   async function submitZoneScanJob(event: FormEvent) {
     event.preventDefault();
     try {
-      await api.createZoneScanJob({
-        zone: zoneScanForm.zone,
-        source_type: zoneScanForm.sourceType,
-        source_date: zoneScanForm.sourceDate || null,
-        min_score: Number(zoneScanForm.minScore),
-        limit_output: Number(zoneScanForm.limitOutput),
-        max_rdap_checks: Number(zoneScanForm.maxRdapChecks),
-        concurrency: Number(zoneScanForm.concurrency),
-        rdap_timeout_seconds: Number(zoneScanForm.rdapTimeoutSeconds),
-        pending_delete_min_days: zoneScanForm.pendingDeleteMinDays === "" ? null : Number(zoneScanForm.pendingDeleteMinDays),
-        pending_delete_max_days: zoneScanForm.pendingDeleteMaxDays === "" ? null : Number(zoneScanForm.pendingDeleteMaxDays),
-        reservoir_size: Number(zoneScanForm.reservoirSize),
-        random_seed: Number(zoneScanForm.randomSeed),
-        keep_file: zoneScanForm.keepFile,
-      });
+      await api.createZoneScanJob(buildZoneScanPayload());
       await loadAll();
       setToast({ type: "success", text: "Zone scan job создан; сервер начнет выполнение автоматически" });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка запуска zone scan" });
+    }
+  }
+
+  function buildZoneScanPayload(overrides: Record<string, unknown> = {}) {
+    return {
+      zone: zoneScanForm.zone,
+      source_type: zoneScanForm.sourceType,
+      source_date: zoneScanForm.sourceDate || null,
+      min_score: Number(zoneScanForm.minScore),
+      limit_output: Number(zoneScanForm.limitOutput),
+      max_rdap_checks: Number(zoneScanForm.maxRdapChecks),
+      concurrency: Number(zoneScanForm.concurrency),
+      rdap_timeout_seconds: Number(zoneScanForm.rdapTimeoutSeconds),
+      pending_delete_min_days: zoneScanForm.pendingDeleteMinDays === "" ? null : Number(zoneScanForm.pendingDeleteMinDays),
+      pending_delete_max_days: zoneScanForm.pendingDeleteMaxDays === "" ? null : Number(zoneScanForm.pendingDeleteMaxDays),
+      reservoir_size: Number(zoneScanForm.reservoirSize),
+      random_seed: Number(zoneScanForm.randomSeed),
+      keep_file: zoneScanForm.keepFile,
+      ...overrides,
+    };
+  }
+
+  async function createPendingWindowProbeJobs() {
+    try {
+      await Promise.all([
+        api.createZoneScanJob(buildZoneScanPayload({
+          source_type: "zone_historic",
+          source_date: formatUtcDateDaysAgo(29),
+          pending_delete_min_days: 1,
+          pending_delete_max_days: 2,
+          random_seed: Number(zoneScanForm.randomSeed),
+          keep_file: false,
+        })),
+        api.createZoneScanJob(buildZoneScanPayload({
+          source_type: "zone_historic",
+          source_date: formatUtcDateDaysAgo(28),
+          pending_delete_min_days: 1,
+          pending_delete_max_days: 2,
+          random_seed: Number(zoneScanForm.randomSeed) + 1,
+          keep_file: false,
+        })),
+      ]);
+      await loadAll();
+      setToast({ type: "success", text: "Созданы 2 scan job для pendingDelete через 1-2 дня" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка запуска pending-window scan" });
     }
   }
 
@@ -1856,7 +1895,7 @@ export default function App() {
           <div className="card-head">
             <div>
               <h2>Новый scan job</h2>
-              <p className="muted">Файл скачивается на сервер и читается потоково из .gz.</p>
+              <p className="muted">Для поиска pendingDelete через 1-2 дня используй historic zonefile за 28-29 дней назад, а не latest zonefile.</p>
             </div>
           </div>
           <form className="form" onSubmit={submitZoneScanJob}>
@@ -1887,6 +1926,9 @@ export default function App() {
               <span>Оставить скачанный .gz файл после scan</span>
             </label>
             <button type="submit">Start server scan</button>
+            <button type="button" className="secondary" onClick={createPendingWindowProbeJobs}>
+              Start 1-2 day pendingDelete probe
+            </button>
           </form>
         </div>
 

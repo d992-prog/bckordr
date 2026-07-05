@@ -623,7 +623,7 @@ def extract_rdap_updated_at(payload: dict) -> datetime | None:
     events = payload.get("events", [])
     if not isinstance(events, list):
         return None
-    preferred_actions = {"last changed", "last update", "last update of rdap database"}
+    preferred_actions = {"last changed", "last update"}
     for event in events:
         if not isinstance(event, dict):
             continue

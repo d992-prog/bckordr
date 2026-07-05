@@ -70,6 +70,17 @@ def test_extract_rdap_updated_at_uses_last_changed_event():
     assert extract_rdap_updated_at(payload).isoformat() == "2026-07-03T07:55:56+00:00"
 
 
+def test_extract_rdap_updated_at_ignores_rdap_database_update():
+    payload = {
+        "events": [
+            {"eventAction": "registration", "eventDate": "2025-05-22T19:11:40Z"},
+            {"eventAction": "last update of RDAP database", "eventDate": "2026-07-04T12:00:00Z"},
+        ]
+    }
+
+    assert extract_rdap_updated_at(payload) is None
+
+
 def test_result_is_accepted_requires_pending_delete_window_for_redemption():
     args = SimpleNamespace(pending_delete_min_days=1.0, pending_delete_max_days=2.0)
     matching = HarvesterResult(

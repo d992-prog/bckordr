@@ -340,6 +340,11 @@ button.ghost {
   color: var(--accent-strong);
 }
 
+button.secondary {
+  background: rgba(48, 83, 66, 0.12);
+  color: #305342;
+}
+
 .active-chip {
   outline: 2px solid rgba(183, 93, 45, 0.35);
 }

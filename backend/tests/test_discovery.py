@@ -55,6 +55,17 @@ def test_discovery_extracts_rdap_updated_at_from_last_changed_event():
     assert extract_rdap_updated_at(payload) == datetime(2026, 7, 2, 9, 14, 52, tzinfo=timezone.utc)
 
 
+def test_discovery_ignores_rdap_database_update_as_redemption_anchor():
+    payload = {
+        "events": [
+            {"eventAction": "registration", "eventDate": "2024-05-20T14:44:28Z"},
+            {"eventAction": "last update of RDAP database", "eventDate": "2026-07-04T12:00:00Z"},
+        ]
+    }
+
+    assert extract_rdap_updated_at(payload) is None
+
+
 @pytest.mark.asyncio
 async def test_discovery_rdap_check_updates_domain_and_records_observation():
     previous_seen = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)

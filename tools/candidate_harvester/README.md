@@ -117,7 +117,7 @@ This mode:
 1. Streams the whole file.
 2. Keeps a fixed-size random reservoir of low-value candidates.
 3. RDAP-checks that reservoir with a continuously refilled worker pool.
-4. Reads RDAP `last changed` / `last update`.
+4. Reads RDAP `last changed` / domain `last update` events, ignoring technical `last update of RDAP database`.
 5. Computes `predicted_pending_delete_at = rdap_updated_at + 30 days`.
 6. Writes only domains whose predicted pendingDelete is 1-2 days away.
 ```
