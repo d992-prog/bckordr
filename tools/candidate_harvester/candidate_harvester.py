@@ -21,6 +21,11 @@ from urllib.request import Request, urlopen
 IANA_RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json"
 DOMAIN_PATTERN = re.compile(r"(?i)(?:https?://)?(?:www\.)?([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z]{2,63})+)")
 VOWELS = set("aeiou")
+DEFAULT_HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
 
 
 @dataclass(frozen=True)
@@ -165,7 +170,7 @@ def iter_domains(inputs: list[Path], stats: ProgressStats | None = None) -> Iter
 
 
 def fetch_bootstrap(url: str = IANA_RDAP_BOOTSTRAP_URL, timeout: float = 15.0) -> dict:
-    request = Request(url, headers={"User-Agent": "drop-window-candidate-harvester/1.0"})
+    request = Request(url, headers={"User-Agent": DEFAULT_HTTP_USER_AGENT})
     with urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
@@ -177,7 +182,7 @@ def check_rdap(domain: str, bootstrap: dict, *, timeout: float = 8.0) -> Harvest
     reason = describe_score(domain)
     try:
         rdap_url = resolve_rdap_domain_url(domain, bootstrap)
-        request = Request(rdap_url, headers={"User-Agent": "drop-window-candidate-harvester/1.0"})
+        request = Request(rdap_url, headers={"User-Agent": DEFAULT_HTTP_USER_AGENT})
         with urlopen(request, timeout=timeout) as response:
             http_status = response.status
             payload = json.loads(response.read().decode("utf-8", errors="replace"))

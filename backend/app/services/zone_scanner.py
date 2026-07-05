@@ -31,6 +31,11 @@ ALLZONEFILES_TOKEN_KEY = "allzonefiles_api_token"
 DOMAIN_PATTERN = re.compile(r"(?i)(?:https?://)?(?:www\.)?([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z]{2,63})+)")
 VOWELS = set("aeiou")
 JOB_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+DEFAULT_HTTP_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
 
 
 @dataclass(frozen=True)
@@ -90,7 +95,7 @@ async def test_allzonefiles_connection(*, token: str, base_url: str) -> tuple[bo
 
 
 def build_allzonefiles_headers(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}", "User-Agent": "domain-drop-catcher/zone-scanner"}
+    return {"Authorization": f"Bearer {token}", "User-Agent": DEFAULT_HTTP_USER_AGENT}
 
 
 def build_allzonefiles_download_url(*, base_url: str, source_type: str, zone: str, source_date: date | None) -> str:
