@@ -123,6 +123,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "tw": "whois.twnic.net.tw",
     "ua": "whois.ua",
     "uy": "whois.nic.org.uy",
+    "us": "whois.nic.us",
     "ve": "whois.nic.ve",
     "vn": "whois.vnnic.vn",
     "za": "whois.registry.net.za",
