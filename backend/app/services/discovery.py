@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import re
+import socket
 import zlib
 from time import perf_counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 
 import httpx
 from sqlalchemy import select
@@ -13,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import DiscoveryDomain, DiscoveryObservation
 
 IANA_RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json"
+WHOIS_FALLBACK_SOURCE = "whois_fallback"
 PENDING_DELETE_DURATION = timedelta(days=5)
 REDEMPTION_DURATION = timedelta(days=30)
 DROP_DAY_SCAN_INTERVAL = timedelta(seconds=10)
@@ -22,6 +27,103 @@ PENDING_DELETE_SCAN_INTERVAL = timedelta(minutes=5)
 ERROR_RETRY_INTERVAL = timedelta(minutes=3)
 ERROR_RETRY_JITTER = timedelta(minutes=1)
 INITIAL_DISCOVERY_IMPORT_SPREAD = timedelta(minutes=15)
+WHOIS_RESPONSE_LIMIT_BYTES = 10000
+WHOIS_STATUS_PATTERN = re.compile(r"(?im)^\s*(?:domain\s+)?status\s*:\s*(.+?)\s*$")
+WHOIS_NOT_FOUND_PATTERNS = (
+    "no match",
+    "not found",
+    "no data found",
+    "domain not found",
+    "object does not exist",
+    "no entries found",
+    "is available",
+    "status: free",
+)
+WHOIS_RATE_LIMIT_PATTERNS = (
+    "quota exceeded",
+    "rate limit",
+    "too many requests",
+    "access denied",
+    "blocked",
+    "blacklisted",
+)
+WHOIS_SERVERS: dict[str, str] = {
+    "ac": "whois.nic.ac",
+    "ad": "whois.ripe.net",
+    "ae": "whois.aeda.net.ae",
+    "aero": "whois.aero",
+    "af": "whois.nic.af",
+    "ag": "whois.nic.ag",
+    "ai": "whois.nic.ai",
+    "am": "whois.amnic.net",
+    "ar": "whois.nic.ar",
+    "asia": "whois.nic.asia",
+    "at": "whois.nic.at",
+    "au": "whois.auda.org.au",
+    "be": "whois.dns.be",
+    "bg": "whois.register.bg",
+    "biz": "whois.nic.biz",
+    "br": "whois.registro.br",
+    "by": "whois.cctld.by",
+    "ca": "whois.cira.ca",
+    "cc": "ccwhois.verisign-grs.com",
+    "ch": "whois.nic.ch",
+    "cl": "whois.nic.cl",
+    "cn": "whois.cnnic.cn",
+    "co": "whois.registry.co",
+    "cz": "whois.nic.cz",
+    "de": "whois.denic.de",
+    "dk": "whois.dk-hostmaster.dk",
+    "ee": "whois.tld.ee",
+    "es": "whois.nic.es",
+    "eu": "whois.eu",
+    "hk": "whois.hkirc.hk",
+    "hu": "whois.nic.hu",
+    "id": "whois.id",
+    "ie": "whois.weare.ie",
+    "il": "whois.isoc.org.il",
+    "in": "whois.registry.in",
+    "info": "whois.afilias.net",
+    "io": "whois.nic.io",
+    "ir": "whois.nic.ir",
+    "is": "whois.isnic.is",
+    "it": "whois.nic.it",
+    "jp": "whois.jprs.jp",
+    "kr": "whois.kr",
+    "kz": "whois.nic.kz",
+    "li": "whois.nic.li",
+    "lt": "whois.domreg.lt",
+    "lu": "whois.dns.lu",
+    "lv": "whois.nic.lv",
+    "me": "whois.nic.me",
+    "mx": "whois.mx",
+    "my": "whois.mynic.my",
+    "nl": "whois.domain-registry.nl",
+    "no": "whois.norid.no",
+    "nu": "whois.iis.nu",
+    "nz": "whois.irs.net.nz",
+    "pe": "kero.yachay.pe",
+    "pl": "whois.dns.pl",
+    "pt": "whois.dns.pt",
+    "ro": "whois.rotld.ro",
+    "rs": "whois.rnids.rs",
+    "ru": "whois.tcinet.ru",
+    "se": "whois.iis.se",
+    "sg": "whois.sgnic.sg",
+    "si": "whois.register.si",
+    "sk": "whois.sk-nic.sk",
+    "th": "whois.thnic.co.th",
+    "tr": "whois.nic.tr",
+    "tv": "tvwhois.verisign-grs.com",
+    "tw": "whois.twnic.net.tw",
+    "ua": "whois.ua",
+    "uy": "whois.nic.org.uy",
+    "ve": "whois.nic.ve",
+    "vn": "whois.vnnic.vn",
+    "za": "whois.registry.net.za",
+}
+
+WhoisLookup = Callable[[str, str, float], Awaitable[str]]
 
 
 @dataclass(frozen=True)
@@ -86,6 +188,7 @@ async def check_discovery_domain_rdap(
     bootstrap_payload: dict | None = None,
     bootstrap_url: str = IANA_RDAP_BOOTSTRAP_URL,
     timeout_seconds: float = 5.0,
+    whois_lookup: WhoisLookup | None = None,
 ) -> DiscoveryObservationInput:
     close_client = client is None
     http_client = client or httpx.AsyncClient(timeout=timeout_seconds)
@@ -93,7 +196,16 @@ async def check_discovery_domain_rdap(
     observed_at = datetime.now(timezone.utc)
     try:
         bootstrap = bootstrap_payload or await fetch_rdap_bootstrap(http_client, bootstrap_url)
-        rdap_url = resolve_rdap_domain_url(domain.fqdn, bootstrap)
+        try:
+            rdap_url = resolve_rdap_domain_url(domain.fqdn, bootstrap)
+        except ValueError:
+            return await check_discovery_domain_whois(
+                domain,
+                observed_at=observed_at,
+                started_at=started_at,
+                timeout_seconds=timeout_seconds,
+                whois_lookup=whois_lookup,
+            )
         rdap_response = await http_client.get(rdap_url)
         latency_ms = int((perf_counter() - started_at) * 1000)
         status_codes: list[str] = []
@@ -130,6 +242,129 @@ async def check_discovery_domain_rdap(
     finally:
         if close_client:
             await http_client.aclose()
+
+
+async def check_discovery_domain_whois(
+    domain: DiscoveryDomain,
+    *,
+    observed_at: datetime | None = None,
+    started_at: float | None = None,
+    timeout_seconds: float = 5.0,
+    whois_lookup: WhoisLookup | None = None,
+) -> DiscoveryObservationInput:
+    started = perf_counter() if started_at is None else started_at
+    checked_at = observed_at or datetime.now(timezone.utc)
+    zone = infer_zone(domain.fqdn)
+    server = WHOIS_SERVERS.get(zone)
+    if not server:
+        return DiscoveryObservationInput(
+            source=WHOIS_FALLBACK_SOURCE,
+            observed_at=checked_at,
+            latency_ms=int((perf_counter() - started) * 1000),
+            lifecycle_stage="unknown",
+            availability_status="unknown",
+            error=f"No WHOIS fallback configured for .{zone}",
+        )
+    try:
+        lookup = whois_lookup or default_whois_lookup
+        raw_response = await lookup(domain.fqdn, server, timeout_seconds)
+        return parse_whois_response(
+            raw_response,
+            fqdn=domain.fqdn,
+            observed_at=checked_at,
+            latency_ms=int((perf_counter() - started) * 1000),
+        )
+    except Exception as exc:
+        return DiscoveryObservationInput(
+            source=WHOIS_FALLBACK_SOURCE,
+            observed_at=checked_at,
+            latency_ms=int((perf_counter() - started) * 1000),
+            lifecycle_stage="unknown",
+            availability_status="unknown",
+            error=str(exc),
+        )
+
+
+async def default_whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+    return await asyncio.to_thread(_query_whois, fqdn, server, timeout_seconds)
+
+
+def _query_whois(fqdn: str, server: str, timeout_seconds: float) -> str:
+    with socket.create_connection((server, 43), timeout=timeout_seconds) as sock:
+        sock.settimeout(timeout_seconds)
+        sock.sendall(f"{fqdn}\r\n".encode("utf-8"))
+        chunks: list[bytes] = []
+        received = 0
+        while received < WHOIS_RESPONSE_LIMIT_BYTES:
+            chunk = sock.recv(min(4096, WHOIS_RESPONSE_LIMIT_BYTES - received))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            received += len(chunk)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def parse_whois_response(
+    raw_response: str,
+    *,
+    fqdn: str,
+    observed_at: datetime,
+    latency_ms: int | None = None,
+) -> DiscoveryObservationInput:
+    del fqdn
+    raw = raw_response or ""
+    normalized_raw = raw.lower()
+    error = _detect_whois_error(normalized_raw)
+    status_codes = _extract_whois_status_codes(raw)
+    lifecycle_stage = _classify_whois_lifecycle(raw, status_codes)
+    availability_status = "available" if lifecycle_stage == "not_found" else "taken"
+    if error:
+        lifecycle_stage = "unknown"
+        availability_status = "unknown"
+    return DiscoveryObservationInput(
+        source=WHOIS_FALLBACK_SOURCE,
+        observed_at=observed_at,
+        http_status=200 if raw else None,
+        latency_ms=latency_ms,
+        lifecycle_stage=lifecycle_stage,
+        availability_status=availability_status,
+        status_codes=status_codes,
+        raw_response=raw[:WHOIS_RESPONSE_LIMIT_BYTES],
+        error=error,
+    )
+
+
+def _detect_whois_error(normalized_raw: str) -> str | None:
+    for pattern in WHOIS_RATE_LIMIT_PATTERNS:
+        if pattern in normalized_raw:
+            return "WHOIS rate limit or access denied"
+    return None
+
+
+def _extract_whois_status_codes(raw_response: str) -> list[str]:
+    statuses: list[str] = []
+    for match in WHOIS_STATUS_PATTERN.finditer(raw_response):
+        value = match.group(1).strip()
+        if not value:
+            continue
+        status = value.split("http://", 1)[0].split("https://", 1)[0].strip()
+        if status and status not in statuses:
+            statuses.append(status)
+    return statuses
+
+
+def _classify_whois_lifecycle(raw_response: str, status_codes: list[str]) -> str:
+    normalized_raw = raw_response.lower()
+    normalized_statuses = {_normalize_status_code(item) for item in status_codes}
+    if any(pattern in normalized_raw for pattern in WHOIS_NOT_FOUND_PATTERNS):
+        return "not_found"
+    if "pendingdelete" in normalized_statuses or "pendingdelete" in _normalize_status_code(normalized_raw):
+        return "pending_delete"
+    if "redemptionperiod" in normalized_statuses or "redemptionperiod" in _normalize_status_code(normalized_raw):
+        return "redemption"
+    if status_codes or raw_response.strip():
+        return "registered"
+    return "unknown"
 
 
 async def fetch_rdap_bootstrap(client: httpx.AsyncClient, bootstrap_url: str = IANA_RDAP_BOOTSTRAP_URL) -> dict:
@@ -289,24 +524,26 @@ def apply_discovery_observation(
         domain.status = "redemption"
         domain.first_seen_redemption_at = domain.first_seen_redemption_at or observed_at
         domain.last_seen_redemption_at = observed_at
-        anchor_at, anchor_source = resolve_redemption_anchor(domain, observation, observed_at)
-        domain.redemption_anchor_at = domain.redemption_anchor_at or anchor_at
-        domain.redemption_anchor_source = domain.redemption_anchor_source or anchor_source
-        if domain.predicted_pending_delete_at is None:
-            domain.predicted_pending_delete_at = domain.redemption_anchor_at + REDEMPTION_DURATION
-        if domain.predicted_drop_start_at is None:
-            domain.predicted_drop_start_at = domain.predicted_pending_delete_at + PENDING_DELETE_DURATION
-        if domain.predicted_drop_end_at is None:
-            domain.predicted_drop_end_at = domain.predicted_drop_start_at
+        if observation.source != WHOIS_FALLBACK_SOURCE:
+            anchor_at, anchor_source = resolve_redemption_anchor(domain, observation, observed_at)
+            domain.redemption_anchor_at = domain.redemption_anchor_at or anchor_at
+            domain.redemption_anchor_source = domain.redemption_anchor_source or anchor_source
+            if domain.predicted_pending_delete_at is None:
+                domain.predicted_pending_delete_at = domain.redemption_anchor_at + REDEMPTION_DURATION
+            if domain.predicted_drop_start_at is None:
+                domain.predicted_drop_start_at = domain.predicted_pending_delete_at + PENDING_DELETE_DURATION
+            if domain.predicted_drop_end_at is None:
+                domain.predicted_drop_end_at = domain.predicted_drop_start_at
     elif lifecycle_stage == "pending_delete":
         domain.status = "pending_delete"
         if domain.first_seen_pending_delete_at is None:
             domain.pending_delete_previous_seen_at = previous_checked_at or observed_at
             domain.first_seen_pending_delete_at = observed_at
-            if domain.predicted_pending_delete_at is None:
-                domain.predicted_pending_delete_at = domain.pending_delete_previous_seen_at
-            domain.predicted_drop_start_at = domain.pending_delete_previous_seen_at + PENDING_DELETE_DURATION
-            domain.predicted_drop_end_at = observed_at + PENDING_DELETE_DURATION
+            if observation.source != WHOIS_FALLBACK_SOURCE:
+                if domain.predicted_pending_delete_at is None:
+                    domain.predicted_pending_delete_at = domain.pending_delete_previous_seen_at
+                domain.predicted_drop_start_at = domain.pending_delete_previous_seen_at + PENDING_DELETE_DURATION
+                domain.predicted_drop_end_at = observed_at + PENDING_DELETE_DURATION
         domain.last_seen_pending_delete_at = observed_at
     elif lifecycle_stage == "not_found" or observation.availability_status == "available":
         domain.status = "available"

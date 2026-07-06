@@ -19,6 +19,7 @@ from app.services.discovery import (
     check_discovery_domain_rdap,
     extract_rdap_updated_at,
     normalize_lifecycle_stage,
+    parse_whois_response,
     process_due_discovery_domains,
     resolve_rdap_domain_url,
 )
@@ -64,6 +65,36 @@ def test_discovery_ignores_rdap_database_update_as_redemption_anchor():
     }
 
     assert extract_rdap_updated_at(payload) is None
+
+
+def test_discovery_parses_generic_whois_pending_delete():
+    observation = parse_whois_response(
+        """
+        Domain Name: EXAMPLE.MX
+        Domain Status: pendingDelete
+        Updated Date: 2026-07-06T10:00:00Z
+        """,
+        fqdn="example.mx",
+        observed_at=datetime(2026, 7, 6, 10, 1, tzinfo=timezone.utc),
+        latency_ms=25,
+    )
+
+    assert observation.source == "whois_fallback"
+    assert observation.lifecycle_stage == "pending_delete"
+    assert observation.availability_status == "taken"
+    assert observation.status_codes == ["pendingDelete"]
+
+
+def test_discovery_parses_generic_whois_not_found():
+    observation = parse_whois_response(
+        "No match for domain \"free-example.mx\".",
+        fqdn="free-example.mx",
+        observed_at=datetime(2026, 7, 6, 10, 1, tzinfo=timezone.utc),
+        latency_ms=25,
+    )
+
+    assert observation.lifecycle_stage == "not_found"
+    assert observation.availability_status == "available"
 
 
 @pytest.mark.asyncio
@@ -116,6 +147,32 @@ async def test_discovery_rdap_check_parses_rdap_json_content_type():
 
     assert observation.lifecycle_stage == "redemption"
     assert observation.status_codes == ["redemptionPeriod"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_falls_back_to_whois_when_rdap_bootstrap_has_no_zone():
+    domain = DiscoveryDomain(fqdn="example.mx", zone="mx")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["com"], ["https://rdap.registry.example/"]]]})
+        return httpx.Response(404)
+
+    async def whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+        assert fqdn == "example.mx"
+        assert server == "whois.mx"
+        assert timeout_seconds == 5.0
+        return "Domain Name: EXAMPLE.MX\nDomain Status: pendingDelete\n"
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        observation = await check_discovery_domain_rdap(domain, client=client, whois_lookup=whois_lookup)
+
+    apply_discovery_observation(domain, observation)
+
+    assert observation.source == "whois_fallback"
+    assert observation.lifecycle_stage == "pending_delete"
+    assert domain.status == "pending_delete"
+    assert domain.predicted_drop_start_at is None
 
 
 def test_pending_delete_observation_creates_drop_range():
