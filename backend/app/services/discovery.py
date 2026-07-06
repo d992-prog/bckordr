@@ -69,6 +69,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "cc": "ccwhois.verisign-grs.com",
     "ch": "whois.nic.ch",
     "cl": "whois.nic.cl",
+    "com": "whois.verisign-grs.com",
     "cn": "whois.cnnic.cn",
     "co": "whois.registry.co",
     "cz": "whois.nic.cz",
@@ -98,10 +99,12 @@ WHOIS_SERVERS: dict[str, str] = {
     "me": "whois.nic.me",
     "mx": "whois.mx",
     "my": "whois.mynic.my",
+    "net": "whois.verisign-grs.com",
     "nl": "whois.domain-registry.nl",
     "no": "whois.norid.no",
     "nu": "whois.iis.nu",
     "nz": "whois.irs.net.nz",
+    "org": "whois.publicinterestregistry.org",
     "pe": "kero.yachay.pe",
     "pl": "whois.dns.pl",
     "pt": "whois.dns.pt",
@@ -231,6 +234,20 @@ async def check_discovery_domain_rdap(
             raw_response=raw_response[:10000],
         )
     except Exception as exc:
+        if WHOIS_SERVERS.get(infer_zone(domain.fqdn)):
+            whois_observation = await check_discovery_domain_whois(
+                domain,
+                observed_at=observed_at,
+                started_at=started_at,
+                timeout_seconds=timeout_seconds,
+                whois_lookup=whois_lookup,
+            )
+            if whois_observation.error:
+                return replace(
+                    whois_observation,
+                    error=f"RDAP failed: {exc}; WHOIS failed: {whois_observation.error}",
+                )
+            return whois_observation
         return DiscoveryObservationInput(
             source="rdap",
             observed_at=observed_at,
@@ -382,6 +399,7 @@ async def process_due_discovery_domains(
     bootstrap_url: str = IANA_RDAP_BOOTSTRAP_URL,
     timeout_seconds: float = 5.0,
     notify=None,
+    whois_lookup: WhoisLookup | None = None,
 ) -> int:
     result = await session.execute(
         select(DiscoveryDomain)
@@ -402,18 +420,8 @@ async def process_due_discovery_domains(
     try:
         try:
             bootstrap_payload = await fetch_rdap_bootstrap(http_client, bootstrap_url)
-        except Exception as exc:
-            for domain in domains:
-                observation = DiscoveryObservationInput(
-                    source="rdap",
-                    observed_at=now,
-                    lifecycle_stage="unknown",
-                    availability_status="unknown",
-                    error=f"RDAP bootstrap failed: {exc}",
-                )
-                apply_discovery_observation(domain, observation)
-                session.add(_build_observation_model(domain, observation))
-            return len(domains)
+        except Exception:
+            bootstrap_payload = {"services": []}
 
         for domain in domains:
             previous_status = domain.status
@@ -425,6 +433,7 @@ async def process_due_discovery_domains(
                 bootstrap_payload=bootstrap_payload,
                 bootstrap_url=bootstrap_url,
                 timeout_seconds=timeout_seconds,
+                whois_lookup=whois_lookup,
             )
             observation = replace(observation, observed_at=now)
             apply_discovery_observation(domain, observation)

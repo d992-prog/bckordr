@@ -175,6 +175,80 @@ async def test_discovery_falls_back_to_whois_when_rdap_bootstrap_has_no_zone():
     assert domain.predicted_drop_start_at is None
 
 
+@pytest.mark.asyncio
+async def test_discovery_falls_back_to_whois_when_rdap_response_is_invalid_json():
+    domain = DiscoveryDomain(fqdn="example.cz", zone="cz")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["cz"], ["https://rdap.nic.cz/"]]]})
+        if str(request.url) == "https://rdap.nic.cz/domain/example.cz":
+            return httpx.Response(200, headers={"content-type": "application/rdap+json"}, text="")
+        return httpx.Response(404)
+
+    async def whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+        assert fqdn == "example.cz"
+        assert server == "whois.nic.cz"
+        assert timeout_seconds == 5.0
+        return "domain: example.cz\nstatus: pendingDelete\n"
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        observation = await check_discovery_domain_rdap(domain, client=client, whois_lookup=whois_lookup)
+
+    assert observation.source == "whois_fallback"
+    assert observation.lifecycle_stage == "pending_delete"
+    assert observation.availability_status == "taken"
+
+
+@pytest.mark.asyncio
+async def test_process_due_discovery_domains_uses_whois_when_bootstrap_fails():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    now = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        session.add(DiscoveryDomain(fqdn="example.com", zone="com", next_check_at=now))
+        await session.commit()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            raise httpx.ConnectError("bootstrap unavailable", request=request)
+        return httpx.Response(404)
+
+    async def whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+        assert fqdn == "example.com"
+        assert server == "whois.verisign-grs.com"
+        return "Domain Name: EXAMPLE.COM\nDomain Status: pendingDelete\n"
+
+    async with session_factory() as session:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            processed = await process_due_discovery_domains(
+                session,
+                now=now,
+                batch_size=5,
+                client=client,
+                whois_lookup=whois_lookup,
+            )
+        await session.commit()
+
+    async with session_factory() as session:
+        domain = await session.get(DiscoveryDomain, 1)
+
+    assert processed == 1
+    assert domain is not None
+    assert domain.status == "pending_delete"
+    assert domain.last_error is None
+
+    await engine.dispose()
+
+
 def test_pending_delete_observation_creates_drop_range():
     previous_seen = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
     observed_at = datetime(2026, 6, 1, 12, 15, tzinfo=timezone.utc)
