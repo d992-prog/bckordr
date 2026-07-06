@@ -128,6 +128,9 @@ WHOIS_SERVERS: dict[str, str] = {
     "vn": "whois.vnnic.vn",
     "za": "whois.registry.net.za",
 }
+STATIC_RDAP_BASE_URLS: dict[str, str] = {
+    "us": "https://rdap.nic.us",
+}
 
 WhoisLookup = Callable[[str, str, float], Awaitable[str]]
 
@@ -184,6 +187,9 @@ def resolve_rdap_domain_url(fqdn: str, bootstrap_payload: dict) -> str:
         if not base_url:
             break
         return f"{base_url.rstrip('/')}/domain/{fqdn}"
+    static_base_url = STATIC_RDAP_BASE_URLS.get(zone)
+    if static_base_url:
+        return f"{static_base_url.rstrip('/')}/domain/{fqdn}"
     raise ValueError(f"RDAP bootstrap has no endpoint for .{zone}")
 
 

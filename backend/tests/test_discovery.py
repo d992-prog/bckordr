@@ -179,24 +179,23 @@ async def test_discovery_falls_back_to_whois_when_rdap_bootstrap_has_no_zone():
 
 
 @pytest.mark.asyncio
-async def test_discovery_falls_back_to_whois_for_us_domains():
+async def test_discovery_uses_static_rdap_for_us_domains():
     domain = DiscoveryDomain(fqdn="example.us", zone="us")
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if str(request.url) == "https://data.iana.org/rdap/dns.json":
             return httpx.Response(200, json={"services": [[["com"], ["https://rdap.registry.example/"]]]})
+        if str(request.url) == "https://rdap.nic.us/domain/example.us":
+            return httpx.Response(200, headers={"content-type": "application/rdap+json"}, json={"status": ["pendingDelete"]})
         return httpx.Response(404)
 
     async def whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
-        assert fqdn == "example.us"
-        assert server == "whois.nic.us"
-        assert timeout_seconds == 5.0
-        return "Domain Name: example.us\nDomain Status: pendingDelete\n"
+        raise AssertionError("WHOIS should not be used when static .us RDAP works")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         observation = await check_discovery_domain_rdap(domain, client=client, whois_lookup=whois_lookup)
 
-    assert observation.source == "whois_fallback"
+    assert observation.source == "rdap"
     assert observation.lifecycle_stage == "pending_delete"
     assert observation.availability_status == "taken"
 
