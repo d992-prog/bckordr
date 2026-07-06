@@ -22,6 +22,7 @@ from app.services.discovery import (
     parse_whois_response,
     process_due_discovery_domains,
     resolve_rdap_domain_url,
+    _build_transition_notification,
 )
 
 
@@ -271,6 +272,27 @@ def test_pending_delete_observation_creates_drop_range():
     assert domain.pending_delete_previous_seen_at == previous_seen
     assert domain.predicted_drop_start_at == previous_seen + timedelta(days=5)
     assert domain.predicted_drop_end_at == observed_at + timedelta(days=5)
+
+
+def test_pending_delete_notification_allows_missing_drop_prediction():
+    observed_at = datetime(2026, 7, 6, 13, 37, 9, tzinfo=timezone.utc)
+    domain = DiscoveryDomain(
+        fqdn="example.pl",
+        zone="pl",
+        status="pending_delete",
+        first_seen_pending_delete_at=observed_at,
+    )
+
+    message = _build_transition_notification(
+        domain,
+        previous_status="tracking",
+        previous_pending_at=None,
+        previous_available_at=None,
+    )
+
+    assert message is not None
+    assert "Discovery pendingDelete" in message
+    assert "Predicted drop: unknown" in message
 
 
 def test_redemption_observation_predicts_pending_delete_and_drop_from_rdap_updated_at():

@@ -649,7 +649,7 @@ def _build_transition_notification(
             "Discovery pendingDelete\n\n"
             f"Domain: {domain.fqdn}\n"
             f"First seen: {domain.first_seen_pending_delete_at.isoformat()}\n"
-            f"Predicted drop: {domain.predicted_drop_start_at.isoformat()} - {domain.predicted_drop_end_at.isoformat()}"
+            f"Predicted drop: {_format_optional_datetime_range(domain.predicted_drop_start_at, domain.predicted_drop_end_at)}"
         )
     if domain.available_first_seen_at and previous_available_at is None:
         return (
@@ -658,3 +658,9 @@ def _build_transition_notification(
             f"First seen: {domain.available_first_seen_at.isoformat()}"
         )
     return None
+
+
+def _format_optional_datetime_range(start: datetime | None, end: datetime | None) -> str:
+    if start is None or end is None:
+        return "unknown"
+    return f"{start.isoformat()} - {end.isoformat()}"
