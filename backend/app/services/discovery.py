@@ -400,6 +400,7 @@ async def process_due_discovery_domains(
     timeout_seconds: float = 5.0,
     notify=None,
     whois_lookup: WhoisLookup | None = None,
+    concurrency: int = 5,
 ) -> int:
     result = await session.execute(
         select(DiscoveryDomain)
@@ -423,18 +424,25 @@ async def process_due_discovery_domains(
         except Exception:
             bootstrap_payload = {"services": []}
 
-        for domain in domains:
+        semaphore = asyncio.Semaphore(max(int(concurrency), 1))
+
+        async def check_domain(domain: DiscoveryDomain) -> DiscoveryObservationInput:
+            async with semaphore:
+                return await check_discovery_domain_rdap(
+                    domain,
+                    client=http_client,
+                    bootstrap_payload=bootstrap_payload,
+                    bootstrap_url=bootstrap_url,
+                    timeout_seconds=timeout_seconds,
+                    whois_lookup=whois_lookup,
+                )
+
+        observations = await asyncio.gather(*(check_domain(domain) for domain in domains))
+
+        for domain, observation in zip(domains, observations, strict=True):
             previous_status = domain.status
             previous_pending_at = domain.first_seen_pending_delete_at
             previous_available_at = domain.available_first_seen_at
-            observation = await check_discovery_domain_rdap(
-                domain,
-                client=http_client,
-                bootstrap_payload=bootstrap_payload,
-                bootstrap_url=bootstrap_url,
-                timeout_seconds=timeout_seconds,
-                whois_lookup=whois_lookup,
-            )
             observation = replace(observation, observed_at=now)
             apply_discovery_observation(domain, observation)
             session.add(_build_observation_model(domain, observation))

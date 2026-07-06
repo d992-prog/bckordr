@@ -46,6 +46,7 @@ class ControlRuntimeOrchestrator:
             max(settings.discovery_scheduler_interval_seconds, 0.25) if settings else 5.0
         )
         self._discovery_batch_size = max(settings.discovery_batch_size, 1) if settings else 10
+        self._discovery_concurrency = max(settings.discovery_concurrency, 1) if settings else 5
         self._discovery_timeout_seconds = max(settings.discovery_timeout_seconds, 0.25) if settings else 5.0
         self._discovery_rdap_bootstrap_url = (
             settings.discovery_rdap_bootstrap_url if settings else "https://data.iana.org/rdap/dns.json"
@@ -120,6 +121,7 @@ class ControlRuntimeOrchestrator:
                     session,
                     now=now,
                     batch_size=self._discovery_batch_size,
+                    concurrency=self._discovery_concurrency,
                     bootstrap_url=self._discovery_rdap_bootstrap_url,
                     timeout_seconds=self._discovery_timeout_seconds,
                     notify=lambda message: self._send_discovery_notification(session, message),

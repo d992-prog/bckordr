@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+import asyncio
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -466,5 +467,53 @@ async def test_process_due_discovery_domains_persists_observation_and_notificati
     assert domain.next_check_at == (now + timedelta(minutes=5)).replace(tzinfo=None)
     assert notifications
     assert "pendingDelete" in notifications[0]
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_process_due_discovery_domains_checks_domains_concurrently():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    now = datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        for index in range(4):
+            session.add(DiscoveryDomain(fqdn=f"example{index}.com", zone="com", next_check_at=now))
+        await session.commit()
+
+    active_requests = 0
+    max_active_requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal active_requests, max_active_requests
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["com"], ["https://rdap.registry.example/"]]]})
+        active_requests += 1
+        max_active_requests = max(max_active_requests, active_requests)
+        await asyncio.sleep(0.05)
+        active_requests -= 1
+        return httpx.Response(200, json={"status": ["pendingDelete"]})
+
+    async with session_factory() as session:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            processed = await process_due_discovery_domains(
+                session,
+                now=now,
+                batch_size=4,
+                client=client,
+                concurrency=4,
+            )
+        await session.commit()
+
+    assert processed == 4
+    assert max_active_requests > 1
 
     await engine.dispose()

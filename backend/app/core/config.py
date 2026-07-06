@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     discovery_enabled: bool = Field(default=True, alias="DISCOVERY_ENABLED")
     discovery_scheduler_interval_seconds: float = Field(default=5.0, alias="DISCOVERY_SCHEDULER_INTERVAL_SECONDS")
     discovery_batch_size: int = Field(default=10, alias="DISCOVERY_BATCH_SIZE")
+    discovery_concurrency: int = Field(default=5, alias="DISCOVERY_CONCURRENCY")
     discovery_timeout_seconds: float = Field(default=5.0, alias="DISCOVERY_TIMEOUT_SECONDS")
     discovery_rdap_bootstrap_url: str = Field(
         default="https://data.iana.org/rdap/dns.json",
