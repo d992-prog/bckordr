@@ -52,6 +52,7 @@ WHOIS_RATE_LIMIT_PATTERNS = (
 RDAP_404_TAKEN_TITLES = {
     "auction pending",
 }
+PIR_DROPZONE_PHRASE = "pir dropzone service"
 WHOIS_SERVERS: dict[str, str] = {
     "ac": "whois.nic.ac",
     "ad": "whois.ripe.net",
@@ -252,6 +253,16 @@ async def check_discovery_domain_rdap(
             http_status=rdap_response.status_code,
             payload=payload,
         )
+        if infer_zone(domain.fqdn) == "org" and lifecycle_stage == "not_found":
+            whois_observation = await check_discovery_domain_whois(
+                domain,
+                observed_at=observed_at,
+                started_at=started_at,
+                timeout_seconds=timeout_seconds,
+                whois_lookup=whois_lookup,
+            )
+            if whois_observation.lifecycle_stage == "dropzone":
+                return whois_observation
         return DiscoveryObservationInput(
             source="rdap",
             observed_at=observed_at,
@@ -364,7 +375,7 @@ def parse_whois_response(
     error = _detect_whois_error(normalized_raw)
     status_codes = _extract_whois_status_codes(raw)
     lifecycle_stage = _classify_whois_lifecycle(raw, status_codes)
-    availability_status = "available" if lifecycle_stage == "not_found" else "taken"
+    availability_status = _availability_for_lifecycle(lifecycle_stage)
     if error:
         lifecycle_stage = "unknown"
         availability_status = "unknown"
@@ -403,6 +414,8 @@ def _extract_whois_status_codes(raw_response: str) -> list[str]:
 def _classify_whois_lifecycle(raw_response: str, status_codes: list[str]) -> str:
     normalized_raw = raw_response.lower()
     normalized_statuses = {_normalize_status_code(item) for item in status_codes}
+    if PIR_DROPZONE_PHRASE in normalized_raw:
+        return "dropzone"
     if any(pattern in normalized_raw for pattern in WHOIS_NOT_FOUND_PATTERNS):
         return "not_found"
     if "pendingdelete" in normalized_statuses or "pendingdelete" in _normalize_status_code(normalized_raw):
@@ -412,6 +425,14 @@ def _classify_whois_lifecycle(raw_response: str, status_codes: list[str]) -> str
     if status_codes or raw_response.strip():
         return "registered"
     return "unknown"
+
+
+def _availability_for_lifecycle(lifecycle_stage: str) -> str:
+    if lifecycle_stage == "not_found":
+        return "available"
+    if lifecycle_stage == "dropzone":
+        return "dropzone"
+    return "taken"
 
 
 async def fetch_rdap_bootstrap(client: httpx.AsyncClient, bootstrap_url: str = IANA_RDAP_BOOTSTRAP_URL) -> dict:
@@ -648,6 +669,8 @@ def apply_discovery_observation(
     elif lifecycle_stage == "not_found" or observation.availability_status == "available":
         domain.status = "available"
         domain.available_first_seen_at = domain.available_first_seen_at or observed_at
+    elif lifecycle_stage == "dropzone" or observation.availability_status == "dropzone":
+        domain.status = "dropzone"
     elif domain.status in {"tracking", "error"}:
         domain.status = "tracking"
 
@@ -737,13 +760,19 @@ def _build_transition_notification(
     previous_pending_at: datetime | None,
     previous_available_at: datetime | None,
 ) -> str | None:
-    del previous_status
     if domain.first_seen_pending_delete_at and previous_pending_at is None:
         return (
             "Discovery pendingDelete\n\n"
             f"Domain: {domain.fqdn}\n"
             f"First seen: {domain.first_seen_pending_delete_at.isoformat()}\n"
             f"Predicted drop: {_format_optional_datetime_range(domain.predicted_drop_start_at, domain.predicted_drop_end_at)}"
+        )
+    if domain.status == "dropzone" and previous_status != "dropzone":
+        return (
+            "Discovery dropzone\n\n"
+            f"Domain: {domain.fqdn}\n"
+            "State: PIR Dropzone / special application required\n"
+            "Action: confirm through registrar before treating as normal available"
         )
     if domain.available_first_seen_at and previous_available_at is None:
         return (

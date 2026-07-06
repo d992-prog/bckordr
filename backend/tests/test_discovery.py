@@ -227,6 +227,38 @@ async def test_discovery_does_not_mark_cz_auction_pending_as_available():
 
 
 @pytest.mark.asyncio
+async def test_discovery_marks_org_pir_dropzone_without_available_status():
+    domain = DiscoveryDomain(fqdn="actonfamily.org", zone="org", status="pending_delete")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["org"], ["https://rdap.publicinterestregistry.org/rdap/"]]]})
+        if str(request.url) == "https://rdap.publicinterestregistry.org/rdap/domain/actonfamily.org":
+            return httpx.Response(404, headers={"content-type": "application/rdap+json"}, json={"errorCode": 404})
+        return httpx.Response(404)
+
+    async def whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+        assert fqdn == "actonfamily.org"
+        assert server == "whois.publicinterestregistry.org"
+        assert timeout_seconds == 5.0
+        return (
+            "This domain is currently available for application via the PIR Dropzone service.\n"
+            ">>> Last update of WHOIS database: 2026-07-06T17:10:41Z <<<\n"
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        observation = await check_discovery_domain_rdap(domain, client=client, whois_lookup=whois_lookup)
+
+    apply_discovery_observation(domain, observation)
+
+    assert observation.source == "whois_fallback"
+    assert observation.lifecycle_stage == "dropzone"
+    assert observation.availability_status == "dropzone"
+    assert domain.status == "dropzone"
+    assert domain.available_first_seen_at is None
+
+
+@pytest.mark.asyncio
 async def test_discovery_falls_back_to_whois_when_rdap_response_is_invalid_json():
     domain = DiscoveryDomain(fqdn="example.cz", zone="cz")
 
@@ -343,6 +375,21 @@ def test_pending_delete_notification_allows_missing_drop_prediction():
     assert message is not None
     assert "Discovery pendingDelete" in message
     assert "Predicted drop: unknown" in message
+
+
+def test_dropzone_notification_is_separate_from_available():
+    domain = DiscoveryDomain(fqdn="actonfamily.org", zone="org", status="dropzone")
+
+    message = _build_transition_notification(
+        domain,
+        previous_status="pending_delete",
+        previous_pending_at=datetime(2026, 7, 6, 16, 11, 30, tzinfo=timezone.utc),
+        previous_available_at=None,
+    )
+
+    assert message is not None
+    assert "Discovery dropzone" in message
+    assert "normal available" in message
 
 
 def test_redemption_observation_predicts_pending_delete_and_drop_from_rdap_updated_at():
