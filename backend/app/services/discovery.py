@@ -49,6 +49,9 @@ WHOIS_RATE_LIMIT_PATTERNS = (
     "blocked",
     "blacklisted",
 )
+RDAP_404_TAKEN_TITLES = {
+    "auction pending",
+}
 WHOIS_SERVERS: dict[str, str] = {
     "ac": "whois.nic.ac",
     "ad": "whois.ripe.net",
@@ -173,6 +176,20 @@ def normalize_lifecycle_stage(status_codes: list[str], *, http_status: int | Non
     return "unknown"
 
 
+def classify_rdap_lifecycle_and_availability(
+    status_codes: list[str],
+    *,
+    http_status: int | None = None,
+    payload: dict | None = None,
+) -> tuple[str, str]:
+    title = str((payload or {}).get("title", "")).strip().lower()
+    if http_status == 404 and title in RDAP_404_TAKEN_TITLES:
+        return "unknown", "taken"
+    lifecycle_stage = normalize_lifecycle_stage(status_codes, http_status=http_status)
+    availability_status = "available" if lifecycle_stage == "not_found" else "taken"
+    return lifecycle_stage, availability_status
+
+
 def resolve_rdap_domain_url(fqdn: str, bootstrap_payload: dict) -> str:
     zone = infer_zone(fqdn)
     for service in bootstrap_payload.get("services", []):
@@ -228,9 +245,13 @@ async def check_discovery_domain_rdap(
             status_codes = [str(item) for item in payload.get("status", []) if item]
             rdap_updated_at = extract_rdap_updated_at(payload)
         else:
+            payload = {}
             rdap_updated_at = None
-        lifecycle_stage = normalize_lifecycle_stage(status_codes, http_status=rdap_response.status_code)
-        availability_status = "available" if lifecycle_stage == "not_found" else "taken"
+        lifecycle_stage, availability_status = classify_rdap_lifecycle_and_availability(
+            status_codes,
+            http_status=rdap_response.status_code,
+            payload=payload,
+        )
         return DiscoveryObservationInput(
             source="rdap",
             observed_at=observed_at,

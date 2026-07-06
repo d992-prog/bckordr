@@ -201,6 +201,32 @@ async def test_discovery_uses_static_rdap_for_us_domains():
 
 
 @pytest.mark.asyncio
+async def test_discovery_does_not_mark_cz_auction_pending_as_available():
+    domain = DiscoveryDomain(fqdn="eshopak.cz", zone="cz", status="tracking")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["cz"], ["https://rdap.nic.cz/"]]]})
+        if str(request.url) == "https://rdap.nic.cz/domain/eshopak.cz":
+            return httpx.Response(
+                404,
+                headers={"content-type": "application/rdap+json"},
+                json={"errorCode": 404, "title": "Auction pending"},
+            )
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        observation = await check_discovery_domain_rdap(domain, client=client)
+
+    apply_discovery_observation(domain, observation)
+
+    assert observation.lifecycle_stage == "unknown"
+    assert observation.availability_status == "taken"
+    assert domain.status == "tracking"
+    assert domain.available_first_seen_at is None
+
+
+@pytest.mark.asyncio
 async def test_discovery_falls_back_to_whois_when_rdap_response_is_invalid_json():
     domain = DiscoveryDomain(fqdn="example.cz", zone="cz")
 
