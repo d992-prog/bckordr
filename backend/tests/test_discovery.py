@@ -5,6 +5,7 @@ import httpx
 import pytest
 import asyncio
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -488,6 +489,60 @@ async def test_process_due_discovery_domains_persists_observation_and_notificati
     assert timedelta(minutes=5) <= next_check_delay <= timedelta(minutes=5, seconds=10)
     assert notifications
     assert "pendingDelete" in notifications[0]
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_process_due_discovery_domains_spreads_batch_within_short_window():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    now = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        for index in range(4):
+            session.add(
+                DiscoveryDomain(
+                    fqdn=f"example{index}.com",
+                    zone="com",
+                    next_check_at=now,
+                    check_interval_seconds=10,
+                )
+            )
+        await session.commit()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["com"], ["https://rdap.registry.example/"]]]})
+        return httpx.Response(200, json={"status": ["pendingDelete"]})
+
+    async with session_factory() as session:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            processed = await process_due_discovery_domains(
+                session,
+                now=now,
+                batch_size=4,
+                client=client,
+                concurrency=4,
+            )
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await session.execute(select(DiscoveryDomain).order_by(DiscoveryDomain.id.asc()))
+        domains = list(result.scalars().all())
+
+    delays = [domain.next_check_at - now.replace(tzinfo=None) for domain in domains]
+
+    assert processed == 4
+    assert all(timedelta(seconds=10) <= delay <= timedelta(seconds=20) for delay in delays)
+    assert len(set(delays)) > 1
 
     await engine.dispose()
 

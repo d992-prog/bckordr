@@ -450,6 +450,7 @@ async def process_due_discovery_domains(
                 domain,
                 observation,
                 next_check_offset=_batch_next_check_offset(index=index, total=len(domains)),
+                include_active_jitter=False,
             )
             session.add(_build_observation_model(domain, observation))
             if notify:
@@ -469,7 +470,12 @@ async def process_due_discovery_domains(
             await http_client.aclose()
 
 
-def calculate_next_check_at(domain: DiscoveryDomain, now: datetime) -> datetime | None:
+def calculate_next_check_at(
+    domain: DiscoveryDomain,
+    now: datetime,
+    *,
+    include_active_jitter: bool = True,
+) -> datetime | None:
     if domain.is_enabled is False or domain.status in {"available", "ignored"}:
         return None
 
@@ -486,10 +492,10 @@ def calculate_next_check_at(domain: DiscoveryDomain, now: datetime) -> datetime 
         and domain.predicted_drop_end_at is not None
         and domain.predicted_drop_start_at.date() <= now.date() <= domain.predicted_drop_end_at.date()
     ):
-        return now + _stable_jittered_interval(
-            getattr(domain, "fqdn", ""),
+        return now + _active_next_check_interval(
+            domain,
             base=DROP_DAY_SCAN_INTERVAL,
-            jitter=ACTIVE_NEXT_CHECK_JITTER,
+            include_jitter=include_active_jitter,
         )
 
     configured_interval = getattr(domain, "check_interval_seconds", None)
@@ -497,25 +503,25 @@ def calculate_next_check_at(domain: DiscoveryDomain, now: datetime) -> datetime 
         domain_interval = (
             timedelta(seconds=max(int(configured_interval), 10)) if configured_interval else REDEMPTION_SCAN_INTERVAL
         )
-        return now + _stable_jittered_interval(
-            getattr(domain, "fqdn", ""),
+        return now + _active_next_check_interval(
+            domain,
             base=min(domain_interval, REDEMPTION_SCAN_INTERVAL),
-            jitter=ACTIVE_NEXT_CHECK_JITTER,
+            include_jitter=include_active_jitter,
         )
     if domain.status == "pending_delete":
         domain_interval = (
             timedelta(seconds=max(int(configured_interval), 10)) if configured_interval else PENDING_DELETE_SCAN_INTERVAL
         )
-        return now + _stable_jittered_interval(
-            getattr(domain, "fqdn", ""),
+        return now + _active_next_check_interval(
+            domain,
             base=min(domain_interval, PENDING_DELETE_SCAN_INTERVAL),
-            jitter=ACTIVE_NEXT_CHECK_JITTER,
+            include_jitter=include_active_jitter,
         )
     domain_interval = timedelta(seconds=max(int(configured_interval), 10)) if configured_interval else DEFAULT_SCAN_INTERVAL
-    return now + _stable_jittered_interval(
-        getattr(domain, "fqdn", ""),
+    return now + _active_next_check_interval(
+        domain,
         base=min(domain_interval, DEFAULT_SCAN_INTERVAL),
-        jitter=ACTIVE_NEXT_CHECK_JITTER,
+        include_jitter=include_active_jitter,
     )
 
 
@@ -541,6 +547,21 @@ def _stable_jittered_interval(key: str, *, base: timedelta, jitter: timedelta) -
     return base + timedelta(seconds=checksum % (jitter_seconds + 1))
 
 
+def _active_next_check_interval(
+    domain: DiscoveryDomain,
+    *,
+    base: timedelta,
+    include_jitter: bool,
+) -> timedelta:
+    if not include_jitter:
+        return base
+    return _stable_jittered_interval(
+        getattr(domain, "fqdn", ""),
+        base=base,
+        jitter=ACTIVE_NEXT_CHECK_JITTER,
+    )
+
+
 def _batch_next_check_offset(*, index: int, total: int) -> timedelta:
     if total <= 1:
         return timedelta(0)
@@ -555,6 +576,7 @@ def apply_discovery_observation(
     observation: DiscoveryObservationInput,
     *,
     next_check_offset: timedelta = timedelta(0),
+    include_active_jitter: bool = True,
 ) -> None:
     observed_at = _ensure_aware(observation.observed_at)
     lifecycle_stage = observation.lifecycle_stage or normalize_lifecycle_stage(
@@ -604,7 +626,7 @@ def apply_discovery_observation(
     if observation.error:
         domain.status = "error"
 
-    next_check_at = calculate_next_check_at(domain, observed_at)
+    next_check_at = calculate_next_check_at(domain, observed_at, include_active_jitter=include_active_jitter)
     if next_check_at is not None and next_check_offset > timedelta(0):
         next_check_at += next_check_offset
     domain.next_check_at = next_check_at
