@@ -26,6 +26,8 @@ DEFAULT_SCAN_INTERVAL = timedelta(hours=6)
 PENDING_DELETE_SCAN_INTERVAL = timedelta(minutes=5)
 ERROR_RETRY_INTERVAL = timedelta(minutes=3)
 ERROR_RETRY_JITTER = timedelta(minutes=1)
+ACTIVE_NEXT_CHECK_JITTER = timedelta(seconds=10)
+BATCH_NEXT_CHECK_SPREAD = timedelta(seconds=10)
 INITIAL_DISCOVERY_IMPORT_SPREAD = timedelta(minutes=15)
 WHOIS_RESPONSE_LIMIT_BYTES = 10000
 WHOIS_STATUS_PATTERN = re.compile(r"(?im)^\s*(?:domain\s+)?status\s*:\s*(.+?)\s*$")
@@ -439,12 +441,16 @@ async def process_due_discovery_domains(
 
         observations = await asyncio.gather(*(check_domain(domain) for domain in domains))
 
-        for domain, observation in zip(domains, observations, strict=True):
+        for index, (domain, observation) in enumerate(zip(domains, observations, strict=True)):
             previous_status = domain.status
             previous_pending_at = domain.first_seen_pending_delete_at
             previous_available_at = domain.available_first_seen_at
             observation = replace(observation, observed_at=now)
-            apply_discovery_observation(domain, observation)
+            apply_discovery_observation(
+                domain,
+                observation,
+                next_check_offset=_batch_next_check_offset(index=index, total=len(domains)),
+            )
             session.add(_build_observation_model(domain, observation))
             if notify:
                 message = _build_transition_notification(
@@ -480,21 +486,37 @@ def calculate_next_check_at(domain: DiscoveryDomain, now: datetime) -> datetime 
         and domain.predicted_drop_end_at is not None
         and domain.predicted_drop_start_at.date() <= now.date() <= domain.predicted_drop_end_at.date()
     ):
-        return now + DROP_DAY_SCAN_INTERVAL
+        return now + _stable_jittered_interval(
+            getattr(domain, "fqdn", ""),
+            base=DROP_DAY_SCAN_INTERVAL,
+            jitter=ACTIVE_NEXT_CHECK_JITTER,
+        )
 
     configured_interval = getattr(domain, "check_interval_seconds", None)
     if domain.last_lifecycle_stage == "redemption":
         domain_interval = (
             timedelta(seconds=max(int(configured_interval), 10)) if configured_interval else REDEMPTION_SCAN_INTERVAL
         )
-        return now + min(domain_interval, REDEMPTION_SCAN_INTERVAL)
+        return now + _stable_jittered_interval(
+            getattr(domain, "fqdn", ""),
+            base=min(domain_interval, REDEMPTION_SCAN_INTERVAL),
+            jitter=ACTIVE_NEXT_CHECK_JITTER,
+        )
     if domain.status == "pending_delete":
         domain_interval = (
             timedelta(seconds=max(int(configured_interval), 10)) if configured_interval else PENDING_DELETE_SCAN_INTERVAL
         )
-        return now + min(domain_interval, PENDING_DELETE_SCAN_INTERVAL)
+        return now + _stable_jittered_interval(
+            getattr(domain, "fqdn", ""),
+            base=min(domain_interval, PENDING_DELETE_SCAN_INTERVAL),
+            jitter=ACTIVE_NEXT_CHECK_JITTER,
+        )
     domain_interval = timedelta(seconds=max(int(configured_interval), 10)) if configured_interval else DEFAULT_SCAN_INTERVAL
-    return now + min(domain_interval, DEFAULT_SCAN_INTERVAL)
+    return now + _stable_jittered_interval(
+        getattr(domain, "fqdn", ""),
+        base=min(domain_interval, DEFAULT_SCAN_INTERVAL),
+        jitter=ACTIVE_NEXT_CHECK_JITTER,
+    )
 
 
 def stagger_initial_check_at(
@@ -519,9 +541,20 @@ def _stable_jittered_interval(key: str, *, base: timedelta, jitter: timedelta) -
     return base + timedelta(seconds=checksum % (jitter_seconds + 1))
 
 
+def _batch_next_check_offset(*, index: int, total: int) -> timedelta:
+    if total <= 1:
+        return timedelta(0)
+    spread_seconds = max(int(BATCH_NEXT_CHECK_SPREAD.total_seconds()), 0)
+    if spread_seconds <= 0:
+        return timedelta(0)
+    return timedelta(seconds=max(index, 0) % (spread_seconds + 1))
+
+
 def apply_discovery_observation(
     domain: DiscoveryDomain,
     observation: DiscoveryObservationInput,
+    *,
+    next_check_offset: timedelta = timedelta(0),
 ) -> None:
     observed_at = _ensure_aware(observation.observed_at)
     lifecycle_stage = observation.lifecycle_stage or normalize_lifecycle_stage(
@@ -571,7 +604,10 @@ def apply_discovery_observation(
     if observation.error:
         domain.status = "error"
 
-    domain.next_check_at = calculate_next_check_at(domain, observed_at)
+    next_check_at = calculate_next_check_at(domain, observed_at)
+    if next_check_at is not None and next_check_offset > timedelta(0):
+        next_check_at += next_check_offset
+    domain.next_check_at = next_check_at
     domain.updated_at = observed_at
 
 

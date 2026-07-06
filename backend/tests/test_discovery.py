@@ -332,7 +332,10 @@ def test_discovery_uses_ten_second_interval_on_predicted_drop_day():
         predicted_drop_end_at=datetime(2026, 6, 6, 23, 59, tzinfo=timezone.utc),
     )
 
-    assert calculate_next_check_at(domain, now) == now + timedelta(seconds=10)
+    next_check = calculate_next_check_at(domain, now)
+
+    assert next_check is not None
+    assert timedelta(seconds=10) <= next_check - now <= timedelta(seconds=20)
 
 
 def test_discovery_uses_fifteen_minute_interval_for_redemption_domains():
@@ -344,7 +347,10 @@ def test_discovery_uses_fifteen_minute_interval_for_redemption_domains():
         last_lifecycle_stage="redemption",
     )
 
-    assert calculate_next_check_at(domain, now) == now + timedelta(minutes=15)
+    next_check = calculate_next_check_at(domain, now)
+
+    assert next_check is not None
+    assert timedelta(minutes=15) <= next_check - now <= timedelta(minutes=15, seconds=10)
 
 
 def test_discovery_retries_error_domains_quickly():
@@ -372,6 +378,19 @@ def test_discovery_spreads_error_retry_with_stable_jitter():
 
     assert timedelta(minutes=3) <= first_delay <= timedelta(minutes=4)
     assert timedelta(minutes=3) <= second_delay <= timedelta(minutes=4)
+    assert first_delay != second_delay
+
+
+def test_discovery_spreads_active_next_checks_with_short_jitter():
+    now = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+    first = DiscoveryDomain(fqdn="alpha-example.com", zone="com", status="pending_delete")
+    second = DiscoveryDomain(fqdn="beta-example.com", zone="com", status="pending_delete")
+
+    first_delay = calculate_next_check_at(first, now) - now
+    second_delay = calculate_next_check_at(second, now) - now
+
+    assert timedelta(minutes=5) <= first_delay <= timedelta(minutes=5, seconds=10)
+    assert timedelta(minutes=5) <= second_delay <= timedelta(minutes=5, seconds=10)
     assert first_delay != second_delay
 
 
@@ -464,7 +483,9 @@ async def test_process_due_discovery_domains_persists_observation_and_notificati
     assert processed == 1
     assert domain is not None
     assert domain.status == "pending_delete"
-    assert domain.next_check_at == (now + timedelta(minutes=5)).replace(tzinfo=None)
+    assert domain.next_check_at is not None
+    next_check_delay = domain.next_check_at - now.replace(tzinfo=None)
+    assert timedelta(minutes=5) <= next_check_delay <= timedelta(minutes=5, seconds=10)
     assert notifications
     assert "pendingDelete" in notifications[0]
 
