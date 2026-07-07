@@ -245,6 +245,56 @@ async def test_discovery_does_not_mark_cz_auction_pending_as_available():
 
 
 @pytest.mark.asyncio
+async def test_discovery_marks_nominet_rdap_404_as_available():
+    domain = DiscoveryDomain(fqdn="globalexpansioninternational.uk", zone="uk", status="tracking")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["uk"], ["https://rdap.nominet.uk/uk/"]]]})
+        if str(request.url) == "https://rdap.nominet.uk/uk/domain/globalexpansioninternational.uk":
+            return httpx.Response(
+                404,
+                headers={"content-type": "application/json;charset=utf-8"},
+                json={"errorCode": 404, "title": "Domain globalexpansioninternational.uk not found"},
+            )
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        observation = await check_discovery_domain_rdap(domain, client=client)
+
+    apply_discovery_observation(domain, observation)
+
+    assert observation.source == "rdap"
+    assert observation.lifecycle_stage == "not_found"
+    assert observation.availability_status == "available"
+    assert domain.status == "available"
+    assert domain.available_first_seen_at is not None
+
+
+@pytest.mark.asyncio
+async def test_discovery_falls_back_to_nominet_whois_for_uk_domains():
+    domain = DiscoveryDomain(fqdn="globalexpansioninternational.uk", zone="uk", status="tracking")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["com"], ["https://rdap.registry.example/"]]]})
+        return httpx.Response(404)
+
+    async def whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+        assert fqdn == "globalexpansioninternational.uk"
+        assert server == "whois.nic.uk"
+        assert timeout_seconds == 5.0
+        return 'No match for "globalexpansioninternational.uk".\nThis domain name has not been registered.\n'
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        observation = await check_discovery_domain_rdap(domain, client=client, whois_lookup=whois_lookup)
+
+    assert observation.source == "whois_fallback"
+    assert observation.lifecycle_stage == "not_found"
+    assert observation.availability_status == "available"
+
+
+@pytest.mark.asyncio
 async def test_discovery_marks_org_pir_dropzone_without_available_status():
     domain = DiscoveryDomain(fqdn="actonfamily.org", zone="org", status="pending_delete")
 

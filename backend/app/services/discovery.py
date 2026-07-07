@@ -129,6 +129,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "tv": "tvwhois.verisign-grs.com",
     "tw": "whois.twnic.net.tw",
     "ua": "whois.ua",
+    "uk": "whois.nic.uk",
     "uy": "whois.nic.org.uy",
     "us": "whois.nic.us",
     "ve": "whois.nic.ve",
