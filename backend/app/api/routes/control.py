@@ -425,6 +425,7 @@ async def _insert_discovery_domains_from_bulk(
             zone=(payload.zone or infer_zone(normalized)).lower(),
             check_interval_seconds=payload.check_interval_seconds,
             source_mode=payload.source_mode,
+            drop_prediction_enabled=payload.drop_prediction_enabled,
             notes=payload.notes,
             next_check_at=stagger_initial_check_at(base_check_at, index=index, total=len(new_domains)),
         )
@@ -1321,6 +1322,7 @@ async def create_discovery_domain(
             zone=payload.zone,
             check_interval_seconds=payload.check_interval_seconds,
             source_mode=payload.source_mode,
+            drop_prediction_enabled=payload.drop_prediction_enabled,
             notes=payload.notes,
         ),
         db,

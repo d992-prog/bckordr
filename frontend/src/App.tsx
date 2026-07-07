@@ -66,6 +66,7 @@ const DEFAULT_DISCOVERY_FORM = {
   zone: "",
   checkIntervalSeconds: "21600",
   sourceMode: "rdap",
+  disableDropPrediction: false,
   notes: "",
 };
 
@@ -790,6 +791,7 @@ export default function App() {
         zone: discoveryForm.zone || null,
         check_interval_seconds: Number(discoveryForm.checkIntervalSeconds),
         source_mode: discoveryForm.sourceMode,
+        drop_prediction_enabled: !discoveryForm.disableDropPrediction,
         notes: discoveryForm.notes || null,
       });
       setDiscoveryForm(DEFAULT_DISCOVERY_FORM);
@@ -1549,6 +1551,14 @@ export default function App() {
               <label><span>Source mode</span><input value={discoveryForm.sourceMode} onChange={(event) => setDiscoveryForm((current) => ({ ...current, sourceMode: event.target.value }))} /></label>
               <label><span>Notes</span><input value={discoveryForm.notes} onChange={(event) => setDiscoveryForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             </div>
+            <label className="checkline">
+              <input
+                type="checkbox"
+                checked={discoveryForm.disableDropPrediction}
+                onChange={(event) => setDiscoveryForm((current) => ({ ...current, disableDropPrediction: event.target.checked }))}
+              />
+              <span>Не рассчитывать прогноз дропа</span>
+            </label>
             <button type="submit">Добавить в discovery</button>
           </form>
         </div>
@@ -1629,6 +1639,10 @@ export default function App() {
                 <div>
                   <span>Current status</span>
                   <strong>{selectedDiscoveryDomain.status} | {selectedDiscoveryDomain.last_lifecycle_stage ?? "unknown"}</strong>
+                </div>
+                <div>
+                  <span>Автопрогноз</span>
+                  <strong>{selectedDiscoveryDomain.drop_prediction_enabled ? "включен" : "выключен"}</strong>
                 </div>
                 <div>
                   <span>От какой даты считаем</span>

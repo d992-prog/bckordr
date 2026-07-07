@@ -641,6 +641,7 @@ def apply_discovery_observation(
         http_status=observation.http_status,
     )
     status_codes_json = json.dumps(observation.status_codes, ensure_ascii=True) if observation.status_codes else None
+    drop_prediction_enabled = getattr(domain, "drop_prediction_enabled", True) is not False
 
     previous_checked_at = domain.last_checked_at
     domain.last_checked_at = observed_at
@@ -657,6 +658,7 @@ def apply_discovery_observation(
             anchor_at, anchor_source = resolve_redemption_anchor(domain, observation, observed_at)
             domain.redemption_anchor_at = domain.redemption_anchor_at or anchor_at
             domain.redemption_anchor_source = domain.redemption_anchor_source or anchor_source
+        if drop_prediction_enabled and observation.source != WHOIS_FALLBACK_SOURCE:
             if domain.predicted_pending_delete_at is None:
                 domain.predicted_pending_delete_at = domain.redemption_anchor_at + REDEMPTION_DURATION
             if domain.predicted_drop_start_at is None:
@@ -668,7 +670,7 @@ def apply_discovery_observation(
         if domain.first_seen_pending_delete_at is None:
             domain.pending_delete_previous_seen_at = previous_checked_at or observed_at
             domain.first_seen_pending_delete_at = observed_at
-            if observation.source != WHOIS_FALLBACK_SOURCE:
+            if drop_prediction_enabled and observation.source != WHOIS_FALLBACK_SOURCE:
                 if domain.predicted_pending_delete_at is None:
                     domain.predicted_pending_delete_at = domain.pending_delete_previous_seen_at
                 domain.predicted_drop_start_at = domain.pending_delete_previous_seen_at + PENDING_DELETE_DURATION

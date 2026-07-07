@@ -297,6 +297,16 @@ th {
   color: var(--muted);
 }
 
+.form .checkline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.form .checkline input {
+  width: auto;
+}
+
 .form.inline {
   grid-template-columns: 1fr auto;
   margin-bottom: 18px;

@@ -425,6 +425,36 @@ def test_pending_delete_observation_creates_drop_range():
     assert domain.predicted_drop_end_at == observed_at + timedelta(days=5)
 
 
+def test_pending_delete_observation_can_skip_drop_prediction():
+    previous_seen = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    observed_at = datetime(2026, 6, 1, 12, 15, tzinfo=timezone.utc)
+    domain = DiscoveryDomain(
+        fqdn="sample.com",
+        zone="com",
+        last_checked_at=previous_seen,
+        drop_prediction_enabled=False,
+    )
+
+    apply_discovery_observation(
+        domain,
+        DiscoveryObservationInput(
+            source="rdap",
+            observed_at=observed_at,
+            http_status=200,
+            lifecycle_stage="pending_delete",
+            status_codes=["pendingDelete"],
+            raw_response='{"status":["pendingDelete"]}',
+        ),
+    )
+
+    assert domain.status == "pending_delete"
+    assert domain.first_seen_pending_delete_at == observed_at
+    assert domain.pending_delete_previous_seen_at == previous_seen
+    assert domain.predicted_pending_delete_at is None
+    assert domain.predicted_drop_start_at is None
+    assert domain.predicted_drop_end_at is None
+
+
 def test_pending_delete_notification_allows_missing_drop_prediction():
     observed_at = datetime(2026, 7, 6, 13, 37, 9, tzinfo=timezone.utc)
     domain = DiscoveryDomain(
@@ -485,6 +515,32 @@ def test_redemption_observation_predicts_pending_delete_and_drop_from_rdap_updat
     assert domain.predicted_pending_delete_at == updated_at + timedelta(days=30)
     assert domain.predicted_drop_start_at == updated_at + timedelta(days=35)
     assert domain.predicted_drop_end_at == updated_at + timedelta(days=35)
+
+
+def test_redemption_observation_can_skip_drop_prediction():
+    observed_at = datetime(2026, 7, 4, 12, 35, 37, tzinfo=timezone.utc)
+    updated_at = datetime(2026, 7, 3, 7, 55, 16, tzinfo=timezone.utc)
+    domain = DiscoveryDomain(fqdn="greenhousepost.net", zone="net", drop_prediction_enabled=False)
+
+    apply_discovery_observation(
+        domain,
+        DiscoveryObservationInput(
+            source="rdap",
+            observed_at=observed_at,
+            http_status=200,
+            lifecycle_stage="redemption",
+            availability_status="taken",
+            status_codes=["redemptionPeriod"],
+            rdap_updated_at=updated_at,
+        ),
+    )
+
+    assert domain.status == "redemption"
+    assert domain.redemption_anchor_at == updated_at
+    assert domain.redemption_anchor_source == "rdap_updated_at"
+    assert domain.predicted_pending_delete_at is None
+    assert domain.predicted_drop_start_at is None
+    assert domain.predicted_drop_end_at is None
 
 
 def test_discovery_uses_ten_second_interval_on_predicted_drop_day():
@@ -598,7 +654,11 @@ async def test_discovery_api_imports_and_lists_domains():
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
         response = await client.post(
             "/control/discovery/domains/import",
-            json={"domains": ["Example.COM", "example.com", "test.org"], "notes": "seed"},
+            json={
+                "domains": ["Example.COM", "example.com", "test.org"],
+                "drop_prediction_enabled": False,
+                "notes": "seed",
+            },
         )
         assert response.status_code == 201
         assert response.json()["skipped"] == ["example.com"]
@@ -609,6 +669,8 @@ async def test_discovery_api_imports_and_lists_domains():
         assert [item["fqdn"] for item in payload] == ["example.com", "test.org"]
         assert payload[0]["zone"] == "com"
         assert payload[0]["status"] == "tracking"
+        assert payload[0]["drop_prediction_enabled"] is False
+        assert payload[1]["drop_prediction_enabled"] is False
         first_check = datetime.fromisoformat(payload[0]["next_check_at"])
         second_check = datetime.fromisoformat(payload[1]["next_check_at"])
         assert 100 <= abs((second_check - first_check).total_seconds()) <= 200

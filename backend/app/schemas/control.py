@@ -566,6 +566,7 @@ class DiscoveryDomainCreateRequest(BaseModel):
     zone: str | None = Field(default=None, min_length=2, max_length=32)
     check_interval_seconds: int = Field(default=21600, ge=10, le=86400)
     source_mode: str = Field(default="rdap", min_length=2, max_length=32)
+    drop_prediction_enabled: bool = True
     notes: str | None = None
 
 
@@ -574,6 +575,7 @@ class DiscoveryDomainBulkCreateRequest(BaseModel):
     zone: str | None = Field(default=None, min_length=2, max_length=32)
     check_interval_seconds: int = Field(default=21600, ge=10, le=86400)
     source_mode: str = Field(default="rdap", min_length=2, max_length=32)
+    drop_prediction_enabled: bool = True
     notes: str | None = None
 
 
@@ -595,6 +597,7 @@ class DiscoveryDomainResponse(BaseModel):
     is_enabled: bool
     check_interval_seconds: int
     source_mode: str
+    drop_prediction_enabled: bool
     last_lifecycle_stage: str | None
     last_status_codes: str | None
     last_availability: str | None

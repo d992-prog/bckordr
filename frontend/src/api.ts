@@ -100,6 +100,7 @@ export type DiscoveryDomain = {
   is_enabled: boolean;
   check_interval_seconds: number;
   source_mode: string;
+  drop_prediction_enabled: boolean;
   last_lifecycle_stage: string | null;
   last_status_codes: string | null;
   last_availability: string | null;

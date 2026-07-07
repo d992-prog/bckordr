@@ -653,6 +653,7 @@ class DiscoveryDomain(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     check_interval_seconds: Mapped[int] = mapped_column(Integer, default=21600, server_default="21600")
     source_mode: Mapped[str] = mapped_column(String(32), default="rdap", server_default="rdap")
+    drop_prediction_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     last_lifecycle_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_status_codes: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_availability: Mapped[str | None] = mapped_column(String(32), nullable=True)

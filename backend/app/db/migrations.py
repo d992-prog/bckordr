@@ -154,6 +154,7 @@ MIGRATIONS = (
         is_enabled BOOLEAN NOT NULL DEFAULT true,
         check_interval_seconds INTEGER NOT NULL DEFAULT 21600,
         source_mode VARCHAR(32) NOT NULL DEFAULT 'rdap',
+        drop_prediction_enabled BOOLEAN NOT NULL DEFAULT true,
         last_lifecycle_stage VARCHAR(32) NULL,
         last_status_codes TEXT NULL,
         last_availability VARCHAR(32) NULL,
@@ -183,6 +184,7 @@ MIGRATIONS = (
     "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS redemption_anchor_at TIMESTAMPTZ NULL",
     "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS redemption_anchor_source VARCHAR(64) NULL",
     "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS predicted_pending_delete_at TIMESTAMPTZ NULL",
+    "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS drop_prediction_enabled BOOLEAN NOT NULL DEFAULT true",
     """
     CREATE TABLE IF NOT EXISTS discovery_observations (
         id SERIAL PRIMARY KEY,
