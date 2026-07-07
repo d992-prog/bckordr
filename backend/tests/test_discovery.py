@@ -100,6 +100,24 @@ def test_discovery_parses_generic_whois_not_found():
     assert observation.availability_status == "available"
 
 
+def test_discovery_parses_eurid_available_status_as_available():
+    observation = parse_whois_response(
+        """
+        % WHOIS richelais.eu
+        Domain: richelais.eu
+        Script: LATIN
+        Status: AVAILABLE
+        """,
+        fqdn="richelais.eu",
+        observed_at=datetime(2026, 7, 7, 9, 40, tzinfo=timezone.utc),
+        latency_ms=25,
+    )
+
+    assert observation.lifecycle_stage == "not_found"
+    assert observation.availability_status == "available"
+    assert observation.status_codes == ["AVAILABLE"]
+
+
 @pytest.mark.asyncio
 async def test_discovery_rdap_check_updates_domain_and_records_observation():
     previous_seen = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)

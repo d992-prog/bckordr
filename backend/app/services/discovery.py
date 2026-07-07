@@ -53,6 +53,9 @@ RDAP_404_TAKEN_TITLES = {
     "auction pending",
 }
 PIR_DROPZONE_PHRASE = "pir dropzone service"
+AVAILABLE_STATUS_CODES = {
+    "available",
+}
 WHOIS_SERVERS: dict[str, str] = {
     "ac": "whois.nic.ac",
     "ad": "whois.ripe.net",
@@ -167,6 +170,8 @@ def infer_zone(fqdn: str) -> str:
 def normalize_lifecycle_stage(status_codes: list[str], *, http_status: int | None = None) -> str:
     normalized = {_normalize_status_code(item) for item in status_codes}
     if http_status == 404:
+        return "not_found"
+    if normalized & AVAILABLE_STATUS_CODES:
         return "not_found"
     if "pendingdelete" in normalized:
         return "pending_delete"
@@ -416,6 +421,8 @@ def _classify_whois_lifecycle(raw_response: str, status_codes: list[str]) -> str
     normalized_statuses = {_normalize_status_code(item) for item in status_codes}
     if PIR_DROPZONE_PHRASE in normalized_raw:
         return "dropzone"
+    if normalized_statuses & AVAILABLE_STATUS_CODES:
+        return "not_found"
     if any(pattern in normalized_raw for pattern in WHOIS_NOT_FOUND_PATTERNS):
         return "not_found"
     if "pendingdelete" in normalized_statuses or "pendingdelete" in _normalize_status_code(normalized_raw):
