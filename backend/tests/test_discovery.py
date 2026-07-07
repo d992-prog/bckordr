@@ -24,6 +24,7 @@ from app.services.discovery import (
     parse_whois_response,
     process_due_discovery_domains,
     resolve_rdap_domain_url,
+    stagger_initial_check_at,
     _build_transition_notification,
 )
 
@@ -558,6 +559,17 @@ def test_discovery_spreads_active_next_checks_with_short_jitter():
     assert first_delay != second_delay
 
 
+def test_discovery_initial_import_spreads_over_five_minutes():
+    now = datetime(2026, 7, 7, 10, 0, tzinfo=timezone.utc)
+    total = 10
+
+    checks = [stagger_initial_check_at(now, index=index, total=total) for index in range(total)]
+
+    assert checks[0] == now
+    assert checks[-1] < now + timedelta(minutes=5)
+    assert timedelta(seconds=25) <= checks[1] - checks[0] <= timedelta(seconds=35)
+
+
 @pytest.mark.asyncio
 async def test_discovery_api_imports_and_lists_domains():
     engine = create_async_engine(
@@ -599,7 +611,7 @@ async def test_discovery_api_imports_and_lists_domains():
         assert payload[0]["status"] == "tracking"
         first_check = datetime.fromisoformat(payload[0]["next_check_at"])
         second_check = datetime.fromisoformat(payload[1]["next_check_at"])
-        assert abs((second_check - first_check).total_seconds()) >= 200
+        assert 100 <= abs((second_check - first_check).total_seconds()) <= 200
 
     await engine.dispose()
 

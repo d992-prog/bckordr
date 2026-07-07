@@ -28,7 +28,7 @@ ERROR_RETRY_INTERVAL = timedelta(minutes=3)
 ERROR_RETRY_JITTER = timedelta(minutes=1)
 ACTIVE_NEXT_CHECK_JITTER = timedelta(seconds=10)
 BATCH_NEXT_CHECK_SPREAD = timedelta(seconds=10)
-INITIAL_DISCOVERY_IMPORT_SPREAD = timedelta(minutes=15)
+INITIAL_DISCOVERY_IMPORT_SPREAD = timedelta(minutes=5)
 WHOIS_RESPONSE_LIMIT_BYTES = 10000
 WHOIS_STATUS_PATTERN = re.compile(r"(?im)^\s*(?:domain\s+)?status\s*:\s*(.+?)\s*$")
 WHOIS_NOT_FOUND_PATTERNS = (
