@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import csv
 from collections import defaultdict
 from datetime import date, datetime
+from io import StringIO
 import json
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -111,6 +113,7 @@ from app.services.discovery import (
     infer_zone,
     normalize_discovery_domain,
     stagger_initial_check_at,
+    trim_discovery_observations,
 )
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
@@ -1384,6 +1387,8 @@ async def create_discovery_observation(
             error=payload.error,
         )
     )
+    await db.flush()
+    await trim_discovery_observations(db, domain.id)
     await db.commit()
     await db.refresh(domain)
     return DiscoveryDomainResponse.model_validate(domain)
@@ -1420,9 +1425,94 @@ async def check_discovery_domain_now(
             error=observation.error,
         )
     )
+    await db.flush()
+    await trim_discovery_observations(db, domain.id)
     await db.commit()
     await db.refresh(domain)
     return DiscoveryDomainResponse.model_validate(domain)
+
+
+@router.get("/discovery/domains/available/export.csv")
+async def export_available_discovery_domains(
+    zone: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> Response:
+    del admin
+    query = select(DiscoveryDomain).where(DiscoveryDomain.status == "available")
+    if zone:
+        query = query.where(DiscoveryDomain.zone == zone.strip().lower())
+    result = await db.execute(query.order_by(DiscoveryDomain.available_first_seen_at.asc(), DiscoveryDomain.fqdn.asc()))
+    domains = list(result.scalars().all())
+
+    fieldnames = [
+        "fqdn",
+        "zone",
+        "status",
+        "available_first_seen_at",
+        "last_checked_at",
+        "last_lifecycle_stage",
+        "last_availability",
+        "last_error",
+        "predicted_drop_start_at",
+        "predicted_drop_end_at",
+    ]
+    for index in range(1, 6):
+        fieldnames.extend(
+            [
+                f"attempt_{index}_observed_at",
+                f"attempt_{index}_source",
+                f"attempt_{index}_http_status",
+                f"attempt_{index}_lifecycle",
+                f"attempt_{index}_availability",
+                f"attempt_{index}_status_codes",
+                f"attempt_{index}_error",
+            ]
+        )
+
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for domain in domains:
+        observations_result = await db.execute(
+            select(DiscoveryObservation)
+            .where(DiscoveryObservation.discovery_domain_id == domain.id)
+            .order_by(DiscoveryObservation.observed_at.desc(), DiscoveryObservation.id.desc())
+            .limit(5)
+        )
+        observations = list(observations_result.scalars().all())
+        row = {
+            "fqdn": domain.fqdn,
+            "zone": domain.zone,
+            "status": domain.status,
+            "available_first_seen_at": _csv_datetime(domain.available_first_seen_at),
+            "last_checked_at": _csv_datetime(domain.last_checked_at),
+            "last_lifecycle_stage": domain.last_lifecycle_stage or "",
+            "last_availability": domain.last_availability or "",
+            "last_error": domain.last_error or "",
+            "predicted_drop_start_at": _csv_datetime(domain.predicted_drop_start_at),
+            "predicted_drop_end_at": _csv_datetime(domain.predicted_drop_end_at),
+        }
+        for index, observation in enumerate(observations, start=1):
+            row[f"attempt_{index}_observed_at"] = _csv_datetime(observation.observed_at)
+            row[f"attempt_{index}_source"] = observation.source
+            row[f"attempt_{index}_http_status"] = observation.http_status or ""
+            row[f"attempt_{index}_lifecycle"] = observation.lifecycle_stage or ""
+            row[f"attempt_{index}_availability"] = observation.availability_status or ""
+            row[f"attempt_{index}_status_codes"] = observation.status_codes or ""
+            row[f"attempt_{index}_error"] = observation.error or ""
+        writer.writerow(row)
+
+    suffix = f"-{zone.strip().lower()}" if zone else ""
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="discovery-available{suffix}.csv"'},
+    )
+
+
+def _csv_datetime(value: datetime | None) -> str:
+    return value.isoformat() if value else ""
 
 
 @router.get(

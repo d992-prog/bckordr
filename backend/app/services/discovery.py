@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import DiscoveryDomain, DiscoveryObservation
@@ -521,10 +521,30 @@ async def process_due_discovery_domains(
                     maybe_result = notify(message)
                     if hasattr(maybe_result, "__await__"):
                         await maybe_result
+        await session.flush()
+        for domain in domains:
+            await trim_discovery_observations(session, domain.id)
         return len(domains)
     finally:
         if close_client:
             await http_client.aclose()
+
+
+async def trim_discovery_observations(
+    session: AsyncSession,
+    discovery_domain_id: int,
+    *,
+    keep: int = 5,
+) -> None:
+    result = await session.execute(
+        select(DiscoveryObservation.id)
+        .where(DiscoveryObservation.discovery_domain_id == discovery_domain_id)
+        .order_by(DiscoveryObservation.observed_at.desc(), DiscoveryObservation.id.desc())
+        .offset(max(keep, 0))
+    )
+    stale_ids = list(result.scalars().all())
+    if stale_ids:
+        await session.execute(delete(DiscoveryObservation).where(DiscoveryObservation.id.in_(stale_ids)))
 
 
 def calculate_next_check_at(

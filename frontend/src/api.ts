@@ -491,6 +491,11 @@ export type DomainDryRunBatchResult = {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
 
+export function discoveryAvailableExportUrl(zone?: string): string {
+  const query = zone ? `?zone=${encodeURIComponent(zone)}` : "";
+  return `${API_BASE}/control/discovery/domains/available/export.csv${query}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     credentials: "include",

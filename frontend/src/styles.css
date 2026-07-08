@@ -350,6 +350,25 @@ button.ghost {
   color: var(--accent-strong);
 }
 
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.button-link {
+  border-radius: 16px;
+  padding: 12px 16px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.button-link.ghost {
+  background: rgba(183, 93, 45, 0.1);
+  color: var(--accent-strong);
+}
+
 button.secondary {
   background: rgba(48, 83, 66, 0.12);
   color: #305342;

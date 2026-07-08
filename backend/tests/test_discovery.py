@@ -679,6 +679,81 @@ async def test_discovery_api_imports_and_lists_domains():
 
 
 @pytest.mark.asyncio
+async def test_discovery_api_keeps_recent_attempts_and_exports_available_csv():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/control/discovery/domains/import",
+            json={"domains": ["drop-example.com"], "check_interval_seconds": 10},
+        )
+        assert response.status_code == 201
+        domain_id = response.json()["inserted"][0]["id"]
+
+        stages = [
+            ("registered", "taken", None),
+            ("registered", "taken", "timeout"),
+            ("pending_delete", "taken", None),
+            ("pending_delete", "taken", None),
+            ("pending_delete", "taken", "temporary RDAP error"),
+            ("pending_delete", "taken", None),
+            ("not_found", "available", None),
+        ]
+        for lifecycle_stage, availability_status, error in stages:
+            observation_response = await client.post(
+                f"/control/discovery/domains/{domain_id}/observations",
+                json={
+                    "source": "manual",
+                    "http_status": 200,
+                    "lifecycle_stage": lifecycle_stage,
+                    "availability_status": availability_status,
+                    "status_codes": [lifecycle_stage],
+                    "error": error,
+                },
+            )
+            assert observation_response.status_code == 201
+
+        observations_response = await client.get(f"/control/discovery/domains/{domain_id}/observations")
+        assert observations_response.status_code == 200
+        observations = observations_response.json()
+        assert len(observations) == 5
+        assert observations[0]["availability_status"] == "available"
+        assert observations[-1]["error"] is None
+
+        export_response = await client.get("/control/discovery/domains/available/export.csv?zone=com")
+        assert export_response.status_code == 200
+        assert "text/csv" in export_response.headers["content-type"]
+        csv_body = export_response.text
+        assert "fqdn,zone,status,available_first_seen_at" in csv_body
+        assert "drop-example.com,com,available," in csv_body
+        assert "attempt_1_observed_at" in csv_body
+        assert "temporary RDAP error" in csv_body
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_process_due_discovery_domains_persists_observation_and_notification():
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",

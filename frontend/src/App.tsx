@@ -2,6 +2,7 @@
 
 import {
   api,
+  discoveryAvailableExportUrl,
   AttackEvent,
   AttackRun,
   AllZonefilesSettings,
@@ -1715,16 +1716,21 @@ export default function App() {
                 Показано {paginatedDiscoveryDomains.length} из {filteredDiscoveryDomains.length}; всего в discovery {discoveryDomains.length}.
               </p>
             </div>
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => {
-                setDiscoveryFilters(DEFAULT_DISCOVERY_FILTERS);
-                setDiscoveryPage(1);
-              }}
-            >
-              Сбросить фильтры
-            </button>
+            <div className="button-row">
+              <a className="button-link ghost" href={discoveryAvailableExportUrl(discoveryFilters.zone || undefined)}>
+                Скачать available CSV
+              </a>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  setDiscoveryFilters(DEFAULT_DISCOVERY_FILTERS);
+                  setDiscoveryPage(1);
+                }}
+              >
+                Сбросить фильтры
+              </button>
+            </div>
           </div>
           <div className="filter-panel">
             <label>
