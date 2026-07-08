@@ -12,7 +12,7 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.db.migrations import run_startup_migrations
 from app.db.session import AsyncSessionLocal, engine
-from app.services.bootstrap import ensure_owner_account
+from app.services.bootstrap import ensure_default_zone_strategies, ensure_owner_account
 from app.services.control_runtime import ControlRuntimeOrchestrator
 from app.services.notifier import TelegramNotifier
 
@@ -30,6 +30,7 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     await run_startup_migrations(engine)
     await ensure_owner_account(AsyncSessionLocal, settings)
+    await ensure_default_zone_strategies(AsyncSessionLocal)
 
     notifier = TelegramNotifier(settings)
     del notifier
