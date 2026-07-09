@@ -333,6 +333,83 @@ function formatRpsModeLabel(value: string | null | undefined) {
   return value ?? "—";
 }
 
+function formatStatusLabel(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    ready: "готово",
+    success: "успех",
+    scheduled: "запланировано",
+    running: "в работе",
+    attacking: "атака",
+    busy: "занят",
+    planned: "запланировано",
+    invalid: "ошибка",
+    error: "ошибка",
+    failed: "сбой",
+    stopped: "остановлено",
+    cancelled: "отменено",
+    offline: "офлайн",
+    inactive: "выключено",
+    active: "активно",
+    disabled: "выключено",
+    tracking: "наблюдение",
+    available: "доступен",
+    queued: "в очереди",
+    draft: "черновик",
+    paused: "пауза",
+    provisioning: "настройка",
+    completed: "завершено",
+    downloading: "скачивание",
+    scanning: "сканирование",
+    ignored: "скрыто",
+  };
+  return value ? labels[value] ?? value : "—";
+}
+
+function formatLifecycleLabel(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    registered: "зарегистрирован",
+    redemption: "redemption",
+    pending_delete: "pendingDelete",
+    not_found: "не найден",
+    unknown: "неизвестно",
+  };
+  return value ? labels[value] ?? value : "—";
+}
+
+function formatAvailabilityLabel(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    available: "доступен",
+    taken: "занят",
+    unknown: "неизвестно",
+  };
+  return value ? labels[value] ?? value : "неизвестно";
+}
+
+function formatSourceType(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    zone_latest: "актуальный zonefile",
+    zone_historic: "исторический zonefile",
+    expired_latest: "актуальный список expired",
+    expired_historic: "исторический список expired",
+  };
+  return value ? labels[value] ?? value : "—";
+}
+
+function formatTabLabel(value: Tab) {
+  const labels: Record<Tab, string> = {
+    domains: "домены",
+    discovery: "discovery",
+    scanner: "scanner",
+    strategies: "стратегии",
+    workers: "воркеры",
+    accounts: "аккаунты",
+    contacts: "контакты",
+    attacks: "атаки",
+    settings: "настройки",
+  };
+  return labels[value];
+}
+
 function statusClass(value: string) {
   if (["ready", "success", "scheduled"].includes(value)) {
     return "status available";
@@ -651,7 +728,7 @@ export default function App() {
         ruleId: current.ruleId || (rules[0] ? String(rules[0].id) : ""),
       }));
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Strategy details error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка загрузки деталей стратегии" });
     }
   }
 
@@ -697,7 +774,7 @@ export default function App() {
         setDomainOverridePhaseForm(DEFAULT_DOMAIN_OVERRIDE_PHASE_FORM);
         return;
       }
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Domain override error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка настроек override домена" });
     }
   }
 
@@ -742,17 +819,17 @@ export default function App() {
       <div className="auth-shell">
         <section className="hero">
           <div>
-            <p className="eyebrow">Control Server</p>
-            <h1>Domain Drop Catcher</h1>
+            <p className="eyebrow">Control-сервер</p>
+            <h1>Veltrix Drop Catcher</h1>
             <p className="subtitle">
-              Панель управления для доменов с известной датой дропа, workers-серверов, аккаунтов регистраторов и
+              Панель управления для доменов с известной датой дропа, воркер-серверов, аккаунтов регистраторов и
               атакующих окон по времени реестра.
             </p>
           </div>
           <div className="stats">
-            <article><span>Режим</span><strong>Control</strong></article>
-            <article><span>Стратегия</span><strong>Priority</strong></article>
-            <article><span>Zone Default</span><strong>.fr</strong></article>
+            <article><span>Режим</span><strong>control</strong></article>
+            <article><span>Стратегия</span><strong>приоритет</strong></article>
+            <article><span>Зона по умолчанию</span><strong>.fr</strong></article>
             <article><span>Окно</span><strong>31:59</strong></article>
           </div>
         </section>
@@ -783,8 +860,8 @@ export default function App() {
               Окно оставлено видимым, но в текущем control-only проекте регистрация новых пользователей отключена.
             </p>
             <form className="form">
-              <label><span>Логин</span><input disabled placeholder="disabled" /></label>
-              <label><span>Пароль</span><input disabled placeholder="disabled" /></label>
+              <label><span>Логин</span><input disabled placeholder="отключено" /></label>
+              <label><span>Пароль</span><input disabled placeholder="отключено" /></label>
               <button type="button" className="ghost" disabled>Регистрация отключена</button>
             </form>
           </div>
@@ -848,7 +925,7 @@ export default function App() {
         text: `Discovery добавлено: ${result.inserted.length}${result.skipped.length ? `, пропущено: ${result.skipped.join(", ")}` : ""}`,
       });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка discovery import" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления discovery-доменов" });
     }
   }
 
@@ -873,9 +950,9 @@ export default function App() {
       if (selectedDiscoveryDomainId === domainId) {
         await loadDiscoveryTimeline(domainId);
       }
-      setToast({ type: "success", text: "Discovery observation сохранен" });
+      setToast({ type: "success", text: "Наблюдение discovery сохранено" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка discovery observation" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка сохранения observation" });
     }
   }
 
@@ -886,9 +963,9 @@ export default function App() {
       if (selectedDiscoveryDomainId === domainId) {
         await loadDiscoveryTimeline(domainId);
       }
-      setToast({ type: "success", text: `Discovery check: ${domain.fqdn} -> ${domain.status}` });
+      setToast({ type: "success", text: `Проверка discovery: ${domain.fqdn} -> ${formatStatusLabel(domain.status)}` });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка discovery check" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка проверки discovery-домена" });
     }
   }
 
@@ -898,7 +975,7 @@ export default function App() {
       setSelectedDiscoveryDomainId(domainId);
       setDiscoveryObservations(observations);
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка загрузки discovery timeline" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка загрузки истории discovery" });
     }
   }
 
@@ -908,9 +985,9 @@ export default function App() {
       const settings = await api.updateAllZonefilesSettings({ api_token: allZonefilesTokenForm || null });
       setAllZonefilesSettings(settings);
       setAllZonefilesTokenForm("");
-      setToast({ type: "success", text: settings.configured ? "AllZonefiles token сохранен" : "AllZonefiles token очищен" });
+      setToast({ type: "success", text: settings.configured ? "Токен AllZonefiles сохранен" : "Токен AllZonefiles очищен" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка сохранения AllZonefiles token" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка сохранения токена AllZonefiles" });
     }
   }
 
@@ -931,9 +1008,9 @@ export default function App() {
     try {
       await api.createZoneScanJob(buildZoneScanPayload());
       await loadAll();
-      setToast({ type: "success", text: "Zone scan job создан; сервер начнет выполнение автоматически" });
+      setToast({ type: "success", text: "Задача сканирования создана; сервер начнет выполнение автоматически" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка запуска zone scan" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка запуска сканирования зоны" });
     }
   }
 
@@ -979,7 +1056,7 @@ export default function App() {
       await loadAll();
       setToast({ type: "success", text: "Созданы 2 scan job для pendingDelete через 1-2 дня" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка запуска pending-window scan" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка запуска поиска pendingDelete" });
     }
   }
 
@@ -997,9 +1074,9 @@ export default function App() {
     try {
       await api.cancelZoneScanJob(jobId);
       await refreshZoneScanner();
-      setToast({ type: "success", text: `Job #${jobId} остановлен` });
+      setToast({ type: "success", text: `Задача #${jobId} остановлена` });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка остановки job" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка остановки задачи" });
     }
   }
 
@@ -1007,7 +1084,7 @@ export default function App() {
     try {
       await api.deleteZoneScanJobFile(jobId);
       await refreshZoneScanner();
-      setToast({ type: "success", text: `Файл job #${jobId} удален` });
+      setToast({ type: "success", text: `Файл задачи #${jobId} удален` });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления файла" });
     }
@@ -1022,7 +1099,7 @@ export default function App() {
       await refreshZoneScanner(null);
       setToast({ type: "success", text: `Job #${jobId} удален` });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления job" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления задачи" });
     }
   }
 
@@ -1047,7 +1124,7 @@ export default function App() {
       await refreshZoneScanner();
       setToast({ type: "success", text: "Кандидат скрыт" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка ignore candidate" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка скрытия кандидата" });
     }
   }
 
@@ -1066,16 +1143,16 @@ export default function App() {
       });
       setStrategyForm(DEFAULT_STRATEGY_FORM);
       await loadAll();
-      setToast({ type: "success", text: "Zone strategy added" });
+      setToast({ type: "success", text: "Стратегия зоны добавлена" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Zone strategy error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка стратегии зоны" });
     }
   }
 
   async function submitRule(event: FormEvent) {
     event.preventDefault();
     if (!selectedStrategyId) {
-      setToast({ type: "error", text: "Select a zone strategy first" });
+      setToast({ type: "error", text: "Сначала выбери стратегию зоны" });
       return;
     }
     try {
@@ -1095,9 +1172,9 @@ export default function App() {
       });
       setRuleForm(DEFAULT_RULE_FORM);
       await loadStrategyDetails(selectedStrategyId, previewDate);
-      setToast({ type: "success", text: "Zone rule added" });
+      setToast({ type: "success", text: "Окно зоны добавлено" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Zone rule error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка окна зоны" });
     }
   }
 
@@ -1105,7 +1182,7 @@ export default function App() {
     event.preventDefault();
     const ruleId = parseNumber(phaseForm.ruleId);
     if (!ruleId || !selectedStrategyId) {
-      setToast({ type: "error", text: "Choose a rule for the phase" });
+      setToast({ type: "error", text: "Выбери окно для фазы" });
       return;
     }
     try {
@@ -1120,9 +1197,9 @@ export default function App() {
       });
       setPhaseForm((current) => ({ ...DEFAULT_PHASE_FORM, ruleId: current.ruleId }));
       await loadStrategyDetails(selectedStrategyId, previewDate);
-      setToast({ type: "success", text: "Zone phase added" });
+      setToast({ type: "success", text: "Фаза зоны добавлена" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Zone phase error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка фазы зоны" });
     }
   }
 
@@ -1135,7 +1212,7 @@ export default function App() {
       await loadStrategyDetails(selectedStrategyId, previewDate);
       setToast({ type: "success", text: payload.detail });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Delete zone rule error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления окна зоны" });
     }
   }
 
@@ -1148,14 +1225,14 @@ export default function App() {
       await loadStrategyDetails(selectedStrategyId, previewDate);
       setToast({ type: "success", text: payload.detail });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Delete zone phase error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления фазы зоны" });
     }
   }
 
   async function saveDomainOverrideSettings(event: FormEvent) {
     event.preventDefault();
     if (!selectedOverrideDomain) {
-      setToast({ type: "error", text: "Выбери домен для manual override" });
+      setToast({ type: "error", text: "Выбери домен для ручного override" });
       return;
     }
     try {
@@ -1167,16 +1244,16 @@ export default function App() {
       });
       await loadAll({ silent: true });
       await loadDomainOverrideDetails(selectedOverrideDomain.id, previewDate);
-      setToast({ type: "success", text: "Domain override settings saved" });
+      setToast({ type: "success", text: "Настройки override домена сохранены" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Domain override settings error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка настроек override домена" });
     }
   }
 
   async function submitDomainOverrideRule(event: FormEvent) {
     event.preventDefault();
     if (!selectedOverrideDomain) {
-      setToast({ type: "error", text: "Выбери домен для override rule" });
+      setToast({ type: "error", text: "Выбери домен для override-окна" });
       return;
     }
     try {
@@ -1197,21 +1274,21 @@ export default function App() {
       setDomainOverrideRuleForm(DEFAULT_DOMAIN_OVERRIDE_RULE_FORM);
       await loadAll({ silent: true });
       await loadDomainOverrideDetails(selectedOverrideDomain.id, previewDate);
-      setToast({ type: "success", text: "Domain override rule added" });
+      setToast({ type: "success", text: "Override-окно домена добавлено" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Domain override rule error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка override-окна домена" });
     }
   }
 
   async function submitDomainOverridePhase(event: FormEvent) {
     event.preventDefault();
     if (!selectedOverrideDomain) {
-      setToast({ type: "error", text: "Выбери домен для override phase" });
+      setToast({ type: "error", text: "Выбери домен для override-фазы" });
       return;
     }
     const ruleId = parseNumber(domainOverridePhaseForm.ruleId);
     if (!ruleId) {
-      setToast({ type: "error", text: "Выбери override rule для фазы" });
+      setToast({ type: "error", text: "Выбери override-окно для фазы" });
       return;
     }
     try {
@@ -1229,9 +1306,9 @@ export default function App() {
         ruleId: current.ruleId,
       }));
       await loadDomainOverrideDetails(selectedOverrideDomain.id, previewDate);
-      setToast({ type: "success", text: "Domain override phase added" });
+      setToast({ type: "success", text: "Override-фаза домена добавлена" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Domain override phase error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка override-фазы домена" });
     }
   }
 
@@ -1245,7 +1322,7 @@ export default function App() {
       await loadDomainOverrideDetails(selectedOverrideDomain.id, previewDate);
       setToast({ type: "success", text: payload.detail });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Delete domain override rule error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления override-окна" });
     }
   }
 
@@ -1258,7 +1335,7 @@ export default function App() {
       await loadDomainOverrideDetails(selectedOverrideDomain.id, previewDate);
       setToast({ type: "success", text: payload.detail });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Delete domain override phase error" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления override-фазы" });
     }
   }
 
@@ -1291,9 +1368,9 @@ export default function App() {
       setWorkerForm(makeWorkerForm());
       setEditingWorkerId(null);
       await loadAll();
-      setToast({ type: "success", text: editingWorkerId ? "Worker обновлен" : "Worker добавлен" });
+      setToast({ type: "success", text: editingWorkerId ? "Воркер обновлен" : "Воркер добавлен" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : editingWorkerId ? "Ошибка обновления worker" : "Ошибка добавления worker" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : editingWorkerId ? "Ошибка обновления воркера" : "Ошибка добавления воркера" });
     }
   }
 
@@ -1357,9 +1434,9 @@ export default function App() {
       });
       setContactForm(DEFAULT_CONTACT_FORM);
       await loadAll();
-      setToast({ type: "success", text: "Contact profile добавлен" });
+      setToast({ type: "success", text: "Профиль контакта добавлен" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления contact profile" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления профиля контакта" });
     }
   }
 
@@ -1381,7 +1458,7 @@ export default function App() {
       setDiagnosticTelegram(payload);
       setToast({ type: "success", text: "Диагностический Telegram обновлен" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка сохранения diagnostic Telegram" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка сохранения диагностического Telegram" });
     }
   }
 
@@ -1458,7 +1535,7 @@ export default function App() {
       });
       await loadAll();
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обновления worker" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обновления воркера" });
     }
   }
 
@@ -1480,7 +1557,7 @@ export default function App() {
       const payload = await api.prefillContactFromRegistrarAccount(account.id);
       applyPrefilledContact(payload);
       setTab("contacts");
-      setToast({ type: "success", text: `Contact draft imported from ${account.name}` });
+      setToast({ type: "success", text: `Черновик контакта импортирован из ${account.name}` });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка prefill из Gandi" });
     }
@@ -1575,7 +1652,7 @@ export default function App() {
         <div className="card">
           <div className="card-head">
             <div>
-              <h2>Drop Discovery</h2>
+              <h2>Аналитика дропа</h2>
               <p className="muted">
                 Это аналитический контур: он фиксирует lifecycle/availability, считает вероятное окно дропа и не запускает регистрацию.
               </p>
@@ -1593,10 +1670,10 @@ export default function App() {
               />
             </label>
             <div className="form two-columns">
-              <label><span>Zone override</span><input value={discoveryForm.zone} onChange={(event) => setDiscoveryForm((current) => ({ ...current, zone: event.target.value }))} placeholder="empty = from domain" /></label>
-              <label><span>Base interval sec</span><input value={discoveryForm.checkIntervalSeconds} onChange={(event) => setDiscoveryForm((current) => ({ ...current, checkIntervalSeconds: event.target.value }))} /></label>
-              <label><span>Source mode</span><input value={discoveryForm.sourceMode} onChange={(event) => setDiscoveryForm((current) => ({ ...current, sourceMode: event.target.value }))} /></label>
-              <label><span>Notes</span><input value={discoveryForm.notes} onChange={(event) => setDiscoveryForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+              <label><span>Зона вручную</span><input value={discoveryForm.zone} onChange={(event) => setDiscoveryForm((current) => ({ ...current, zone: event.target.value }))} placeholder="пусто = взять из домена" /></label>
+              <label><span>Базовый интервал, сек</span><input value={discoveryForm.checkIntervalSeconds} onChange={(event) => setDiscoveryForm((current) => ({ ...current, checkIntervalSeconds: event.target.value }))} /></label>
+              <label><span>Источник проверки</span><input value={discoveryForm.sourceMode} onChange={(event) => setDiscoveryForm((current) => ({ ...current, sourceMode: event.target.value }))} /></label>
+              <label><span>Заметки</span><input value={discoveryForm.notes} onChange={(event) => setDiscoveryForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             </div>
             <label className="checkline">
               <input
@@ -1606,57 +1683,57 @@ export default function App() {
               />
               <span>Не рассчитывать прогноз дропа</span>
             </label>
-            <button type="submit">Добавить в discovery</button>
+            <button type="submit">Добавить в аналитику</button>
           </form>
         </div>
 
         <div className="card">
-          <h2>Manual observation</h2>
-          <p className="muted">Для первичного теста можно вручную зафиксировать RDAP/EPP статус. Автоматический checker будет следующим слоем.</p>
+          <h2>Ручное наблюдение</h2>
+          <p className="muted">Для первичного теста можно вручную зафиксировать RDAP/EPP статус. Автоматический чекер будет следующим слоем.</p>
           <form className="form" onSubmit={submitDiscoveryObservation}>
             <label>
-              <span>Discovery domain</span>
+              <span>Домен discovery</span>
               <select value={discoveryObservationForm.domainId} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, domainId: event.target.value }))}>
                 <option value="">Выбери домен</option>
-                {discoveryDomains.map((domain) => <option key={domain.id} value={domain.id}>{domain.fqdn} | {domain.status}</option>)}
+                {discoveryDomains.map((domain) => <option key={domain.id} value={domain.id}>{domain.fqdn} | {formatStatusLabel(domain.status)}</option>)}
               </select>
             </label>
             <div className="form two-columns">
               <label>
-                <span>Lifecycle stage</span>
+                <span>Стадия lifecycle</span>
                 <select value={discoveryObservationForm.lifecycleStage} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, lifecycleStage: event.target.value }))}>
-                  <option value="registered">registered</option>
+                  <option value="registered">зарегистрирован</option>
                   <option value="redemption">redemption</option>
                   <option value="pending_delete">pending_delete</option>
-                  <option value="not_found">not_found</option>
-                  <option value="unknown">unknown</option>
+                  <option value="not_found">не найден</option>
+                  <option value="unknown">неизвестно</option>
                 </select>
               </label>
               <label>
-                <span>Availability</span>
+                <span>Доступность</span>
                 <select value={discoveryObservationForm.availabilityStatus} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, availabilityStatus: event.target.value }))}>
-                  <option value="">unknown</option>
-                  <option value="taken">taken</option>
-                  <option value="available">available</option>
+                  <option value="">неизвестно</option>
+                  <option value="taken">занят</option>
+                  <option value="available">доступен</option>
                 </select>
               </label>
-              <label><span>HTTP status</span><input value={discoveryObservationForm.httpStatus} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, httpStatus: event.target.value }))} /></label>
-              <label><span>Status codes</span><input value={discoveryObservationForm.statusCodes} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, statusCodes: event.target.value }))} placeholder="pendingDelete redemptionPeriod" /></label>
+              <label><span>HTTP статус</span><input value={discoveryObservationForm.httpStatus} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, httpStatus: event.target.value }))} /></label>
+              <label><span>Коды статуса</span><input value={discoveryObservationForm.statusCodes} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, statusCodes: event.target.value }))} placeholder="pendingDelete redemptionPeriod" /></label>
             </div>
-            <label><span>Raw response / note</span><textarea rows={3} value={discoveryObservationForm.rawResponse} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, rawResponse: event.target.value }))} /></label>
-            <label><span>Error</span><input value={discoveryObservationForm.error} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, error: event.target.value }))} /></label>
-            <button type="submit">Сохранить observation</button>
+            <label><span>Сырой ответ / заметка</span><textarea rows={3} value={discoveryObservationForm.rawResponse} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, rawResponse: event.target.value }))} /></label>
+            <label><span>Ошибка</span><input value={discoveryObservationForm.error} onChange={(event) => setDiscoveryObservationForm((current) => ({ ...current, error: event.target.value }))} /></label>
+            <button type="submit">Сохранить наблюдение</button>
           </form>
         </div>
 
         <div className="card full-span">
-          <h2>Zone discovery summary</h2>
+          <h2>Сводка по зонам</h2>
           <div className="key-value compact">
             {discoveryZoneStats.length === 0 ? <div><span>Нет данных</span><strong>0</strong></div> : null}
             {discoveryZoneStats.map((item) => (
               <div key={item.zone}>
                 <span>.{item.zone}</span>
-                <strong>{item.total} total | {item.pending_delete} pending | {item.predicted} predicted | {item.available} available</strong>
+                <strong>{item.total} всего | {item.pending_delete} pending | {item.predicted} с прогнозом | {item.available} доступно</strong>
               </div>
             ))}
           </div>
@@ -1665,14 +1742,14 @@ export default function App() {
         <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>Discovery timeline</h2>
+              <h2>История discovery</h2>
               <p className="muted">
                 История RDAP/manual observations по выбранному домену. Это основной журнал для вычисления перехода redemption {"->"} pendingDelete {"->"} available.
               </p>
             </div>
             {selectedDiscoveryDomain ? (
               <button type="button" className="ghost" onClick={() => void loadDiscoveryTimeline(selectedDiscoveryDomain.id)}>
-                Обновить timeline
+                Обновить историю
               </button>
             ) : null}
           </div>
@@ -1680,12 +1757,12 @@ export default function App() {
             <>
               <div className="key-value compact timeline-summary">
                 <div>
-                  <span>Domain</span>
+                  <span>Домен</span>
                   <strong>{selectedDiscoveryDomain.fqdn}</strong>
                 </div>
                 <div>
-                  <span>Current status</span>
-                  <strong>{selectedDiscoveryDomain.status} | {selectedDiscoveryDomain.last_lifecycle_stage ?? "unknown"}</strong>
+                  <span>Текущий статус</span>
+                  <strong>{formatStatusLabel(selectedDiscoveryDomain.status)} | {formatLifecycleLabel(selectedDiscoveryDomain.last_lifecycle_stage)}</strong>
                 </div>
                 <div>
                   <span>Автопрогноз</span>
@@ -1712,18 +1789,18 @@ export default function App() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Observed</th>
-                      <th>Source</th>
+                      <th>Время</th>
+                      <th>Источник</th>
                       <th>Lifecycle</th>
-                      <th>Status codes</th>
+                      <th>Коды статуса</th>
                       <th>HTTP / latency</th>
-                      <th>Error / raw</th>
+                      <th>Ошибка / ответ</th>
                     </tr>
                   </thead>
                   <tbody>
                     {discoveryObservations.length === 0 ? (
                       <tr>
-                        <td colSpan={6}>Истории пока нет. Нажми Check now или дождись автоматического RDAP-чека.</td>
+                        <td colSpan={6}>Истории пока нет. Нажми “Проверить сейчас” или дождись автоматического RDAP-чека.</td>
                       </tr>
                     ) : null}
                     {discoveryObservations.map((observation) => (
@@ -1731,17 +1808,17 @@ export default function App() {
                         <td>{formatDateTime(observation.observed_at)}</td>
                         <td>{observation.source}</td>
                         <td>
-                          <div>{observation.lifecycle_stage ?? "unknown"}</div>
-                          <div className="row-hint">availability: {observation.availability_status ?? "unknown"}</div>
+                          <div>{formatLifecycleLabel(observation.lifecycle_stage)}</div>
+                          <div className="row-hint">доступность: {formatAvailabilityLabel(observation.availability_status)}</div>
                         </td>
                         <td><span className="code-inline">{observation.status_codes ?? "—"}</span></td>
                         <td>
                           <div>{observation.http_status ?? "—"}</div>
-                          <div className="row-hint">{observation.latency_ms ? `${observation.latency_ms} ms` : "latency: —"}</div>
+                          <div className="row-hint">{observation.latency_ms ? `${observation.latency_ms} ms` : "задержка: —"}</div>
                         </td>
                         <td>
-                          {observation.error ? <div className="row-hint">error: {observation.error}</div> : null}
-                          {observation.raw_response ? <div className="row-hint clipped-text">{observation.raw_response}</div> : <div className="row-hint">raw: —</div>}
+                          {observation.error ? <div className="row-hint">ошибка: {observation.error}</div> : null}
+                          {observation.raw_response ? <div className="row-hint clipped-text">{observation.raw_response}</div> : <div className="row-hint">ответ: —</div>}
                         </td>
                       </tr>
                     ))}
@@ -1750,21 +1827,21 @@ export default function App() {
               </div>
             </>
           ) : (
-            <p className="muted">Выбери домен через кнопку Timeline в таблице ниже.</p>
+            <p className="muted">Выбери домен через кнопку “История” в таблице ниже.</p>
           )}
         </div>
 
         <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>Discovery domains</h2>
+              <h2>Домены discovery</h2>
               <p className="muted">
                 Показано {paginatedDiscoveryDomains.length} из {filteredDiscoveryDomains.length}; всего в discovery {discoveryDomains.length}.
               </p>
             </div>
             <div className="button-row">
               <a className="button-link ghost" href={discoveryAvailableExportUrl(discoveryFilters.zone || undefined)}>
-                Скачать available CSV
+                Скачать доступные CSV
               </a>
               <button
                 type="button"
@@ -1791,7 +1868,7 @@ export default function App() {
               />
             </label>
             <label>
-              <span>Zone</span>
+              <span>Зона</span>
               <select
                 value={discoveryFilters.zone}
                 onChange={(event) => {
@@ -1799,12 +1876,12 @@ export default function App() {
                   setDiscoveryPage(1);
                 }}
               >
-                <option value="">All zones</option>
+                <option value="">Все зоны</option>
                 {discoveryZoneOptions.map((zone) => <option key={zone} value={zone}>.{zone}</option>)}
               </select>
             </label>
             <label>
-              <span>Status</span>
+              <span>Статус</span>
               <select
                 value={discoveryFilters.status}
                 onChange={(event) => {
@@ -1812,8 +1889,8 @@ export default function App() {
                   setDiscoveryPage(1);
                 }}
               >
-                <option value="">All statuses</option>
-                {discoveryStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+                <option value="">Все статусы</option>
+                {discoveryStatusOptions.map((status) => <option key={status} value={status}>{formatStatusLabel(status)}</option>)}
               </select>
             </label>
             <label>
@@ -1825,12 +1902,12 @@ export default function App() {
                   setDiscoveryPage(1);
                 }}
               >
-                <option value="">All lifecycles</option>
-                {discoveryLifecycleOptions.map((lifecycle) => <option key={lifecycle} value={lifecycle}>{lifecycle}</option>)}
+                <option value="">Все стадии</option>
+                {discoveryLifecycleOptions.map((lifecycle) => <option key={lifecycle} value={lifecycle}>{formatLifecycleLabel(lifecycle)}</option>)}
               </select>
             </label>
             <label>
-              <span>Page size</span>
+              <span>На странице</span>
               <select
                 value={discoveryFilters.pageSize}
                 onChange={(event) => {
@@ -1849,14 +1926,14 @@ export default function App() {
             <table>
               <thead>
                 <tr>
-                  <th>Domain</th>
-                  <th>Status</th>
+                  <th>Домен</th>
+                  <th>Статус</th>
                   <th>Lifecycle</th>
                   <th>Прогноз pendingDelete</th>
                   <th>Прогноз drop</th>
-                  <th>Availability</th>
-                  <th>Next check</th>
-                  <th>Actions</th>
+                  <th>Доступность</th>
+                  <th>Следующая проверка</th>
+                  <th>Действия</th>
                 </tr>
               </thead>
               <tbody>
@@ -1868,11 +1945,11 @@ export default function App() {
                 {paginatedDiscoveryDomains.map((domain) => (
                   <tr key={domain.id}>
                     <td><strong>{domain.fqdn}</strong><div className="row-hint">.{domain.zone} | {domain.source_mode}</div></td>
-                    <td><span className={statusClass(domain.status)}>{domain.status}</span></td>
+                    <td><span className={statusClass(domain.status)}>{formatStatusLabel(domain.status)}</span></td>
                     <td>
-                      <div>{domain.last_lifecycle_stage ?? "—"}</div>
-                      <div className="row-hint">codes: {domain.last_status_codes ?? "—"}</div>
-                      <div className="row-hint">checked: {formatDateTime(domain.last_checked_at)}</div>
+                      <div>{formatLifecycleLabel(domain.last_lifecycle_stage)}</div>
+                      <div className="row-hint">коды: {domain.last_status_codes ?? "—"}</div>
+                      <div className="row-hint">проверено: {formatDateTime(domain.last_checked_at)}</div>
                     </td>
                     <td>
                       <div>{formatDateTime(domain.predicted_pending_delete_at)}</div>
@@ -1881,20 +1958,20 @@ export default function App() {
                     </td>
                     <td>
                       <div>{formatDateTime(domain.predicted_drop_start_at)}</div>
-                      <div className="row-hint">to {formatDateTime(domain.predicted_drop_end_at)}</div>
+                      <div className="row-hint">до {formatDateTime(domain.predicted_drop_end_at)}</div>
                       <div className="row-hint">pendingDelete увидели: {formatDateTime(domain.first_seen_pending_delete_at)}</div>
                     </td>
                     <td>
-                      <div>{domain.last_availability ?? "unknown"}</div>
-                      <div className="row-hint">available first: {formatDateTime(domain.available_first_seen_at)}</div>
-                      {domain.last_error ? <div className="row-hint">error: {domain.last_error}</div> : null}
+                      <div>{formatAvailabilityLabel(domain.last_availability)}</div>
+                      <div className="row-hint">впервые доступен: {formatDateTime(domain.available_first_seen_at)}</div>
+                      {domain.last_error ? <div className="row-hint">ошибка: {domain.last_error}</div> : null}
                     </td>
                     <td>{formatDateTime(domain.next_check_at)}</td>
                     <td>
                       <div className="actions">
-                        <button type="button" onClick={() => void checkDiscoveryDomainNow(domain.id)}>Check now</button>
-                        <button type="button" className="ghost" onClick={() => void loadDiscoveryTimeline(domain.id)}>Timeline</button>
-                        <button type="button" className="ghost" onClick={() => setDiscoveryObservationForm((current) => ({ ...current, domainId: String(domain.id) }))}>Observation</button>
+                        <button type="button" onClick={() => void checkDiscoveryDomainNow(domain.id)}>Проверить сейчас</button>
+                        <button type="button" className="ghost" onClick={() => void loadDiscoveryTimeline(domain.id)}>История</button>
+                        <button type="button" className="ghost" onClick={() => setDiscoveryObservationForm((current) => ({ ...current, domainId: String(domain.id) }))}>Наблюдение</button>
                         <button type="button" className="danger" onClick={() => void deleteItem("discovery", domain.id)}>Удалить</button>
                       </div>
                     </td>
@@ -1938,14 +2015,14 @@ export default function App() {
             <div>
               <h2>AllZonefiles</h2>
               <p className="muted">
-                API: {allZonefilesSettings?.base_url ?? "—"}; token: {allZonefilesSettings?.configured ? "configured" : "not configured"}
+                API: {allZonefilesSettings?.base_url ?? "—"}; токен: {allZonefilesSettings?.configured ? "настроен" : "не настроен"}
               </p>
             </div>
-            <button type="button" className="ghost" onClick={() => void testAllZonefilesToken()}>Test connection</button>
+            <button type="button" className="ghost" onClick={() => void testAllZonefilesToken()}>Проверить подключение</button>
           </div>
           <form className="form" onSubmit={saveAllZonefilesToken}>
             <label>
-              <span>API token</span>
+              <span>API токен</span>
               <input
                 type="password"
                 value={allZonefilesTokenForm}
@@ -1953,47 +2030,47 @@ export default function App() {
                 placeholder={allZonefilesSettings?.configured ? "Новый token или пусто для очистки" : "allzfio_..."}
               />
             </label>
-            <button type="submit">Сохранить token</button>
+            <button type="submit">Сохранить токен</button>
           </form>
         </div>
 
         <div className="card">
           <div className="card-head">
             <div>
-              <h2>Новый scan job</h2>
-              <p className="muted">Для поиска pendingDelete через 1-2 дня используй historic zonefile за 28-29 дней назад, а не latest zonefile.</p>
+              <h2>Новая задача сканирования</h2>
+              <p className="muted">Для поиска pendingDelete через 1-2 дня используй исторический zonefile за 28-29 дней назад, а не актуальный zonefile.</p>
             </div>
           </div>
           <form className="form" onSubmit={submitZoneScanJob}>
             <div className="form-grid">
-              <label><span>Zone</span><input value={zoneScanForm.zone} onChange={(event) => setZoneScanForm((current) => ({ ...current, zone: event.target.value }))} /></label>
+              <label><span>Зона</span><input value={zoneScanForm.zone} onChange={(event) => setZoneScanForm((current) => ({ ...current, zone: event.target.value }))} /></label>
               <label>
-                <span>Source</span>
+                <span>Источник</span>
                 <select value={zoneScanForm.sourceType} onChange={(event) => setZoneScanForm((current) => ({ ...current, sourceType: event.target.value }))}>
-                  <option value="zone_latest">Latest zonefile</option>
-                  <option value="zone_historic">Historic zonefile</option>
-                  <option value="expired_latest">Latest expired list</option>
-                  <option value="expired_historic">Historic expired list</option>
+                  <option value="zone_latest">актуальный zonefile</option>
+                  <option value="zone_historic">исторический zonefile</option>
+                  <option value="expired_latest">актуальный список expired</option>
+                  <option value="expired_historic">исторический список expired</option>
                 </select>
               </label>
-              <label><span>Date</span><input type="date" value={zoneScanForm.sourceDate} onChange={(event) => setZoneScanForm((current) => ({ ...current, sourceDate: event.target.value }))} /></label>
-              <label><span>Min score</span><input value={zoneScanForm.minScore} onChange={(event) => setZoneScanForm((current) => ({ ...current, minScore: event.target.value }))} /></label>
-              <label><span>Limit output</span><input value={zoneScanForm.limitOutput} onChange={(event) => setZoneScanForm((current) => ({ ...current, limitOutput: event.target.value }))} /></label>
-              <label><span>Max RDAP</span><input value={zoneScanForm.maxRdapChecks} onChange={(event) => setZoneScanForm((current) => ({ ...current, maxRdapChecks: event.target.value }))} /></label>
-              <label><span>Concurrency</span><input value={zoneScanForm.concurrency} onChange={(event) => setZoneScanForm((current) => ({ ...current, concurrency: event.target.value }))} /></label>
-              <label><span>RDAP timeout</span><input value={zoneScanForm.rdapTimeoutSeconds} onChange={(event) => setZoneScanForm((current) => ({ ...current, rdapTimeoutSeconds: event.target.value }))} /></label>
-              <label><span>Pending min days</span><input value={zoneScanForm.pendingDeleteMinDays} onChange={(event) => setZoneScanForm((current) => ({ ...current, pendingDeleteMinDays: event.target.value }))} /></label>
-              <label><span>Pending max days</span><input value={zoneScanForm.pendingDeleteMaxDays} onChange={(event) => setZoneScanForm((current) => ({ ...current, pendingDeleteMaxDays: event.target.value }))} /></label>
-              <label><span>Reservoir size</span><input value={zoneScanForm.reservoirSize} onChange={(event) => setZoneScanForm((current) => ({ ...current, reservoirSize: event.target.value }))} /></label>
-              <label><span>Random seed</span><input value={zoneScanForm.randomSeed} onChange={(event) => setZoneScanForm((current) => ({ ...current, randomSeed: event.target.value }))} /></label>
+              <label><span>Дата файла</span><input type="date" value={zoneScanForm.sourceDate} onChange={(event) => setZoneScanForm((current) => ({ ...current, sourceDate: event.target.value }))} /></label>
+              <label><span>Мин. score</span><input value={zoneScanForm.minScore} onChange={(event) => setZoneScanForm((current) => ({ ...current, minScore: event.target.value }))} /></label>
+              <label><span>Лимит результата</span><input value={zoneScanForm.limitOutput} onChange={(event) => setZoneScanForm((current) => ({ ...current, limitOutput: event.target.value }))} /></label>
+              <label><span>Макс. RDAP</span><input value={zoneScanForm.maxRdapChecks} onChange={(event) => setZoneScanForm((current) => ({ ...current, maxRdapChecks: event.target.value }))} /></label>
+              <label><span>Потоки</span><input value={zoneScanForm.concurrency} onChange={(event) => setZoneScanForm((current) => ({ ...current, concurrency: event.target.value }))} /></label>
+              <label><span>Таймаут RDAP</span><input value={zoneScanForm.rdapTimeoutSeconds} onChange={(event) => setZoneScanForm((current) => ({ ...current, rdapTimeoutSeconds: event.target.value }))} /></label>
+              <label><span>Pending мин. дней</span><input value={zoneScanForm.pendingDeleteMinDays} onChange={(event) => setZoneScanForm((current) => ({ ...current, pendingDeleteMinDays: event.target.value }))} /></label>
+              <label><span>Pending макс. дней</span><input value={zoneScanForm.pendingDeleteMaxDays} onChange={(event) => setZoneScanForm((current) => ({ ...current, pendingDeleteMaxDays: event.target.value }))} /></label>
+              <label><span>Размер выборки</span><input value={zoneScanForm.reservoirSize} onChange={(event) => setZoneScanForm((current) => ({ ...current, reservoirSize: event.target.value }))} /></label>
+              <label><span>Seed рандома</span><input value={zoneScanForm.randomSeed} onChange={(event) => setZoneScanForm((current) => ({ ...current, randomSeed: event.target.value }))} /></label>
             </div>
             <label className="checkbox">
               <input type="checkbox" checked={zoneScanForm.keepFile} onChange={(event) => setZoneScanForm((current) => ({ ...current, keepFile: event.target.checked }))} />
-              <span>Оставить скачанный .gz файл после scan</span>
+              <span>Оставить скачанный .gz файл после сканирования</span>
             </label>
-            <button type="submit">Start server scan</button>
+            <button type="submit">Запустить сканирование</button>
             <button type="button" className="secondary" onClick={createPendingWindowProbeJobs}>
-              Start 1-2 day pendingDelete probe
+              Найти pendingDelete через 1-2 дня
             </button>
           </form>
         </div>
@@ -2001,8 +2078,8 @@ export default function App() {
         <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>Scan jobs</h2>
-              <p className="muted">Выбери job, чтобы отфильтровать кандидатов. Активные jobs продолжают работать на сервере.</p>
+              <h2>Задачи сканирования</h2>
+              <p className="muted">Выбери задачу, чтобы отфильтровать кандидатов. Активные задачи продолжают работать на сервере.</p>
             </div>
             <button type="button" className="ghost" onClick={() => void refreshZoneScanner()}>Обновить</button>
           </div>
@@ -2011,51 +2088,51 @@ export default function App() {
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Zone</th>
-                  <th>Status</th>
-                  <th>File</th>
-                  <th>Progress</th>
+                  <th>Зона</th>
+                  <th>Статус</th>
+                  <th>Файл</th>
+                  <th>Прогресс</th>
                   <th>RDAP</th>
-                  <th>Found</th>
-                  <th>Actions</th>
+                  <th>Найдено</th>
+                  <th>Действия</th>
                 </tr>
               </thead>
               <tbody>
                 {zoneScanJobs.length === 0 ? (
-                  <tr><td colSpan={8}>Scan jobs пока нет.</td></tr>
+                  <tr><td colSpan={8}>Задач сканирования пока нет.</td></tr>
                 ) : null}
                 {zoneScanJobs.map((job) => (
                   <tr key={job.id}>
                     <td>#{job.id}</td>
                     <td>
                       <strong>.{job.zone}</strong>
-                      <div className="row-hint">{job.source_type}{job.source_date ? ` / ${job.source_date}` : ""}</div>
+                      <div className="row-hint">{formatSourceType(job.source_type)}{job.source_date ? ` / ${job.source_date}` : ""}</div>
                     </td>
                     <td>
-                      <span className={statusClass(job.status)}>{job.status}</span>
-                      {job.last_error ? <div className="row-hint">error: {job.last_error}</div> : null}
+                      <span className={statusClass(job.status)}>{formatStatusLabel(job.status)}</span>
+                      {job.last_error ? <div className="row-hint">ошибка: {job.last_error}</div> : null}
                     </td>
                     <td>
                       <div>{job.file_name ?? "—"}</div>
                       <div className="row-hint">{formatBytes(job.downloaded_bytes)} / {formatBytes(job.file_size_bytes)}</div>
                     </td>
                     <td>
-                      <div>lines: {job.scanned_lines.toLocaleString("ru-RU")}</div>
-                      <div className="row-hint">filtered: {job.filtered_candidates.toLocaleString("ru-RU")}</div>
+                      <div>строк: {job.scanned_lines.toLocaleString("ru-RU")}</div>
+                      <div className="row-hint">отфильтровано: {job.filtered_candidates.toLocaleString("ru-RU")}</div>
                     </td>
                     <td>
                       <div>{job.completed_rdap.toLocaleString("ru-RU")} / {job.submitted_rdap.toLocaleString("ru-RU")}</div>
-                      <div className="row-hint">max: {job.max_rdap_checks.toLocaleString("ru-RU")}; threads: {job.concurrency}</div>
+                      <div className="row-hint">макс: {job.max_rdap_checks.toLocaleString("ru-RU")}; потоки: {job.concurrency}</div>
                     </td>
                     <td>
                       <strong>{job.found_candidates}</strong>
-                      <div className="row-hint">errors: {job.error_count}</div>
+                      <div className="row-hint">ошибки: {job.error_count}</div>
                     </td>
                     <td>
                       <div className="actions">
-                        <button type="button" onClick={() => void selectZoneScanJob(job.id)}>Candidates</button>
-                        <button type="button" className="ghost" onClick={() => void cancelZoneScanJob(job.id)}>Stop</button>
-                        <button type="button" className="ghost" onClick={() => void deleteZoneScanFile(job.id)}>Delete file</button>
+                        <button type="button" onClick={() => void selectZoneScanJob(job.id)}>Кандидаты</button>
+                        <button type="button" className="ghost" onClick={() => void cancelZoneScanJob(job.id)}>Стоп</button>
+                        <button type="button" className="ghost" onClick={() => void deleteZoneScanFile(job.id)}>Удалить файл</button>
                         <button type="button" className="danger" onClick={() => void deleteZoneScanJob(job.id)}>Удалить</button>
                       </div>
                     </td>
@@ -2069,9 +2146,9 @@ export default function App() {
         <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>Found candidates</h2>
+              <h2>Найденные кандидаты</h2>
               <p className="muted">
-                {selectedJob ? `Job #${selectedJob.id}, .${selectedJob.zone}` : "Все последние кандидаты"}; показано {zoneScanCandidates.length}.
+                {selectedJob ? `Задача #${selectedJob.id}, .${selectedJob.zone}` : "Все последние кандидаты"}; показано {zoneScanCandidates.length}.
               </p>
             </div>
             <button type="button" className="ghost" onClick={() => void selectZoneScanJob(null)}>Показать все</button>
@@ -2080,12 +2157,12 @@ export default function App() {
             <table>
               <thead>
                 <tr>
-                  <th>Domain</th>
+                  <th>Домен</th>
                   <th>Lifecycle</th>
-                  <th>Pending forecast</th>
+                  <th>Прогноз pendingDelete</th>
                   <th>Score</th>
-                  <th>Checked</th>
-                  <th>Actions</th>
+                  <th>Проверено</th>
+                  <th>Действия</th>
                 </tr>
               </thead>
               <tbody>
@@ -2099,13 +2176,13 @@ export default function App() {
                       <div className="row-hint">job #{candidate.job_id} | .{candidate.zone}</div>
                     </td>
                     <td>
-                      <span className={statusClass(candidate.lifecycle_stage)}>{candidate.lifecycle_stage}</span>
-                      <div className="row-hint">{candidate.status_codes ?? "codes: —"}</div>
+                      <span className={statusClass(candidate.lifecycle_stage)}>{formatLifecycleLabel(candidate.lifecycle_stage)}</span>
+                      <div className="row-hint">{candidate.status_codes ?? "коды: —"}</div>
                     </td>
                     <td>
                       <div>{formatDateTime(candidate.predicted_pending_delete_at)}</div>
-                      <div className="row-hint">anchor: {formatDateTime(candidate.redemption_anchor_at)}</div>
-                      <div className="row-hint">days: {candidate.days_to_pending_delete ?? "—"}</div>
+                      <div className="row-hint">считаем от: {formatDateTime(candidate.redemption_anchor_at)}</div>
+                      <div className="row-hint">дней: {candidate.days_to_pending_delete ?? "—"}</div>
                     </td>
                     <td>
                       <strong>{candidate.score}</strong>
@@ -2122,9 +2199,9 @@ export default function App() {
                           disabled={Boolean(candidate.discovery_domain_id)}
                           onClick={() => void addZoneScanCandidateToDiscovery(candidate.id)}
                         >
-                          {candidate.discovery_domain_id ? "In Discovery" : "Add to Discovery"}
+                          {candidate.discovery_domain_id ? "Уже в discovery" : "Добавить в discovery"}
                         </button>
-                        <button type="button" className="ghost" onClick={() => void ignoreZoneScanCandidate(candidate.id)}>Ignore</button>
+                        <button type="button" className="ghost" onClick={() => void ignoreZoneScanCandidate(candidate.id)}>Скрыть</button>
                       </div>
                     </td>
                   </tr>
@@ -2147,8 +2224,8 @@ export default function App() {
               <p className="muted">У каждого домена обязательна дата дропа. Внутри дня атака работает только по окну зоны.</p>
             </div>
             <div className="actions">
-              <button type="button" className="ghost" onClick={() => void dryRunReadyDueTodayDomains()}>Dry run due today</button>
-              <button type="button" onClick={() => void startTodayAttacks(false)}>Старт due today</button>
+              <button type="button" className="ghost" onClick={() => void dryRunReadyDueTodayDomains()}>Dry-run на сегодня</button>
+              <button type="button" onClick={() => void startTodayAttacks(false)}>Старт на сегодня</button>
               <button type="button" className="ghost" onClick={() => void startTodayAttacks(true)}>Перестроить атаки</button>
             </div>
           </div>
@@ -2156,7 +2233,7 @@ export default function App() {
           <form className="form" onSubmit={submitDomains}>
             <p className="muted">
               `inherit_zone` использует общую стратегию зоны. `manual_override` переводит домен на собственные
-              rules/phases, которые дальше настраиваются ниже в этой вкладке.
+              окна/фазы, которые дальше настраиваются ниже в этой вкладке.
             </p>
             <label>
               <span>Домены по одному или пачкой</span>
@@ -2174,46 +2251,46 @@ export default function App() {
             <div className="form two-columns">
               <label><span>Дата дропа</span><input type="date" value={domainForm.dropDate} onChange={(event) => setDomainForm((current) => ({ ...current, dropDate: event.target.value }))} /></label>
               <label><span>Приоритет</span><input value={domainForm.priority} onChange={(event) => setDomainForm((current) => ({ ...current, priority: event.target.value }))} /></label>
-              <label><span>Zone</span><input value={domainForm.zone} onChange={(event) => setDomainForm((current) => ({ ...current, zone: event.target.value }))} /></label>
-              <label><span>Timezone</span><input value={domainForm.timezoneName} onChange={(event) => setDomainForm((current) => ({ ...current, timezoneName: event.target.value }))} /></label>
-              <label><span>Registrar</span><input value={domainForm.registrarSlug} onChange={(event) => setDomainForm((current) => ({ ...current, registrarSlug: event.target.value }))} /></label>
-              <label><span>Duration years</span><input value={domainForm.requestedDurationYears} onChange={(event) => setDomainForm((current) => ({ ...current, requestedDurationYears: event.target.value }))} /></label>
+              <label><span>Зона</span><input value={domainForm.zone} onChange={(event) => setDomainForm((current) => ({ ...current, zone: event.target.value }))} /></label>
+              <label><span>Часовой пояс</span><input value={domainForm.timezoneName} onChange={(event) => setDomainForm((current) => ({ ...current, timezoneName: event.target.value }))} /></label>
+              <label><span>Регистратор</span><input value={domainForm.registrarSlug} onChange={(event) => setDomainForm((current) => ({ ...current, registrarSlug: event.target.value }))} /></label>
+              <label><span>Лет регистрации</span><input value={domainForm.requestedDurationYears} onChange={(event) => setDomainForm((current) => ({ ...current, requestedDurationYears: event.target.value }))} /></label>
               <label>
-                <span>Strategy mode</span>
+                <span>Режим стратегии</span>
                 <select value={domainForm.strategyMode} onChange={(event) => setDomainForm((current) => ({ ...current, strategyMode: event.target.value }))}>
-                  <option value="inherit_zone">inherit_zone</option>
-                  <option value="manual_override">manual_override</option>
+                  <option value="inherit_zone">стратегия зоны</option>
+                  <option value="manual_override">ручной override</option>
                 </select>
               </label>
               <label>
-                <span>Zone strategy</span>
+                <span>Стратегия зоны</span>
                 <select value={domainForm.zoneStrategyId} onChange={(event) => setDomainForm((current) => ({ ...current, zoneStrategyId: event.target.value }))}>
-                  <option value="">Auto by zone</option>
+                  <option value="">Авто по зоне</option>
                   {matchingDomainStrategies.map((strategy) => <option key={strategy.id} value={strategy.id}>{strategy.zone} | {strategy.name}</option>)}
                 </select>
               </label>
               <label>
-                <span>Registrar account</span>
+                <span>Аккаунт регистратора</span>
                 <select value={domainForm.registrarAccountId} onChange={(event) => setDomainForm((current) => ({ ...current, registrarAccountId: event.target.value }))}>
                   <option value="">Автовыбор</option>
                   {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                 </select>
               </label>
               <label>
-                <span>Contact profile</span>
+                <span>Профиль контакта</span>
                 <select value={domainForm.contactProfileId} onChange={(event) => setDomainForm((current) => ({ ...current, contactProfileId: event.target.value }))}>
                   <option value="">Автовыбор</option>
                   {contacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.label}</option>)}
                 </select>
               </label>
-              <label><span>Min guaranteed RPS override</span><input value={domainForm.overrideMinGuaranteedRps} onChange={(event) => setDomainForm((current) => ({ ...current, overrideMinGuaranteedRps: event.target.value }))} placeholder="empty = use zone default" /></label>
-              <label><span>Window minute</span><input value={domainForm.windowStartMinute} onChange={(event) => setDomainForm((current) => ({ ...current, windowStartMinute: event.target.value }))} /></label>
-              <label><span>Window second</span><input value={domainForm.windowStartSecond} onChange={(event) => setDomainForm((current) => ({ ...current, windowStartSecond: event.target.value }))} /></label>
-              <label><span>Window duration sec</span><input value={domainForm.windowDurationSeconds} onChange={(event) => setDomainForm((current) => ({ ...current, windowDurationSeconds: event.target.value }))} /></label>
+              <label><span>Override мин. RPS</span><input value={domainForm.overrideMinGuaranteedRps} onChange={(event) => setDomainForm((current) => ({ ...current, overrideMinGuaranteedRps: event.target.value }))} placeholder="пусто = значение зоны" /></label>
+              <label><span>Минута окна</span><input value={domainForm.windowStartMinute} onChange={(event) => setDomainForm((current) => ({ ...current, windowStartMinute: event.target.value }))} /></label>
+              <label><span>Секунда окна</span><input value={domainForm.windowStartSecond} onChange={(event) => setDomainForm((current) => ({ ...current, windowStartSecond: event.target.value }))} /></label>
+              <label><span>Длина окна, сек</span><input value={domainForm.windowDurationSeconds} onChange={(event) => setDomainForm((current) => ({ ...current, windowDurationSeconds: event.target.value }))} /></label>
               <label className="checkbox"><input type="checkbox" checked={domainForm.attackEnabled} onChange={(event) => setDomainForm((current) => ({ ...current, attackEnabled: event.target.checked }))} /><span>Атака активна</span></label>
             </div>
             <label>
-              <span>Gandi registration extra parameters (JSON)</span>
+              <span>Дополнительные параметры регистрации Gandi (JSON)</span>
               <textarea
                 rows={3}
                 value={domainForm.registrationExtraParameters}
@@ -2230,7 +2307,7 @@ export default function App() {
           <h2>Активный пул</h2>
           <div className="key-value compact">
             <div><span>Всего доменов</span><strong>{overview?.total_domains ?? 0}</strong></div>
-            <div><span>Due today</span><strong>{overview?.due_today_domains ?? 0}</strong></div>
+            <div><span>Дроп сегодня</span><strong>{overview?.due_today_domains ?? 0}</strong></div>
             <div><span>Сейчас в атаке</span><strong>{overview?.active_attack_domains ?? 0}</strong></div>
             <div><span>Успешно сегодня</span><strong>{overview?.success_today_domains ?? 0}</strong></div>
           </div>
@@ -2239,12 +2316,12 @@ export default function App() {
         <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>Domain Manual Override</h2>
-              <p className="muted">Для доменов в режиме `manual_override` здесь задаются собственные settings, rules, phases и preview.</p>
+              <h2>Ручной override домена</h2>
+              <p className="muted">Для доменов в режиме `manual_override` здесь задаются собственные настройки, окна, фазы и предпросмотр.</p>
             </div>
             <div className="actions">
               <label>
-                <span>Preview date</span>
+                <span>Дата предпросмотра</span>
                 <input type="date" value={previewDate} onChange={(event) => setPreviewDate(event.target.value)} />
               </label>
               <button type="button" className="ghost" onClick={() => selectedOverrideDomainId ? void loadDomainOverrideDetails(selectedOverrideDomainId, previewDate) : undefined}>Обновить override</button>
@@ -2253,7 +2330,7 @@ export default function App() {
 
           <div className="form two-columns">
             <label>
-              <span>Manual override domain</span>
+              <span>Домен с ручным override</span>
               <select value={selectedOverrideDomainId ?? ""} onChange={(event) => setSelectedOverrideDomainId(event.target.value ? Number(event.target.value) : null)}>
                 <option value="">Выбери домен</option>
                 {manualOverrideDomains.map((domain) => (
@@ -2264,10 +2341,10 @@ export default function App() {
               </select>
             </label>
             <div className="key-value compact">
-              <div><span>Override object</span><strong>{domainOverrideSettings ? `#${domainOverrideSettings.id}` : "not initialized"}</strong></div>
-              <div><span>Rules</span><strong>{domainOverrideRules.length}</strong></div>
-              <div><span>Preview windows</span><strong>{domainOverridePreview?.windows.length ?? 0}</strong></div>
-              <div><span>Readiness</span><strong>{selectedOverrideDomain ? formatDomainReadiness(selectedOverrideDomain) : "—"}</strong></div>
+              <div><span>Override объект</span><strong>{domainOverrideSettings ? `#${domainOverrideSettings.id}` : "не создан"}</strong></div>
+              <div><span>Окна</span><strong>{domainOverrideRules.length}</strong></div>
+              <div><span>Окон в предпросмотре</span><strong>{domainOverridePreview?.windows.length ?? 0}</strong></div>
+              <div><span>Готовность</span><strong>{selectedOverrideDomain ? formatDomainReadiness(selectedOverrideDomain) : "—"}</strong></div>
             </div>
           </div>
 
@@ -2275,108 +2352,108 @@ export default function App() {
             <>
               <div className="grid two">
                 <div className="card">
-                  <h3>Override Settings</h3>
+                  <h3>Настройки override</h3>
                   <form className="form" onSubmit={saveDomainOverrideSettings}>
                     <div className="form two-columns">
-                      <label><span>Timezone</span><input value={domainOverrideForm.timezoneName} onChange={(event) => setDomainOverrideForm((current) => ({ ...current, timezoneName: event.target.value }))} /></label>
+                      <label><span>Часовой пояс</span><input value={domainOverrideForm.timezoneName} onChange={(event) => setDomainOverrideForm((current) => ({ ...current, timezoneName: event.target.value }))} /></label>
                       <label>
-                        <span>Resolution</span>
+                        <span>Как выбирать окно</span>
                         <select value={domainOverrideForm.ruleResolutionMode} onChange={(event) => setDomainOverrideForm((current) => ({ ...current, ruleResolutionMode: event.target.value }))}>
-                          <option value="priority">priority</option>
-                          <option value="merge">merge</option>
+                          <option value="priority">по приоритету</option>
+                          <option value="merge">объединять окна</option>
                         </select>
                       </label>
-                      <label><span>Default min RPS</span><input value={domainOverrideForm.defaultMinGuaranteedRps} onChange={(event) => setDomainOverrideForm((current) => ({ ...current, defaultMinGuaranteedRps: event.target.value }))} /></label>
+                      <label><span>Мин. RPS по умолчанию</span><input value={domainOverrideForm.defaultMinGuaranteedRps} onChange={(event) => setDomainOverrideForm((current) => ({ ...current, defaultMinGuaranteedRps: event.target.value }))} /></label>
                     </div>
-                    <label><span>Notes</span><textarea rows={2} value={domainOverrideForm.notes} onChange={(event) => setDomainOverrideForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+                    <label><span>Заметки</span><textarea rows={2} value={domainOverrideForm.notes} onChange={(event) => setDomainOverrideForm((current) => ({ ...current, notes: event.target.value }))} /></label>
                     <button type="submit">{domainOverrideSettings ? "Сохранить override" : "Инициализировать override"}</button>
                   </form>
                 </div>
 
                 <div className="card">
-                  <h3>Override Rule</h3>
+                  <h3>Override-окно</h3>
                   <form className="form" onSubmit={submitDomainOverrideRule}>
                     <div className="form two-columns">
-                      <label><span>Name</span><input value={domainOverrideRuleForm.name} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, name: event.target.value }))} /></label>
+                      <label><span>Название</span><input value={domainOverrideRuleForm.name} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, name: event.target.value }))} /></label>
                       <label>
-                        <span>Schedule</span>
+                        <span>Расписание</span>
                         <select value={domainOverrideRuleForm.scheduleType} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, scheduleType: event.target.value }))}>
-                          <option value="hourly">hourly</option>
-                          <option value="daily">daily</option>
-                          <option value="weekly">weekly</option>
-                          <option value="one_time">one_time</option>
+                          <option value="hourly">каждый час</option>
+                          <option value="daily">каждый день</option>
+                          <option value="weekly">по дням недели</option>
+                          <option value="one_time">один раз</option>
                         </select>
                       </label>
-                      <label><span>Hour</span><input value={domainOverrideRuleForm.hour} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, hour: event.target.value }))} placeholder="empty for hourly" /></label>
-                      <label><span>Minute</span><input value={domainOverrideRuleForm.minute} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, minute: event.target.value }))} /></label>
-                      <label><span>Second</span><input value={domainOverrideRuleForm.second} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, second: event.target.value }))} /></label>
-                      <label><span>Priority</span><input value={domainOverrideRuleForm.priority} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, priority: event.target.value }))} /></label>
-                      <label><span>Weekdays</span><input value={domainOverrideRuleForm.weekdays} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, weekdays: event.target.value }))} placeholder="1,3,5" /></label>
-                      <label><span>Specific date</span><input type="date" value={domainOverrideRuleForm.specificDate} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, specificDate: event.target.value }))} /></label>
-                      <label><span>Duration sec</span><input value={domainOverrideRuleForm.windowDurationSeconds} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, windowDurationSeconds: event.target.value }))} /></label>
+                      <label><span>Час</span><input value={domainOverrideRuleForm.hour} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, hour: event.target.value }))} placeholder="пусто = каждый час" /></label>
+                      <label><span>Минута</span><input value={domainOverrideRuleForm.minute} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, minute: event.target.value }))} /></label>
+                      <label><span>Секунда</span><input value={domainOverrideRuleForm.second} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, second: event.target.value }))} /></label>
+                      <label><span>Приоритет</span><input value={domainOverrideRuleForm.priority} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, priority: event.target.value }))} /></label>
+                      <label><span>Дни недели</span><input value={domainOverrideRuleForm.weekdays} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, weekdays: event.target.value }))} placeholder="1,3,5" /></label>
+                      <label><span>Конкретная дата</span><input type="date" value={domainOverrideRuleForm.specificDate} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, specificDate: event.target.value }))} /></label>
+                      <label><span>Длина окна, сек</span><input value={domainOverrideRuleForm.windowDurationSeconds} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, windowDurationSeconds: event.target.value }))} /></label>
                       <label>
-                        <span>Execution</span>
+                        <span>Подача запросов</span>
                         <select value={domainOverrideRuleForm.executionProfileMode} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, executionProfileMode: event.target.value }))}>
-                          <option value="flat">flat</option>
-                          <option value="phased">phased</option>
+                          <option value="flat">ровно</option>
+                          <option value="phased">по фазам</option>
                         </select>
                       </label>
-                      <label className="checkbox"><input type="checkbox" checked={domainOverrideRuleForm.isEnabled} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, isEnabled: event.target.checked }))} /><span>Enabled</span></label>
+                      <label className="checkbox"><input type="checkbox" checked={domainOverrideRuleForm.isEnabled} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, isEnabled: event.target.checked }))} /><span>Включено</span></label>
                     </div>
-                    <label><span>Notes</span><textarea rows={2} value={domainOverrideRuleForm.notes} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, notes: event.target.value }))} /></label>
-                    <button type="submit">Add override rule</button>
+                    <label><span>Заметки</span><textarea rows={2} value={domainOverrideRuleForm.notes} onChange={(event) => setDomainOverrideRuleForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+                    <button type="submit">Добавить override-окно</button>
                   </form>
                 </div>
 
                 <div className="card">
-                  <h3>Override Phase</h3>
+                  <h3>Override-фаза</h3>
                   <form className="form" onSubmit={submitDomainOverridePhase}>
                     <div className="form two-columns">
                       <label>
-                        <span>Rule</span>
+                        <span>Окно</span>
                         <select value={domainOverridePhaseForm.ruleId} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, ruleId: event.target.value }))}>
-                          <option value="">Выбери rule</option>
+                          <option value="">Выбери окно</option>
                           {domainOverrideRules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name}</option>)}
                         </select>
                       </label>
-                      <label><span>Name</span><input value={domainOverridePhaseForm.name} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, name: event.target.value }))} /></label>
-                      <label><span>Sort</span><input value={domainOverridePhaseForm.sortOrder} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, sortOrder: event.target.value }))} /></label>
-                      <label><span>Offset sec</span><input value={domainOverridePhaseForm.startOffsetSeconds} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, startOffsetSeconds: event.target.value }))} /></label>
-                      <label><span>Duration sec</span><input value={domainOverridePhaseForm.durationSeconds} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, durationSeconds: event.target.value }))} /></label>
+                      <label><span>Название</span><input value={domainOverridePhaseForm.name} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, name: event.target.value }))} /></label>
+                      <label><span>Порядок</span><input value={domainOverridePhaseForm.sortOrder} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, sortOrder: event.target.value }))} /></label>
+                      <label><span>Старт через, сек</span><input value={domainOverridePhaseForm.startOffsetSeconds} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, startOffsetSeconds: event.target.value }))} /></label>
+                      <label><span>Длительность, сек</span><input value={domainOverridePhaseForm.durationSeconds} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, durationSeconds: event.target.value }))} /></label>
                       <label>
-                        <span>RPS mode</span>
+                        <span>Режим RPS</span>
                         <select value={domainOverridePhaseForm.rpsMode} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, rpsMode: event.target.value }))}>
-                          <option value="percent">percent</option>
-                          <option value="fixed">fixed</option>
+                          <option value="percent">процент</option>
+                          <option value="fixed">фиксированно</option>
                         </select>
                       </label>
-                      <label><span>RPS value</span><input value={domainOverridePhaseForm.rpsValue} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, rpsValue: event.target.value }))} /></label>
-                      <label className="checkbox"><input type="checkbox" checked={domainOverridePhaseForm.stopOnSuccess} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, stopOnSuccess: event.target.checked }))} /><span>Stop on success</span></label>
+                      <label><span>Значение RPS</span><input value={domainOverridePhaseForm.rpsValue} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, rpsValue: event.target.value }))} /></label>
+                      <label className="checkbox"><input type="checkbox" checked={domainOverridePhaseForm.stopOnSuccess} onChange={(event) => setDomainOverridePhaseForm((current) => ({ ...current, stopOnSuccess: event.target.checked }))} /><span>Остановить при успехе</span></label>
                     </div>
-                    <button type="submit" disabled={domainOverrideRules.length === 0}>Add override phase</button>
+                    <button type="submit" disabled={domainOverrideRules.length === 0}>Добавить override-фазу</button>
                   </form>
                 </div>
 
                 <div className="card">
-                  <h3>Override Preview</h3>
+                  <h3>Предпросмотр override</h3>
                   <div className="key-value compact">
-                    <div><span>Timezone</span><strong>{domainOverridePreview?.timezone_name ?? domainOverrideForm.timezoneName}</strong></div>
-                    <div><span>Resolution</span><strong>{domainOverridePreview?.resolution_mode ?? domainOverrideForm.ruleResolutionMode}</strong></div>
+                    <div><span>Часовой пояс</span><strong>{domainOverridePreview?.timezone_name ?? domainOverrideForm.timezoneName}</strong></div>
+                    <div><span>Как выбираются окна</span><strong>{formatResolutionMode(domainOverridePreview?.resolution_mode ?? domainOverrideForm.ruleResolutionMode)}</strong></div>
                   </div>
                   <div className="table-wrap">
                     <table>
                       <thead>
                         <tr>
-                          <th>Rule</th>
-                          <th>Priority</th>
-                          <th>Start</th>
-                          <th>End</th>
+                          <th>Окно</th>
+                          <th>Приоритет</th>
+                          <th>Старт</th>
+                          <th>Конец</th>
                         </tr>
                       </thead>
                       <tbody>
                         {(domainOverridePreview?.windows ?? []).map((window) => (
                           <tr key={`${window.rule_id}-${window.start_at}`}>
-                            <td>{window.rule_name ?? `rule #${window.rule_id}`}</td>
+                            <td>{window.rule_name ?? `окно #${window.rule_id}`}</td>
                             <td>{window.priority}</td>
                             <td>{formatDateTime(window.start_at)}</td>
                             <td>{formatDateTime(window.end_at)}</td>
@@ -2384,7 +2461,7 @@ export default function App() {
                         ))}
                         {(domainOverridePreview?.windows ?? []).length === 0 ? (
                           <tr>
-                            <td colSpan={4} className="empty">No windows resolved for this date</td>
+                            <td colSpan={4} className="empty">На эту дату окна не найдены</td>
                           </tr>
                         ) : null}
                       </tbody>
@@ -2400,27 +2477,27 @@ export default function App() {
                       <div>
                         <div className="domain-title-row">
                           <h3>{rule.name}</h3>
-                          <span className={statusClass(rule.is_enabled ? "ready" : "inactive")}>{rule.schedule_type}</span>
+                          <span className={statusClass(rule.is_enabled ? "ready" : "inactive")}>{formatScheduleType(rule.schedule_type)}</span>
                         </div>
                         <p className="muted">
-                          priority {rule.priority} | time {rule.hour ?? "*"}:{String(rule.minute).padStart(2, "0")}:{String(rule.second).padStart(2, "0")} | duration {rule.window_duration_seconds}s | mode {rule.execution_profile_mode}
+                          приоритет {rule.priority} | время {rule.hour ?? "*"}:{String(rule.minute).padStart(2, "0")}:{String(rule.second).padStart(2, "0")} | окно {rule.window_duration_seconds} сек | запросы: {formatExecutionMode(rule.execution_profile_mode)}
                         </p>
                       </div>
                       <div className="actions">
-                        <button type="button" className="danger" onClick={() => void removeDomainOverrideRule(rule.id)}>Delete rule</button>
+                        <button type="button" className="danger" onClick={() => void removeDomainOverrideRule(rule.id)}>Удалить окно</button>
                       </div>
                     </div>
                     <div className="table-wrap">
                       <table>
                         <thead>
                           <tr>
-                            <th>Phase</th>
-                            <th>Sort</th>
-                            <th>Offset</th>
-                            <th>Duration</th>
-                            <th>Mode</th>
-                            <th>Value</th>
-                            <th>Stop</th>
+                            <th>Фаза</th>
+                            <th>Порядок</th>
+                            <th>Старт через</th>
+                            <th>Длительность</th>
+                            <th>Режим</th>
+                            <th>Значение</th>
+                            <th>Стоп</th>
                             <th></th>
                           </tr>
                         </thead>
@@ -2429,17 +2506,17 @@ export default function App() {
                             <tr key={phase.id}>
                               <td>{phase.name}</td>
                               <td>{phase.sort_order}</td>
-                              <td>{phase.start_offset_seconds}</td>
-                              <td>{phase.duration_seconds}</td>
-                              <td>{phase.rps_mode}</td>
+                              <td>{phase.start_offset_seconds} сек</td>
+                              <td>{phase.duration_seconds} сек</td>
+                              <td>{formatRpsModeLabel(phase.rps_mode)}</td>
                               <td>{phase.rps_value}</td>
-                              <td>{phase.stop_on_success ? "yes" : "no"}</td>
-                              <td><button type="button" className="danger" onClick={() => void removeDomainOverridePhase(phase.id)}>Delete</button></td>
+                              <td>{phase.stop_on_success ? "да" : "нет"}</td>
+                              <td><button type="button" className="danger" onClick={() => void removeDomainOverridePhase(phase.id)}>Удалить</button></td>
                             </tr>
                           ))}
                           {(domainOverridePhases[rule.id] ?? []).length === 0 ? (
                             <tr>
-                              <td colSpan={8} className="empty">No phases yet</td>
+                              <td colSpan={8} className="empty">Фаз пока нет</td>
                             </tr>
                           ) : null}
                         </tbody>
@@ -2447,7 +2524,7 @@ export default function App() {
                     </div>
                   </article>
                 ))}
-                {domainOverrideRules.length === 0 ? <p className="empty">No domain override rules yet</p> : null}
+                {domainOverrideRules.length === 0 ? <p className="empty">Override-окон пока нет</p> : null}
               </div>
             </>
           ) : (
@@ -2467,10 +2544,10 @@ export default function App() {
                   <th>Домен</th>
                   <th>Статус</th>
                   <th>Дата дропа</th>
-                  <th>Readiness</th>
-                  <th>Priority</th>
-                  <th>Strategy</th>
-                  <th>Runtime RPS</th>
+                  <th>Готовность</th>
+                  <th>Приоритет</th>
+                  <th>Стратегия</th>
+                  <th>Рабочий RPS</th>
                   <th>Аккаунт</th>
                   <th>Контакт</th>
                   <th>Окно</th>
@@ -2486,37 +2563,37 @@ export default function App() {
                         <div className="row-hint">{domain.zone} | {domain.registrar_slug} | {domain.strategy_mode}</div>
                       </td>
                       <td>
-                        <span className={statusClass(domain.status)}>{domain.status}</span>
-                        {domain.runtime_attack_status ? <div className="row-hint">run: {domain.runtime_attack_status}</div> : null}
+                        <span className={statusClass(domain.status)}>{formatStatusLabel(domain.status)}</span>
+                        {domain.runtime_attack_status ? <div className="row-hint">запуск: {formatStatusLabel(domain.runtime_attack_status)}</div> : null}
                       </td>
                       <td>{domain.drop_date}</td>
                       <td>
                         <div>{formatDomainReadiness(domain)}</div>
-                        {domain.override_min_guaranteed_rps !== null ? <div className="row-hint">min override: {domain.override_min_guaranteed_rps}</div> : null}
+                        {domain.override_min_guaranteed_rps !== null ? <div className="row-hint">мин. override: {domain.override_min_guaranteed_rps}</div> : null}
                         {domain.dry_run_status ? <div className="row-hint">dry-run: {domain.dry_run_status}{domain.dry_run_http_status ? ` / ${domain.dry_run_http_status}` : ""}</div> : null}
                       </td>
                       <td>{domain.priority}</td>
                       <td>
-                        <div>{domain.zone_strategy_id ? strategyMap.get(domain.zone_strategy_id)?.name ?? `#${domain.zone_strategy_id}` : "auto"}</div>
-                        {domain.runtime_phase_name ? <div className="row-hint">phase: {domain.runtime_phase_name}</div> : null}
+                        <div>{domain.zone_strategy_id ? strategyMap.get(domain.zone_strategy_id)?.name ?? `#${domain.zone_strategy_id}` : "авто"}</div>
+                        {domain.runtime_phase_name ? <div className="row-hint">фаза: {domain.runtime_phase_name}</div> : null}
                       </td>
                       <td>
-                        <div>min {formatRps(domain.runtime_minimum_rps)}</div>
-                        <div>desired {formatRps(domain.runtime_desired_rps)}</div>
-                        <div>allocated {formatRps(domain.runtime_allocated_rps)}</div>
-                        <div className="row-hint">workers: {domain.runtime_assigned_worker_count}</div>
+                        <div>мин. {formatRps(domain.runtime_minimum_rps)}</div>
+                        <div>желаемый {formatRps(domain.runtime_desired_rps)}</div>
+                        <div>выделено {formatRps(domain.runtime_allocated_rps)}</div>
+                        <div className="row-hint">воркеры: {domain.runtime_assigned_worker_count}</div>
                       </td>
-                      <td>{domain.registrar_account_id ? accountMap.get(domain.registrar_account_id)?.name ?? `#${domain.registrar_account_id}` : "auto"}</td>
-                    <td>{domain.contact_profile_id ? contactMap.get(domain.contact_profile_id)?.label ?? `#${domain.contact_profile_id}` : "auto"}</td>
+                      <td>{domain.registrar_account_id ? accountMap.get(domain.registrar_account_id)?.name ?? `#${domain.registrar_account_id}` : "авто"}</td>
+                    <td>{domain.contact_profile_id ? contactMap.get(domain.contact_profile_id)?.label ?? `#${domain.contact_profile_id}` : "авто"}</td>
                     <td>{String(domain.window_start_minute).padStart(2, "0")}:{String(domain.window_start_second).padStart(2, "0")} + {domain.window_duration_seconds}s</td>
                     <td>
                       <div>{domain.success_at ? formatDateTime(domain.success_at) : "—"}</div>
-                      {domain.dry_run_checked_at ? <div className="row-hint">checked: {formatDateTime(domain.dry_run_checked_at)}</div> : null}
+                      {domain.dry_run_checked_at ? <div className="row-hint">проверено: {formatDateTime(domain.dry_run_checked_at)}</div> : null}
                     </td>
                     <td>
                       <div className="actions">
                         <button type="button" className="ghost" onClick={() => void startDomainAttack(domain.id)}>Старт</button>
-                        <button type="button" className="ghost" onClick={() => void dryRunDomain(domain)}>Dry run</button>
+                        <button type="button" className="ghost" onClick={() => void dryRunDomain(domain)}>Тест</button>
                         <button type="button" className="ghost" onClick={() => void toggleDomain(domain)}>{domain.attack_enabled ? "Пауза" : "Вкл"}</button>
                         {domain.strategy_mode === "manual_override" ? (
                           <button type="button" className="ghost" onClick={() => setSelectedOverrideDomainId(domain.id)}>Override</button>
@@ -2538,34 +2615,34 @@ export default function App() {
     return (
       <section className="grid two">
         <div className="card">
-          <h2>{editingWorkerId ? `Редактировать worker #${editingWorkerId}` : "Добавить worker"}</h2>
+          <h2>{editingWorkerId ? `Редактировать воркер #${editingWorkerId}` : "Добавить воркер"}</h2>
           <form className="form" onSubmit={submitWorker}>
             <div className="form two-columns">
               <label><span>Имя</span><input value={workerForm.name} onChange={(event) => setWorkerForm((current) => ({ ...current, name: event.target.value }))} /></label>
-              <label><span>Registrar</span><input value={workerForm.registrarSlug} onChange={(event) => setWorkerForm((current) => ({ ...current, registrarSlug: event.target.value }))} /></label>
+              <label><span>Регистратор</span><input value={workerForm.registrarSlug} onChange={(event) => setWorkerForm((current) => ({ ...current, registrarSlug: event.target.value }))} /></label>
               <label>
-                <span>Assigned account</span>
+                <span>Закрепленный аккаунт</span>
                 <select value={workerForm.assignedRegistrarAccountId} onChange={(event) => setWorkerForm((current) => ({ ...current, assignedRegistrarAccountId: event.target.value }))}>
                   <option value="">Не закреплен</option>
                   {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                 </select>
               </label>
               <label><span>API base URL</span><input value={workerForm.apiBaseUrl} onChange={(event) => setWorkerForm((current) => ({ ...current, apiBaseUrl: event.target.value }))} /></label>
-              <label><span>Control token</span><input value={workerForm.controlToken} onChange={(event) => setWorkerForm((current) => ({ ...current, controlToken: event.target.value }))} /></label>
-              <label><span>Status</span><input value={workerForm.status} onChange={(event) => setWorkerForm((current) => ({ ...current, status: event.target.value }))} /></label>
+              <label><span>Токен control</span><input value={workerForm.controlToken} onChange={(event) => setWorkerForm((current) => ({ ...current, controlToken: event.target.value }))} /></label>
+              <label><span>Статус</span><input value={workerForm.status} onChange={(event) => setWorkerForm((current) => ({ ...current, status: event.target.value }))} /></label>
               <label><span>IP</span><input value={workerForm.ipAddress} onChange={(event) => setWorkerForm((current) => ({ ...current, ipAddress: event.target.value }))} /></label>
-              <label><span>Region</span><input value={workerForm.region} onChange={(event) => setWorkerForm((current) => ({ ...current, region: event.target.value }))} /></label>
-              <label><span>Max RPS</span><input value={workerForm.maxRps} onChange={(event) => setWorkerForm((current) => ({ ...current, maxRps: event.target.value }))} /></label>
-              <label><span>Target RPS</span><input value={workerForm.targetRps} onChange={(event) => setWorkerForm((current) => ({ ...current, targetRps: event.target.value }))} /></label>
-              <label><span>Current RPS</span><input value={workerForm.currentRps} onChange={(event) => setWorkerForm((current) => ({ ...current, currentRps: event.target.value }))} /></label>
-              <label><span>Capacity now</span><input value={workerForm.currentCapacityRps} onChange={(event) => setWorkerForm((current) => ({ ...current, currentCapacityRps: event.target.value }))} /></label>
+              <label><span>Регион</span><input value={workerForm.region} onChange={(event) => setWorkerForm((current) => ({ ...current, region: event.target.value }))} /></label>
+              <label><span>Макс. RPS</span><input value={workerForm.maxRps} onChange={(event) => setWorkerForm((current) => ({ ...current, maxRps: event.target.value }))} /></label>
+              <label><span>Целевой RPS</span><input value={workerForm.targetRps} onChange={(event) => setWorkerForm((current) => ({ ...current, targetRps: event.target.value }))} /></label>
+              <label><span>Текущий RPS</span><input value={workerForm.currentRps} onChange={(event) => setWorkerForm((current) => ({ ...current, currentRps: event.target.value }))} /></label>
+              <label><span>Текущая емкость</span><input value={workerForm.currentCapacityRps} onChange={(event) => setWorkerForm((current) => ({ ...current, currentCapacityRps: event.target.value }))} /></label>
               <label><span>CPU %</span><input value={workerForm.cpuLoad} onChange={(event) => setWorkerForm((current) => ({ ...current, cpuLoad: event.target.value }))} /></label>
               <label><span>RAM %</span><input value={workerForm.ramUsagePercent} onChange={(event) => setWorkerForm((current) => ({ ...current, ramUsagePercent: event.target.value }))} /></label>
-              <label><span>Clock drift ms</span><input value={workerForm.clockDriftMs} onChange={(event) => setWorkerForm((current) => ({ ...current, clockDriftMs: event.target.value }))} /></label>
+              <label><span>Сдвиг часов, мс</span><input value={workerForm.clockDriftMs} onChange={(event) => setWorkerForm((current) => ({ ...current, clockDriftMs: event.target.value }))} /></label>
             </div>
-            <label><span>Notes</span><textarea rows={3} value={workerForm.notes} onChange={(event) => setWorkerForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+            <label><span>Заметки</span><textarea rows={3} value={workerForm.notes} onChange={(event) => setWorkerForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             <div className="actions">
-              <button type="submit">{editingWorkerId ? "Обновить worker" : "Сохранить worker"}</button>
+              <button type="submit">{editingWorkerId ? "Обновить воркер" : "Сохранить воркер"}</button>
               {editingWorkerId ? <button type="button" className="ghost" onClick={resetWorkerForm}>Отмена</button> : null}
             </div>
           </form>
@@ -2574,16 +2651,16 @@ export default function App() {
         <div className="card">
           <h2>Суммарный RPS</h2>
           <div className="key-value compact">
-            <div><span>Current</span><strong>{overview?.capacity.current_rps ?? 0}</strong></div>
-            <div><span>Target</span><strong>{overview?.capacity.target_rps ?? 0}</strong></div>
-            <div><span>Max</span><strong>{overview?.capacity.max_rps ?? 0}</strong></div>
-            <div><span>Workers online</span><strong>{overview?.capacity.online_workers ?? 0} / {overview?.capacity.enabled_workers ?? 0}</strong></div>
+            <div><span>Текущий</span><strong>{overview?.capacity.current_rps ?? 0}</strong></div>
+            <div><span>Целевой</span><strong>{overview?.capacity.target_rps ?? 0}</strong></div>
+            <div><span>Максимум</span><strong>{overview?.capacity.max_rps ?? 0}</strong></div>
+            <div><span>Воркеры онлайн</span><strong>{overview?.capacity.online_workers ?? 0} / {overview?.capacity.enabled_workers ?? 0}</strong></div>
           </div>
         </div>
 
         <div className="card full-span">
           <div className="card-head">
-            <h2>Workers</h2>
+            <h2>Воркеры</h2>
             <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
           </div>
           <div className="user-list">
@@ -2593,21 +2670,21 @@ export default function App() {
                   <div>
                     <strong>{worker.name}</strong>
                     <p>
-                      <span className={statusClass(worker.status)}>{worker.status}</span>
-                      <span className="muted"> {worker.ip_address ?? "no-ip"} | {worker.region ?? "no-region"} | {worker.registrar_slug}</span>
+                      <span className={statusClass(worker.status)}>{formatStatusLabel(worker.status)}</span>
+                      <span className="muted"> {worker.ip_address ?? "нет IP"} | {worker.region ?? "нет региона"} | {worker.registrar_slug}</span>
                     </p>
                   </div>
-                  <div className="muted">seen: {formatDateTime(worker.last_seen_at)}</div>
+                  <div className="muted">видели: {formatDateTime(worker.last_seen_at)}</div>
                 </div>
                 <div className="key-value">
-                  <div><span>Current / Target / Max RPS</span><strong>{worker.current_rps} / {worker.target_rps} / {worker.max_rps}</strong></div>
-                  <div><span>Capacity now</span><strong>{worker.current_capacity_rps}</strong></div>
+                  <div><span>Текущий / Целевой / Макс. RPS</span><strong>{worker.current_rps} / {worker.target_rps} / {worker.max_rps}</strong></div>
+                  <div><span>Текущая емкость</span><strong>{worker.current_capacity_rps}</strong></div>
                   <div><span>CPU / RAM</span><strong>{worker.cpu_load}% / {worker.ram_usage_percent}%</strong></div>
-                  <div><span>Clock drift</span><strong>{worker.clock_drift_ms} ms</strong></div>
-                  <div><span>Domains on worker</span><strong>{worker.current_domain_count}</strong></div>
-                  <div><span>Assigned account</span><strong>{worker.assigned_registrar_account_id ? accountMap.get(worker.assigned_registrar_account_id)?.name ?? worker.assigned_registrar_account_id : "not pinned"}</strong></div>
-                  <div><span>Worker ID</span><strong>{worker.id}</strong></div>
-                  <div><span>Control token</span><strong>{worker.control_token ?? "auto-generate on create"}</strong></div>
+                  <div><span>Сдвиг часов</span><strong>{worker.clock_drift_ms} ms</strong></div>
+                  <div><span>Доменов на воркере</span><strong>{worker.current_domain_count}</strong></div>
+                  <div><span>Закрепленный аккаунт</span><strong>{worker.assigned_registrar_account_id ? accountMap.get(worker.assigned_registrar_account_id)?.name ?? worker.assigned_registrar_account_id : "не закреплен"}</strong></div>
+                  <div><span>ID воркера</span><strong>{worker.id}</strong></div>
+                  <div><span>Токен control</span><strong>{worker.control_token ?? "создается автоматически"}</strong></div>
                 </div>
                 <div className="actions">
                   <button type="button" className="ghost" onClick={() => startEditWorker(worker)}>Редактировать</button>
@@ -2630,12 +2707,12 @@ export default function App() {
           <form className="form" onSubmit={submitAccount}>
             <div className="form two-columns">
               <label><span>Имя</span><input value={accountForm.name} onChange={(event) => setAccountForm((current) => ({ ...current, name: event.target.value }))} /></label>
-              <label><span>Registrar</span><input value={accountForm.registrarSlug} onChange={(event) => setAccountForm((current) => ({ ...current, registrarSlug: event.target.value }))} /></label>
-              <label><span>API token</span><input value={accountForm.apiToken} onChange={(event) => setAccountForm((current) => ({ ...current, apiToken: event.target.value }))} /></label>
+              <label><span>Регистратор</span><input value={accountForm.registrarSlug} onChange={(event) => setAccountForm((current) => ({ ...current, registrarSlug: event.target.value }))} /></label>
+              <label><span>API токен</span><input value={accountForm.apiToken} onChange={(event) => setAccountForm((current) => ({ ...current, apiToken: event.target.value }))} /></label>
               <label><span>API base URL</span><input value={accountForm.apiBaseUrl} onChange={(event) => setAccountForm((current) => ({ ...current, apiBaseUrl: event.target.value }))} placeholder="https://api.gandi.net/v5/domain/domains" /></label>
               <label><span>sharing_id</span><input value={accountForm.sharingId} onChange={(event) => setAccountForm((current) => ({ ...current, sharingId: event.target.value }))} /></label>
               <label>
-                <span>Default contact</span>
+                <span>Контакт по умолчанию</span>
                 <select value={accountForm.defaultContactProfileId} onChange={(event) => setAccountForm((current) => ({ ...current, defaultContactProfileId: event.target.value }))}>
                   <option value="">Не назначен</option>
                   {contacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.label}</option>)}
@@ -2644,7 +2721,7 @@ export default function App() {
               <label className="checkbox"><input type="checkbox" checked={accountForm.supportsDryRun} onChange={(event) => setAccountForm((current) => ({ ...current, supportsDryRun: event.target.checked }))} /><span>Dry-Run</span></label>
               <label className="checkbox"><input type="checkbox" checked={accountForm.isActive} onChange={(event) => setAccountForm((current) => ({ ...current, isActive: event.target.checked }))} /><span>Активен</span></label>
             </div>
-            <label><span>Notes</span><textarea rows={3} value={accountForm.notes} onChange={(event) => setAccountForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+            <label><span>Заметки</span><textarea rows={3} value={accountForm.notes} onChange={(event) => setAccountForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             <button type="submit">Добавить аккаунт</button>
           </form>
         </div>
@@ -2664,14 +2741,14 @@ export default function App() {
               <article key={account.id} className="proxy-row">
                 <div>
                   <strong>{account.name}</strong>
-                  <p>{account.registrar_slug} | status: <span className={statusClass(account.last_validation_status)}>{account.last_validation_status}</span></p>
-                  <p>contact: {account.default_contact_profile_id ? contactMap.get(account.default_contact_profile_id)?.label ?? account.default_contact_profile_id : "none"}</p>
-                  <p>validated: {formatDateTime(account.last_validated_at)}</p>
+                  <p>{account.registrar_slug} | статус: <span className={statusClass(account.last_validation_status)}>{formatStatusLabel(account.last_validation_status)}</span></p>
+                  <p>контакт: {account.default_contact_profile_id ? contactMap.get(account.default_contact_profile_id)?.label ?? account.default_contact_profile_id : "не назначен"}</p>
+                  <p>проверено: {formatDateTime(account.last_validated_at)}</p>
                   {account.last_validation_message ? <p className="row-hint">{account.last_validation_message}</p> : null}
                 </div>
                 <div className="actions">
                   <button type="button" className="ghost" onClick={() => void validateAccount(account.id)}>Проверить</button>
-                  <button type="button" className="ghost" onClick={() => void prefillContactFromAccount(account)}>Prefill contact</button>
+                  <button type="button" className="ghost" onClick={() => void prefillContactFromAccount(account)}>Заполнить контакт</button>
                   <button type="button" className="danger" onClick={() => void deleteItem("account", account.id)}>Удалить</button>
                 </div>
               </article>
@@ -3013,39 +3090,39 @@ export default function App() {
     return (
       <section className="grid two">
         <div className="card">
-          <h2>Contact profile</h2>
+          <h2>Профиль контакта</h2>
           <form className="form" onSubmit={submitContact}>
             <div className="form two-columns">
-              <label><span>Label</span><input value={contactForm.label} onChange={(event) => setContactForm((current) => ({ ...current, label: event.target.value }))} /></label>
-              <label><span>Type</span><input value={contactForm.personType} onChange={(event) => setContactForm((current) => ({ ...current, personType: event.target.value }))} /></label>
-              <label><span>Given</span><input value={contactForm.givenName} onChange={(event) => setContactForm((current) => ({ ...current, givenName: event.target.value }))} /></label>
-              <label><span>Family</span><input value={contactForm.familyName} onChange={(event) => setContactForm((current) => ({ ...current, familyName: event.target.value }))} /></label>
-              <label><span>Organization</span><input value={contactForm.organizationName} onChange={(event) => setContactForm((current) => ({ ...current, organizationName: event.target.value }))} /></label>
+              <label><span>Метка</span><input value={contactForm.label} onChange={(event) => setContactForm((current) => ({ ...current, label: event.target.value }))} /></label>
+              <label><span>Тип</span><input value={contactForm.personType} onChange={(event) => setContactForm((current) => ({ ...current, personType: event.target.value }))} /></label>
+              <label><span>Имя</span><input value={contactForm.givenName} onChange={(event) => setContactForm((current) => ({ ...current, givenName: event.target.value }))} /></label>
+              <label><span>Фамилия</span><input value={contactForm.familyName} onChange={(event) => setContactForm((current) => ({ ...current, familyName: event.target.value }))} /></label>
+              <label><span>Организация</span><input value={contactForm.organizationName} onChange={(event) => setContactForm((current) => ({ ...current, organizationName: event.target.value }))} /></label>
               <label><span>Email</span><input value={contactForm.email} onChange={(event) => setContactForm((current) => ({ ...current, email: event.target.value }))} /></label>
-              <label><span>Phone</span><input value={contactForm.phone} onChange={(event) => setContactForm((current) => ({ ...current, phone: event.target.value }))} /></label>
-              <label><span>Mobile</span><input value={contactForm.mobile} onChange={(event) => setContactForm((current) => ({ ...current, mobile: event.target.value }))} /></label>
+              <label><span>Телефон</span><input value={contactForm.phone} onChange={(event) => setContactForm((current) => ({ ...current, phone: event.target.value }))} /></label>
+              <label><span>Мобильный</span><input value={contactForm.mobile} onChange={(event) => setContactForm((current) => ({ ...current, mobile: event.target.value }))} /></label>
               <label><span>Fax</span><input value={contactForm.fax} onChange={(event) => setContactForm((current) => ({ ...current, fax: event.target.value }))} /></label>
-              <label><span>Lang</span><input value={contactForm.lang} onChange={(event) => setContactForm((current) => ({ ...current, lang: event.target.value }))} /></label>
-              <label><span>Street</span><input value={contactForm.streetAddress} onChange={(event) => setContactForm((current) => ({ ...current, streetAddress: event.target.value }))} /></label>
-              <label><span>City</span><input value={contactForm.city} onChange={(event) => setContactForm((current) => ({ ...current, city: event.target.value }))} /></label>
-              <label><span>State</span><input value={contactForm.state} onChange={(event) => setContactForm((current) => ({ ...current, state: event.target.value }))} /></label>
-              <label><span>ZIP</span><input value={contactForm.zipCode} onChange={(event) => setContactForm((current) => ({ ...current, zipCode: event.target.value }))} /></label>
-              <label><span>Country</span><input value={contactForm.countryCode} onChange={(event) => setContactForm((current) => ({ ...current, countryCode: event.target.value }))} /></label>
-              <label className="checkbox"><input type="checkbox" checked={contactForm.dataObfuscated} onChange={(event) => setContactForm((current) => ({ ...current, dataObfuscated: event.target.checked }))} /><span>data_obfuscated</span></label>
-              <label className="checkbox"><input type="checkbox" checked={contactForm.mailObfuscated} onChange={(event) => setContactForm((current) => ({ ...current, mailObfuscated: event.target.checked }))} /><span>mail_obfuscated</span></label>
-              <label className="checkbox"><input type="checkbox" checked={contactForm.icannContractAccept} onChange={(event) => setContactForm((current) => ({ ...current, icannContractAccept: event.target.checked }))} /><span>ICANN accept</span></label>
+              <label><span>Язык</span><input value={contactForm.lang} onChange={(event) => setContactForm((current) => ({ ...current, lang: event.target.value }))} /></label>
+              <label><span>Улица</span><input value={contactForm.streetAddress} onChange={(event) => setContactForm((current) => ({ ...current, streetAddress: event.target.value }))} /></label>
+              <label><span>Город</span><input value={contactForm.city} onChange={(event) => setContactForm((current) => ({ ...current, city: event.target.value }))} /></label>
+              <label><span>Регион/штат</span><input value={contactForm.state} onChange={(event) => setContactForm((current) => ({ ...current, state: event.target.value }))} /></label>
+              <label><span>Индекс</span><input value={contactForm.zipCode} onChange={(event) => setContactForm((current) => ({ ...current, zipCode: event.target.value }))} /></label>
+              <label><span>Страна</span><input value={contactForm.countryCode} onChange={(event) => setContactForm((current) => ({ ...current, countryCode: event.target.value }))} /></label>
+              <label className="checkbox"><input type="checkbox" checked={contactForm.dataObfuscated} onChange={(event) => setContactForm((current) => ({ ...current, dataObfuscated: event.target.checked }))} /><span>Скрывать данные</span></label>
+              <label className="checkbox"><input type="checkbox" checked={contactForm.mailObfuscated} onChange={(event) => setContactForm((current) => ({ ...current, mailObfuscated: event.target.checked }))} /><span>Скрывать email</span></label>
+              <label className="checkbox"><input type="checkbox" checked={contactForm.icannContractAccept} onChange={(event) => setContactForm((current) => ({ ...current, icannContractAccept: event.target.checked }))} /><span>ICANN принят</span></label>
               <label className="checkbox"><input type="checkbox" checked={contactForm.isDefault} onChange={(event) => setContactForm((current) => ({ ...current, isDefault: event.target.checked }))} /><span>По умолчанию</span></label>
             </div>
-            <label><span>Contact extra parameters (JSON)</span><textarea rows={3} value={contactForm.extraParameters} onChange={(event) => setContactForm((current) => ({ ...current, extraParameters: event.target.value }))} placeholder='{"local_presence":"fr"}' /></label>
-            <label><span>Notes</span><textarea rows={3} value={contactForm.notes} onChange={(event) => setContactForm((current) => ({ ...current, notes: event.target.value }))} /></label>
-            <button type="submit">Добавить contact profile</button>
+            <label><span>Дополнительные параметры контакта (JSON)</span><textarea rows={3} value={contactForm.extraParameters} onChange={(event) => setContactForm((current) => ({ ...current, extraParameters: event.target.value }))} placeholder='{"local_presence":"fr"}' /></label>
+            <label><span>Заметки</span><textarea rows={3} value={contactForm.notes} onChange={(event) => setContactForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+            <button type="submit">Добавить профиль контакта</button>
           </form>
         </div>
 
         <div className="card">
           <h2>Логика контактов</h2>
           <p className="muted">
-            Проект уже поддерживает несколько contact profiles. Один можно сделать дефолтным, остальные назначать под
+            Проект уже поддерживает несколько профилей контактов. Один можно сделать дефолтным, остальные назначать под
             аккаунты или домены отдельно, без необходимости решать это один раз и навсегда прямо сейчас.
           </p>
         </div>
@@ -3055,14 +3132,14 @@ export default function App() {
             {contacts.map((contact) => (
               <article key={contact.id} className="promo-row">
                 <strong>{contact.label}</strong>
-                <p>{contact.given_name} {contact.family_name} | {contact.person_type}{contact.is_default ? " | default" : ""}</p>
-                <p>{contact.email} | {contact.phone}{contact.mobile ? ` | mobile ${contact.mobile}` : ""}</p>
+                <p>{contact.given_name} {contact.family_name} | {contact.person_type}{contact.is_default ? " | по умолчанию" : ""}</p>
+                <p>{contact.email} | {contact.phone}{contact.mobile ? ` | мобильный ${contact.mobile}` : ""}</p>
                 <p>{contact.street_address}, {contact.city}, {contact.zip_code}, {contact.country_code}</p>
                 {contact.lang || contact.icann_contract_accept !== null || contact.extra_parameters ? (
                   <p className="row-hint">
-                    {contact.lang ? `lang ${contact.lang}` : "lang —"}
-                    {contact.icann_contract_accept !== null ? ` | icann ${String(contact.icann_contract_accept)}` : ""}
-                    {contact.extra_parameters ? " | extra json set" : ""}
+                    {contact.lang ? `язык ${contact.lang}` : "язык —"}
+                    {contact.icann_contract_accept !== null ? ` | ICANN ${String(contact.icann_contract_accept)}` : ""}
+                    {contact.extra_parameters ? " | extra JSON задан" : ""}
                   </p>
                 ) : null}
                 <div className="actions">
@@ -3086,45 +3163,45 @@ export default function App() {
               <p className="muted">По умолчанию используется приоритетная стратегия: сначала насыщаем мощностью более важные домены.</p>
             </div>
             <div className="actions">
-              <button type="button" onClick={() => void startTodayAttacks(false)}>Старт due today</button>
-              <button type="button" className="ghost" onClick={() => void startTodayAttacks(true)}>Force rebuild</button>
-              <button type="button" className="ghost" onClick={() => void rebalanceAttacksNow()}>Rebalance</button>
+              <button type="button" onClick={() => void startTodayAttacks(false)}>Старт на сегодня</button>
+              <button type="button" className="ghost" onClick={() => void startTodayAttacks(true)}>Пересобрать</button>
+              <button type="button" className="ghost" onClick={() => void rebalanceAttacksNow()}>Перераспределить</button>
               <button type="button" className="danger" onClick={() => void stopAllAttacks()}>Стоп всё</button>
             </div>
           </div>
           <div className="key-value compact">
-            <div><span>Scheduled runs</span><strong>{overview?.scheduled_runs ?? 0}</strong></div>
-            <div><span>Running runs</span><strong>{overview?.running_runs ?? 0}</strong></div>
-            <div><span>Capacity target</span><strong>{overview?.capacity.target_rps ?? 0}</strong></div>
-            <div><span>Capacity max</span><strong>{overview?.capacity.max_rps ?? 0}</strong></div>
+            <div><span>Запланировано запусков</span><strong>{overview?.scheduled_runs ?? 0}</strong></div>
+            <div><span>Запущено сейчас</span><strong>{overview?.running_runs ?? 0}</strong></div>
+            <div><span>Целевая мощность</span><strong>{overview?.capacity.target_rps ?? 0}</strong></div>
+            <div><span>Макс. мощность</span><strong>{overview?.capacity.max_rps ?? 0}</strong></div>
           </div>
         </div>
 
         <div className="card">
-          <h2>Поведение scheduler</h2>
+          <h2>Поведение планировщика</h2>
           <p className="muted">
-            При старте control строит `attack runs` и `worker tasks` для доменов due today. Освобождение workers после
+            При старте control строит запуски атак и задачи воркеров для доменов с дропом сегодня. Освобождение воркеров после
             успешной регистрации и их повторное распределение будет реализовано на worker/runtime этапе.
           </p>
         </div>
 
         <div className="card full-span">
-          <h2>Attack Runs</h2>
+          <h2>Запуски атак</h2>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Domain</th>
-                  <th>Status</th>
-                  <th>Phase</th>
-                  <th>Start</th>
-                  <th>End</th>
-                  <th>Workers</th>
-                  <th>Runtime RPS</th>
-                  <th>Planned RPS</th>
-                  <th>Current RPS</th>
-                  <th>Max RPS</th>
+                  <th>Домен</th>
+                  <th>Статус</th>
+                  <th>Фаза</th>
+                  <th>Старт</th>
+                  <th>Конец</th>
+                  <th>Воркеры</th>
+                  <th>Рабочий RPS</th>
+                  <th>План RPS</th>
+                  <th>Текущий RPS</th>
+                  <th>Макс. RPS</th>
                 </tr>
               </thead>
               <tbody>
@@ -3132,15 +3209,15 @@ export default function App() {
                   <tr key={attack.id}>
                     <td>{attack.id}</td>
                     <td>{domainMap.get(attack.domain_id)?.fqdn ?? attack.domain_id}</td>
-                    <td><span className={statusClass(attack.status)}>{attack.status}</span></td>
+                    <td><span className={statusClass(attack.status)}>{formatStatusLabel(attack.status)}</span></td>
                     <td>{attack.runtime_phase_name ?? domainMap.get(attack.domain_id)?.runtime_phase_name ?? "—"}</td>
                     <td>{formatDateTime(attack.planned_start_at)}</td>
                     <td>{formatDateTime(attack.planned_end_at)}</td>
                     <td>{attack.assigned_worker_count}</td>
                     <td>
-                      <div>min {formatRps(attack.runtime_minimum_rps ?? domainMap.get(attack.domain_id)?.runtime_minimum_rps)}</div>
-                      <div>desired {formatRps(attack.runtime_desired_rps ?? domainMap.get(attack.domain_id)?.runtime_desired_rps)}</div>
-                      <div>allocated {formatRps(attack.runtime_allocated_rps ?? domainMap.get(attack.domain_id)?.runtime_allocated_rps ?? attack.planned_rps)}</div>
+                      <div>мин. {formatRps(attack.runtime_minimum_rps ?? domainMap.get(attack.domain_id)?.runtime_minimum_rps)}</div>
+                      <div>желательно {formatRps(attack.runtime_desired_rps ?? domainMap.get(attack.domain_id)?.runtime_desired_rps)}</div>
+                      <div>выделено {formatRps(attack.runtime_allocated_rps ?? domainMap.get(attack.domain_id)?.runtime_allocated_rps ?? attack.planned_rps)}</div>
                     </td>
                     <td>{attack.planned_rps}</td>
                     <td>{attack.current_rps}</td>
@@ -3153,14 +3230,14 @@ export default function App() {
         </div>
 
         <div className="card">
-          <h2>Worker Tasks</h2>
+          <h2>Задачи воркеров</h2>
           <div className="log-list">
             {tasks.slice(0, 20).map((task) => (
               <article key={task.id} className="log-row">
-                <span className={statusClass(task.status)}>{task.status}</span>
+                <span className={statusClass(task.status)}>{formatStatusLabel(task.status)}</span>
                 <div>
-                  <strong>run #{task.attack_run_id} | worker #{task.worker_id}</strong>
-                  <p>domain: {domainMap.get(task.domain_id)?.fqdn ?? task.domain_id} | planned_rps: {task.planned_rps} | actual_rps: {task.actual_rps}</p>
+                  <strong>запуск #{task.attack_run_id} | воркер #{task.worker_id}</strong>
+                  <p>домен: {domainMap.get(task.domain_id)?.fqdn ?? task.domain_id} | план RPS: {task.planned_rps} | факт RPS: {task.actual_rps}</p>
                 </div>
               </article>
             ))}
@@ -3168,7 +3245,7 @@ export default function App() {
         </div>
 
         <div className="card">
-          <h2>Attack Events</h2>
+          <h2>События атак</h2>
           <div className="log-list">
             {events.slice(0, 20).map((event) => (
               <article key={event.id} className="log-row">
@@ -3192,7 +3269,7 @@ export default function App() {
         <div className="card">
           <h2>Личный Telegram</h2>
           <form className="form" onSubmit={saveTelegram}>
-            <label><span>Bot token</span><input value={telegramForm.telegram_token} onChange={(event) => setTelegramForm((current) => ({ ...current, telegram_token: event.target.value }))} /></label>
+            <label><span>Токен бота</span><input value={telegramForm.telegram_token} onChange={(event) => setTelegramForm((current) => ({ ...current, telegram_token: event.target.value }))} /></label>
             <label><span>Chat ID</span><input value={telegramForm.telegram_chat_id} onChange={(event) => setTelegramForm((current) => ({ ...current, telegram_chat_id: event.target.value }))} /></label>
             <div className="actions">
               <button type="submit">Сохранить</button>
@@ -3204,7 +3281,7 @@ export default function App() {
         <div className="card">
           <h2>Диагностический Telegram</h2>
           <form className="form" onSubmit={saveDiagnosticTelegram}>
-            <label><span>Bot token</span><input value={diagnosticTelegram.telegram_token ?? ""} onChange={(event) => setDiagnosticTelegram((current) => ({ ...current, telegram_token: event.target.value }))} /></label>
+            <label><span>Токен бота</span><input value={diagnosticTelegram.telegram_token ?? ""} onChange={(event) => setDiagnosticTelegram((current) => ({ ...current, telegram_token: event.target.value }))} /></label>
             <label><span>Chat ID</span><input value={diagnosticTelegram.telegram_chat_id ?? ""} onChange={(event) => setDiagnosticTelegram((current) => ({ ...current, telegram_chat_id: event.target.value }))} /></label>
             <div className="actions">
               <button type="submit">Сохранить</button>
@@ -3225,10 +3302,10 @@ export default function App() {
         <div className="card">
           <h2>Статус билда</h2>
           <div className="key-value compact">
-            <div><span>Публичная регистрация</span><strong>disabled</strong></div>
-            <div><span>User create в админке</span><strong>disabled</strong></div>
-            <div><span>Control API</span><strong>enabled</strong></div>
-            <div><span>Worker-side runtime</span><strong>next phase</strong></div>
+            <div><span>Публичная регистрация</span><strong>отключена</strong></div>
+            <div><span>Создание пользователей в админке</span><strong>отключено</strong></div>
+            <div><span>Control API</span><strong>включен</strong></div>
+            <div><span>Runtime на воркерах</span><strong>следующий этап</strong></div>
           </div>
         </div>
       </section>
@@ -3247,23 +3324,23 @@ export default function App() {
     <div className="app-shell">
       <header className="hero hero-top">
         <div>
-          <p className="eyebrow">Control Server</p>
-          <h1>Domain Drop Catcher</h1>
+          <p className="eyebrow">Control-сервер</p>
+          <h1>Veltrix Drop Catcher</h1>
           <p className="subtitle">
-            Один control-сервер управляет списком доменов, workers, контактами, аккаунтами регистраторов и планированием
+            Один control-сервер управляет списком доменов, воркерами, контактами, аккаунтами регистраторов и планированием
             атакующих окон по времени реестра.
           </p>
           <div className="hero-meta">
-            <span className={statusClass(session.user.status)}>{session.user.status}</span>
+            <span className={statusClass(session.user.status)}>{formatStatusLabel(session.user.status)}</span>
             <span className="muted">@{session.user.username}</span>
-            <span className="muted">checked: {formatDateTime(overview?.checked_at ?? null)}</span>
+            <span className="muted">проверено: {formatDateTime(overview?.checked_at ?? null)}</span>
           </div>
         </div>
         <div className="stats">
-          <article><span>Domains</span><strong>{overview?.total_domains ?? 0}</strong></article>
-          <article><span>Due Today</span><strong>{overview?.due_today_domains ?? 0}</strong></article>
-          <article><span>Target RPS</span><strong>{overview?.capacity.target_rps ?? 0}</strong></article>
-          <article><span>Max RPS</span><strong>{overview?.capacity.max_rps ?? 0}</strong></article>
+          <article><span>Домены</span><strong>{overview?.total_domains ?? 0}</strong></article>
+          <article><span>Дроп сегодня</span><strong>{overview?.due_today_domains ?? 0}</strong></article>
+          <article><span>Целевой RPS</span><strong>{overview?.capacity.target_rps ?? 0}</strong></article>
+          <article><span>Макс. RPS</span><strong>{overview?.capacity.max_rps ?? 0}</strong></article>
         </div>
       </header>
 
@@ -3271,7 +3348,7 @@ export default function App() {
         <div className="tab-strip">
           {(["domains", "discovery", "scanner", "strategies", "workers", "accounts", "contacts", "attacks", "settings"] as Tab[]).map((item) => (
             <button key={item} type="button" className={tab === item ? "ghost active-chip" : "ghost"} onClick={() => setTab(item)}>
-              {item}
+              {formatTabLabel(item)}
             </button>
           ))}
         </div>

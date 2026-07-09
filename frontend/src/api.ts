@@ -511,9 +511,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
       const payload = (await response.json()) as { detail?: string };
-      throw new Error(payload.detail || `Request failed with ${response.status}`);
+      throw new Error(payload.detail || `Запрос завершился ошибкой ${response.status}`);
     }
-    throw new Error((await response.text()) || `Request failed with ${response.status}`);
+    throw new Error((await response.text()) || `Запрос завершился ошибкой ${response.status}`);
   }
 
   return (await response.json()) as T;
