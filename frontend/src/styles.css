@@ -501,6 +501,60 @@ button:disabled {
   margin-bottom: 6px;
 }
 
+.strategies-page {
+  gap: 18px;
+}
+
+.strategies-page .compact-section {
+  margin-top: 0;
+}
+
+.strategy-topline {
+  align-items: flex-start;
+}
+
+.strategy-controls {
+  min-width: min(420px, 100%);
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 12px;
+}
+
+.strategy-controls label {
+  display: grid;
+  gap: 8px;
+}
+
+.strategy-controls span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.strategy-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.strategy-summary article {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(79, 57, 29, 0.1);
+  background: rgba(255, 250, 242, 0.76);
+}
+
+.strategy-summary span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.strategy-summary strong {
+  font-size: 1.25rem;
+}
+
 .checkbox {
   display: flex !important;
   gap: 10px;
@@ -722,7 +776,8 @@ button:disabled {
   }
 
   .domain-metrics,
-  .domain-snapshot-grid {
+  .domain-snapshot-grid,
+  .strategy-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -770,7 +825,9 @@ button:disabled {
   }
 
   .domain-metrics,
-  .domain-snapshot-grid {
+  .domain-snapshot-grid,
+  .strategy-controls,
+  .strategy-summary {
     grid-template-columns: 1fr;
   }
 }

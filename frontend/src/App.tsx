@@ -287,6 +287,52 @@ function formatRedemptionAnchorSource(value: string | null) {
   return "—";
 }
 
+function formatResolutionMode(value: string | null | undefined) {
+  if (value === "priority") {
+    return "по приоритету";
+  }
+  if (value === "merge") {
+    return "объединять окна";
+  }
+  return value ?? "—";
+}
+
+function formatScheduleType(value: string | null | undefined) {
+  if (value === "hourly") {
+    return "каждый час";
+  }
+  if (value === "daily") {
+    return "каждый день";
+  }
+  if (value === "weekly") {
+    return "по дням недели";
+  }
+  if (value === "one_time") {
+    return "один раз";
+  }
+  return value ?? "—";
+}
+
+function formatExecutionMode(value: string | null | undefined) {
+  if (value === "flat") {
+    return "ровно";
+  }
+  if (value === "phased") {
+    return "по фазам";
+  }
+  return value ?? "—";
+}
+
+function formatRpsModeLabel(value: string | null | undefined) {
+  if (value === "percent") {
+    return "процент";
+  }
+  if (value === "fixed") {
+    return "фиксированно";
+  }
+  return value ?? "—";
+}
+
 function statusClass(value: string) {
   if (["ready", "success", "scheduled"].includes(value)) {
     return "status available";
@@ -2638,180 +2684,234 @@ export default function App() {
 
   function renderStrategies() {
     return (
-      <section className="grid two">
-        <div className="card">
-          <h2>Zone Strategy</h2>
-          <form className="form" onSubmit={submitStrategy}>
-            <div className="form two-columns">
+      <section className="stack strategies-page">
+        <div className="card full-span">
+          <div className="card-head strategy-topline">
+            <div>
+              <h2>Стратегии зон</h2>
+              <p className="muted">
+                Здесь задается, когда домены конкретной зоны нужно атаковать: часовой пояс, окна дропа и распределение RPS.
+              </p>
+            </div>
+            <div className="strategy-controls">
               <label>
-                <span>Zone</span>
-                <input value={strategyForm.zone} onChange={(event) => setStrategyForm((current) => ({ ...current, zone: event.target.value }))} />
-              </label>
-              <label>
-                <span>Name</span>
-                <input value={strategyForm.name} onChange={(event) => setStrategyForm((current) => ({ ...current, name: event.target.value }))} />
-              </label>
-              <label>
-                <span>Timezone</span>
-                <input value={strategyForm.timezoneName} onChange={(event) => setStrategyForm((current) => ({ ...current, timezoneName: event.target.value }))} />
-              </label>
-              <label>
-                <span>Resolution</span>
-                <select value={strategyForm.ruleResolutionMode} onChange={(event) => setStrategyForm((current) => ({ ...current, ruleResolutionMode: event.target.value }))}>
-                  <option value="priority">priority</option>
-                  <option value="merge">merge</option>
+                <span>Текущая стратегия</span>
+                <select
+                  value={selectedStrategyId ?? ""}
+                  onChange={(event) => setSelectedStrategyId(event.target.value ? Number(event.target.value) : null)}
+                >
+                  {strategies.length === 0 ? <option value="">Стратегий пока нет</option> : null}
+                  {strategies.map((strategy) => (
+                    <option key={strategy.id} value={strategy.id}>
+                      .{strategy.zone} — {strategy.name}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label>
-                <span>Min guaranteed RPS</span>
+                <span>Дата предпросмотра</span>
+                <input type="date" value={previewDate} onChange={(event) => setPreviewDate(event.target.value)} />
+              </label>
+            </div>
+          </div>
+
+          <div className="strategy-summary">
+            <article>
+              <span>Выбрана зона</span>
+              <strong>{selectedStrategy ? `.${selectedStrategy.zone}` : "—"}</strong>
+            </article>
+            <article>
+              <span>Часовой пояс</span>
+              <strong>{selectedStrategy?.timezone_name ?? "—"}</strong>
+            </article>
+            <article>
+              <span>Окон в стратегии</span>
+              <strong>{strategyRules.length}</strong>
+            </article>
+            <article>
+              <span>Активных стратегий</span>
+              <strong>{strategies.filter((item) => item.is_active).length} / {strategies.length}</strong>
+            </article>
+          </div>
+        </div>
+
+        <section className="grid two compact-section">
+          <div className="card">
+          <h2>Новая стратегия</h2>
+          <form className="form" onSubmit={submitStrategy}>
+            <div className="form two-columns">
+              <label>
+                <span>Зона</span>
+                <input value={strategyForm.zone} onChange={(event) => setStrategyForm((current) => ({ ...current, zone: event.target.value }))} />
+              </label>
+              <label>
+                <span>Название</span>
+                <input value={strategyForm.name} onChange={(event) => setStrategyForm((current) => ({ ...current, name: event.target.value }))} />
+              </label>
+              <label>
+                <span>Часовой пояс</span>
+                <input value={strategyForm.timezoneName} onChange={(event) => setStrategyForm((current) => ({ ...current, timezoneName: event.target.value }))} />
+              </label>
+              <label>
+                <span>Как выбирать окно</span>
+                <select value={strategyForm.ruleResolutionMode} onChange={(event) => setStrategyForm((current) => ({ ...current, ruleResolutionMode: event.target.value }))}>
+                  <option value="priority">по приоритету</option>
+                  <option value="merge">объединять окна</option>
+                </select>
+              </label>
+              <label>
+                <span>Мин. гарантированный RPS</span>
                 <input value={strategyForm.defaultMinGuaranteedRps} onChange={(event) => setStrategyForm((current) => ({ ...current, defaultMinGuaranteedRps: event.target.value }))} />
               </label>
               <label>
-                <span>Registrar</span>
+                <span>Регистратор</span>
                 <input value={strategyForm.defaultRegistrarSlug} onChange={(event) => setStrategyForm((current) => ({ ...current, defaultRegistrarSlug: event.target.value }))} />
               </label>
               <label className="checkbox">
                 <input type="checkbox" checked={strategyForm.isActive} onChange={(event) => setStrategyForm((current) => ({ ...current, isActive: event.target.checked }))} />
-                <span>Active</span>
+                <span>Активна</span>
               </label>
             </div>
             <label>
-              <span>Notes</span>
+              <span>Заметки</span>
               <textarea rows={3} value={strategyForm.notes} onChange={(event) => setStrategyForm((current) => ({ ...current, notes: event.target.value }))} />
             </label>
-            <button type="submit">Add strategy</button>
+            <button type="submit">Создать стратегию</button>
           </form>
-        </div>
+          </div>
 
-        <div className="card">
-          <h2>Strategy Model</h2>
+          <div className="card">
+          <h2>Как это читать</h2>
           <p className="muted">
-            Strategies are now first-class control objects. Each zone can get its own timezone,
-            resolution mode, and default guaranteed RPS before we attach richer rules and phases.
+            Стратегия привязана к зоне. Внутри стратегии находятся окна дропа. Если окон несколько,
+            режим “по приоритету” берет самое важное окно, а “объединять окна” оставляет все подходящие окна.
           </p>
           <div className="key-value compact">
-            <div><span>Total strategies</span><strong>{strategies.length}</strong></div>
-            <div><span>Active zones</span><strong>{strategies.filter((item) => item.is_active).length}</strong></div>
+            <div><span>Режим выбранной стратегии</span><strong>{formatResolutionMode(selectedStrategy?.rule_resolution_mode)}</strong></div>
+            <div><span>RPS по умолчанию</span><strong>{selectedStrategy?.default_min_guaranteed_rps ?? "—"}</strong></div>
+            <div><span>Регистратор</span><strong>{selectedStrategy?.default_registrar_slug ?? "—"}</strong></div>
           </div>
-          <label>
-            <span>Selected strategy</span>
-            <select value={selectedStrategyId ?? ""} onChange={(event) => setSelectedStrategyId(Number(event.target.value))}>
-              {strategies.map((strategy) => (
-                <option key={strategy.id} value={strategy.id}>
-                  {strategy.zone} | {strategy.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
+          </div>
+        </section>
 
         <div className="card full-span">
+          <div className="card-head">
+            <div>
+              <h2>Список стратегий</h2>
+              <p className="muted">Краткая таблица всех зон. Детали окон показываются ниже для выбранной стратегии.</p>
+            </div>
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Zone</th>
-                  <th>Name</th>
-                  <th>Timezone</th>
-                  <th>Resolution</th>
-                  <th>Min RPS</th>
-                  <th>Registrar</th>
-                  <th>Status</th>
+                  <th>Зона</th>
+                  <th>Название</th>
+                  <th>Часовой пояс</th>
+                  <th>Окна</th>
+                  <th>Мин. RPS</th>
+                  <th>Регистратор</th>
+                  <th>Статус</th>
                 </tr>
               </thead>
               <tbody>
                 {strategies.map((strategy) => (
                   <tr key={strategy.id}>
-                    <td>{strategy.zone}</td>
+                    <td>.{strategy.zone}</td>
                     <td>{strategy.name}</td>
                     <td>{strategy.timezone_name}</td>
-                    <td>{strategy.rule_resolution_mode}</td>
+                    <td>{formatResolutionMode(strategy.rule_resolution_mode)}</td>
                     <td>{strategy.default_min_guaranteed_rps}</td>
                     <td>{strategy.default_registrar_slug}</td>
-                    <td><span className={statusClass(strategy.is_active ? "ready" : "inactive")}>{strategy.is_active ? "active" : "inactive"}</span></td>
+                    <td><span className={statusClass(strategy.is_active ? "ready" : "inactive")}>{strategy.is_active ? "активна" : "выключена"}</span></td>
                   </tr>
                 ))}
+                {strategies.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="empty">Стратегий пока нет</td>
+                  </tr>
+                ) : null}
               </tbody>
             </table>
           </div>
         </div>
 
-        <div className="card">
-          <h2>Zone Rule</h2>
+        <section className="grid two compact-section">
+          <div className="card">
+          <h2>Новое окно дропа</h2>
+          <p className="muted">Окно добавляется в выбранную сверху стратегию.</p>
           <form className="form" onSubmit={submitRule}>
             <div className="form two-columns">
-              <label><span>Name</span><input value={ruleForm.name} onChange={(event) => setRuleForm((current) => ({ ...current, name: event.target.value }))} /></label>
+              <label><span>Название окна</span><input value={ruleForm.name} onChange={(event) => setRuleForm((current) => ({ ...current, name: event.target.value }))} /></label>
               <label>
-                <span>Schedule</span>
+                <span>Расписание</span>
                 <select value={ruleForm.scheduleType} onChange={(event) => setRuleForm((current) => ({ ...current, scheduleType: event.target.value }))}>
-                  <option value="hourly">hourly</option>
-                  <option value="daily">daily</option>
-                  <option value="weekly">weekly</option>
-                  <option value="one_time">one_time</option>
+                  <option value="hourly">каждый час</option>
+                  <option value="daily">каждый день</option>
+                  <option value="weekly">по дням недели</option>
+                  <option value="one_time">один раз</option>
                 </select>
               </label>
-              <label><span>Hour</span><input value={ruleForm.hour} onChange={(event) => setRuleForm((current) => ({ ...current, hour: event.target.value }))} placeholder="empty for hourly" /></label>
-              <label><span>Minute</span><input value={ruleForm.minute} onChange={(event) => setRuleForm((current) => ({ ...current, minute: event.target.value }))} /></label>
-              <label><span>Second</span><input value={ruleForm.second} onChange={(event) => setRuleForm((current) => ({ ...current, second: event.target.value }))} /></label>
-              <label><span>Priority</span><input value={ruleForm.priority} onChange={(event) => setRuleForm((current) => ({ ...current, priority: event.target.value }))} /></label>
-              <label><span>Weekdays</span><input value={ruleForm.weekdays} onChange={(event) => setRuleForm((current) => ({ ...current, weekdays: event.target.value }))} placeholder="1,3,5" /></label>
-              <label><span>Specific date</span><input type="date" value={ruleForm.specificDate} onChange={(event) => setRuleForm((current) => ({ ...current, specificDate: event.target.value }))} /></label>
-              <label><span>Duration sec</span><input value={ruleForm.windowDurationSeconds} onChange={(event) => setRuleForm((current) => ({ ...current, windowDurationSeconds: event.target.value }))} /></label>
+              <label><span>Час</span><input value={ruleForm.hour} onChange={(event) => setRuleForm((current) => ({ ...current, hour: event.target.value }))} placeholder="пусто = каждый час" /></label>
+              <label><span>Минута</span><input value={ruleForm.minute} onChange={(event) => setRuleForm((current) => ({ ...current, minute: event.target.value }))} /></label>
+              <label><span>Секунда</span><input value={ruleForm.second} onChange={(event) => setRuleForm((current) => ({ ...current, second: event.target.value }))} /></label>
+              <label><span>Приоритет</span><input value={ruleForm.priority} onChange={(event) => setRuleForm((current) => ({ ...current, priority: event.target.value }))} /></label>
+              <label><span>Дни недели</span><input value={ruleForm.weekdays} onChange={(event) => setRuleForm((current) => ({ ...current, weekdays: event.target.value }))} placeholder="1,3,5" /></label>
+              <label><span>Конкретная дата</span><input type="date" value={ruleForm.specificDate} onChange={(event) => setRuleForm((current) => ({ ...current, specificDate: event.target.value }))} /></label>
+              <label><span>Длина окна, сек</span><input value={ruleForm.windowDurationSeconds} onChange={(event) => setRuleForm((current) => ({ ...current, windowDurationSeconds: event.target.value }))} /></label>
               <label>
-                <span>Execution</span>
+                <span>Подача запросов</span>
                 <select value={ruleForm.executionProfileMode} onChange={(event) => setRuleForm((current) => ({ ...current, executionProfileMode: event.target.value }))}>
-                  <option value="flat">flat</option>
-                  <option value="phased">phased</option>
+                  <option value="flat">ровно</option>
+                  <option value="phased">по фазам</option>
                 </select>
               </label>
-              <label className="checkbox"><input type="checkbox" checked={ruleForm.isEnabled} onChange={(event) => setRuleForm((current) => ({ ...current, isEnabled: event.target.checked }))} /><span>Enabled</span></label>
+              <label className="checkbox"><input type="checkbox" checked={ruleForm.isEnabled} onChange={(event) => setRuleForm((current) => ({ ...current, isEnabled: event.target.checked }))} /><span>Включено</span></label>
             </div>
-            <label><span>Notes</span><textarea rows={2} value={ruleForm.notes} onChange={(event) => setRuleForm((current) => ({ ...current, notes: event.target.value }))} /></label>
-            <button type="submit">Add rule</button>
+            <label><span>Заметки</span><textarea rows={2} value={ruleForm.notes} onChange={(event) => setRuleForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+            <button type="submit">Добавить окно</button>
           </form>
-        </div>
+          </div>
 
-        <div className="card">
-          <h2>Rule Phase</h2>
+          <div className="card">
+          <h2>Фаза RPS</h2>
+          <p className="muted">Фазы нужны только если у окна выбран режим “по фазам”.</p>
           <form className="form" onSubmit={submitPhase}>
             <div className="form two-columns">
               <label>
-                <span>Rule</span>
+                <span>Окно</span>
                 <select value={phaseForm.ruleId} onChange={(event) => setPhaseForm((current) => ({ ...current, ruleId: event.target.value }))}>
-                  <option value="">Select rule</option>
+                  <option value="">Выбери окно</option>
                   {strategyRules.map((rule) => (
                     <option key={rule.id} value={rule.id}>{rule.name}</option>
                   ))}
                 </select>
               </label>
-              <label><span>Name</span><input value={phaseForm.name} onChange={(event) => setPhaseForm((current) => ({ ...current, name: event.target.value }))} /></label>
-              <label><span>Sort</span><input value={phaseForm.sortOrder} onChange={(event) => setPhaseForm((current) => ({ ...current, sortOrder: event.target.value }))} /></label>
-              <label><span>Start offset sec</span><input value={phaseForm.startOffsetSeconds} onChange={(event) => setPhaseForm((current) => ({ ...current, startOffsetSeconds: event.target.value }))} /></label>
-              <label><span>Duration sec</span><input value={phaseForm.durationSeconds} onChange={(event) => setPhaseForm((current) => ({ ...current, durationSeconds: event.target.value }))} /></label>
+              <label><span>Название фазы</span><input value={phaseForm.name} onChange={(event) => setPhaseForm((current) => ({ ...current, name: event.target.value }))} /></label>
+              <label><span>Порядок</span><input value={phaseForm.sortOrder} onChange={(event) => setPhaseForm((current) => ({ ...current, sortOrder: event.target.value }))} /></label>
+              <label><span>Старт через, сек</span><input value={phaseForm.startOffsetSeconds} onChange={(event) => setPhaseForm((current) => ({ ...current, startOffsetSeconds: event.target.value }))} /></label>
+              <label><span>Длительность, сек</span><input value={phaseForm.durationSeconds} onChange={(event) => setPhaseForm((current) => ({ ...current, durationSeconds: event.target.value }))} /></label>
               <label>
-                <span>RPS mode</span>
+                <span>Режим RPS</span>
                 <select value={phaseForm.rpsMode} onChange={(event) => setPhaseForm((current) => ({ ...current, rpsMode: event.target.value }))}>
-                  <option value="percent">percent</option>
-                  <option value="fixed">fixed</option>
+                  <option value="percent">процент</option>
+                  <option value="fixed">фиксированно</option>
                 </select>
               </label>
-              <label><span>RPS value</span><input value={phaseForm.rpsValue} onChange={(event) => setPhaseForm((current) => ({ ...current, rpsValue: event.target.value }))} /></label>
-              <label className="checkbox"><input type="checkbox" checked={phaseForm.stopOnSuccess} onChange={(event) => setPhaseForm((current) => ({ ...current, stopOnSuccess: event.target.checked }))} /><span>Stop on success</span></label>
+              <label><span>Значение RPS</span><input value={phaseForm.rpsValue} onChange={(event) => setPhaseForm((current) => ({ ...current, rpsValue: event.target.value }))} /></label>
+              <label className="checkbox"><input type="checkbox" checked={phaseForm.stopOnSuccess} onChange={(event) => setPhaseForm((current) => ({ ...current, stopOnSuccess: event.target.checked }))} /><span>Остановить при успехе</span></label>
             </div>
-            <button type="submit">Add phase</button>
+            <button type="submit">Добавить фазу</button>
           </form>
-        </div>
+          </div>
+        </section>
 
         <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>Rules & Phases</h2>
-              <p className="muted">Operational rule editor for the selected zone strategy.</p>
+              <h2>Окна и фазы</h2>
+              <p className="muted">Текущая стратегия: {selectedStrategy ? `.${selectedStrategy.zone} — ${selectedStrategy.name}` : "не выбрана"}.</p>
             </div>
-            <label className="preview-date">
-              <span>Preview date</span>
-              <input type="date" value={previewDate} onChange={(event) => setPreviewDate(event.target.value)} />
-            </label>
           </div>
           <div className="strategy-rule-list">
             {strategyRules.map((rule) => (
@@ -2820,27 +2920,27 @@ export default function App() {
                   <div>
                     <div className="domain-title-row">
                       <h3>{rule.name}</h3>
-                      <span className={statusClass(rule.is_enabled ? "ready" : "inactive")}>{rule.schedule_type}</span>
+                      <span className={statusClass(rule.is_enabled ? "ready" : "inactive")}>{formatScheduleType(rule.schedule_type)}</span>
                     </div>
                     <p className="muted">
-                      priority {rule.priority} | time {rule.hour ?? "*"}:{String(rule.minute).padStart(2, "0")}:{String(rule.second).padStart(2, "0")} | duration {rule.window_duration_seconds}s | mode {rule.execution_profile_mode}
+                      приоритет {rule.priority} | время {rule.hour ?? "*"}:{String(rule.minute).padStart(2, "0")}:{String(rule.second).padStart(2, "0")} | окно {rule.window_duration_seconds} сек | запросы: {formatExecutionMode(rule.execution_profile_mode)}
                     </p>
                   </div>
                   <div className="actions">
-                    <button type="button" className="danger" onClick={() => void removeZoneRule(rule.id)}>Delete rule</button>
+                    <button type="button" className="danger" onClick={() => void removeZoneRule(rule.id)}>Удалить окно</button>
                   </div>
                 </div>
                 <div className="table-wrap">
                   <table>
                     <thead>
                       <tr>
-                        <th>Phase</th>
-                        <th>Sort</th>
-                        <th>Offset</th>
-                        <th>Duration</th>
-                        <th>Mode</th>
-                        <th>Value</th>
-                        <th>Stop</th>
+                        <th>Фаза</th>
+                        <th>Порядок</th>
+                        <th>Старт через</th>
+                        <th>Длительность</th>
+                        <th>Режим</th>
+                        <th>Значение</th>
+                        <th>Стоп</th>
                         <th></th>
                       </tr>
                     </thead>
@@ -2849,17 +2949,17 @@ export default function App() {
                         <tr key={phase.id}>
                           <td>{phase.name}</td>
                           <td>{phase.sort_order}</td>
-                          <td>{phase.start_offset_seconds}</td>
-                          <td>{phase.duration_seconds}</td>
-                          <td>{phase.rps_mode}</td>
+                          <td>{phase.start_offset_seconds} сек</td>
+                          <td>{phase.duration_seconds} сек</td>
+                          <td>{formatRpsModeLabel(phase.rps_mode)}</td>
                           <td>{phase.rps_value}</td>
-                          <td>{phase.stop_on_success ? "yes" : "no"}</td>
-                          <td><button type="button" className="danger" onClick={() => void removeZonePhase(phase.id)}>Delete</button></td>
+                          <td>{phase.stop_on_success ? "да" : "нет"}</td>
+                          <td><button type="button" className="danger" onClick={() => void removeZonePhase(phase.id)}>Удалить</button></td>
                         </tr>
                       ))}
                       {(rulePhases[rule.id] ?? []).length === 0 ? (
                         <tr>
-                          <td colSpan={8} className="empty">No phases yet</td>
+                          <td colSpan={8} className="empty">Фаз пока нет</td>
                         </tr>
                       ) : null}
                     </tbody>
@@ -2867,30 +2967,30 @@ export default function App() {
                 </div>
               </article>
             ))}
-            {strategyRules.length === 0 ? <p className="empty">No rules yet for this strategy</p> : null}
+            {strategyRules.length === 0 ? <p className="empty">У выбранной стратегии пока нет окон</p> : null}
           </div>
         </div>
 
         <div className="card full-span">
-          <h2>Schedule Preview</h2>
+          <h2>Предпросмотр расписания</h2>
           <div className="key-value compact">
-            <div><span>Timezone</span><strong>{strategyPreview?.timezone_name ?? selectedStrategy?.timezone_name ?? "—"}</strong></div>
-            <div><span>Resolution</span><strong>{strategyPreview?.resolution_mode ?? selectedStrategy?.rule_resolution_mode ?? "—"}</strong></div>
+            <div><span>Часовой пояс</span><strong>{strategyPreview?.timezone_name ?? selectedStrategy?.timezone_name ?? "—"}</strong></div>
+            <div><span>Как выбираются окна</span><strong>{formatResolutionMode(strategyPreview?.resolution_mode ?? selectedStrategy?.rule_resolution_mode)}</strong></div>
           </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Rule</th>
-                  <th>Priority</th>
-                  <th>Start</th>
-                  <th>End</th>
+                  <th>Окно</th>
+                  <th>Приоритет</th>
+                  <th>Старт</th>
+                  <th>Конец</th>
                 </tr>
               </thead>
               <tbody>
                 {(strategyPreview?.windows ?? []).map((window) => (
                   <tr key={`${window.rule_id}-${window.start_at}`}>
-                    <td>{window.rule_name ?? `rule #${window.rule_id}`}</td>
+                    <td>{window.rule_name ?? `окно #${window.rule_id}`}</td>
                     <td>{window.priority}</td>
                     <td>{formatDateTime(window.start_at)}</td>
                     <td>{formatDateTime(window.end_at)}</td>
@@ -2898,7 +2998,7 @@ export default function App() {
                 ))}
                 {(strategyPreview?.windows ?? []).length === 0 ? (
                   <tr>
-                    <td colSpan={4} className="empty">No windows resolved for this date</td>
+                    <td colSpan={4} className="empty">На эту дату окна не найдены</td>
                   </tr>
                 ) : null}
               </tbody>
