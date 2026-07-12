@@ -711,6 +711,45 @@ button:disabled {
   color: var(--danger);
 }
 
+.notice {
+  border-radius: 16px;
+  padding: 12px 14px;
+  font-weight: 600;
+}
+
+.notice.warning {
+  background: rgba(183, 122, 28, 0.12);
+  color: var(--warning);
+}
+
+.setup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.setup-block {
+  display: grid;
+  gap: 10px;
+}
+
+.setup-block-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.setup-block textarea {
+  min-height: 130px;
+  font-family: "Courier New", monospace;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  white-space: pre;
+  overflow: auto;
+}
+
 .admin-grid {
   grid-template-columns: 1.6fr 1fr;
 }
@@ -796,7 +835,8 @@ button:disabled {
   .toolbar,
   .user-card-head,
   .form.two-columns,
-  .key-value {
+  .key-value,
+  .setup-grid {
     grid-template-columns: 1fr;
   }
 

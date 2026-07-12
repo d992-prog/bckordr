@@ -76,6 +76,12 @@ class Settings(BaseSettings):
         default=None,
         alias="WORKER_RUNTIME_ALLOWLIST_RELOAD_COMMAND",
     )
+    worker_runtime_public_base_url: str | None = Field(default=None, alias="WORKER_RUNTIME_PUBLIC_BASE_URL")
+    worker_setup_repository_url: str = Field(
+        default="https://github.com/d992-prog/bckordr.git",
+        alias="WORKER_SETUP_REPOSITORY_URL",
+    )
+    worker_setup_python_bin: str = Field(default="python3.11", alias="WORKER_SETUP_PYTHON_BIN")
     max_upload_bytes: int = 5 * 1024 * 1024
 
     model_config = SettingsConfigDict(

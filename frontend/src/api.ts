@@ -349,6 +349,21 @@ export type WorkerNode = {
   updated_at: string;
 };
 
+export type WorkerSetup = {
+  worker_id: number;
+  worker_name: string;
+  runtime_base_url: string;
+  mode: string;
+  simulate_mode: boolean;
+  env_file: string;
+  write_env_command: string;
+  full_install_commands: string[];
+  update_existing_commands: string[];
+  switch_to_test_commands: string[];
+  switch_to_live_commands: string[];
+  verify_commands: string[];
+};
+
 export type RegistrarAccount = {
   id: number;
   name: string;
@@ -708,6 +723,13 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+  getWorkerSetup: (id: number, payload: { simulate_mode: boolean; runtime_base_url?: string | null }) => {
+    const params = new URLSearchParams({ simulate_mode: String(payload.simulate_mode) });
+    if (payload.runtime_base_url) {
+      params.set("runtime_base_url", payload.runtime_base_url);
+    }
+    return request<WorkerSetup>(`/control/workers/${id}/setup?${params.toString()}`);
+  },
   deleteWorker: (id: number) => request<{ detail: string }>(`/control/workers/${id}`, { method: "DELETE" }),
 
   getRegistrarAccounts: () => request<RegistrarAccount[]>("/control/registrar-accounts"),

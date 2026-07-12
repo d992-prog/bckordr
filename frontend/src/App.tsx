@@ -21,6 +21,7 @@ import {
   SessionResponse,
   StrategyPreview,
   WorkerNode,
+  WorkerSetup,
   WorkerTask,
   ZoneScanCandidate,
   ZoneScanJob,
@@ -236,6 +237,8 @@ const DEFAULT_CONTACT_FORM = {
   isDefault: false,
   notes: "",
 };
+
+const DEFAULT_WORKER_RUNTIME_BASE_URL = "http://CONTROL_SERVER_IP:8080";
 
 function makeWorkerForm(worker?: WorkerNode | null) {
   if (!worker) {
@@ -511,6 +514,10 @@ export default function App() {
   const [domainOverridePhaseForm, setDomainOverridePhaseForm] = useState(DEFAULT_DOMAIN_OVERRIDE_PHASE_FORM);
   const [workerForm, setWorkerForm] = useState(DEFAULT_WORKER_FORM);
   const [editingWorkerId, setEditingWorkerId] = useState<number | null>(null);
+  const [workerSetup, setWorkerSetup] = useState<WorkerSetup | null>(null);
+  const [workerSetupMode, setWorkerSetupMode] = useState<"test" | "live">("test");
+  const [workerSetupRuntimeUrl, setWorkerSetupRuntimeUrl] = useState(DEFAULT_WORKER_RUNTIME_BASE_URL);
+  const [workerSetupLoading, setWorkerSetupLoading] = useState(false);
   const [accountForm, setAccountForm] = useState(DEFAULT_ACCOUNT_FORM);
   const [contactForm, setContactForm] = useState(DEFAULT_CONTACT_FORM);
   const [passwordForm, setPasswordForm] = useState({ current_password: "", new_password: "" });
@@ -1382,6 +1389,34 @@ export default function App() {
   function resetWorkerForm() {
     setEditingWorkerId(null);
     setWorkerForm(makeWorkerForm());
+  }
+
+  async function loadWorkerSetup(worker: WorkerNode, options?: { mode?: "test" | "live"; runtimeUrl?: string }) {
+    const mode = options?.mode ?? workerSetupMode;
+    const runtimeUrl = options?.runtimeUrl ?? workerSetupRuntimeUrl;
+    setWorkerSetupLoading(true);
+    try {
+      const payload = await api.getWorkerSetup(worker.id, {
+        simulate_mode: mode === "test",
+        runtime_base_url: runtimeUrl && runtimeUrl !== DEFAULT_WORKER_RUNTIME_BASE_URL ? runtimeUrl : null,
+      });
+      setWorkerSetup(payload);
+      setWorkerSetupMode(payload.simulate_mode ? "test" : "live");
+      setWorkerSetupRuntimeUrl(payload.runtime_base_url);
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка генерации команд воркера" });
+    } finally {
+      setWorkerSetupLoading(false);
+    }
+  }
+
+  async function copyWorkerCommands(commands: string[], label: string) {
+    try {
+      await navigator.clipboard.writeText(commands.join("\n"));
+      setToast({ type: "success", text: `${label}: команды скопированы` });
+    } catch {
+      setToast({ type: "error", text: "Не удалось скопировать команды" });
+    }
   }
 
   async function submitAccount(event: FormEvent) {
@@ -2612,6 +2647,12 @@ export default function App() {
   }
 
   function renderWorkers() {
+    const setupWorker = workerSetup ? workers.find((worker) => worker.id === workerSetup.worker_id) ?? null : null;
+    const fullInstallCommands = workerSetup?.full_install_commands ?? [];
+    const updateExistingCommands = workerSetup?.update_existing_commands ?? [];
+    const switchModeCommands = workerSetupMode === "test" ? workerSetup?.switch_to_test_commands ?? [] : workerSetup?.switch_to_live_commands ?? [];
+    const verifyCommands = workerSetup?.verify_commands ?? [];
+
     return (
       <section className="grid two">
         <div className="card">
@@ -2658,6 +2699,78 @@ export default function App() {
           </div>
         </div>
 
+        {workerSetup ? (
+          <div className="card full-span">
+            <div className="card-head">
+              <div>
+                <h2>Установка воркера #{workerSetup.worker_id}</h2>
+                <p className="muted">Команды рассчитаны для {workerSetup.worker_name}. Выполняй их на worker сервере под root.</p>
+              </div>
+              <button type="button" className="ghost" onClick={() => setWorkerSetup(null)}>Скрыть</button>
+            </div>
+            <div className="form two-columns">
+              <label>
+                <span>Режим</span>
+                <select
+                  value={workerSetupMode}
+                  onChange={(event) => {
+                    const mode = event.target.value as "test" | "live";
+                    setWorkerSetupMode(mode);
+                    if (setupWorker) {
+                      void loadWorkerSetup(setupWorker, { mode });
+                    }
+                  }}
+                >
+                  <option value="test">Тестовая нагрузка без реальной регистрации</option>
+                  <option value="live">Боевой режим с реальными запросами</option>
+                </select>
+              </label>
+              <label>
+                <span>Runtime URL control</span>
+                <input
+                  value={workerSetupRuntimeUrl}
+                  onChange={(event) => setWorkerSetupRuntimeUrl(event.target.value)}
+                  onBlur={(event) => setupWorker ? void loadWorkerSetup(setupWorker, { runtimeUrl: event.currentTarget.value }) : undefined}
+                />
+              </label>
+            </div>
+            {workerSetup.runtime_base_url.includes("CONTROL_SERVER_IP") ? (
+              <p className="notice warning">Укажи прямой адрес control runtime, например http://2.27.21.88:8080. Лучше один раз добавить WORKER_RUNTIME_PUBLIC_BASE_URL в .env control сервера.</p>
+            ) : null}
+            <div className="setup-grid">
+              <div className="setup-block">
+                <div className="setup-block-head">
+                  <strong>Новый worker сервер</strong>
+                  <button type="button" className="ghost" onClick={() => void copyWorkerCommands(fullInstallCommands, "Новый сервер")}>Копировать</button>
+                </div>
+                <textarea readOnly rows={8} value={fullInstallCommands.join("\n")} />
+              </div>
+              <div className="setup-block">
+                <div className="setup-block-head">
+                  <strong>Если worker уже установлен</strong>
+                  <button type="button" className="ghost" onClick={() => void copyWorkerCommands(updateExistingCommands, "Обновление worker")}>Копировать</button>
+                </div>
+                <textarea readOnly rows={8} value={updateExistingCommands.join("\n")} />
+              </div>
+              <div className="setup-block">
+                <div className="setup-block-head">
+                  <strong>{workerSetupMode === "test" ? "Переключить в тест" : "Переключить в бой"}</strong>
+                  <button type="button" className="ghost" onClick={() => void copyWorkerCommands(switchModeCommands, "Переключение режима")}>Копировать</button>
+                </div>
+                <textarea readOnly rows={5} value={switchModeCommands.join("\n")} />
+              </div>
+              <div className="setup-block">
+                <div className="setup-block-head">
+                  <strong>Проверка</strong>
+                  <button type="button" className="ghost" onClick={() => void copyWorkerCommands(verifyCommands, "Проверка")}>Копировать</button>
+                </div>
+                <textarea readOnly rows={5} value={verifyCommands.join("\n")} />
+              </div>
+            </div>
+            {workerSetupLoading ? <p className="muted">Обновляю команды...</p> : null}
+          </div>
+        ) : null}
+
         <div className="card full-span">
           <div className="card-head">
             <h2>Воркеры</h2>
@@ -2687,6 +2800,7 @@ export default function App() {
                   <div><span>Токен control</span><strong>{worker.control_token ?? "создается автоматически"}</strong></div>
                 </div>
                 <div className="actions">
+                  <button type="button" className="ghost" onClick={() => void loadWorkerSetup(worker)}>Команды установки</button>
                   <button type="button" className="ghost" onClick={() => startEditWorker(worker)}>Редактировать</button>
                   <button type="button" className="ghost" onClick={() => void toggleWorker(worker)}>{worker.is_enabled ? "Выключить" : "Включить"}</button>
                   <button type="button" className="danger" onClick={() => void deleteItem("worker", worker.id)}>Удалить</button>

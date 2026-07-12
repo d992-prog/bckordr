@@ -440,6 +440,21 @@ class WorkerNodeResponse(WorkerNodeBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class WorkerSetupResponse(BaseModel):
+    worker_id: int
+    worker_name: str
+    runtime_base_url: str
+    mode: str
+    simulate_mode: bool
+    env_file: str
+    write_env_command: str
+    full_install_commands: list[str]
+    update_existing_commands: list[str]
+    switch_to_test_commands: list[str]
+    switch_to_live_commands: list[str]
+    verify_commands: list[str]
+
+
 class DropDomainBase(BaseModel):
     fqdn: str = Field(min_length=3, max_length=255)
     zone: str = Field(default="fr", min_length=2, max_length=32)

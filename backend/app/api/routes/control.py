@@ -6,9 +6,10 @@ from datetime import date, datetime
 from io import StringIO
 import json
 from pathlib import Path
+import shlex
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,6 +80,7 @@ from app.schemas.control import (
     RegistrarAccountValidateResponse,
     WorkerNodeCreateRequest,
     WorkerNodeResponse,
+    WorkerSetupResponse,
     WorkerNodeUpdateRequest,
     WorkerTaskResponse,
     ZoneScanCandidateResponse,
@@ -151,6 +153,120 @@ def _worker_is_online(worker: WorkerNode, now: datetime) -> bool:
 def _serialize_registrar_account(account: RegistrarAccount) -> RegistrarAccountResponse:
     response = RegistrarAccountResponse.model_validate(account)
     return response.model_copy(update={"api_token": None})
+
+
+def _shell_quote(value: str | int | float | bool) -> str:
+    return shlex.quote(str(value))
+
+
+def _build_worker_env_lines(worker: WorkerNode, *, runtime_base_url: str, simulate_mode: bool) -> list[str]:
+    return [
+        f"CONTROL_BASE_URL={runtime_base_url.rstrip('/')}",
+        f"WORKER_ID={worker.id}",
+        f"CONTROL_TOKEN={worker.control_token or ''}",
+        "POLL_INTERVAL_SECONDS=2",
+        "HEARTBEAT_INTERVAL_SECONDS=5",
+        "REQUEST_TIMEOUT_SECONDS=10",
+        "CONNECT_TIMEOUT_SECONDS=2",
+        f"SIMULATE_MODE={'true' if simulate_mode else 'false'}",
+        "SIMULATE_LATENCY_MS=20",
+        "SIMULATE_JITTER_MS=10",
+        "SIMULATE_SUCCESS_RATE=1.0",
+        "SIMULATE_SUCCESS_STATUS_CODE=200",
+        "SIMULATE_FAILURE_STATUS_CODE=503",
+        "SIMULATE_RANDOM_SEED=12345",
+        "GANDI_STATUS_POLL_INTERVAL_SECONDS=0.5",
+        "GANDI_STATUS_POLL_MAX_ATTEMPTS=8",
+        "MAX_IDLE_BACKOFF_SECONDS=10",
+    ]
+
+
+def _build_printf_command(path: str, lines: list[str]) -> str:
+    quoted_lines = " ".join(_shell_quote(line) for line in lines)
+    return f"printf '%s\\n' {quoted_lines} > {_shell_quote(path)}"
+
+
+def _build_worker_service_command() -> str:
+    lines = [
+        "[Unit]",
+        "Description=Domain Drop Catcher Worker",
+        "After=network-online.target",
+        "Wants=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        "WorkingDirectory=/opt/domain-drop-catcher/worker",
+        "ExecStart=/opt/domain-drop-catcher/worker/.venv/bin/python -m app.main",
+        "Restart=always",
+        "RestartSec=2",
+        "",
+        "[Install]",
+        "WantedBy=multi-user.target",
+    ]
+    return _build_printf_command("/etc/systemd/system/domain-drop-worker.service", lines)
+
+
+def _build_worker_setup_response(
+    worker: WorkerNode,
+    *,
+    runtime_base_url: str,
+    simulate_mode: bool,
+) -> WorkerSetupResponse:
+    settings = get_settings()
+    env_path = "/opt/domain-drop-catcher/worker/.env"
+    python_bin = settings.worker_setup_python_bin
+    env_command = _build_printf_command(
+        env_path,
+        _build_worker_env_lines(worker, runtime_base_url=runtime_base_url, simulate_mode=simulate_mode),
+    )
+    mode = "test" if simulate_mode else "live"
+    full_install_commands = [
+        "apt-get update",
+        "apt-get install -y git python3.11 python3.11-venv python3.11-dev build-essential",
+        f"git clone {_shell_quote(settings.worker_setup_repository_url)} /opt/domain-drop-catcher",
+        f"{_shell_quote(python_bin)} -m venv /opt/domain-drop-catcher/worker/.venv",
+        "/opt/domain-drop-catcher/worker/.venv/bin/pip install --upgrade pip",
+        "/opt/domain-drop-catcher/worker/.venv/bin/pip install -e /opt/domain-drop-catcher/worker",
+        env_command,
+        _build_worker_service_command(),
+        "systemctl daemon-reload",
+        "systemctl enable --now domain-drop-worker.service",
+    ]
+    update_existing_commands = [
+        "cd /opt/domain-drop-catcher && git pull",
+        "/opt/domain-drop-catcher/worker/.venv/bin/pip install -e /opt/domain-drop-catcher/worker",
+        env_command,
+        "systemctl daemon-reload",
+        "systemctl restart domain-drop-worker.service",
+    ]
+    switch_to_test_commands = [
+        "sed -i 's/^SIMULATE_MODE=.*/SIMULATE_MODE=true/' /opt/domain-drop-catcher/worker/.env",
+        "sed -i 's/^SIMULATE_SUCCESS_RATE=.*/SIMULATE_SUCCESS_RATE=1.0/' /opt/domain-drop-catcher/worker/.env",
+        "systemctl restart domain-drop-worker.service",
+    ]
+    switch_to_live_commands = [
+        "sed -i 's/^SIMULATE_MODE=.*/SIMULATE_MODE=false/' /opt/domain-drop-catcher/worker/.env",
+        "systemctl restart domain-drop-worker.service",
+    ]
+    verify_commands = [
+        "systemctl status domain-drop-worker.service --no-pager",
+        "journalctl -u domain-drop-worker.service -n 120 --no-pager",
+        "grep -E '^(CONTROL_BASE_URL|WORKER_ID|SIMULATE_MODE|SIMULATE_SUCCESS_RATE)=' /opt/domain-drop-catcher/worker/.env",
+    ]
+    return WorkerSetupResponse(
+        worker_id=worker.id,
+        worker_name=worker.name,
+        runtime_base_url=runtime_base_url.rstrip("/"),
+        mode=mode,
+        simulate_mode=simulate_mode,
+        env_file=env_path,
+        write_env_command=env_command,
+        full_install_commands=full_install_commands,
+        update_existing_commands=update_existing_commands,
+        switch_to_test_commands=switch_to_test_commands,
+        switch_to_live_commands=switch_to_live_commands,
+        verify_commands=verify_commands,
+    )
 
 
 async def _enforce_single_default_contact(session: AsyncSession, contact_id: int) -> None:
@@ -1801,6 +1917,34 @@ async def list_workers(
     del admin
     result = await db.execute(select(WorkerNode).order_by(WorkerNode.name.asc()))
     return [WorkerNodeResponse.model_validate(worker) for worker in result.scalars().all()]
+
+
+@router.get("/workers/{worker_id}/setup", response_model=WorkerSetupResponse)
+async def get_worker_setup(
+    worker_id: int,
+    simulate_mode: bool = Query(default=True),
+    runtime_base_url: str | None = Query(default=None, max_length=255),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> WorkerSetupResponse:
+    del admin
+    worker = await db.get(WorkerNode, worker_id)
+    if worker is None:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    effective_runtime_base_url = (
+        runtime_base_url
+        or get_settings().worker_runtime_public_base_url
+        or "http://CONTROL_SERVER_IP:8080"
+    )
+    if not worker.control_token:
+        worker.control_token = generate_session_token()
+        await db.commit()
+        await db.refresh(worker)
+    return _build_worker_setup_response(
+        worker,
+        runtime_base_url=effective_runtime_base_url,
+        simulate_mode=simulate_mode,
+    )
 
 
 @router.post("/workers", response_model=WorkerNodeResponse, status_code=status.HTTP_201_CREATED)

@@ -104,6 +104,7 @@ Optional worker runtime allowlist knobs for nginx-managed origin protection:
 ```env
 WORKER_RUNTIME_ALLOWLIST_PATH=/etc/nginx/includes/domain-drop-worker-allowlist.conf
 WORKER_RUNTIME_ALLOWLIST_RELOAD_COMMAND=systemctl reload nginx
+WORKER_RUNTIME_PUBLIC_BASE_URL=http://CONTROL_SERVER_IP:8080
 ```
 
 Run control API:
