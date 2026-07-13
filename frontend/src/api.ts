@@ -342,6 +342,7 @@ export type WorkerNode = {
   cpu_load: number;
   ram_usage_percent: number;
   clock_drift_ms: number;
+  runtime_mode: string;
   current_domain_count: number;
   last_seen_at: string | null;
   last_heartbeat_at: string | null;

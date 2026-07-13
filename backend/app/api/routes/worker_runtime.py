@@ -60,6 +60,7 @@ async def worker_heartbeat(
     worker.cpu_load = payload.cpu_load
     worker.ram_usage_percent = payload.ram_usage_percent
     worker.clock_drift_ms = payload.clock_drift_ms
+    worker.runtime_mode = payload.runtime_mode
     worker.last_seen_at = utcnow()
     worker.last_heartbeat_at = utcnow()
     await db.commit()

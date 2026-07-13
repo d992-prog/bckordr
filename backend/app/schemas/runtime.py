@@ -15,6 +15,7 @@ class WorkerHeartbeatRequest(BaseModel):
     cpu_load: float = 0.0
     ram_usage_percent: float = 0.0
     clock_drift_ms: int = 0
+    runtime_mode: str = "unknown"
 
 
 class WorkerHeartbeatResponse(BaseModel):

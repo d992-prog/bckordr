@@ -280,6 +280,16 @@ function formatDateTime(value: string | null) {
   return `${formatted} MSK`;
 }
 
+function formatWorkerRuntimeMode(value: string | null | undefined) {
+  if (value === "test") {
+    return "Тест";
+  }
+  if (value === "live") {
+    return "Бой";
+  }
+  return "неизвестно";
+}
+
 function formatRedemptionAnchorSource(value: string | null) {
   if (value === "rdap_updated_at") {
     return "дата обновления из RDAP/WHOIS";
@@ -2794,6 +2804,7 @@ export default function App() {
                   <div><span>Текущая емкость</span><strong>{worker.current_capacity_rps}</strong></div>
                   <div><span>CPU / RAM</span><strong>{worker.cpu_load}% / {worker.ram_usage_percent}%</strong></div>
                   <div><span>Сдвиг часов</span><strong>{worker.clock_drift_ms} ms</strong></div>
+                  <div><span>Режим воркера</span><strong>{formatWorkerRuntimeMode(worker.runtime_mode)}</strong></div>
                   <div><span>Доменов на воркере</span><strong>{worker.current_domain_count}</strong></div>
                   <div><span>Закрепленный аккаунт</span><strong>{worker.assigned_registrar_account_id ? accountMap.get(worker.assigned_registrar_account_id)?.name ?? worker.assigned_registrar_account_id : "не закреплен"}</strong></div>
                   <div><span>ID воркера</span><strong>{worker.id}</strong></div>

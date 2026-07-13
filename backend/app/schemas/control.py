@@ -402,6 +402,7 @@ class WorkerNodeBase(BaseModel):
     cpu_load: float = Field(default=0.0, ge=0.0)
     ram_usage_percent: float = Field(default=0.0, ge=0.0)
     clock_drift_ms: int = 0
+    runtime_mode: str = "unknown"
     current_domain_count: int = Field(default=0, ge=0)
 
 
@@ -427,6 +428,7 @@ class WorkerNodeUpdateRequest(BaseModel):
     cpu_load: float | None = Field(default=None, ge=0.0)
     ram_usage_percent: float | None = Field(default=None, ge=0.0)
     clock_drift_ms: int | None = None
+    runtime_mode: str | None = None
     current_domain_count: int | None = Field(default=None, ge=0)
 
 

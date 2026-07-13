@@ -68,6 +68,7 @@ class WorkerRunner:
             "cpu_load": psutil.cpu_percent(interval=None),
             "ram_usage_percent": psutil.virtual_memory().percent,
             "clock_drift_ms": self._clock_drift_ms(),
+            "runtime_mode": "test" if self.settings.simulate_mode else "live",
             "ip_address": None,
             "region": None,
         }
