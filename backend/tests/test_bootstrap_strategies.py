@@ -29,8 +29,9 @@ async def test_bootstrap_creates_discovered_zone_strategy_presets():
         rules = (await session.execute(select(ZoneRule).order_by(ZoneRule.name.asc()))).scalars().all()
 
     strategy_by_zone = {strategy.zone: strategy for strategy in strategies}
-    assert set(strategy_by_zone) == {"com", "net", "org"}
+    assert set(strategy_by_zone) == {"com", "fr", "net", "org"}
     assert strategy_by_zone["com"].timezone_name == "UTC"
+    assert strategy_by_zone["fr"].timezone_name == "Europe/Paris"
     assert strategy_by_zone["net"].name == "Verisign NET Drop Window"
     assert strategy_by_zone["org"].name == "PIR ORG Drop Window"
 
@@ -40,6 +41,11 @@ async def test_bootstrap_creates_discovered_zone_strategy_presets():
     assert rule_by_zone["com"].minute == 0
     assert rule_by_zone["com"].second == 0
     assert rule_by_zone["com"].window_duration_seconds == 2700
+    assert rule_by_zone["fr"].schedule_type == "hourly"
+    assert rule_by_zone["fr"].hour is None
+    assert rule_by_zone["fr"].minute == 31
+    assert rule_by_zone["fr"].second == 59
+    assert rule_by_zone["fr"].window_duration_seconds == 61
     assert rule_by_zone["net"].hour == 18
     assert rule_by_zone["net"].window_duration_seconds == 2700
     assert rule_by_zone["org"].hour == 15
@@ -53,6 +59,6 @@ async def test_bootstrap_creates_discovered_zone_strategy_presets():
         strategy_count = await session.scalar(select(func.count()).select_from(ZoneStrategy))
         rule_count = await session.scalar(select(func.count()).select_from(ZoneRule))
 
-    assert strategy_count == 3
-    assert rule_count == 3
+    assert strategy_count == 4
+    assert rule_count == 4
     await engine.dispose()

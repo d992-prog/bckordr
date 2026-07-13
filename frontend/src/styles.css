@@ -555,6 +555,80 @@ button:disabled {
   font-size: 1.25rem;
 }
 
+.preset-card {
+  background: linear-gradient(135deg, rgba(255, 250, 242, 0.96), rgba(241, 226, 204, 0.72));
+}
+
+.preset-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.preset-button {
+  min-height: 92px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+  text-align: left;
+}
+
+.preset-button strong,
+.preset-button span {
+  display: block;
+}
+
+.preset-button span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.collapsible-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.collapsible-card summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 22px;
+  display: grid;
+  gap: 6px;
+  font-weight: 800;
+}
+
+.collapsible-card summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible-card summary::after {
+  content: "Открыть";
+  justify-self: start;
+  margin-top: 4px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--accent-dark);
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
+.collapsible-card[open] summary::after {
+  content: "Свернуть";
+}
+
+.collapsible-card summary small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.collapsible-card > .form,
+.collapsible-card > p {
+  margin: 0 22px 22px;
+}
+
 .checkbox {
   display: flex !important;
   gap: 10px;
@@ -816,6 +890,7 @@ button:disabled {
 
   .domain-metrics,
   .domain-snapshot-grid,
+  .preset-actions,
   .strategy-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -866,6 +941,7 @@ button:disabled {
 
   .domain-metrics,
   .domain-snapshot-grid,
+  .preset-actions,
   .strategy-controls,
   .strategy-summary {
     grid-template-columns: 1fr;

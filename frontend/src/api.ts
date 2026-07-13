@@ -574,6 +574,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  createZoneStrategyPreset: (zone: string) =>
+    request<ZoneStrategy>(`/control/zone-strategies/presets/${encodeURIComponent(zone)}`, {
+      method: "POST",
+    }),
   getZoneRules: (strategyId: number) => request<ZoneRule[]>(`/control/zone-strategies/${strategyId}/rules`),
   createZoneRule: (strategyId: number, payload: Record<string, unknown>) =>
     request<ZoneRule>(`/control/zone-strategies/${strategyId}/rules`, {

@@ -72,6 +72,50 @@ def test_domain_override_rule_phase_defaults_to_percent_mode():
 
 
 @pytest.mark.asyncio
+async def test_zone_strategy_preset_api_creates_fr_hourly_window():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post("/control/zone-strategies/presets/fr")
+        assert response.status_code == 201
+        strategy_payload = response.json()
+        assert strategy_payload["zone"] == "fr"
+        assert strategy_payload["timezone_name"] == "Europe/Paris"
+
+        rules_response = await client.get(f"/control/zone-strategies/{strategy_payload['id']}/rules")
+        assert rules_response.status_code == 200
+        rules_payload = rules_response.json()
+        assert len(rules_payload) == 1
+        assert rules_payload[0]["schedule_type"] == "hourly"
+        assert rules_payload[0]["minute"] == 31
+        assert rules_payload[0]["second"] == 59
+        assert rules_payload[0]["window_duration_seconds"] == 61
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_domain_override_api_supports_create_rule_phase_and_preview():
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",

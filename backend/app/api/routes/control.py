@@ -107,6 +107,7 @@ from app.services.attack_runtime import (
     recompute_run_statistics,
 )
 from app.services.audit import add_audit_log
+from app.services.bootstrap import ensure_zone_strategy_preset
 from app.services.domain_parser import normalize_domain, parse_upload
 from app.services.discovery import (
     DiscoveryObservationInput,
@@ -715,6 +716,28 @@ async def create_zone_strategy(
         target_user_id=None,
         action="zone_strategy_create",
         details=f"zone={payload.zone} name={payload.name}",
+    )
+    await db.commit()
+    await db.refresh(strategy)
+    return ZoneStrategyResponse.model_validate(strategy)
+
+
+@router.post("/zone-strategies/presets/{zone}", response_model=ZoneStrategyResponse, status_code=status.HTTP_201_CREATED)
+async def create_zone_strategy_preset(
+    zone: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> ZoneStrategyResponse:
+    try:
+        strategy = await ensure_zone_strategy_preset(db, zone)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="zone_strategy_preset_create",
+        details=f"zone={strategy.zone} strategy_id={strategy.id}",
     )
     await db.commit()
     await db.refresh(strategy)

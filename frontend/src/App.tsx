@@ -1166,6 +1166,18 @@ export default function App() {
     }
   }
 
+  async function createPresetStrategy(zone: string) {
+    try {
+      const strategy = await api.createZoneStrategyPreset(zone);
+      await loadAll();
+      setSelectedStrategyId(strategy.id);
+      await loadStrategyDetails(strategy.id, previewDate);
+      setToast({ type: "success", text: `Стандартная стратегия .${strategy.zone} готова` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка создания пресета" });
+    }
+  }
+
   async function submitRule(event: FormEvent) {
     event.preventDefault();
     if (!selectedStrategyId) {
@@ -1660,9 +1672,20 @@ export default function App() {
 
   function formatDomainReadiness(domain: DropDomain) {
     if (!domain.readiness_reasons) {
-      return "ready";
+      return "готово";
     }
-    return domain.readiness_reasons;
+    const translations: Record<string, string> = {
+      "strategy is missing": "нет стратегии для зоны",
+      "strategy rules are missing": "у стратегии нет окон дропа",
+      "registrar account is missing": "не выбран аккаунт регистратора",
+      "contact profile is missing": "не выбран контакт",
+      "drop date is missing": "не указана дата дропа",
+    };
+    return domain.readiness_reasons
+      .split(";")
+      .map((reason) => translations[reason.trim()] ?? reason.trim())
+      .filter(Boolean)
+      .join("; ");
   }
 
   function applyPrefilledContact(payload: ContactProfilePrefill) {
@@ -2885,6 +2908,13 @@ export default function App() {
   }
 
   function renderStrategies() {
+    const strategyPresets = [
+      { zone: "fr", title: ".fr FRNIC", description: "каждый час 31:59 + 61 сек, Europe/Paris" },
+      { zone: "com", title: ".com Verisign", description: "ежедневное окно 18:00 UTC" },
+      { zone: "net", title: ".net Verisign", description: "ежедневное окно 18:00 UTC" },
+      { zone: "org", title: ".org PIR", description: "короткое окно около 15:15 UTC" },
+    ];
+
     return (
       <section className="stack strategies-page">
         <div className="card full-span">
@@ -2937,9 +2967,29 @@ export default function App() {
           </div>
         </div>
 
+        <div className="card full-span preset-card">
+          <div className="card-head">
+            <div>
+              <h2>Быстрый старт</h2>
+              <p className="muted">Создай стандартную стратегию зоны одной кнопкой. Если она уже есть, панель просто выберет ее.</p>
+            </div>
+          </div>
+          <div className="preset-actions">
+            {strategyPresets.map((preset) => (
+              <button key={preset.zone} type="button" className="ghost preset-button" onClick={() => void createPresetStrategy(preset.zone)}>
+                <strong>{preset.title}</strong>
+                <span>{preset.description}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
         <section className="grid two compact-section">
-          <div className="card">
-          <h2>Новая стратегия</h2>
+          <details className="card collapsible-card">
+          <summary>
+            <span>Ручное создание стратегии</span>
+            <small>Нужно только для нестандартных зон или новых гипотез</small>
+          </summary>
           <form className="form" onSubmit={submitStrategy}>
             <div className="form two-columns">
               <label>
@@ -2980,7 +3030,7 @@ export default function App() {
             </label>
             <button type="submit">Создать стратегию</button>
           </form>
-          </div>
+          </details>
 
           <div className="card">
           <h2>Как это читать</h2>
@@ -3014,6 +3064,7 @@ export default function App() {
                   <th>Мин. RPS</th>
                   <th>Регистратор</th>
                   <th>Статус</th>
+                  <th>Действие</th>
                 </tr>
               </thead>
               <tbody>
@@ -3026,11 +3077,16 @@ export default function App() {
                     <td>{strategy.default_min_guaranteed_rps}</td>
                     <td>{strategy.default_registrar_slug}</td>
                     <td><span className={statusClass(strategy.is_active ? "ready" : "inactive")}>{strategy.is_active ? "активна" : "выключена"}</span></td>
+                    <td>
+                      <button type="button" className="ghost" onClick={() => setSelectedStrategyId(strategy.id)}>
+                        Выбрать
+                      </button>
+                    </td>
                   </tr>
                 ))}
                 {strategies.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="empty">Стратегий пока нет</td>
+                    <td colSpan={8} className="empty">Стратегий пока нет</td>
                   </tr>
                 ) : null}
               </tbody>
@@ -3039,8 +3095,11 @@ export default function App() {
         </div>
 
         <section className="grid two compact-section">
-          <div className="card">
-          <h2>Новое окно дропа</h2>
+          <details className="card collapsible-card">
+          <summary>
+            <span>Добавить окно дропа вручную</span>
+            <small>Используй, если пресет зоны не подходит</small>
+          </summary>
           <p className="muted">Окно добавляется в выбранную сверху стратегию.</p>
           <form className="form" onSubmit={submitRule}>
             <div className="form two-columns">
@@ -3073,10 +3132,13 @@ export default function App() {
             <label><span>Заметки</span><textarea rows={2} value={ruleForm.notes} onChange={(event) => setRuleForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             <button type="submit">Добавить окно</button>
           </form>
-          </div>
+          </details>
 
-          <div className="card">
-          <h2>Фаза RPS</h2>
+          <details className="card collapsible-card">
+          <summary>
+            <span>Фазы RPS</span>
+            <small>Дополнительная настройка нагрузки внутри окна</small>
+          </summary>
           <p className="muted">Фазы нужны только если у окна выбран режим “по фазам”.</p>
           <form className="form" onSubmit={submitPhase}>
             <div className="form two-columns">
@@ -3105,7 +3167,7 @@ export default function App() {
             </div>
             <button type="submit">Добавить фазу</button>
           </form>
-          </div>
+          </details>
         </section>
 
         <div className="card full-span">
