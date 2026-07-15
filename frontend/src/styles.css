@@ -459,6 +459,72 @@ button:disabled {
   grid-template-columns: auto 1fr;
 }
 
+.run-mini-summary {
+  display: grid;
+  gap: 6px;
+  min-width: 190px;
+  font-size: 0.9rem;
+}
+
+.run-report-list {
+  display: grid;
+  gap: 16px;
+}
+
+.run-report {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(79, 57, 29, 0.12);
+  background: rgba(255, 250, 242, 0.7);
+}
+
+.run-report h3 {
+  margin: 0 0 4px;
+  font-size: 1.05rem;
+}
+
+.run-report-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.run-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.worker-breakdown {
+  display: grid;
+  gap: 10px;
+}
+
+.worker-breakdown-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 1.2fr) repeat(4, minmax(90px, 0.8fr)) minmax(220px, 1.8fr);
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(79, 57, 29, 0.1);
+  background: rgba(255, 255, 255, 0.45);
+  font-size: 0.92rem;
+}
+
+.worker-breakdown-row > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.worker-error {
+  color: var(--muted);
+  word-break: break-word;
+}
+
 .promo-row,
 .user-card {
   grid-template-columns: 1fr;
@@ -894,6 +960,11 @@ button:disabled {
   .strategy-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .worker-breakdown-row,
+  .run-metrics {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -943,7 +1014,13 @@ button:disabled {
   .domain-snapshot-grid,
   .preset-actions,
   .strategy-controls,
-  .strategy-summary {
+  .strategy-summary,
+  .run-metrics,
+  .worker-breakdown-row {
     grid-template-columns: 1fr;
+  }
+
+  .run-report-head {
+    flex-direction: column;
   }
 }

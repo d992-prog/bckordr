@@ -429,7 +429,7 @@ function statusClass(value: string) {
   if (["ready", "success", "scheduled"].includes(value)) {
     return "status available";
   }
-  if (["running", "attacking", "busy", "planned"].includes(value)) {
+  if (["running", "attacking", "busy", "planned", "warning", "info"].includes(value)) {
     return "status checking";
   }
   if (["invalid", "error", "failed", "stopped", "cancelled", "offline"].includes(value)) {
@@ -450,6 +450,145 @@ function formatRps(value: number | null | undefined) {
     return "—";
   }
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function formatSeconds(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "—";
+  }
+  if (value < 60) {
+    return `${value.toFixed(value >= 10 ? 0 : 1)} сек`;
+  }
+  return `${(value / 60).toFixed(1)} мин`;
+}
+
+function secondsBetween(start: string | null, end: string | null) {
+  if (!start || !end) {
+    return null;
+  }
+  const diff = new Date(end).getTime() - new Date(start).getTime();
+  return diff > 0 ? diff / 1000 : null;
+}
+
+function truncateText(value: string | null | undefined, maxLength = 180) {
+  if (!value) {
+    return "—";
+  }
+  const trimmed = value.trim();
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}…` : trimmed;
+}
+
+function extractReadableError(value: string | null | undefined) {
+  if (!value) {
+    return "—";
+  }
+  try {
+    const parsed = JSON.parse(value) as { message?: unknown; cause?: unknown; code?: unknown };
+    const message = typeof parsed.message === "string" ? parsed.message : "";
+    const cause = typeof parsed.cause === "string" ? parsed.cause : "";
+    const code = parsed.code !== undefined ? `HTTP ${parsed.code}` : "";
+    return [code, cause, message].filter(Boolean).join(": ") || truncateText(value);
+  } catch {
+    return truncateText(value);
+  }
+}
+
+function formatAttackEventType(value: string) {
+  const labels: Record<string, string> = {
+    attack_planned: "Запуск создан",
+    task_ack: "Воркер взял задачу",
+    task_result: "Результат воркера",
+    attack_window_expired: "Окно закончилось",
+    post_window_rdap_inconclusive: "После окна домен еще занят",
+    post_window_rdap_registered: "После окна домен зарегистрирован",
+    post_window_rdap_available: "После окна домен доступен",
+    domain_registered: "Домен зарегистрирован",
+    domain_dry_run: "Тест Gandi",
+    worker_stalled: "Воркер завис/пропал",
+    attack_rebalanced: "Мощность перераспределена",
+    attack_stopped: "Запуск остановлен",
+  };
+  return labels[value] ?? value;
+}
+
+function groupTasksByRun(tasks: WorkerTask[]) {
+  const map = new Map<number, WorkerTask[]>();
+  for (const task of tasks) {
+    const items = map.get(task.attack_run_id) ?? [];
+    items.push(task);
+    map.set(task.attack_run_id, items);
+  }
+  return map;
+}
+
+function groupEventsByRun(events: AttackEvent[]) {
+  const map = new Map<number, AttackEvent[]>();
+  for (const event of events) {
+    if (!event.attack_run_id) {
+      continue;
+    }
+    const items = map.get(event.attack_run_id) ?? [];
+    items.push(event);
+    map.set(event.attack_run_id, items);
+  }
+  return map;
+}
+
+function summarizeAttackRun(attack: AttackRun, runTasks: WorkerTask[], runEvents: AttackEvent[]) {
+  const totalAttempts = runTasks.reduce((sum, task) => sum + task.total_attempts, 0);
+  const totalSuccess = runTasks.reduce((sum, task) => sum + task.success_attempts, 0);
+  const startedAt = runTasks
+    .map((task) => task.started_at)
+    .filter((value): value is string => Boolean(value))
+    .sort()[0] ?? attack.started_at;
+  const finishedAt = runTasks
+    .map((task) => task.finished_at)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  const lastFinishedAt = finishedAt.length ? finishedAt[finishedAt.length - 1] : null;
+  const elapsedSeconds = secondsBetween(startedAt, lastFinishedAt ?? attack.finished_at);
+  const estimatedRps = elapsedSeconds ? totalAttempts / elapsedSeconds : null;
+  const httpCounts = new Map<string, number>();
+  for (const task of runTasks) {
+    const key = task.last_http_status ? String(task.last_http_status) : "нет";
+    httpCounts.set(key, (httpCounts.get(key) ?? 0) + 1);
+  }
+  const httpSummary = Array.from(httpCounts.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([status, count]) => `${status} x${count}`)
+    .join(", ") || "—";
+  const postWindowEvent = runEvents.find((event) => event.event_type.startsWith("post_window_rdap"));
+  let conclusion = "Нет данных по попыткам";
+  let conclusionTone = "inactive";
+  if (totalSuccess > 0 || attack.status === "success") {
+    conclusion = "Регистрация прошла";
+    conclusionTone = "success";
+  } else if (totalAttempts > 0 && httpCounts.has("500")) {
+    conclusion = "Окно отработало, Gandi отвечал 500";
+    conclusionTone = "running";
+  } else if (totalAttempts > 0) {
+    conclusion = "Окно отработало, регистрации нет";
+    conclusionTone = "running";
+  } else if (runTasks.length > 0) {
+    conclusion = "Воркеры получили задачи, но попыток нет";
+    conclusionTone = "error";
+  } else if (attack.status === "planned") {
+    conclusion = "Запуск ожидает окна";
+    conclusionTone = "planned";
+  } else if (attack.status === "failed") {
+    conclusion = "Сбой без попыток";
+    conclusionTone = "error";
+  }
+  return {
+    totalAttempts,
+    totalSuccess,
+    elapsedSeconds,
+    estimatedRps,
+    httpSummary,
+    postWindowEvent,
+    conclusion,
+    conclusionTone,
+  };
 }
 
 function formatBytes(value: number | null | undefined) {
@@ -3364,6 +3503,16 @@ export default function App() {
   }
 
   function renderAttacks() {
+    const tasksByRun = groupTasksByRun(tasks);
+    const eventsByRun = groupEventsByRun(events);
+    const attackSummaries = new Map(
+      attacks.map((attack) => [
+        attack.id,
+        summarizeAttackRun(attack, tasksByRun.get(attack.id) ?? [], eventsByRun.get(attack.id) ?? []),
+      ]),
+    );
+    const recentAttacks = attacks.slice(0, 6);
+
     return (
       <section className="grid two">
         <div className="card">
@@ -3412,30 +3561,96 @@ export default function App() {
                   <th>План RPS</th>
                   <th>Текущий RPS</th>
                   <th>Макс. RPS</th>
+                  <th>Итог окна</th>
                 </tr>
               </thead>
               <tbody>
-                {attacks.map((attack) => (
-                  <tr key={attack.id}>
-                    <td>{attack.id}</td>
-                    <td>{domainMap.get(attack.domain_id)?.fqdn ?? attack.domain_id}</td>
-                    <td><span className={statusClass(attack.status)}>{formatStatusLabel(attack.status)}</span></td>
-                    <td>{attack.runtime_phase_name ?? domainMap.get(attack.domain_id)?.runtime_phase_name ?? "—"}</td>
-                    <td>{formatDateTime(attack.planned_start_at)}</td>
-                    <td>{formatDateTime(attack.planned_end_at)}</td>
-                    <td>{attack.assigned_worker_count}</td>
-                    <td>
-                      <div>мин. {formatRps(attack.runtime_minimum_rps ?? domainMap.get(attack.domain_id)?.runtime_minimum_rps)}</div>
-                      <div>желательно {formatRps(attack.runtime_desired_rps ?? domainMap.get(attack.domain_id)?.runtime_desired_rps)}</div>
-                      <div>выделено {formatRps(attack.runtime_allocated_rps ?? domainMap.get(attack.domain_id)?.runtime_allocated_rps ?? attack.planned_rps)}</div>
-                    </td>
-                    <td>{attack.planned_rps}</td>
-                    <td>{attack.current_rps}</td>
-                    <td>{attack.max_rps}</td>
-                  </tr>
-                ))}
+                {attacks.map((attack) => {
+                  const summary = attackSummaries.get(attack.id);
+                  return (
+                    <tr key={attack.id}>
+                      <td>{attack.id}</td>
+                      <td>{domainMap.get(attack.domain_id)?.fqdn ?? attack.domain_id}</td>
+                      <td><span className={statusClass(attack.status)}>{formatStatusLabel(attack.status)}</span></td>
+                      <td>{attack.runtime_phase_name ?? domainMap.get(attack.domain_id)?.runtime_phase_name ?? "—"}</td>
+                      <td>{formatDateTime(attack.planned_start_at)}</td>
+                      <td>{formatDateTime(attack.planned_end_at)}</td>
+                      <td>{attack.assigned_worker_count}</td>
+                      <td>
+                        <div>мин. {formatRps(attack.runtime_minimum_rps ?? domainMap.get(attack.domain_id)?.runtime_minimum_rps)}</div>
+                        <div>желательно {formatRps(attack.runtime_desired_rps ?? domainMap.get(attack.domain_id)?.runtime_desired_rps)}</div>
+                        <div>выделено {formatRps(attack.runtime_allocated_rps ?? domainMap.get(attack.domain_id)?.runtime_allocated_rps ?? attack.planned_rps)}</div>
+                      </td>
+                      <td>{attack.planned_rps}</td>
+                      <td>{attack.current_rps}</td>
+                      <td>{attack.max_rps}</td>
+                      <td>
+                        {summary ? (
+                          <div className="run-mini-summary">
+                            <span className={statusClass(summary.conclusionTone)}>{summary.conclusion}</span>
+                            <div>попыток: {summary.totalAttempts}</div>
+                            <div>успехов: {summary.totalSuccess}</div>
+                            <div>HTTP воркеров: {summary.httpSummary}</div>
+                            <div>факт: {formatRps(summary.estimatedRps)} RPS</div>
+                          </div>
+                        ) : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        <div className="card full-span">
+          <h2>Отчеты по последним окнам</h2>
+          <div className="run-report-list">
+            {recentAttacks.map((attack) => {
+              const runTasks = (tasksByRun.get(attack.id) ?? []).slice().sort((left, right) => left.worker_id - right.worker_id);
+              const runEvents = eventsByRun.get(attack.id) ?? [];
+              const summary = attackSummaries.get(attack.id) ?? summarizeAttackRun(attack, runTasks, runEvents);
+              const domain = domainMap.get(attack.domain_id);
+              return (
+                <article key={attack.id} className="run-report">
+                  <div className="run-report-head">
+                    <div>
+                      <h3>Запуск #{attack.id} · {domain?.fqdn ?? attack.domain_id}</h3>
+                      <p className="muted">{formatDateTime(attack.planned_start_at)} → {formatDateTime(attack.planned_end_at)}</p>
+                    </div>
+                    <span className={statusClass(summary.conclusionTone)}>{summary.conclusion}</span>
+                  </div>
+                  <div className="key-value compact run-metrics">
+                    <div><span>Всего попыток</span><strong>{summary.totalAttempts}</strong></div>
+                    <div><span>Успешных попыток</span><strong>{summary.totalSuccess}</strong></div>
+                    <div><span>Расчетный факт RPS</span><strong>{formatRps(summary.estimatedRps)}</strong></div>
+                    <div><span>Длительность задач</span><strong>{formatSeconds(summary.elapsedSeconds)}</strong></div>
+                    <div><span>Последний HTTP по воркерам</span><strong>{summary.httpSummary}</strong></div>
+                    <div><span>После окна</span><strong>{summary.postWindowEvent ? summary.postWindowEvent.message : "—"}</strong></div>
+                  </div>
+                  {attack.stop_reason ? <p className="muted">Причина остановки: {attack.stop_reason}</p> : null}
+                  <div className="worker-breakdown">
+                    {runTasks.length ? runTasks.map((task) => {
+                      const taskElapsed = secondsBetween(task.started_at, task.finished_at);
+                      const taskRps = task.actual_rps || (taskElapsed ? task.total_attempts / taskElapsed : null);
+                      return (
+                        <div key={task.id} className="worker-breakdown-row">
+                          <div>
+                            <strong>worker #{task.worker_id}</strong>
+                            <span className={statusClass(task.status)}>{formatStatusLabel(task.status)}</span>
+                          </div>
+                          <div>попыток: <strong>{task.total_attempts}</strong></div>
+                          <div>успехов: <strong>{task.success_attempts}</strong></div>
+                          <div>факт: <strong>{formatRps(taskRps)} RPS</strong></div>
+                          <div>HTTP: <strong>{task.last_http_status ?? "—"}</strong></div>
+                          <div className="worker-error">ошибка: {extractReadableError(task.last_error)}</div>
+                        </div>
+                      );
+                    }) : <p className="muted">По этому запуску задач воркеров пока нет.</p>}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </div>
 
@@ -3447,7 +3662,14 @@ export default function App() {
                 <span className={statusClass(task.status)}>{formatStatusLabel(task.status)}</span>
                 <div>
                   <strong>запуск #{task.attack_run_id} | воркер #{task.worker_id}</strong>
-                  <p>домен: {domainMap.get(task.domain_id)?.fqdn ?? task.domain_id} | план RPS: {task.planned_rps} | факт RPS: {task.actual_rps}</p>
+                  <p>
+                    домен: {domainMap.get(task.domain_id)?.fqdn ?? task.domain_id}
+                    {" | "}план RPS: {task.planned_rps}
+                    {" | "}попыток: {task.total_attempts}
+                    {" | "}успехов: {task.success_attempts}
+                    {" | "}HTTP: {task.last_http_status ?? "—"}
+                  </p>
+                  {task.last_error ? <p>ошибка: {extractReadableError(task.last_error)}</p> : null}
                 </div>
               </article>
             ))}
@@ -3461,7 +3683,7 @@ export default function App() {
               <article key={event.id} className="log-row">
                 <span className={statusClass(event.level)}>{event.level}</span>
                 <div>
-                  <strong>{event.event_type}</strong>
+                  <strong>{formatAttackEventType(event.event_type)}</strong>
                   <p>{event.message}</p>
                   <p>{formatDateTime(event.created_at)}</p>
                 </div>
