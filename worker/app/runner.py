@@ -84,11 +84,16 @@ class WorkerRunner:
     def _clock_drift_ms(self) -> int:
         return self._clock_offset_ms
 
-    @staticmethod
-    def _runtime_limits(planned_rps: float) -> tuple[float, int]:
+    def _runtime_limits(self, planned_rps: float) -> tuple[float, int]:
         effective_rps = max(0.0, float(planned_rps))
         dispatch_interval = 1.0 / max(effective_rps, 0.1)
-        concurrency_limit = max(1, min(64, math.ceil(max(effective_rps, 1.0) * 2)))
+        concurrency_limit = max(
+            1,
+            min(
+                self.settings.registration_max_concurrency,
+                math.ceil(max(effective_rps, 1.0) * self.settings.registration_concurrency_multiplier),
+            ),
+        )
         return dispatch_interval, concurrency_limit
 
     def _apply_live_task_status(self, task: ControlTask, status: ControlTaskStatus) -> tuple[float, int]:

@@ -21,6 +21,13 @@ class WorkerSettings(BaseSettings):
     simulate_random_seed: int = Field(default=12345, alias="SIMULATE_RANDOM_SEED")
     gandi_status_poll_interval_seconds: float = Field(default=0.5, alias="GANDI_STATUS_POLL_INTERVAL_SECONDS")
     gandi_status_poll_max_attempts: int = Field(default=8, alias="GANDI_STATUS_POLL_MAX_ATTEMPTS")
+    registration_concurrency_multiplier: float = Field(
+        default=2.0,
+        alias="REGISTRATION_CONCURRENCY_MULTIPLIER",
+        ge=1.0,
+        le=32.0,
+    )
+    registration_max_concurrency: int = Field(default=64, alias="REGISTRATION_MAX_CONCURRENCY", ge=1, le=512)
     max_idle_backoff_seconds: float = Field(default=10.0, alias="MAX_IDLE_BACKOFF_SECONDS")
 
     model_config = SettingsConfigDict(

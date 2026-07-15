@@ -178,6 +178,8 @@ def _build_worker_env_lines(worker: WorkerNode, *, runtime_base_url: str, simula
         "SIMULATE_RANDOM_SEED=12345",
         "GANDI_STATUS_POLL_INTERVAL_SECONDS=0.5",
         "GANDI_STATUS_POLL_MAX_ATTEMPTS=8",
+        "REGISTRATION_CONCURRENCY_MULTIPLIER=8",
+        "REGISTRATION_MAX_CONCURRENCY=160",
         "MAX_IDLE_BACKOFF_SECONDS=10",
     ]
 
@@ -252,7 +254,7 @@ def _build_worker_setup_response(
     verify_commands = [
         "systemctl status domain-drop-worker.service --no-pager",
         "journalctl -u domain-drop-worker.service -n 120 --no-pager",
-        "grep -E '^(CONTROL_BASE_URL|WORKER_ID|SIMULATE_MODE|SIMULATE_SUCCESS_RATE)=' /opt/domain-drop-catcher/worker/.env",
+        "grep -E '^(CONTROL_BASE_URL|WORKER_ID|SIMULATE_MODE|SIMULATE_SUCCESS_RATE|REGISTRATION_CONCURRENCY_MULTIPLIER|REGISTRATION_MAX_CONCURRENCY)=' /opt/domain-drop-catcher/worker/.env",
     ]
     return WorkerSetupResponse(
         worker_id=worker.id,

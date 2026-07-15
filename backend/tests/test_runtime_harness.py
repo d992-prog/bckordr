@@ -480,3 +480,31 @@ async def test_worker_simulate_mode_supports_controlled_failure_and_success_rate
         assert body == "simulated success"
     finally:
         await runner.close()
+
+
+def test_worker_runtime_limits_are_configurable_for_slow_registrar_responses():
+    default_settings = WorkerSettings(
+        CONTROL_BASE_URL="http://control.test",
+        WORKER_ID=1,
+        CONTROL_TOKEN="worker-token",
+    )
+    default_runner = WorkerRunner(default_settings)
+    try:
+        _interval, concurrency = default_runner._runtime_limits(16.0)
+        assert concurrency == 32
+    finally:
+        asyncio.run(default_runner.close())
+
+    tuned_settings = WorkerSettings(
+        CONTROL_BASE_URL="http://control.test",
+        WORKER_ID=1,
+        CONTROL_TOKEN="worker-token",
+        REGISTRATION_CONCURRENCY_MULTIPLIER=8.0,
+        REGISTRATION_MAX_CONCURRENCY=160,
+    )
+    tuned_runner = WorkerRunner(tuned_settings)
+    try:
+        _interval, concurrency = tuned_runner._runtime_limits(16.0)
+        assert concurrency == 128
+    finally:
+        asyncio.run(tuned_runner.close())
