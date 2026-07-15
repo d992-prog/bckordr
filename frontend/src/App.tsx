@@ -56,6 +56,8 @@ const DEFAULT_DOMAIN_FORM = {
   requestedDurationYears: "1",
   registrationExtraParameters: "",
   attackEnabled: true,
+  autoStartEnabled: false,
+  autoStartLeadSeconds: "90",
   overrideMinGuaranteedRps: "",
   windowStartMinute: "31",
   windowStartSecond: "59",
@@ -903,6 +905,8 @@ export default function App() {
         requested_duration_years: Number(domainForm.requestedDurationYears),
         registration_extra_parameters: domainForm.registrationExtraParameters || null,
         attack_enabled: domainForm.attackEnabled,
+        auto_start_enabled: domainForm.autoStartEnabled,
+        auto_start_lead_seconds: Number(domainForm.autoStartLeadSeconds),
         override_min_guaranteed_rps: parseNumber(domainForm.overrideMinGuaranteedRps),
         window_start_minute: Number(domainForm.windowStartMinute),
         window_start_second: Number(domainForm.windowStartSecond),
@@ -1581,6 +1585,19 @@ export default function App() {
       setToast({ type: "success", text: `Домен ${!domain.attack_enabled ? "включен" : "поставлен на паузу"}` });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обновления домена" });
+    }
+  }
+
+  async function toggleDomainAutoStart(domain: DropDomain) {
+    try {
+      await api.updateDomain(domain.id, {
+        auto_start_enabled: !domain.auto_start_enabled,
+        auto_start_lead_seconds: domain.auto_start_lead_seconds || 90,
+      });
+      await loadAll();
+      setToast({ type: "success", text: `Автостарт ${!domain.auto_start_enabled ? "включен" : "выключен"}` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка автостарта" });
     }
   }
 
@@ -2356,6 +2373,8 @@ export default function App() {
               <label><span>Секунда окна</span><input value={domainForm.windowStartSecond} onChange={(event) => setDomainForm((current) => ({ ...current, windowStartSecond: event.target.value }))} /></label>
               <label><span>Длина окна, сек</span><input value={domainForm.windowDurationSeconds} onChange={(event) => setDomainForm((current) => ({ ...current, windowDurationSeconds: event.target.value }))} /></label>
               <label className="checkbox"><input type="checkbox" checked={domainForm.attackEnabled} onChange={(event) => setDomainForm((current) => ({ ...current, attackEnabled: event.target.checked }))} /><span>Атака активна</span></label>
+              <label className="checkbox"><input type="checkbox" checked={domainForm.autoStartEnabled} onChange={(event) => setDomainForm((current) => ({ ...current, autoStartEnabled: event.target.checked }))} /><span>Автостарт по окну</span></label>
+              <label><span>Автостарт за, сек</span><input value={domainForm.autoStartLeadSeconds} onChange={(event) => setDomainForm((current) => ({ ...current, autoStartLeadSeconds: event.target.value }))} /></label>
             </div>
             <label>
               <span>Дополнительные параметры регистрации Gandi (JSON)</span>
@@ -2653,7 +2672,10 @@ export default function App() {
                       </td>
                       <td>{domain.registrar_account_id ? accountMap.get(domain.registrar_account_id)?.name ?? `#${domain.registrar_account_id}` : "авто"}</td>
                     <td>{domain.contact_profile_id ? contactMap.get(domain.contact_profile_id)?.label ?? `#${domain.contact_profile_id}` : "авто"}</td>
-                    <td>{String(domain.window_start_minute).padStart(2, "0")}:{String(domain.window_start_second).padStart(2, "0")} + {domain.window_duration_seconds}s</td>
+                    <td>
+                      <div>{String(domain.window_start_minute).padStart(2, "0")}:{String(domain.window_start_second).padStart(2, "0")} + {domain.window_duration_seconds}s</div>
+                      {domain.auto_start_enabled ? <div className="row-hint">автостарт за {domain.auto_start_lead_seconds}s</div> : <div className="row-hint">автостарт выкл</div>}
+                    </td>
                     <td>
                       <div>{domain.success_at ? formatDateTime(domain.success_at) : "—"}</div>
                       {domain.dry_run_checked_at ? <div className="row-hint">проверено: {formatDateTime(domain.dry_run_checked_at)}</div> : null}
@@ -2663,6 +2685,7 @@ export default function App() {
                         <button type="button" className="ghost" onClick={() => void startDomainAttack(domain.id)}>Старт</button>
                         <button type="button" className="ghost" onClick={() => void dryRunDomain(domain)}>Тест</button>
                         <button type="button" className="ghost" onClick={() => void toggleDomain(domain)}>{domain.attack_enabled ? "Пауза" : "Вкл"}</button>
+                        <button type="button" className="ghost" onClick={() => void toggleDomainAutoStart(domain)}>{domain.auto_start_enabled ? "Авто выкл" : "Авто вкл"}</button>
                         {domain.strategy_mode === "manual_override" ? (
                           <button type="button" className="ghost" onClick={() => setSelectedOverrideDomainId(domain.id)}>Override</button>
                         ) : null}

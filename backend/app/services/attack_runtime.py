@@ -71,6 +71,8 @@ def select_domains_for_autoplanning(
     for domain in domains:
         if not domain.attack_enabled:
             continue
+        if not getattr(domain, "auto_start_enabled", False):
+            continue
         if domain.success_at is not None:
             continue
         if domain.id in active_run_domain_ids:
@@ -78,6 +80,15 @@ def select_domains_for_autoplanning(
         if domain.status not in AUTOPLAN_ELIGIBLE_STATUSES:
             continue
         if not is_domain_due_today(domain, now):
+            continue
+        bounds = domain_window_bounds(domain, now)
+        if bounds is None:
+            continue
+        planned_start_at, planned_end_at = bounds
+        lead_seconds = max(int(getattr(domain, "auto_start_lead_seconds", 90) or 0), 0)
+        if now < planned_start_at - timedelta(seconds=lead_seconds):
+            continue
+        if now > planned_end_at:
             continue
         eligible.append(domain)
     eligible.sort(key=lambda domain: (-domain.priority, domain.drop_date, domain.fqdn))

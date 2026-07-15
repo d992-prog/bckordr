@@ -134,6 +134,8 @@ MIGRATIONS = (
     "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS strategy_mode VARCHAR(32) DEFAULT 'inherit_zone'",
     "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS override_min_guaranteed_rps DOUBLE PRECISION NULL",
     "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS readiness_reasons TEXT NULL",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS auto_start_enabled BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS auto_start_lead_seconds INTEGER NOT NULL DEFAULT 90",
     "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS mobile VARCHAR(64) NULL",
     "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS fax VARCHAR(64) NULL",
     "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS lang VARCHAR(16) NULL",

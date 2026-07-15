@@ -471,6 +471,8 @@ class DropDomainBase(BaseModel):
     requested_duration_years: int = Field(default=1, ge=1, le=10)
     registration_extra_parameters: str | None = None
     attack_enabled: bool = True
+    auto_start_enabled: bool = False
+    auto_start_lead_seconds: int = Field(default=90, ge=0, le=3600)
     override_min_guaranteed_rps: float | None = Field(default=None, ge=0.0)
     window_start_minute: int = Field(default=31, ge=0, le=59)
     window_start_second: int = Field(default=59, ge=0, le=59)
@@ -496,6 +498,8 @@ class DropDomainBulkCreateRequest(BaseModel):
     requested_duration_years: int = Field(default=1, ge=1, le=10)
     registration_extra_parameters: str | None = None
     attack_enabled: bool = True
+    auto_start_enabled: bool = False
+    auto_start_lead_seconds: int = Field(default=90, ge=0, le=3600)
     override_min_guaranteed_rps: float | None = Field(default=None, ge=0.0)
     window_start_minute: int = Field(default=31, ge=0, le=59)
     window_start_second: int = Field(default=59, ge=0, le=59)
@@ -517,6 +521,8 @@ class DropDomainUpdateRequest(BaseModel):
     requested_duration_years: int | None = Field(default=None, ge=1, le=10)
     registration_extra_parameters: str | None = None
     attack_enabled: bool | None = None
+    auto_start_enabled: bool | None = None
+    auto_start_lead_seconds: int | None = Field(default=None, ge=0, le=3600)
     override_min_guaranteed_rps: float | None = Field(default=None, ge=0.0)
     window_start_minute: int | None = Field(default=None, ge=0, le=59)
     window_start_second: int | None = Field(default=None, ge=0, le=59)

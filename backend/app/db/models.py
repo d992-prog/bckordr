@@ -607,6 +607,8 @@ class DropDomain(Base):
     registration_extra_parameters: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="draft", server_default="draft")
     attack_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    auto_start_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    auto_start_lead_seconds: Mapped[int] = mapped_column(Integer, default=90, server_default="90")
     override_min_guaranteed_rps: Mapped[float | None] = mapped_column(Float, nullable=True)
     readiness_reasons: Mapped[str | None] = mapped_column(Text, nullable=True)
     window_start_minute: Mapped[int] = mapped_column(Integer, default=31, server_default="31")

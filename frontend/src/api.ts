@@ -62,6 +62,8 @@ export type DropDomain = {
   registration_extra_parameters: string | null;
   status: string;
   attack_enabled: boolean;
+  auto_start_enabled: boolean;
+  auto_start_lead_seconds: number;
   override_min_guaranteed_rps: number | null;
   readiness_reasons: string | null;
   runtime_minimum_rps: number | null;
