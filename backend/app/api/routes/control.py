@@ -39,6 +39,7 @@ from app.db.session import get_db
 from app.schemas.common import MessageResponse
 from app.schemas.control import (
     AttackEventResponse,
+    AttackRegistrationSimulationRequest,
     AttackRunResponse,
     AttackStartRequest,
     AttackStopRequest,
@@ -101,6 +102,7 @@ from app.schemas.control import (
 from app.services.attack_runtime import (
     build_domain_runtime_snapshots,
     load_effective_strategies,
+    plan_immediate_registration_runs,
     plan_attack_runs,
     rebalance_worker_pool,
     recompute_worker_domain_counts,
@@ -2344,6 +2346,60 @@ async def start_attacks(
         target_user_id=None,
         action="attack_start",
         details=f"domains={len(domains)} created_runs={len(created_runs)}",
+    )
+    await db.commit()
+    for run in created_runs:
+        await db.refresh(run)
+    return [AttackRunResponse.model_validate(run) for run in created_runs]
+
+
+@router.post("/attacks/simulate-registration", response_model=list[AttackRunResponse])
+async def simulate_registration_attack(
+    payload: AttackRegistrationSimulationRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[AttackRunResponse]:
+    now = utcnow()
+    domain_ids = [domain_id for domain_id in payload.domain_ids if domain_id > 0]
+    if not domain_ids:
+        raise HTTPException(status_code=400, detail="No domains selected for registration simulation")
+
+    domains = (
+        await db.execute(
+            select(DropDomain)
+            .where(DropDomain.id.in_(domain_ids), DropDomain.attack_enabled.is_(True))
+            .order_by(DropDomain.priority.desc(), DropDomain.drop_date.asc(), DropDomain.fqdn.asc())
+        )
+    ).scalars().all()
+    if not domains:
+        raise HTTPException(status_code=400, detail="No enabled domains selected for registration simulation")
+
+    workers = (
+        await db.execute(
+            select(WorkerNode)
+            .where(WorkerNode.is_enabled.is_(True))
+            .order_by(WorkerNode.target_rps.desc(), WorkerNode.max_rps.desc(), WorkerNode.name.asc())
+        )
+    ).scalars().all()
+    if not workers:
+        raise HTTPException(status_code=400, detail="No enabled workers configured")
+
+    created_runs = await plan_immediate_registration_runs(
+        db,
+        domains=domains,
+        workers=workers,
+        now=now,
+        duration_seconds=payload.duration_seconds,
+        force_rebuild=payload.force_rebuild,
+    )
+    await recompute_worker_domain_counts(db)
+    await recompute_run_statistics(db)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="attack_simulate_registration",
+        details=f"domains={len(domains)} created_runs={len(created_runs)} duration={payload.duration_seconds}",
     )
     await db.commit()
     for run in created_runs:

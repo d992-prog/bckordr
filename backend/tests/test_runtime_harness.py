@@ -414,6 +414,9 @@ async def test_worker_runtime_treats_accepted_create_as_pending_not_success():
     assert stub_control.results[-1]["status"] == "failed"
     assert stub_control.results[-1]["success_attempts"] == 0
     assert stub_control.results[-1]["total_attempts"] > 0
+    assert stub_control.results[-1]["response_status_counts"]["202"] > 0
+    assert stub_control.results[-1]["response_samples"]["first"][0]["status_code"] == 202
+    assert stub_control.results[-1]["response_samples"]["last"][-1]["body_preview"] == "creation accepted"
 
 
 @pytest.mark.asyncio

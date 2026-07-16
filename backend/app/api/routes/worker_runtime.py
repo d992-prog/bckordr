@@ -229,6 +229,9 @@ async def report_task_progress(
     task.latency_ms = payload.latency_ms
     task.last_http_status = payload.last_http_status
     task.last_error = payload.last_error
+    task.response_status_counts = payload.response_status_counts
+    task.response_error_counts = payload.response_error_counts
+    task.response_samples = payload.response_samples
     task.updated_at = utcnow()
     await recompute_run_statistics(db)
     await db.commit()
@@ -258,6 +261,9 @@ async def report_task_result(
     task.latency_ms = payload.latency_ms
     task.last_http_status = payload.last_http_status
     task.last_error = payload.last_error
+    task.response_status_counts = payload.response_status_counts
+    task.response_error_counts = payload.response_error_counts
+    task.response_samples = payload.response_samples
     task.finished_at = now
 
     if payload.status == "success":

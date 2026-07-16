@@ -473,6 +473,12 @@ export type WorkerTask = {
   latency_ms: number | null;
   last_http_status: number | null;
   last_error: string | null;
+  response_status_counts: Record<string, number> | null;
+  response_error_counts: Record<string, number> | null;
+  response_samples: {
+    first?: Array<Record<string, unknown>>;
+    last?: Array<Record<string, unknown>>;
+  } | null;
   assigned_at: string | null;
   acknowledged_at: string | null;
   started_at: string | null;
@@ -783,6 +789,11 @@ export const api = {
   getEvents: () => request<AttackEvent[]>("/control/events"),
   startAttacks: (payload: { domain_ids?: number[]; force_rebuild?: boolean }) =>
     request<AttackRun[]>("/control/attacks/start", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  simulateRegistration: (payload: { domain_ids: number[]; duration_seconds?: number; force_rebuild?: boolean }) =>
+    request<AttackRun[]>("/control/attacks/simulate-registration", {
       method: "POST",
       body: JSON.stringify(payload),
     }),

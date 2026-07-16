@@ -86,6 +86,9 @@ class WorkerTaskResultRequest(BaseModel):
     latency_ms: float | None = None
     last_http_status: int | None = None
     last_error: str | None = None
+    response_status_counts: dict[str, int] | None = None
+    response_error_counts: dict[str, int] | None = None
+    response_samples: dict | None = None
     success_response_code: int | None = None
     success_message: str | None = None
 
@@ -98,6 +101,9 @@ class WorkerTaskProgressRequest(BaseModel):
     latency_ms: float | None = None
     last_http_status: int | None = None
     last_error: str | None = None
+    response_status_counts: dict[str, int] | None = None
+    response_error_counts: dict[str, int] | None = None
+    response_samples: dict | None = None
 
 
 class WorkerTaskResponseEnvelope(BaseModel):

@@ -774,6 +774,12 @@ class AttackStartRequest(BaseModel):
     force_rebuild: bool = False
 
 
+class AttackRegistrationSimulationRequest(BaseModel):
+    domain_ids: list[int]
+    duration_seconds: int = 95
+    force_rebuild: bool = True
+
+
 class AttackStopRequest(BaseModel):
     domain_ids: list[int] | None = None
     reason: str | None = None
@@ -816,6 +822,9 @@ class WorkerTaskResponse(BaseModel):
     latency_ms: float | None
     last_http_status: int | None
     last_error: str | None
+    response_status_counts: dict[str, int] | None = None
+    response_error_counts: dict[str, int] | None = None
+    response_samples: dict | None = None
     assigned_at: datetime | None
     acknowledged_at: datetime | None
     started_at: datetime | None

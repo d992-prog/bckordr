@@ -541,6 +541,42 @@ function groupEventsByRun(events: AttackEvent[]) {
   return map;
 }
 
+function addCount(target: Map<string, number>, key: string, value: number) {
+  target.set(key, (target.get(key) ?? 0) + value);
+}
+
+function collectTaskStatusCounts(task: WorkerTask) {
+  const counts = new Map<string, number>();
+  if (task.response_status_counts) {
+    for (const [status, count] of Object.entries(task.response_status_counts)) {
+      addCount(counts, status, count);
+    }
+  }
+  if (counts.size === 0) {
+    addCount(counts, task.last_http_status ? String(task.last_http_status) : "нет", 1);
+  }
+  return counts;
+}
+
+function formatCountMap(counts: Map<string, number>) {
+  return Array.from(counts.entries())
+    .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
+    .map(([status, count]) => `${status} x${count}`)
+    .join(", ") || "—";
+}
+
+function formatTaskSamples(task: WorkerTask) {
+  const lastSamples = task.response_samples?.last ?? [];
+  return lastSamples
+    .slice(-3)
+    .map((sample) => {
+      const status = sample.status_code ?? "ошибка";
+      const body = sample.body_preview || sample.error || "";
+      return `${status}: ${String(body).slice(0, 90)}`;
+    })
+    .join(" | ");
+}
+
 function summarizeAttackRun(attack: AttackRun, runTasks: WorkerTask[], runEvents: AttackEvent[]) {
   const totalAttempts = runTasks.reduce((sum, task) => sum + task.total_attempts, 0);
   const totalSuccess = runTasks.reduce((sum, task) => sum + task.success_attempts, 0);
@@ -557,13 +593,11 @@ function summarizeAttackRun(attack: AttackRun, runTasks: WorkerTask[], runEvents
   const estimatedRps = elapsedSeconds ? totalAttempts / elapsedSeconds : null;
   const httpCounts = new Map<string, number>();
   for (const task of runTasks) {
-    const key = task.last_http_status ? String(task.last_http_status) : "нет";
-    httpCounts.set(key, (httpCounts.get(key) ?? 0) + 1);
+    for (const [status, count] of collectTaskStatusCounts(task)) {
+      addCount(httpCounts, status, count);
+    }
   }
-  const httpSummary = Array.from(httpCounts.entries())
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([status, count]) => `${status} x${count}`)
-    .join(", ") || "—";
+  const httpSummary = formatCountMap(httpCounts);
   const postWindowEvent = runEvents.find((event) => event.event_type.startsWith("post_window_rdap"));
   let conclusion = "Нет данных по попыткам";
   let conclusionTone = "inactive";
@@ -1701,6 +1735,20 @@ export default function App() {
     }
   }
 
+  async function simulateDomainRegistration(domainId: number) {
+    try {
+      const payload = await api.simulateRegistration({
+        domain_ids: [domainId],
+        duration_seconds: 95,
+        force_rebuild: true,
+      });
+      await loadAll();
+      setToast({ type: "success", text: `Запущена симуляция регистрации: ${payload.length}` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка симуляции регистрации" });
+    }
+  }
+
   async function stopAllAttacks() {
     try {
       const payload = await api.stopAttacks({ reason: "Остановлено из панели" });
@@ -2829,6 +2877,7 @@ export default function App() {
                     <td>
                       <div className="actions">
                         <button type="button" className="ghost" onClick={() => void startDomainAttack(domain.id)}>Старт</button>
+                        <button type="button" className="ghost" onClick={() => void simulateDomainRegistration(domain.id)}>Сим. реги</button>
                         <button type="button" className="ghost" onClick={() => void dryRunDomain(domain)}>Тест</button>
                         <button type="button" className="ghost" onClick={() => void toggleDomain(domain)}>{domain.attack_enabled ? "Пауза" : "Вкл"}</button>
                         <button type="button" className="ghost" onClick={() => void toggleDomainAutoStart(domain)}>{domain.auto_start_enabled ? "Авто выкл" : "Авто вкл"}</button>
@@ -3633,7 +3682,7 @@ export default function App() {
                     <div><span>Успешных попыток</span><strong>{summary.totalSuccess}</strong></div>
                     <div><span>Расчетный факт RPS</span><strong>{formatRps(summary.estimatedRps)}</strong></div>
                     <div><span>Длительность задач</span><strong>{formatSeconds(summary.elapsedSeconds)}</strong></div>
-                    <div><span>Последний HTTP по воркерам</span><strong>{summary.httpSummary}</strong></div>
+                    <div><span>HTTP ответы</span><strong>{summary.httpSummary}</strong></div>
                     <div><span>После окна</span><strong>{summary.postWindowEvent ? summary.postWindowEvent.message : "—"}</strong></div>
                   </div>
                   {attack.stop_reason ? <p className="muted">Причина остановки: {attack.stop_reason}</p> : null}
@@ -3641,6 +3690,14 @@ export default function App() {
                     {runTasks.length ? runTasks.map((task) => {
                       const taskElapsed = secondsBetween(task.started_at, task.finished_at);
                       const taskRps = task.actual_rps || (taskElapsed ? task.total_attempts / taskElapsed : null);
+                      const httpSummary = formatCountMap(collectTaskStatusCounts(task));
+                      const errorSummary = task.response_error_counts
+                        ? Object.entries(task.response_error_counts)
+                            .sort(([left], [right]) => left.localeCompare(right))
+                            .map(([name, count]) => `${name} x${count}`)
+                            .join(", ")
+                        : "";
+                      const samplesSummary = formatTaskSamples(task);
                       return (
                         <div key={task.id} className="worker-breakdown-row">
                           <div>
@@ -3650,8 +3707,10 @@ export default function App() {
                           <div>попыток: <strong>{task.total_attempts}</strong></div>
                           <div>успехов: <strong>{task.success_attempts}</strong></div>
                           <div>факт: <strong>{formatRps(taskRps)} RPS</strong></div>
-                          <div>HTTP: <strong>{task.last_http_status ?? "—"}</strong></div>
+                          <div>HTTP: <strong>{httpSummary}</strong></div>
                           <div className="worker-error">ошибка: {extractReadableError(task.last_error)}</div>
+                          {errorSummary ? <div className="worker-error">типы ошибок: {errorSummary}</div> : null}
+                          {samplesSummary ? <div className="worker-error">последние ответы: {samplesSummary}</div> : null}
                         </div>
                       );
                     }) : <p className="muted">По этому запуску задач воркеров пока нет.</p>}

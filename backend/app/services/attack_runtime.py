@@ -1116,6 +1116,139 @@ async def plan_attack_runs(
     return created_runs
 
 
+async def plan_immediate_registration_runs(
+    session: AsyncSession,
+    *,
+    domains: list[DropDomain],
+    workers: list[WorkerNode],
+    now: datetime,
+    duration_seconds: int = 95,
+    force_rebuild: bool = True,
+) -> list[AttackRun]:
+    if not domains or not workers:
+        return []
+
+    duration_seconds = min(max(int(duration_seconds), 5), 600)
+    domain_ids = [domain.id for domain in domains]
+    if force_rebuild:
+        runs = (
+            await session.execute(
+                select(AttackRun).where(
+                    AttackRun.domain_id.in_(domain_ids),
+                    AttackRun.status.in_(["planned", "running", "verifying"]),
+                )
+            )
+        ).scalars().all()
+        for run in runs:
+            run.status = "stopped"
+            run.finished_at = now
+            run.stop_reason = "Manual registration simulation replaced this run"
+        tasks = (
+            await session.execute(
+                select(WorkerTask).where(
+                    WorkerTask.domain_id.in_(domain_ids),
+                    WorkerTask.status.in_(["queued", "planned", "running"]),
+                )
+            )
+        ).scalars().all()
+        for task in tasks:
+            task.status = "cancelled"
+            task.finished_at = now
+            task.stop_reason = "Manual registration simulation replaced this task"
+    else:
+        existing_domain_ids = set(
+            (
+                await session.execute(
+                    select(AttackRun.domain_id).where(
+                        AttackRun.domain_id.in_(domain_ids),
+                        AttackRun.status.in_(["planned", "running", "verifying"]),
+                    )
+                )
+            ).scalars().all()
+        )
+        domains = [domain for domain in domains if domain.id not in existing_domain_ids]
+        if not domains:
+            return []
+
+    assignments = plan_initial_run_workers(
+        domains=domains,
+        workers=workers,
+        now=now,
+        domain_target_rps_by_id={
+            domain.id: sum(worker.target_rps for worker in workers if worker_matches_domain(worker, domain))
+            for domain in domains
+        },
+    )
+    created_runs: list[AttackRun] = []
+    planned_end_at = now + timedelta(seconds=duration_seconds)
+    for domain in domains:
+        selected_workers = assignments.get(domain.id, [])
+        selected_workers = [worker for worker in selected_workers if worker_matches_domain(worker, domain)]
+        if not selected_workers:
+            session.add(
+                AttackEvent(
+                    domain_id=domain.id,
+                    level="warning",
+                    event_type="registration_simulation_skipped",
+                    message=f"No compatible workers available for immediate registration simulation of {domain.fqdn}",
+                    created_at=now,
+                )
+            )
+            continue
+
+        target_rps = sum(worker.target_rps for worker in selected_workers)
+        if target_rps <= 0:
+            continue
+        worker_rps_plan = allocate_worker_rps(selected_workers, target_rps=target_rps)
+        planned_workers = [worker for worker in selected_workers if worker.id in worker_rps_plan]
+        run = AttackRun(
+            domain_id=domain.id,
+            status="running",
+            planned_start_at=now,
+            planned_end_at=planned_end_at,
+            started_at=now,
+            assigned_worker_count=len(planned_workers),
+            planned_rps=round(target_rps, 2),
+            current_rps=0.0,
+            max_rps=sum(worker.max_rps for worker in planned_workers),
+        )
+        session.add(run)
+        await session.flush()
+        for worker in planned_workers:
+            session.add(
+                WorkerTask(
+                    attack_run_id=run.id,
+                    domain_id=domain.id,
+                    worker_id=worker.id,
+                    status="queued",
+                    planned_rps=worker_rps_plan.get(worker.id, worker.target_rps),
+                    actual_rps=0.0,
+                    assigned_at=now,
+                )
+            )
+        domain.status = "attacking"
+        domain.updated_at = now
+        created_runs.append(run)
+        session.add(
+            AttackEvent(
+                attack_run_id=run.id,
+                domain_id=domain.id,
+                level="warning",
+                event_type="registration_simulation_planned",
+                message=(
+                    f"Immediate registration simulation started for {domain.fqdn}; "
+                    f"workers={len(planned_workers)} planned_rps={run.planned_rps:.2f} "
+                    f"duration={duration_seconds}s"
+                ),
+                created_at=now,
+            )
+        )
+
+    await recompute_worker_domain_counts(session)
+    await recompute_run_statistics(session)
+    return created_runs
+
+
 async def autoplan_due_attack_runs(
     session: AsyncSession,
     *,

@@ -4,13 +4,14 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.api.deps import require_admin
 from app.api.routes.control import _apply_domain_readiness, router as control_router
 from app.db.base import Base
-from app.db.models import ContactProfile, DropDomain, RegistrarAccount, ZoneRule, ZoneStrategy
+from app.db.models import AttackRun, ContactProfile, DropDomain, RegistrarAccount, WorkerNode, WorkerTask, ZoneRule, ZoneStrategy
 from app.db.session import get_db
 from app.schemas.control import (
     ContactProfileCreateRequest,
@@ -294,6 +295,111 @@ async def test_apply_domain_readiness_marks_inherited_zone_strategy_ready_when_r
 
         assert domain.status == "ready"
         assert domain.readiness_reasons is None
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_attack_registration_simulation_starts_immediate_run():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
+        contact = ContactProfile(
+            label="Default contact",
+            given_name="Alice",
+            family_name="Doe",
+            email="alice@example.org",
+            phone="+33123456789",
+            street_address="5 rue neuve",
+            city="Paris",
+            zip_code="75001",
+            country_code="FR",
+            is_default=True,
+        )
+        session.add(contact)
+        await session.flush()
+
+        account = RegistrarAccount(
+            name="Gandi account",
+            registrar_slug="gandi",
+            api_token="token",
+            default_contact_profile_id=contact.id,
+            is_active=True,
+        )
+        session.add(account)
+        await session.flush()
+
+        worker = WorkerNode(
+            name="worker-primary",
+            registrar_slug="gandi",
+            assigned_registrar_account_id=account.id,
+            control_token="worker-token",
+            status="ready",
+            is_enabled=True,
+            target_rps=16.0,
+            max_rps=16.0,
+        )
+        session.add(worker)
+        await session.flush()
+
+        domain = DropDomain(
+            fqdn="manual-load.fr",
+            zone="fr",
+            timezone_name="Europe/Paris",
+            registrar_slug="gandi",
+            registrar_account_id=account.id,
+            contact_profile_id=contact.id,
+            drop_date=date(2026, 5, 6),
+            priority=100,
+            status="ready",
+            attack_enabled=True,
+        )
+        session.add(domain)
+        await session.commit()
+        await session.refresh(domain)
+        domain_id = domain.id
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/control/attacks/simulate-registration",
+            json={"domain_ids": [domain_id], "duration_seconds": 15},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload[0]["status"] == "running"
+        assert payload[0]["planned_rps"] == 16.0
+
+    async with session_factory() as session:
+        runs = (await session.execute(select(AttackRun))).scalars().all()
+        tasks = (await session.execute(select(WorkerTask))).scalars().all()
+        domain = await session.get(DropDomain, domain_id)
+        assert len(runs) == 1
+        assert runs[0].status == "running"
+        assert runs[0].planned_end_at > runs[0].planned_start_at
+        assert len(tasks) == 1
+        assert tasks[0].planned_rps == 16.0
+        assert domain is not None and domain.status == "attacking"
 
     await engine.dispose()
 

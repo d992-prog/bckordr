@@ -9,6 +9,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -847,6 +848,9 @@ class WorkerTask(Base):
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_status_counts: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    response_error_counts: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    response_samples: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

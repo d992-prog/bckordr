@@ -33,6 +33,34 @@ from app.gandi import register_domain
 logger = logging.getLogger(__name__)
 
 
+def _add_count(counter: dict[str, int], key: str | int | None) -> None:
+    normalized = str(key if key is not None else "none")
+    counter[normalized] = counter.get(normalized, 0) + 1
+
+
+def _record_response_sample(
+    samples: dict[str, list[dict]],
+    *,
+    status_code: int | None = None,
+    latency_ms: float | None = None,
+    body_preview: str | None = None,
+    error: str | None = None,
+) -> None:
+    sample = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "status_code": status_code,
+        "latency_ms": latency_ms,
+        "body_preview": (body_preview or "")[:240],
+        "error": (error or "")[:240],
+    }
+    first = samples.setdefault("first", [])
+    if len(first) < 3:
+        first.append(sample)
+    last = samples.setdefault("last", [])
+    last.append(sample)
+    del last[:-3]
+
+
 class WorkerRunner:
     def __init__(self, settings: WorkerSettings) -> None:
         self.settings = settings
@@ -143,6 +171,9 @@ class WorkerRunner:
             last_status: int | None = None
             last_error: str | None = None
             last_latency_ms: float | None = None
+            response_status_counts: dict[str, int] = {}
+            response_error_counts: dict[str, int] = {}
+            response_samples: dict[str, list[dict]] = {"first": [], "last": []}
             stop_requested = False
 
             while datetime.now(timezone.utc) <= task.planned_end_at or pending:
@@ -203,10 +234,19 @@ class WorkerRunner:
                         status_code, latency_ms, body_preview = await completed
                     except Exception as exc:
                         last_error = str(exc)
+                        _add_count(response_error_counts, exc.__class__.__name__)
+                        _record_response_sample(response_samples, error=last_error)
                         continue
 
                     last_status = status_code
                     last_latency_ms = latency_ms
+                    _add_count(response_status_counts, status_code)
+                    _record_response_sample(
+                        response_samples,
+                        status_code=status_code,
+                        latency_ms=latency_ms,
+                        body_preview=body_preview,
+                    )
                     if status_code == 200:
                         success_attempts += 1
                         for queued in pending:
@@ -221,6 +261,9 @@ class WorkerRunner:
                                 "success_attempts": success_attempts,
                                 "latency_ms": latency_ms,
                                 "last_http_status": status_code,
+                                "response_status_counts": response_status_counts,
+                                "response_error_counts": response_error_counts,
+                                "response_samples": response_samples,
                                 "success_response_code": status_code,
                                 "success_message": body_preview[:500],
                             },
@@ -244,6 +287,9 @@ class WorkerRunner:
                             "latency_ms": last_latency_ms,
                             "last_http_status": last_status,
                             "last_error": last_error,
+                            "response_status_counts": response_status_counts,
+                            "response_error_counts": response_error_counts,
+                            "response_samples": response_samples,
                         },
                     )
                     await self._heartbeat(status="running")
@@ -262,6 +308,9 @@ class WorkerRunner:
                     "latency_ms": last_latency_ms,
                     "last_http_status": last_status,
                     "last_error": last_error or "Attack window completed without success",
+                    "response_status_counts": response_status_counts,
+                    "response_error_counts": response_error_counts,
+                    "response_samples": response_samples,
                 },
             )
             self._current_rps = 0.0
