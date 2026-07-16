@@ -87,6 +87,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "ee": "whois.tld.ee",
     "es": "whois.nic.es",
     "eu": "whois.eu",
+    "fr": "whois.nic.fr",
     "hk": "whois.hkirc.hk",
     "hu": "whois.nic.hu",
     "id": "whois.id",

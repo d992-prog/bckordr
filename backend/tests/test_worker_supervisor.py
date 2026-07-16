@@ -404,6 +404,87 @@ async def test_finalize_expired_attack_runs_disables_domain_after_repeated_regis
 
 
 @pytest.mark.asyncio
+async def test_finalize_expired_attack_runs_uses_fr_whois_when_rdap_is_stale_pending_delete():
+    engine, session_factory = await _make_session_factory()
+    now = datetime(2026, 7, 16, 22, 33, 5, tzinfo=timezone.utc)
+    try:
+        async with session_factory() as session:
+            domain = DropDomain(
+                fqdn="lesmotsdetrop.fr",
+                zone="fr",
+                timezone_name="Europe/Paris",
+                registrar_slug="gandi",
+                drop_date=now.date(),
+                priority=200,
+                status="attacking",
+                attack_enabled=True,
+            )
+            session.add(domain)
+            await session.flush()
+
+            run = AttackRun(
+                domain_id=domain.id,
+                status="running",
+                planned_start_at=now - timedelta(seconds=95),
+                planned_end_at=now - timedelta(seconds=5),
+                started_at=now - timedelta(seconds=95),
+                assigned_worker_count=0,
+                planned_rps=80.0,
+                current_rps=0.0,
+                max_rps=80.0,
+            )
+            session.add(run)
+            await session.commit()
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                if str(request.url) == "https://data.iana.org/rdap/dns.json":
+                    return httpx.Response(200, json={"services": [[["fr"], ["https://rdap.nic.fr/"]]]})
+                if str(request.url) == "https://rdap.nic.fr/domain/lesmotsdetrop.fr":
+                    return httpx.Response(200, json={"status": ["pendingDelete"]})
+                return httpx.Response(404)
+
+            async def whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+                assert fqdn == "lesmotsdetrop.fr"
+                assert server == "whois.nic.fr"
+                assert timeout_seconds == 5.0
+                return """
+domain:                        lesmotsdetrop.fr
+status:                        ACTIVE
+status:                        addPeriod
+eppstatus:                     active
+registrar:                     FUNCALL BV
+created:                       2026-07-16T22:32:02.759659Z
+source:                        FRNIC
+"""
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                await finalize_expired_attack_runs(
+                    session,
+                    now=now,
+                    client=client,
+                    confirmation_threshold=1,
+                    check_interval_seconds=60,
+                    whois_lookup=whois_lookup,
+                )
+                await session.commit()
+
+        async with session_factory() as session:
+            domain = (await session.execute(select(DropDomain).where(DropDomain.fqdn == "lesmotsdetrop.fr"))).scalar_one()
+            run = (await session.execute(select(AttackRun).where(AttackRun.domain_id == domain.id))).scalar_one()
+            events = (
+                await session.execute(select(AttackEvent).where(AttackEvent.domain_id == domain.id).order_by(AttackEvent.id.asc()))
+            ).scalars().all()
+
+            assert domain.attack_enabled is False
+            assert domain.status == "failed"
+            assert run.status == "failed"
+            assert any(event.event_type == "post_window_rdap_registered" for event in events)
+            assert any("source=whois_fallback" in event.message for event in events)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_finalize_expired_attack_runs_keeps_domain_enabled_when_rdap_is_not_conclusive():
     engine, session_factory = await _make_session_factory()
     now = datetime(2026, 5, 5, 12, 32, 10, tzinfo=timezone.utc)

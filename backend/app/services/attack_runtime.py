@@ -24,7 +24,12 @@ from app.db.models import (
     ZoneRulePhase,
     ZoneStrategy,
 )
-from app.services.discovery import IANA_RDAP_BOOTSTRAP_URL, check_discovery_domain_rdap
+from app.services.discovery import (
+    IANA_RDAP_BOOTSTRAP_URL,
+    WhoisLookup,
+    check_discovery_domain_rdap,
+    check_discovery_domain_whois,
+)
 from app.services.strategy_runtime import (
     is_domain_due_today,
     resolve_effective_strategy,
@@ -38,6 +43,7 @@ POST_WINDOW_RDAP_CHECK_EVENT_TYPES = {
     "post_window_rdap_registered",
     "post_window_rdap_inconclusive",
 }
+WHOIS_SAFETY_CONFIRMATION_ZONES = {"fr"}
 
 
 @dataclass(slots=True)
@@ -104,6 +110,36 @@ def _is_registered_taken_observation(observation: object) -> bool:
     )
 
 
+async def _check_domain_safety_observation(
+    domain: DropDomain,
+    *,
+    client: httpx.AsyncClient,
+    bootstrap_url: str,
+    whois_lookup: WhoisLookup | None = None,
+) -> object:
+    discovery_domain = DiscoveryDomain(fqdn=domain.fqdn, zone=domain.zone)
+    observation = await check_discovery_domain_rdap(
+        discovery_domain,
+        client=client,
+        bootstrap_url=bootstrap_url,
+        whois_lookup=whois_lookup,
+    )
+    if _is_registered_taken_observation(observation):
+        return observation
+    if domain.zone.lower() not in WHOIS_SAFETY_CONFIRMATION_ZONES:
+        return observation
+
+    whois_observation = await check_discovery_domain_whois(
+        discovery_domain,
+        observed_at=getattr(observation, "observed_at", None),
+        timeout_seconds=5.0,
+        whois_lookup=whois_lookup,
+    )
+    if _is_registered_taken_observation(whois_observation):
+        return whois_observation
+    return observation
+
+
 async def _filter_domains_available_for_autostart(
     session: AsyncSession,
     domains: list[DropDomain],
@@ -111,6 +147,7 @@ async def _filter_domains_available_for_autostart(
     now: datetime,
     client: httpx.AsyncClient | None = None,
     bootstrap_url: str = IANA_RDAP_BOOTSTRAP_URL,
+    whois_lookup: WhoisLookup | None = None,
 ) -> list[DropDomain]:
     if not domains:
         return []
@@ -120,10 +157,11 @@ async def _filter_domains_available_for_autostart(
     available: list[DropDomain] = []
     try:
         for domain in domains:
-            observation = await check_discovery_domain_rdap(
-                DiscoveryDomain(fqdn=domain.fqdn, zone=domain.zone),
+            observation = await _check_domain_safety_observation(
+                domain,
                 client=http_client,
                 bootstrap_url=bootstrap_url,
+                whois_lookup=whois_lookup,
             )
             if _is_registered_taken_observation(observation):
                 reason = "Pre-start RDAP safety check confirmed domain is already registered"
@@ -139,7 +177,7 @@ async def _filter_domains_available_for_autostart(
                         message=(
                             f"{domain.fqdn} disabled before auto-start: "
                             f"lifecycle={observation.lifecycle_stage} availability={observation.availability_status} "
-                            f"http={observation.http_status}"
+                            f"http={observation.http_status} source={observation.source}"
                         ),
                         created_at=now,
                     )
@@ -817,6 +855,7 @@ async def finalize_expired_attack_runs(
     bootstrap_url: str = IANA_RDAP_BOOTSTRAP_URL,
     confirmation_threshold: int = POST_WINDOW_RDAP_CONFIRMATION_THRESHOLD,
     check_interval_seconds: int = POST_WINDOW_RDAP_CHECK_INTERVAL_SECONDS,
+    whois_lookup: WhoisLookup | None = None,
 ) -> int:
     effective_now = now or utcnow()
     confirmation_threshold = max(1, int(confirmation_threshold))
@@ -882,10 +921,11 @@ async def finalize_expired_attack_runs(
             if last_check_at is not None and (effective_now - last_check_at).total_seconds() < check_interval_seconds:
                 continue
 
-            observation = await check_discovery_domain_rdap(
-                DiscoveryDomain(fqdn=domain.fqdn, zone=domain.zone),
+            observation = await _check_domain_safety_observation(
+                domain,
                 client=http_client,
                 bootstrap_url=bootstrap_url,
+                whois_lookup=whois_lookup,
             )
             is_registered_taken = _is_registered_taken_observation(observation)
             event_type = "post_window_rdap_registered" if is_registered_taken else "post_window_rdap_inconclusive"
@@ -893,7 +933,7 @@ async def finalize_expired_attack_runs(
             message = (
                 f"Post-window RDAP check for {domain.fqdn}: "
                 f"lifecycle={observation.lifecycle_stage} availability={observation.availability_status} "
-                f"http={observation.http_status or 'n/a'}"
+                f"http={observation.http_status or 'n/a'} source={observation.source}"
             )
             if observation.error:
                 message = f"{message} error={observation.error}"
