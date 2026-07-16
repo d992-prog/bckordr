@@ -95,6 +95,64 @@ def select_domains_for_autoplanning(
     return eligible
 
 
+def _is_registered_taken_observation(observation: object) -> bool:
+    return (
+        getattr(observation, "error", None) is None
+        and getattr(observation, "http_status", None) == 200
+        and getattr(observation, "lifecycle_stage", None) == "registered"
+        and getattr(observation, "availability_status", None) == "taken"
+    )
+
+
+async def _filter_domains_available_for_autostart(
+    session: AsyncSession,
+    domains: list[DropDomain],
+    *,
+    now: datetime,
+    client: httpx.AsyncClient | None = None,
+    bootstrap_url: str = IANA_RDAP_BOOTSTRAP_URL,
+) -> list[DropDomain]:
+    if not domains:
+        return []
+
+    close_client = client is None
+    http_client = client or httpx.AsyncClient(timeout=5.0)
+    available: list[DropDomain] = []
+    try:
+        for domain in domains:
+            observation = await check_discovery_domain_rdap(
+                DiscoveryDomain(fqdn=domain.fqdn, zone=domain.zone),
+                client=http_client,
+                bootstrap_url=bootstrap_url,
+            )
+            if _is_registered_taken_observation(observation):
+                reason = "Pre-start RDAP safety check confirmed domain is already registered"
+                domain.status = "failed"
+                domain.attack_enabled = False
+                domain.readiness_reasons = reason
+                domain.updated_at = now
+                session.add(
+                    AttackEvent(
+                        domain_id=domain.id,
+                        level="error",
+                        event_type="pre_start_domain_taken",
+                        message=(
+                            f"{domain.fqdn} disabled before auto-start: "
+                            f"lifecycle={observation.lifecycle_stage} availability={observation.availability_status} "
+                            f"http={observation.http_status}"
+                        ),
+                        created_at=now,
+                    )
+                )
+                continue
+            available.append(domain)
+    finally:
+        if close_client:
+            await http_client.aclose()
+
+    return available
+
+
 def domain_window_bounds(domain: DropDomain, anchor: datetime | None = None) -> tuple[datetime, datetime] | None:
     tz = ZoneInfo(domain.timezone_name or "Europe/Paris")
     current = (anchor or utcnow()).astimezone(tz)
@@ -829,12 +887,7 @@ async def finalize_expired_attack_runs(
                 client=http_client,
                 bootstrap_url=bootstrap_url,
             )
-            is_registered_taken = (
-                observation.error is None
-                and observation.http_status == 200
-                and observation.lifecycle_stage == "registered"
-                and observation.availability_status == "taken"
-            )
+            is_registered_taken = _is_registered_taken_observation(observation)
             event_type = "post_window_rdap_registered" if is_registered_taken else "post_window_rdap_inconclusive"
             level = "warning" if is_registered_taken else "info"
             message = (
@@ -1063,7 +1116,13 @@ async def plan_attack_runs(
     return created_runs
 
 
-async def autoplan_due_attack_runs(session: AsyncSession, *, now: datetime | None = None) -> list[AttackRun]:
+async def autoplan_due_attack_runs(
+    session: AsyncSession,
+    *,
+    now: datetime | None = None,
+    client: httpx.AsyncClient | None = None,
+    bootstrap_url: str = IANA_RDAP_BOOTSTRAP_URL,
+) -> list[AttackRun]:
     effective_now = now or utcnow()
     domains = (
         await session.execute(
@@ -1081,6 +1140,15 @@ async def autoplan_due_attack_runs(session: AsyncSession, *, now: datetime | Non
         domains,
         now=effective_now,
         active_run_domain_ids=active_run_domain_ids,
+    )
+    if not selected_domains:
+        return []
+    selected_domains = await _filter_domains_available_for_autostart(
+        session,
+        selected_domains,
+        now=effective_now,
+        client=client,
+        bootstrap_url=bootstrap_url,
     )
     if not selected_domains:
         return []

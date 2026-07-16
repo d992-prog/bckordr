@@ -10,12 +10,15 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
 from app.db.models import AttackEvent, AttackRun, ContactProfile, DropDomain, RegistrarAccount, WorkerNode, WorkerTask
+from app.services import attack_runtime as attack_runtime_module
 from app.services.attack_runtime import (
+    autoplan_due_attack_runs,
     finalize_expired_attack_runs,
     rebalance_worker_pool,
     recompute_run_statistics,
     supervise_worker_pool,
 )
+from app.services.discovery import DiscoveryObservationInput
 
 
 async def _make_session_factory():
@@ -29,6 +32,97 @@ async def _make_session_factory():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     return engine, session_factory
+
+
+@pytest.mark.asyncio
+async def test_autoplan_disables_domain_when_preflight_confirms_it_is_registered(monkeypatch):
+    engine, session_factory = await _make_session_factory()
+    now = datetime(2026, 7, 16, 4, 30, 45, tzinfo=timezone.utc)
+    try:
+        async with session_factory() as session:
+            contact = ContactProfile(
+                label="Default FR",
+                given_name="Jean",
+                family_name="Dupont",
+                email="ops@example.com",
+                phone="+33100000000",
+                street_address="1 Rue Test",
+                city="Paris",
+                zip_code="75001",
+                country_code="FR",
+                is_default=True,
+            )
+            session.add(contact)
+            await session.flush()
+
+            account = RegistrarAccount(
+                name="Gandi main",
+                registrar_slug="gandi",
+                api_token="gandi-token",
+                default_contact_profile_id=contact.id,
+                is_active=True,
+            )
+            session.add(account)
+            await session.flush()
+
+            worker = WorkerNode(
+                name="worker-primary",
+                registrar_slug="gandi",
+                assigned_registrar_account_id=account.id,
+                status="ready",
+                is_enabled=True,
+                target_rps=16.0,
+                max_rps=16.0,
+                last_heartbeat_at=now,
+            )
+            domain = DropDomain(
+                fqdn="anfas.fr",
+                zone="fr",
+                timezone_name="Europe/Paris",
+                registrar_slug="gandi",
+                registrar_account_id=account.id,
+                contact_profile_id=contact.id,
+                drop_date=now.date(),
+                priority=200,
+                status="queued",
+                attack_enabled=True,
+                auto_start_enabled=True,
+                auto_start_lead_seconds=90,
+                window_start_minute=31,
+                window_start_second=59,
+                window_duration_seconds=61,
+            )
+            session.add_all([worker, domain])
+            await session.commit()
+
+            async def fake_check(*_args, **_kwargs):
+                return DiscoveryObservationInput(
+                    source="rdap",
+                    observed_at=now,
+                    http_status=200,
+                    lifecycle_stage="registered",
+                    availability_status="taken",
+                    status_codes=["ACTIVE", "addPeriod"],
+                )
+
+            monkeypatch.setattr(attack_runtime_module, "check_discovery_domain_rdap", fake_check)
+
+            created_runs = await autoplan_due_attack_runs(session, now=now)
+            await session.commit()
+
+        async with session_factory() as session:
+            domain = (await session.execute(select(DropDomain).where(DropDomain.fqdn == "anfas.fr"))).scalar_one()
+            events = (
+                await session.execute(select(AttackEvent).where(AttackEvent.domain_id == domain.id).order_by(AttackEvent.id.asc()))
+            ).scalars().all()
+
+            assert created_runs == []
+            assert domain.attack_enabled is False
+            assert domain.status == "failed"
+            assert domain.readiness_reasons == "Pre-start RDAP safety check confirmed domain is already registered"
+            assert [event.event_type for event in events] == ["pre_start_domain_taken"]
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
