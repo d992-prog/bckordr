@@ -549,6 +549,10 @@ class DropDomainResponse(DropDomainBase):
     runtime_attack_status: str | None = None
     runtime_window_start_at: datetime | None = None
     runtime_window_end_at: datetime | None = None
+    effective_window_start_minute: int | None = None
+    effective_window_start_second: int | None = None
+    effective_window_duration_seconds: int | None = None
+    effective_window_source: str = "domain"
     dry_run_checked_at: datetime | None
     dry_run_status: str | None = None
     dry_run_http_status: int | None = None

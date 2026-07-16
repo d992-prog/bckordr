@@ -57,6 +57,30 @@ class DomainRuntimeSnapshot:
     attack_status: str | None
     window_start_at: datetime | None = None
     window_end_at: datetime | None = None
+    effective_window_start_minute: int | None = None
+    effective_window_start_second: int | None = None
+    effective_window_duration_seconds: int | None = None
+    effective_window_source: str = "domain"
+
+
+def _resolve_display_window_fields(domain: DropDomain, effective_strategy) -> tuple[int, int, int, str]:
+    if effective_strategy is not None and getattr(effective_strategy, "rules", None):
+        enabled_rules = [rule for rule in effective_strategy.rules if getattr(rule, "is_enabled", True)]
+        if enabled_rules:
+            enabled_rules.sort(key=lambda rule: (-getattr(rule, "priority", 100), getattr(rule, "id", 0)))
+            rule = enabled_rules[0]
+            return (
+                int(getattr(rule, "minute", getattr(domain, "window_start_minute", 31))),
+                int(getattr(rule, "second", getattr(domain, "window_start_second", 30))),
+                int(getattr(rule, "window_duration_seconds", getattr(domain, "window_duration_seconds", 95))),
+                "strategy",
+            )
+    return (
+        int(getattr(domain, "window_start_minute", 31)),
+        int(getattr(domain, "window_start_second", 30)),
+        int(getattr(domain, "window_duration_seconds", 95)),
+        "domain",
+    )
 
 
 def worker_matches_domain(worker: WorkerNode, domain: DropDomain) -> bool:
@@ -632,6 +656,10 @@ def build_domain_runtime_snapshots(
 ) -> dict[int, DomainRuntimeSnapshot]:
     snapshots: dict[int, DomainRuntimeSnapshot] = {}
     for domain in domains:
+        display_minute, display_second, display_duration, display_source = _resolve_display_window_fields(
+            domain,
+            strategy_map.get(domain.id),
+        )
         if not is_domain_due_today(domain, now):
             snapshots[domain.id] = DomainRuntimeSnapshot(
                 minimum_rps=0.0,
@@ -643,6 +671,10 @@ def build_domain_runtime_snapshots(
                 attack_status=None,
                 window_start_at=None,
                 window_end_at=None,
+                effective_window_start_minute=display_minute,
+                effective_window_start_second=display_second,
+                effective_window_duration_seconds=display_duration,
+                effective_window_source=display_source,
             )
             continue
         compatible_workers = [worker for worker in workers if worker_matches_domain(worker, domain)]
@@ -672,6 +704,10 @@ def build_domain_runtime_snapshots(
             attack_status=getattr(active_run, "status", None),
             window_start_at=bounds[0] if bounds is not None else None,
             window_end_at=bounds[1] if bounds is not None else None,
+            effective_window_start_minute=display_minute,
+            effective_window_start_second=display_second,
+            effective_window_duration_seconds=display_duration,
+            effective_window_source=display_source,
         )
     return snapshots
 

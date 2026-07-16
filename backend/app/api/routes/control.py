@@ -632,6 +632,10 @@ def _serialize_domain_response(domain: DropDomain, runtime_snapshots) -> DropDom
             "runtime_attack_status": snapshot.attack_status,
             "runtime_window_start_at": snapshot.window_start_at,
             "runtime_window_end_at": snapshot.window_end_at,
+            "effective_window_start_minute": snapshot.effective_window_start_minute,
+            "effective_window_start_second": snapshot.effective_window_start_second,
+            "effective_window_duration_seconds": snapshot.effective_window_duration_seconds,
+            "effective_window_source": snapshot.effective_window_source,
         }
     )
 

@@ -401,3 +401,53 @@ def test_build_domain_runtime_snapshots_zeroes_metrics_for_non_due_domains():
     assert snapshot.desired_rps == 0.0
     assert snapshot.allocated_rps == 0.0
     assert snapshot.phase_name is None
+
+
+def test_runtime_snapshot_reports_effective_window_pattern_for_future_domain():
+    now = datetime(2026, 5, 5, 12, 30, 45, tzinfo=timezone.utc)
+    domain = make_domain(
+        id=10,
+        fqdn="future-window.fr",
+        drop_date=date(2026, 5, 6),
+        timezone_name="Europe/Paris",
+        window_start_second=59,
+        window_duration_seconds=61,
+    )
+    strategy = SimpleNamespace(
+        rules=[
+            SimpleNamespace(
+                id=20,
+                name="FR expanded",
+                is_enabled=True,
+                schedule_type="hourly",
+                hour=None,
+                minute=31,
+                second=30,
+                weekdays=None,
+                specific_date=None,
+                window_duration_seconds=95,
+                priority=100,
+                execution_profile_mode="flat",
+            )
+        ],
+        phases_by_rule_id={20: []},
+        minimum_guaranteed_rps=1.0,
+        timezone_name="Europe/Paris",
+        rule_resolution_mode="priority",
+    )
+
+    snapshot = build_domain_runtime_snapshots(
+        [domain],
+        workers=[make_worker(id=1)],
+        strategy_map={domain.id: strategy},
+        now=now,
+        active_run_by_domain_id={},
+        active_tasks_by_domain_id={},
+    )[domain.id]
+
+    assert snapshot.desired_rps == 0.0
+    assert snapshot.window_start_at is None
+    assert snapshot.effective_window_start_minute == 31
+    assert snapshot.effective_window_start_second == 30
+    assert snapshot.effective_window_duration_seconds == 95
+    assert snapshot.effective_window_source == "strategy"

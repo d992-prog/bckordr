@@ -296,7 +296,7 @@ function formatTimeInZone(value: string | null, timeZone: string) {
 
 function getEffectiveWindowDurationSeconds(domain: DropDomain) {
   if (!domain.runtime_window_start_at || !domain.runtime_window_end_at) {
-    return domain.window_duration_seconds;
+    return domain.effective_window_duration_seconds ?? domain.window_duration_seconds;
   }
   return Math.max(
     1,
@@ -313,10 +313,13 @@ function formatDomainWindow(domain: DropDomain) {
       domain.timezone_name,
     )}`;
   }
-  return `${String(domain.window_start_minute).padStart(2, "0")}:${String(domain.window_start_second).padStart(
+  const minute = domain.effective_window_start_minute ?? domain.window_start_minute;
+  const second = domain.effective_window_start_second ?? domain.window_start_second;
+  const duration = domain.effective_window_duration_seconds ?? domain.window_duration_seconds;
+  return `${String(minute).padStart(2, "0")}:${String(second).padStart(
     2,
     "0",
-  )} + ${domain.window_duration_seconds}s`;
+  )} + ${duration}s`;
 }
 
 function formatWorkerRuntimeMode(value: string | null | undefined) {
@@ -2923,7 +2926,7 @@ export default function App() {
                     <td>
                       <div>{formatDomainWindow(domain)}</div>
                       <div className="row-hint">
-                        {domain.runtime_window_start_at ? "эффективное окно" : "ручное окно"} · {getEffectiveWindowDurationSeconds(domain)}s
+                        {domain.effective_window_source === "strategy" ? "окно стратегии" : "ручное окно"} · {getEffectiveWindowDurationSeconds(domain)}s
                       </div>
                       {domain.auto_start_enabled ? <div className="row-hint">автостарт за {domain.auto_start_lead_seconds}s</div> : <div className="row-hint">автостарт выкл</div>}
                     </td>

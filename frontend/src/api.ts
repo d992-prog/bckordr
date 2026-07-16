@@ -75,6 +75,10 @@ export type DropDomain = {
   runtime_attack_status: string | null;
   runtime_window_start_at: string | null;
   runtime_window_end_at: string | null;
+  effective_window_start_minute: number | null;
+  effective_window_start_second: number | null;
+  effective_window_duration_seconds: number | null;
+  effective_window_source: string;
   window_start_minute: number;
   window_start_second: number;
   window_duration_seconds: number;
