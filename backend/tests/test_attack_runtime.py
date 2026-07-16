@@ -279,6 +279,62 @@ def test_build_domain_runtime_snapshots_reports_min_desired_allocated_and_phase(
     assert snapshot.phase_name == "burst"
     assert snapshot.attack_run_id == 77
     assert snapshot.attack_status == "running"
+    paris = ZoneInfo("Europe/Paris")
+    assert snapshot.window_start_at is not None
+    assert snapshot.window_end_at is not None
+    assert snapshot.window_start_at.astimezone(paris) == datetime(2026, 5, 5, 14, 32, 0, tzinfo=paris)
+    assert snapshot.window_end_at.astimezone(paris) == datetime(2026, 5, 5, 14, 33, 1, tzinfo=paris)
+
+
+def test_runtime_snapshot_uses_effective_strategy_window_over_domain_fallback():
+    now = datetime(2026, 5, 5, 12, 30, 45, tzinfo=timezone.utc)
+    domain = make_domain(
+        id=9,
+        fqdn="old-fields.fr",
+        drop_date=date(2026, 5, 5),
+        timezone_name="Europe/Paris",
+        window_start_minute=31,
+        window_start_second=59,
+        window_duration_seconds=61,
+    )
+    worker = make_worker(id=1, target_rps=16.0, max_rps=16.0)
+    strategy = SimpleNamespace(
+        rules=[
+            SimpleNamespace(
+                id=19,
+                name="FR expanded",
+                is_enabled=True,
+                schedule_type="hourly",
+                hour=None,
+                minute=31,
+                second=30,
+                weekdays=None,
+                specific_date=None,
+                window_duration_seconds=95,
+                priority=100,
+                execution_profile_mode="flat",
+            )
+        ],
+        phases_by_rule_id={19: []},
+        minimum_guaranteed_rps=1.0,
+        timezone_name="Europe/Paris",
+        rule_resolution_mode="priority",
+    )
+
+    snapshot = build_domain_runtime_snapshots(
+        [domain],
+        workers=[worker],
+        strategy_map={domain.id: strategy},
+        now=now,
+        active_run_by_domain_id={},
+        active_tasks_by_domain_id={},
+    )[domain.id]
+
+    paris = ZoneInfo("Europe/Paris")
+    assert snapshot.window_start_at is not None
+    assert snapshot.window_end_at is not None
+    assert snapshot.window_start_at.astimezone(paris) == datetime(2026, 5, 5, 14, 31, 30, tzinfo=paris)
+    assert snapshot.window_end_at.astimezone(paris) == datetime(2026, 5, 5, 14, 33, 5, tzinfo=paris)
 
 
 def test_build_domain_runtime_snapshots_keeps_allocation_zero_without_active_tasks():

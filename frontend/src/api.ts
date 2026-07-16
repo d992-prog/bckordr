@@ -73,6 +73,8 @@ export type DropDomain = {
   runtime_phase_name: string | null;
   runtime_attack_run_id: number | null;
   runtime_attack_status: string | null;
+  runtime_window_start_at: string | null;
+  runtime_window_end_at: string | null;
   window_start_minute: number;
   window_start_second: number;
   window_duration_seconds: number;

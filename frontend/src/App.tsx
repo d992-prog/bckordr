@@ -60,8 +60,8 @@ const DEFAULT_DOMAIN_FORM = {
   autoStartLeadSeconds: "90",
   overrideMinGuaranteedRps: "",
   windowStartMinute: "31",
-  windowStartSecond: "59",
-  windowDurationSeconds: "61",
+  windowStartSecond: "30",
+  windowDurationSeconds: "95",
   notes: "",
 };
 
@@ -131,10 +131,10 @@ const DEFAULT_RULE_FORM = {
   scheduleType: "hourly",
   hour: "",
   minute: "31",
-  second: "59",
+  second: "30",
   weekdays: "",
   specificDate: "",
-  windowDurationSeconds: "61",
+  windowDurationSeconds: "95",
   priority: "100",
   executionProfileMode: "flat",
   isEnabled: true,
@@ -164,10 +164,10 @@ const DEFAULT_DOMAIN_OVERRIDE_RULE_FORM = {
   scheduleType: "hourly",
   hour: "",
   minute: "31",
-  second: "59",
+  second: "30",
   weekdays: "",
   specificDate: "",
-  windowDurationSeconds: "61",
+  windowDurationSeconds: "95",
   priority: "100",
   executionProfileMode: "flat",
   isEnabled: true,
@@ -280,6 +280,43 @@ function formatDateTime(value: string | null) {
     second: "2-digit",
   }).format(new Date(value));
   return `${formatted} MSK`;
+}
+
+function formatTimeInZone(value: string | null, timeZone: string) {
+  if (!value) {
+    return "—";
+  }
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
+}
+
+function getEffectiveWindowDurationSeconds(domain: DropDomain) {
+  if (!domain.runtime_window_start_at || !domain.runtime_window_end_at) {
+    return domain.window_duration_seconds;
+  }
+  return Math.max(
+    1,
+    Math.round(
+      (new Date(domain.runtime_window_end_at).getTime() - new Date(domain.runtime_window_start_at).getTime()) / 1000,
+    ),
+  );
+}
+
+function formatDomainWindow(domain: DropDomain) {
+  if (domain.runtime_window_start_at && domain.runtime_window_end_at) {
+    return `${formatTimeInZone(domain.runtime_window_start_at, domain.timezone_name)} → ${formatTimeInZone(
+      domain.runtime_window_end_at,
+      domain.timezone_name,
+    )}`;
+  }
+  return `${String(domain.window_start_minute).padStart(2, "0")}:${String(domain.window_start_second).padStart(
+    2,
+    "0",
+  )} + ${domain.window_duration_seconds}s`;
 }
 
 function formatWorkerRuntimeMode(value: string | null | undefined) {
@@ -1046,7 +1083,7 @@ export default function App() {
             <article><span>Режим</span><strong>control</strong></article>
             <article><span>Стратегия</span><strong>приоритет</strong></article>
             <article><span>Зона по умолчанию</span><strong>.fr</strong></article>
-            <article><span>Окно</span><strong>31:59</strong></article>
+            <article><span>Окно</span><strong>31:30 → 33:05</strong></article>
           </div>
         </section>
 
@@ -2884,7 +2921,10 @@ export default function App() {
                       <td>{domain.registrar_account_id ? accountMap.get(domain.registrar_account_id)?.name ?? `#${domain.registrar_account_id}` : "авто"}</td>
                     <td>{domain.contact_profile_id ? contactMap.get(domain.contact_profile_id)?.label ?? `#${domain.contact_profile_id}` : "авто"}</td>
                     <td>
-                      <div>{String(domain.window_start_minute).padStart(2, "0")}:{String(domain.window_start_second).padStart(2, "0")} + {domain.window_duration_seconds}s</div>
+                      <div>{formatDomainWindow(domain)}</div>
+                      <div className="row-hint">
+                        {domain.runtime_window_start_at ? "эффективное окно" : "ручное окно"} · {getEffectiveWindowDurationSeconds(domain)}s
+                      </div>
                       {domain.auto_start_enabled ? <div className="row-hint">автостарт за {domain.auto_start_lead_seconds}s</div> : <div className="row-hint">автостарт выкл</div>}
                     </td>
                     <td>
@@ -3145,7 +3185,7 @@ export default function App() {
 
   function renderStrategies() {
     const strategyPresets = [
-      { zone: "fr", title: ".fr FRNIC", description: "каждый час 31:59 + 61 сек, Europe/Paris" },
+      { zone: "fr", title: ".fr FRNIC", description: "каждый час 31:30 → 33:05, Europe/Paris" },
       { zone: "com", title: ".com Verisign", description: "ежедневное окно 18:00 UTC" },
       { zone: "net", title: ".net Verisign", description: "ежедневное окно 18:00 UTC" },
       { zone: "org", title: ".org PIR", description: "короткое окно около 15:15 UTC" },

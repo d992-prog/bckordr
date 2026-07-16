@@ -67,10 +67,10 @@ class ZoneRuleBase(BaseModel):
     schedule_type: str = "hourly"
     hour: int | None = Field(default=None, ge=0, le=23)
     minute: int = Field(default=31, ge=0, le=59)
-    second: int = Field(default=59, ge=0, le=59)
+    second: int = Field(default=30, ge=0, le=59)
     weekdays: str | None = Field(default=None, max_length=64)
     specific_date: date | None = None
-    window_duration_seconds: int = Field(default=61, ge=1, le=86400)
+    window_duration_seconds: int = Field(default=95, ge=1, le=86400)
     execution_profile_mode: str = "flat"
     notes: str | None = None
 
@@ -169,10 +169,10 @@ class DomainOverrideRuleBase(BaseModel):
     schedule_type: str = "hourly"
     hour: int | None = Field(default=None, ge=0, le=23)
     minute: int = Field(default=31, ge=0, le=59)
-    second: int = Field(default=59, ge=0, le=59)
+    second: int = Field(default=30, ge=0, le=59)
     weekdays: str | None = Field(default=None, max_length=64)
     specific_date: date | None = None
-    window_duration_seconds: int = Field(default=61, ge=1, le=86400)
+    window_duration_seconds: int = Field(default=95, ge=1, le=86400)
     execution_profile_mode: str = "flat"
     notes: str | None = None
 
@@ -479,8 +479,8 @@ class DropDomainBase(BaseModel):
     auto_start_lead_seconds: int = Field(default=90, ge=0, le=3600)
     override_min_guaranteed_rps: float | None = Field(default=None, ge=0.0)
     window_start_minute: int = Field(default=31, ge=0, le=59)
-    window_start_second: int = Field(default=59, ge=0, le=59)
-    window_duration_seconds: int = Field(default=61, ge=1, le=3600)
+    window_start_second: int = Field(default=30, ge=0, le=59)
+    window_duration_seconds: int = Field(default=95, ge=1, le=3600)
     notes: str | None = None
 
 
@@ -506,8 +506,8 @@ class DropDomainBulkCreateRequest(BaseModel):
     auto_start_lead_seconds: int = Field(default=90, ge=0, le=3600)
     override_min_guaranteed_rps: float | None = Field(default=None, ge=0.0)
     window_start_minute: int = Field(default=31, ge=0, le=59)
-    window_start_second: int = Field(default=59, ge=0, le=59)
-    window_duration_seconds: int = Field(default=61, ge=1, le=3600)
+    window_start_second: int = Field(default=30, ge=0, le=59)
+    window_duration_seconds: int = Field(default=95, ge=1, le=3600)
     notes: str | None = None
 
 
@@ -547,6 +547,8 @@ class DropDomainResponse(DropDomainBase):
     runtime_phase_name: str | None = None
     runtime_attack_run_id: int | None = None
     runtime_attack_status: str | None = None
+    runtime_window_start_at: datetime | None = None
+    runtime_window_end_at: datetime | None = None
     dry_run_checked_at: datetime | None
     dry_run_status: str | None = None
     dry_run_http_status: int | None = None

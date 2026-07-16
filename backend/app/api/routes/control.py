@@ -630,6 +630,8 @@ def _serialize_domain_response(domain: DropDomain, runtime_snapshots) -> DropDom
             "runtime_phase_name": snapshot.phase_name,
             "runtime_attack_run_id": snapshot.attack_run_id,
             "runtime_attack_status": snapshot.attack_status,
+            "runtime_window_start_at": snapshot.window_start_at,
+            "runtime_window_end_at": snapshot.window_end_at,
         }
     )
 
@@ -1329,8 +1331,8 @@ async def import_domains(
     auto_start_lead_seconds: int = Form(default=90),
     override_min_guaranteed_rps: float | None = Form(default=None),
     window_start_minute: int = Form(default=31),
-    window_start_second: int = Form(default=59),
-    window_duration_seconds: int = Form(default=61),
+    window_start_second: int = Form(default=30),
+    window_duration_seconds: int = Form(default=95),
     notes: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),

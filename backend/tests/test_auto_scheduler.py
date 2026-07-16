@@ -62,3 +62,23 @@ def test_select_domains_for_autoplanning_waits_until_lead_window():
 
     assert select_domains_for_autoplanning([domain], now=too_early, active_run_domain_ids=set()) == []
     assert select_domains_for_autoplanning([domain], now=inside_lead, active_run_domain_ids=set()) == [domain]
+
+
+def test_select_domains_for_autoplanning_uses_effective_strategy_bounds_when_provided():
+    now = datetime(2026, 5, 5, 12, 30, 10, tzinfo=timezone.utc)
+    domain = make_domain(id=1, auto_start_enabled=True, auto_start_lead_seconds=90)
+    effective_bounds = (
+        datetime(2026, 5, 5, 12, 31, 30, tzinfo=timezone.utc),
+        datetime(2026, 5, 5, 12, 33, 5, tzinfo=timezone.utc),
+    )
+
+    assert select_domains_for_autoplanning([domain], now=now, active_run_domain_ids=set()) == []
+    assert (
+        select_domains_for_autoplanning(
+            [domain],
+            now=now,
+            active_run_domain_ids=set(),
+            bounds_by_domain_id={1: effective_bounds},
+        )
+        == [domain]
+    )

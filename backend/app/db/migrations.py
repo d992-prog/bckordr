@@ -59,10 +59,10 @@ MIGRATIONS = (
         schedule_type VARCHAR(32) NOT NULL DEFAULT 'hourly',
         hour INTEGER NULL,
         minute INTEGER NOT NULL DEFAULT 31,
-        second INTEGER NOT NULL DEFAULT 59,
+        second INTEGER NOT NULL DEFAULT 30,
         weekdays VARCHAR(64) NULL,
         specific_date DATE NULL,
-        window_duration_seconds INTEGER NOT NULL DEFAULT 61,
+        window_duration_seconds INTEGER NOT NULL DEFAULT 95,
         execution_profile_mode VARCHAR(32) NOT NULL DEFAULT 'flat',
         notes TEXT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -70,6 +70,8 @@ MIGRATIONS = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_zone_rules_zone_strategy_id ON zone_rules(zone_strategy_id)",
+    "ALTER TABLE zone_rules ALTER COLUMN second SET DEFAULT 30",
+    "ALTER TABLE zone_rules ALTER COLUMN window_duration_seconds SET DEFAULT 95",
     """
     CREATE TABLE IF NOT EXISTS zone_rule_phases (
         id SERIAL PRIMARY KEY,
@@ -107,10 +109,10 @@ MIGRATIONS = (
         schedule_type VARCHAR(32) NOT NULL DEFAULT 'hourly',
         hour INTEGER NULL,
         minute INTEGER NOT NULL DEFAULT 31,
-        second INTEGER NOT NULL DEFAULT 59,
+        second INTEGER NOT NULL DEFAULT 30,
         weekdays VARCHAR(64) NULL,
         specific_date DATE NULL,
-        window_duration_seconds INTEGER NOT NULL DEFAULT 61,
+        window_duration_seconds INTEGER NOT NULL DEFAULT 95,
         execution_profile_mode VARCHAR(32) NOT NULL DEFAULT 'flat',
         notes TEXT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -118,6 +120,8 @@ MIGRATIONS = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_domain_override_rules_domain_rule_override_id ON domain_override_rules(domain_rule_override_id)",
+    "ALTER TABLE domain_override_rules ALTER COLUMN second SET DEFAULT 30",
+    "ALTER TABLE domain_override_rules ALTER COLUMN window_duration_seconds SET DEFAULT 95",
     """
     CREATE TABLE IF NOT EXISTS domain_override_phases (
         id SERIAL PRIMARY KEY,
@@ -141,6 +145,8 @@ MIGRATIONS = (
     "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS readiness_reasons TEXT NULL",
     "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS auto_start_enabled BOOLEAN NOT NULL DEFAULT false",
     "ALTER TABLE drop_domains ADD COLUMN IF NOT EXISTS auto_start_lead_seconds INTEGER NOT NULL DEFAULT 90",
+    "ALTER TABLE drop_domains ALTER COLUMN window_start_second SET DEFAULT 30",
+    "ALTER TABLE drop_domains ALTER COLUMN window_duration_seconds SET DEFAULT 95",
     "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS mobile VARCHAR(64) NULL",
     "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS fax VARCHAR(64) NULL",
     "ALTER TABLE contact_profiles ADD COLUMN IF NOT EXISTS lang VARCHAR(16) NULL",

@@ -55,6 +55,8 @@ class DomainRuntimeSnapshot:
     phase_name: str | None
     attack_run_id: int | None
     attack_status: str | None
+    window_start_at: datetime | None = None
+    window_end_at: datetime | None = None
 
 
 def worker_matches_domain(worker: WorkerNode, domain: DropDomain) -> bool:
@@ -72,6 +74,7 @@ def select_domains_for_autoplanning(
     *,
     now: datetime,
     active_run_domain_ids: set[int],
+    bounds_by_domain_id: dict[int, tuple[datetime, datetime] | None] | None = None,
 ) -> list[DropDomain]:
     eligible: list[DropDomain] = []
     for domain in domains:
@@ -87,7 +90,11 @@ def select_domains_for_autoplanning(
             continue
         if not is_domain_due_today(domain, now):
             continue
-        bounds = domain_window_bounds(domain, now)
+        bounds = (
+            bounds_by_domain_id.get(domain.id)
+            if bounds_by_domain_id is not None and domain.id in bounds_by_domain_id
+            else domain_window_bounds(domain, now)
+        )
         if bounds is None:
             continue
         planned_start_at, planned_end_at = bounds
@@ -634,10 +641,12 @@ def build_domain_runtime_snapshots(
                 phase_name=None,
                 attack_run_id=None,
                 attack_status=None,
+                window_start_at=None,
+                window_end_at=None,
             )
             continue
         compatible_workers = [worker for worker in workers if worker_matches_domain(worker, domain)]
-        _bounds, desired_rps, minimum_rps = resolve_domain_budget_requirements(
+        bounds, desired_rps, minimum_rps = resolve_domain_budget_requirements(
             domain,
             compatible_workers=compatible_workers,
             effective_strategy=strategy_map.get(domain.id),
@@ -661,6 +670,8 @@ def build_domain_runtime_snapshots(
             phase_name=getattr(profile.phase, "name", None) if profile is not None else None,
             attack_run_id=getattr(active_run, "id", None),
             attack_status=getattr(active_run, "status", None),
+            window_start_at=bounds[0] if bounds is not None else None,
+            window_end_at=bounds[1] if bounds is not None else None,
         )
     return snapshots
 
@@ -1309,10 +1320,27 @@ async def autoplan_due_attack_runs(
             )
         ).scalars().all()
     )
+    workers = (
+        await session.execute(
+            select(WorkerNode)
+            .where(WorkerNode.is_enabled.is_(True))
+            .order_by(WorkerNode.target_rps.desc(), WorkerNode.max_rps.desc(), WorkerNode.name.asc())
+        )
+    ).scalars().all()
+    if not workers:
+        return []
+    strategy_map = await load_effective_strategies(session, domains)
+    bounds_by_domain_id, _desired_rps_by_domain, _domain_target_rps_by_id = plan_domain_rps_targets(
+        domains,
+        workers=workers,
+        strategy_map=strategy_map,
+        now=effective_now,
+    )
     selected_domains = select_domains_for_autoplanning(
         domains,
         now=effective_now,
         active_run_domain_ids=active_run_domain_ids,
+        bounds_by_domain_id=bounds_by_domain_id,
     )
     if not selected_domains:
         return []
@@ -1324,16 +1352,6 @@ async def autoplan_due_attack_runs(
         bootstrap_url=bootstrap_url,
     )
     if not selected_domains:
-        return []
-
-    workers = (
-        await session.execute(
-            select(WorkerNode)
-            .where(WorkerNode.is_enabled.is_(True))
-            .order_by(WorkerNode.target_rps.desc(), WorkerNode.max_rps.desc(), WorkerNode.name.asc())
-        )
-    ).scalars().all()
-    if not workers:
         return []
 
     return await plan_attack_runs(
