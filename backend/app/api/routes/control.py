@@ -176,6 +176,7 @@ def _build_worker_env_lines(worker: WorkerNode, *, runtime_base_url: str, simula
         "SIMULATE_SUCCESS_STATUS_CODE=200",
         "SIMULATE_FAILURE_STATUS_CODE=503",
         "SIMULATE_RANDOM_SEED=12345",
+        "GANDI_CREATE_STATUS_POLL_ENABLED=false",
         "GANDI_STATUS_POLL_INTERVAL_SECONDS=0.5",
         "GANDI_STATUS_POLL_MAX_ATTEMPTS=8",
         "REGISTRATION_CONCURRENCY_MULTIPLIER=8",

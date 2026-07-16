@@ -153,6 +153,7 @@ async def register_domain(
     client: httpx.AsyncClient,
     *,
     dry_run: bool = False,
+    poll_create_status: bool = True,
     status_poll_interval_seconds: float = 0.5,
     status_poll_max_attempts: int = 8,
 ) -> tuple[int, str]:
@@ -160,6 +161,8 @@ async def register_domain(
     response = await client.post(url, json=payload, headers=headers)
     if dry_run or response.status_code != 202:
         return response.status_code, response.text
+    if not poll_create_status:
+        return 202, response.text or "creation accepted; createstatus polling skipped"
     return await poll_creation_status(
         task,
         client,

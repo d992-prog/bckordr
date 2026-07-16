@@ -207,7 +207,7 @@ class WorkerRunner:
 
                     last_status = status_code
                     last_latency_ms = latency_ms
-                    if status_code in {200, 202}:
+                    if status_code == 200:
                         success_attempts += 1
                         for queued in pending:
                             queued.cancel()
@@ -293,6 +293,7 @@ class WorkerRunner:
         status_code, body = await register_domain(
             task,
             client,
+            poll_create_status=self.settings.gandi_create_status_poll_enabled,
             status_poll_interval_seconds=self.settings.gandi_status_poll_interval_seconds,
             status_poll_max_attempts=self.settings.gandi_status_poll_max_attempts,
         )

@@ -19,6 +19,7 @@ class WorkerSettings(BaseSettings):
     simulate_success_status_code: int = Field(default=200, alias="SIMULATE_SUCCESS_STATUS_CODE")
     simulate_failure_status_code: int = Field(default=503, alias="SIMULATE_FAILURE_STATUS_CODE")
     simulate_random_seed: int = Field(default=12345, alias="SIMULATE_RANDOM_SEED")
+    gandi_create_status_poll_enabled: bool = Field(default=False, alias="GANDI_CREATE_STATUS_POLL_ENABLED")
     gandi_status_poll_interval_seconds: float = Field(default=0.5, alias="GANDI_STATUS_POLL_INTERVAL_SECONDS")
     gandi_status_poll_max_attempts: int = Field(default=8, alias="GANDI_STATUS_POLL_MAX_ATTEMPTS")
     registration_concurrency_multiplier: float = Field(

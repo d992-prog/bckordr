@@ -6,7 +6,7 @@ import sys
 import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import MethodType
+from types import MethodType, SimpleNamespace
 
 import httpx
 import pytest
@@ -353,6 +353,67 @@ async def test_worker_runtime_harness_covers_live_rps_update_and_success_flow():
             assert any(event.event_type == "domain_registered" for event in events)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_runtime_treats_accepted_create_as_pending_not_success():
+    class StubControlClient:
+        def __init__(self) -> None:
+            self.results: list[dict] = []
+            self.progress: list[dict] = []
+
+        async def heartbeat(self, payload: dict) -> dict:
+            return {}
+
+        async def get_task_status(self, task_id: int):
+            return SimpleNamespace(task_id=task_id, status="running", stop_reason=None, planned_rps=20.0)
+
+        async def report_progress(self, task_id: int, payload: dict) -> None:
+            self.progress.append({"task_id": task_id, **payload})
+
+        async def report_result(self, task_id: int, payload: dict) -> None:
+            self.results.append({"task_id": task_id, **payload})
+
+        async def close(self) -> None:
+            return None
+
+    settings = WorkerSettings(
+        CONTROL_BASE_URL="http://control.test",
+        WORKER_ID=1,
+        CONTROL_TOKEN="worker-token",
+        POLL_INTERVAL_SECONDS=0.05,
+        HEARTBEAT_INTERVAL_SECONDS=0.05,
+        REQUEST_TIMEOUT_SECONDS=2.0,
+        CONNECT_TIMEOUT_SECONDS=1.0,
+        SIMULATE_MODE=False,
+        REGISTRATION_CONCURRENCY_MULTIPLIER=8.0,
+        REGISTRATION_MAX_CONCURRENCY=160,
+    )
+    runner = WorkerRunner(settings)
+    await runner.control.client.aclose()
+    stub_control = StubControlClient()
+    runner.control = stub_control
+
+    task = SimpleNamespace(
+        task_id=1,
+        registrar={"registrar_slug": "gandi"},
+        planned_start_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        planned_end_at=datetime.now(timezone.utc) + timedelta(seconds=0.5),
+        planned_rps=20.0,
+    )
+
+    async def accepted_attempt(self, client, live_task):
+        await asyncio.sleep(0.01)
+        return 202, 10.0, "creation accepted"
+
+    runner._attempt_register = MethodType(accepted_attempt, runner)
+
+    await runner._execute_task(task)
+
+    assert stub_control.results
+    assert stub_control.results[-1]["status"] == "failed"
+    assert stub_control.results[-1]["success_attempts"] == 0
+    assert stub_control.results[-1]["total_attempts"] > 0
 
 
 @pytest.mark.asyncio

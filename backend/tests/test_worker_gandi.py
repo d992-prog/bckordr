@@ -177,6 +177,35 @@ async def test_register_domain_polls_createstatus_until_success_redirect():
 
 
 @pytest.mark.asyncio
+async def test_register_domain_can_skip_createstatus_polling_after_accepted():
+    task = make_task()
+    calls: list[tuple[str, str]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "POST":
+            return httpx.Response(
+                202,
+                headers={"Location": "https://api.gandi.net/v5/domain/domains/alpha.fr/createstatus"},
+                json={"message": "accepted"},
+            )
+        return httpx.Response(500, json={"message": "createstatus should not be polled"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        status_code, body = await gandi.register_domain(
+            task,
+            client,
+            poll_create_status=False,
+            status_poll_interval_seconds=0.0,
+            status_poll_max_attempts=3,
+        )
+
+    assert status_code == 202
+    assert "accepted" in body
+    assert calls == [("POST", "/v5/domain/domains")]
+
+
+@pytest.mark.asyncio
 async def test_register_domain_returns_error_for_createstatus_error_step():
     task = make_task()
 
