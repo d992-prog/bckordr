@@ -32,6 +32,8 @@ from app.gandi import register_domain
 
 logger = logging.getLogger(__name__)
 
+RESPONSE_SAMPLE_PREVIEW_LIMIT = 2000
+
 
 def _add_count(counter: dict[str, int], key: str | int | None) -> None:
     normalized = str(key if key is not None else "none")
@@ -51,8 +53,8 @@ def _record_response_sample(
         "at": datetime.now(timezone.utc).isoformat(),
         "status_code": status_code,
         "latency_ms": latency_ms,
-        "body_preview": (body_preview or "")[:240],
-        "error": (error or "")[:240],
+        "body_preview": (body_preview or "")[:RESPONSE_SAMPLE_PREVIEW_LIMIT],
+        "error": (error or "")[:RESPONSE_SAMPLE_PREVIEW_LIMIT],
         "error_type": error_type or "",
     }
     first = samples.setdefault("first", [])

@@ -573,7 +573,7 @@ function formatTaskSamples(task: WorkerTask) {
       const errorType = String(sample.error_type || "");
       const status = sample.status_code ?? (errorType || "ошибка");
       const body = sample.body_preview || sample.error || "";
-      return body ? `${status}: ${String(body).slice(0, 90)}` : String(status);
+      return body ? `${status}: ${String(body).slice(0, 220)}` : String(status);
     })
     .join(" | ");
 }
@@ -583,9 +583,10 @@ function formatStatusSamples(task: WorkerTask) {
   return Object.entries(byStatus)
     .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
     .map(([status, samples]) => {
+      const previewLimit = status === "400" ? 800 : 260;
       const previews = samples
         .slice(0, 2)
-        .map((sample) => String(sample.body_preview || sample.error || "").slice(0, 80))
+        .map((sample) => String(sample.body_preview || sample.error || "").slice(0, previewLimit))
         .filter(Boolean)
         .join(" / ");
       return previews ? `${status}: ${previews}` : status;

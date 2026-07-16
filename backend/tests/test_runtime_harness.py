@@ -482,6 +482,74 @@ async def test_worker_runtime_samples_include_exception_type():
 
 
 @pytest.mark.asyncio
+async def test_worker_runtime_preserves_long_http_error_body_samples():
+    class StubControlClient:
+        def __init__(self) -> None:
+            self.results: list[dict] = []
+
+        async def heartbeat(self, payload: dict) -> dict:
+            return {}
+
+        async def get_task_status(self, task_id: int):
+            return SimpleNamespace(task_id=task_id, status="running", stop_reason=None, planned_rps=20.0)
+
+        async def report_progress(self, task_id: int, payload: dict) -> None:
+            return None
+
+        async def report_result(self, task_id: int, payload: dict) -> None:
+            self.results.append({"task_id": task_id, **payload})
+
+        async def close(self) -> None:
+            return None
+
+    settings = WorkerSettings(
+        CONTROL_BASE_URL="http://control.test",
+        WORKER_ID=1,
+        CONTROL_TOKEN="worker-token",
+        POLL_INTERVAL_SECONDS=0.05,
+        HEARTBEAT_INTERVAL_SECONDS=0.05,
+        REQUEST_TIMEOUT_SECONDS=2.0,
+        CONNECT_TIMEOUT_SECONDS=1.0,
+        SIMULATE_MODE=False,
+        REGISTRATION_CONCURRENCY_MULTIPLIER=8.0,
+        REGISTRATION_MAX_CONCURRENCY=160,
+    )
+    runner = WorkerRunner(settings)
+    await runner.control.client.aclose()
+    stub_control = StubControlClient()
+    runner.control = stub_control
+
+    task = SimpleNamespace(
+        task_id=1,
+        registrar={"registrar_slug": "gandi"},
+        planned_start_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        planned_end_at=datetime.now(timezone.utc) + timedelta(seconds=0.25),
+        planned_rps=20.0,
+    )
+    long_gandi_error = (
+        '{"object":"OBJECT_CONTACT","cause":"CAUSE_BADPARAMETER","code":400,'
+        '"message":"owner.extra_parameters.frnic_legal_contact_type is required for .fr registrations",'
+        '"details":"'
+        + ("x" * 900)
+        + '"}'
+    )
+
+    async def bad_contact_attempt(self, client, live_task):
+        await asyncio.sleep(0.01)
+        return 400, 10.0, long_gandi_error
+
+    runner._attempt_register = MethodType(bad_contact_attempt, runner)
+
+    await runner._execute_task(task)
+
+    assert stub_control.results
+    result = stub_control.results[-1]
+    sample = result["response_samples"]["by_status"]["400"][0]
+    assert "frnic_legal_contact_type" in sample["body_preview"]
+    assert len(sample["body_preview"]) > 500
+
+
+@pytest.mark.asyncio
 async def test_worker_acknowledge_transitions_queued_task_to_running():
     engine, session_factory = await _make_test_session_factory()
     try:
