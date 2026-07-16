@@ -109,8 +109,8 @@ async def test_zone_strategy_preset_api_creates_fr_hourly_window():
         assert len(rules_payload) == 1
         assert rules_payload[0]["schedule_type"] == "hourly"
         assert rules_payload[0]["minute"] == 31
-        assert rules_payload[0]["second"] == 59
-        assert rules_payload[0]["window_duration_seconds"] == 61
+        assert rules_payload[0]["second"] == 30
+        assert rules_payload[0]["window_duration_seconds"] == 95
 
     await engine.dispose()
 

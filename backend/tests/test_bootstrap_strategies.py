@@ -44,8 +44,8 @@ async def test_bootstrap_creates_discovered_zone_strategy_presets():
     assert rule_by_zone["fr"].schedule_type == "hourly"
     assert rule_by_zone["fr"].hour is None
     assert rule_by_zone["fr"].minute == 31
-    assert rule_by_zone["fr"].second == 59
-    assert rule_by_zone["fr"].window_duration_seconds == 61
+    assert rule_by_zone["fr"].second == 30
+    assert rule_by_zone["fr"].window_duration_seconds == 95
     assert rule_by_zone["net"].hour == 18
     assert rule_by_zone["net"].window_duration_seconds == 2700
     assert rule_by_zone["org"].hour == 15
