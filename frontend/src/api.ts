@@ -478,6 +478,7 @@ export type WorkerTask = {
   response_samples: {
     first?: Array<Record<string, unknown>>;
     last?: Array<Record<string, unknown>>;
+    by_status?: Record<string, Array<Record<string, unknown>>>;
   } | null;
   assigned_at: string | null;
   acknowledged_at: string | null;

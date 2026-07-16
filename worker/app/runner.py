@@ -39,12 +39,13 @@ def _add_count(counter: dict[str, int], key: str | int | None) -> None:
 
 
 def _record_response_sample(
-    samples: dict[str, list[dict]],
+    samples: dict[str, object],
     *,
     status_code: int | None = None,
     latency_ms: float | None = None,
     body_preview: str | None = None,
     error: str | None = None,
+    error_type: str | None = None,
 ) -> None:
     sample = {
         "at": datetime.now(timezone.utc).isoformat(),
@@ -52,13 +53,23 @@ def _record_response_sample(
         "latency_ms": latency_ms,
         "body_preview": (body_preview or "")[:240],
         "error": (error or "")[:240],
+        "error_type": error_type or "",
     }
     first = samples.setdefault("first", [])
+    assert isinstance(first, list)
     if len(first) < 3:
         first.append(sample)
     last = samples.setdefault("last", [])
+    assert isinstance(last, list)
     last.append(sample)
     del last[:-3]
+    if status_code is not None:
+        by_status = samples.setdefault("by_status", {})
+        assert isinstance(by_status, dict)
+        status_samples = by_status.setdefault(str(status_code), [])
+        assert isinstance(status_samples, list)
+        if len(status_samples) < 3:
+            status_samples.append(sample)
 
 
 class WorkerRunner:
@@ -173,7 +184,7 @@ class WorkerRunner:
             last_latency_ms: float | None = None
             response_status_counts: dict[str, int] = {}
             response_error_counts: dict[str, int] = {}
-            response_samples: dict[str, list[dict]] = {"first": [], "last": []}
+            response_samples: dict[str, object] = {"first": [], "last": [], "by_status": {}}
             stop_requested = False
 
             while datetime.now(timezone.utc) <= task.planned_end_at or pending:
@@ -234,8 +245,9 @@ class WorkerRunner:
                         status_code, latency_ms, body_preview = await completed
                     except Exception as exc:
                         last_error = str(exc)
-                        _add_count(response_error_counts, exc.__class__.__name__)
-                        _record_response_sample(response_samples, error=last_error)
+                        error_type = exc.__class__.__name__
+                        _add_count(response_error_counts, error_type)
+                        _record_response_sample(response_samples, error=last_error, error_type=error_type)
                         continue
 
                     last_status = status_code

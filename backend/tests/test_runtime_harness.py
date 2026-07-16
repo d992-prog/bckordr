@@ -417,6 +417,68 @@ async def test_worker_runtime_treats_accepted_create_as_pending_not_success():
     assert stub_control.results[-1]["response_status_counts"]["202"] > 0
     assert stub_control.results[-1]["response_samples"]["first"][0]["status_code"] == 202
     assert stub_control.results[-1]["response_samples"]["last"][-1]["body_preview"] == "creation accepted"
+    assert stub_control.results[-1]["response_samples"]["by_status"]["202"][0]["body_preview"] == "creation accepted"
+
+
+@pytest.mark.asyncio
+async def test_worker_runtime_samples_include_exception_type():
+    class StubControlClient:
+        def __init__(self) -> None:
+            self.results: list[dict] = []
+
+        async def heartbeat(self, payload: dict) -> dict:
+            return {}
+
+        async def get_task_status(self, task_id: int):
+            return SimpleNamespace(task_id=task_id, status="running", stop_reason=None, planned_rps=20.0)
+
+        async def report_progress(self, task_id: int, payload: dict) -> None:
+            return None
+
+        async def report_result(self, task_id: int, payload: dict) -> None:
+            self.results.append({"task_id": task_id, **payload})
+
+        async def close(self) -> None:
+            return None
+
+    settings = WorkerSettings(
+        CONTROL_BASE_URL="http://control.test",
+        WORKER_ID=1,
+        CONTROL_TOKEN="worker-token",
+        POLL_INTERVAL_SECONDS=0.05,
+        HEARTBEAT_INTERVAL_SECONDS=0.05,
+        REQUEST_TIMEOUT_SECONDS=2.0,
+        CONNECT_TIMEOUT_SECONDS=1.0,
+        SIMULATE_MODE=False,
+        REGISTRATION_CONCURRENCY_MULTIPLIER=8.0,
+        REGISTRATION_MAX_CONCURRENCY=160,
+    )
+    runner = WorkerRunner(settings)
+    await runner.control.client.aclose()
+    stub_control = StubControlClient()
+    runner.control = stub_control
+
+    task = SimpleNamespace(
+        task_id=1,
+        registrar={"registrar_slug": "gandi"},
+        planned_start_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        planned_end_at=datetime.now(timezone.utc) + timedelta(seconds=0.25),
+        planned_rps=20.0,
+    )
+
+    async def timeout_attempt(self, client, live_task):
+        await asyncio.sleep(0.01)
+        raise httpx.ReadTimeout("read timed out")
+
+    runner._attempt_register = MethodType(timeout_attempt, runner)
+
+    await runner._execute_task(task)
+
+    assert stub_control.results
+    result = stub_control.results[-1]
+    assert result["response_error_counts"]["ReadTimeout"] > 0
+    assert result["response_samples"]["last"][-1]["error_type"] == "ReadTimeout"
+    assert "read timed out" in result["response_samples"]["last"][-1]["error"]
 
 
 @pytest.mark.asyncio

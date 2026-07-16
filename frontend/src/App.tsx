@@ -570,9 +570,25 @@ function formatTaskSamples(task: WorkerTask) {
   return lastSamples
     .slice(-3)
     .map((sample) => {
-      const status = sample.status_code ?? "ошибка";
+      const errorType = String(sample.error_type || "");
+      const status = sample.status_code ?? (errorType || "ошибка");
       const body = sample.body_preview || sample.error || "";
-      return `${status}: ${String(body).slice(0, 90)}`;
+      return body ? `${status}: ${String(body).slice(0, 90)}` : String(status);
+    })
+    .join(" | ");
+}
+
+function formatStatusSamples(task: WorkerTask) {
+  const byStatus = task.response_samples?.by_status ?? {};
+  return Object.entries(byStatus)
+    .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
+    .map(([status, samples]) => {
+      const previews = samples
+        .slice(0, 2)
+        .map((sample) => String(sample.body_preview || sample.error || "").slice(0, 80))
+        .filter(Boolean)
+        .join(" / ");
+      return previews ? `${status}: ${previews}` : status;
     })
     .join(" | ");
 }
@@ -3698,6 +3714,7 @@ export default function App() {
                             .join(", ")
                         : "";
                       const samplesSummary = formatTaskSamples(task);
+                      const statusSamplesSummary = formatStatusSamples(task);
                       return (
                         <div key={task.id} className="worker-breakdown-row">
                           <div>
@@ -3710,6 +3727,7 @@ export default function App() {
                           <div>HTTP: <strong>{httpSummary}</strong></div>
                           <div className="worker-error">ошибка: {extractReadableError(task.last_error)}</div>
                           {errorSummary ? <div className="worker-error">типы ошибок: {errorSummary}</div> : null}
+                          {statusSamplesSummary ? <div className="worker-error">примеры HTTP: {statusSamplesSummary}</div> : null}
                           {samplesSummary ? <div className="worker-error">последние ответы: {samplesSummary}</div> : null}
                         </div>
                       );
