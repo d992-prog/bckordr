@@ -16,6 +16,8 @@ class WorkerHeartbeatRequest(BaseModel):
     ram_usage_percent: float = 0.0
     clock_drift_ms: int = 0
     runtime_mode: str = "unknown"
+    registration_concurrency_multiplier: float = 2.0
+    registration_max_concurrency: int = 64
 
 
 class WorkerHeartbeatResponse(BaseModel):

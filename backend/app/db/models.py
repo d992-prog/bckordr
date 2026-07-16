@@ -554,6 +554,8 @@ class WorkerNode(Base):
     ram_usage_percent: Mapped[float] = mapped_column(Float, default=0.0, server_default="0.0")
     clock_drift_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     runtime_mode: Mapped[str] = mapped_column(String(32), default="unknown", server_default="unknown")
+    registration_concurrency_multiplier: Mapped[float] = mapped_column(Float, default=2.0, server_default="2.0")
+    registration_max_concurrency: Mapped[int] = mapped_column(Integer, default=64, server_default="64")
     current_domain_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

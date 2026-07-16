@@ -345,6 +345,8 @@ export type WorkerNode = {
   ram_usage_percent: number;
   clock_drift_ms: number;
   runtime_mode: string;
+  registration_concurrency_multiplier: number;
+  registration_max_concurrency: number;
   current_domain_count: number;
   last_seen_at: string | null;
   last_heartbeat_at: string | null;

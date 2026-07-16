@@ -69,6 +69,8 @@ class WorkerRunner:
             "ram_usage_percent": psutil.virtual_memory().percent,
             "clock_drift_ms": self._clock_drift_ms(),
             "runtime_mode": "test" if self.settings.simulate_mode else "live",
+            "registration_concurrency_multiplier": self.settings.registration_concurrency_multiplier,
+            "registration_max_concurrency": self.settings.registration_max_concurrency,
             "ip_address": None,
             "region": None,
         }

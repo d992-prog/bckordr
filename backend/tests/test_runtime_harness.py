@@ -214,6 +214,8 @@ async def test_worker_heartbeat_reports_clock_offset_instead_of_elapsed_time(mon
         REQUEST_TIMEOUT_SECONDS=2.0,
         CONNECT_TIMEOUT_SECONDS=1.0,
         SIMULATE_MODE=False,
+        REGISTRATION_CONCURRENCY_MULTIPLIER=8.0,
+        REGISTRATION_MAX_CONCURRENCY=160,
     )
     runner = WorkerRunner(settings)
     await runner.control.client.aclose()
@@ -254,6 +256,8 @@ async def test_worker_heartbeat_reports_clock_offset_instead_of_elapsed_time(mon
 
     assert stub_control.payloads[0]["clock_drift_ms"] == 0
     assert stub_control.payloads[1]["clock_drift_ms"] == 10
+    assert stub_control.payloads[0]["registration_concurrency_multiplier"] == 8.0
+    assert stub_control.payloads[0]["registration_max_concurrency"] == 160
 
 
 @pytest.mark.asyncio
@@ -272,6 +276,8 @@ async def test_worker_runtime_harness_covers_live_rps_update_and_success_flow():
             REQUEST_TIMEOUT_SECONDS=2.0,
             CONNECT_TIMEOUT_SECONDS=1.0,
             SIMULATE_MODE=False,
+            REGISTRATION_CONCURRENCY_MULTIPLIER=8.0,
+            REGISTRATION_MAX_CONCURRENCY=160,
         )
         runner = WorkerRunner(settings)
         await runner.control.client.aclose()
@@ -289,6 +295,10 @@ async def test_worker_runtime_harness_covers_live_rps_update_and_success_flow():
         await runner.control.acknowledge_task(task.task_id)
 
         async with session_factory() as session:
+            worker = await session.get(WorkerNode, ids["worker_primary_id"])
+            assert worker is not None
+            assert worker.registration_concurrency_multiplier == 8.0
+            assert worker.registration_max_concurrency == 160
             acknowledged_task = await session.get(WorkerTask, ids["primary_task_id"])
             assert acknowledged_task is not None
             assert acknowledged_task.status == "running"

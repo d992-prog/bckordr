@@ -403,6 +403,8 @@ class WorkerNodeBase(BaseModel):
     ram_usage_percent: float = Field(default=0.0, ge=0.0)
     clock_drift_ms: int = 0
     runtime_mode: str = "unknown"
+    registration_concurrency_multiplier: float = Field(default=2.0, ge=1.0)
+    registration_max_concurrency: int = Field(default=64, ge=1)
     current_domain_count: int = Field(default=0, ge=0)
 
 
@@ -429,6 +431,8 @@ class WorkerNodeUpdateRequest(BaseModel):
     ram_usage_percent: float | None = Field(default=None, ge=0.0)
     clock_drift_ms: int | None = None
     runtime_mode: str | None = None
+    registration_concurrency_multiplier: float | None = Field(default=None, ge=1.0)
+    registration_max_concurrency: int | None = Field(default=None, ge=1)
     current_domain_count: int | None = Field(default=None, ge=0)
 
 

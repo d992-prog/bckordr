@@ -24,6 +24,8 @@ MIGRATIONS = (
     "ALTER TABLE domains ADD COLUMN IF NOT EXISTS last_owner_change_at TIMESTAMPTZ NULL",
     "ALTER TABLE domains ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER DEFAULT 0",
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS runtime_mode VARCHAR(32) DEFAULT 'unknown'",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS registration_concurrency_multiplier DOUBLE PRECISION DEFAULT 2.0",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS registration_max_concurrency INTEGER DEFAULT 64",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_domains_owner_domain ON domains(owner_id, domain)",
     "ALTER TABLE proxies ADD COLUMN IF NOT EXISTS owner_id INTEGER NULL REFERENCES users(id) ON DELETE CASCADE",
     "ALTER TABLE logs ADD COLUMN IF NOT EXISTS owner_id INTEGER NULL REFERENCES users(id) ON DELETE CASCADE",
