@@ -36,9 +36,12 @@ WHOIS_NOT_FOUND_PATTERNS = (
     "not found",
     "no data found",
     "domain not found",
+    "domain not allocated",
+    "no object found",
     "object does not exist",
     "no entries found",
     "is available",
+    "available for registration",
     "status: free",
 )
 WHOIS_RATE_LIMIT_PATTERNS = (
@@ -58,7 +61,7 @@ AVAILABLE_STATUS_CODES = {
 }
 WHOIS_SERVERS: dict[str, str] = {
     "ac": "whois.nic.ac",
-    "ad": "whois.ripe.net",
+    "ad": "whois.nic.ad",
     "ae": "whois.aeda.net.ae",
     "aero": "whois.aero",
     "af": "whois.nic.af",
@@ -89,6 +92,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "eu": "whois.eu",
     "fr": "whois.nic.fr",
     "hk": "whois.hkirc.hk",
+    "hr": "whois.dns.hr",
     "hu": "whois.nic.hu",
     "id": "whois.id",
     "ie": "whois.weare.ie",
@@ -107,6 +111,8 @@ WHOIS_SERVERS: dict[str, str] = {
     "lu": "whois.dns.lu",
     "lv": "whois.nic.lv",
     "me": "whois.nic.me",
+    "md": "whois.nic.md",
+    "mk": "whois.marnet.mk",
     "mx": "whois.mx",
     "my": "whois.mynic.my",
     "net": "whois.verisign-grs.com",
@@ -126,7 +132,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "si": "whois.register.si",
     "sk": "whois.sk-nic.sk",
     "th": "whois.thnic.co.th",
-    "tr": "whois.nic.tr",
+    "tr": "whois.trabis.gov.tr",
     "tv": "tvwhois.verisign-grs.com",
     "tw": "whois.twnic.net.tw",
     "ua": "whois.ua",

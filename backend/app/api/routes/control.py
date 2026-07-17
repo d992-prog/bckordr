@@ -64,6 +64,8 @@ from app.schemas.control import (
     DiscoveryDomainBulkCreateRequest,
     DiscoveryDomainCreateRequest,
     DiscoveryDomainImportResponse,
+    DiscoveryDomainIntervalUpdateRequest,
+    DiscoveryDomainIntervalUpdateResponse,
     DiscoveryDomainResponse,
     DiscoveryObservationCreateRequest,
     DiscoveryObservationResponse,
@@ -1506,6 +1508,46 @@ async def import_discovery_domains(
 ) -> DiscoveryDomainImportResponse:
     del admin
     return await _insert_discovery_domains_from_bulk(payload, db)
+
+
+@router.patch("/discovery/domains/interval", response_model=DiscoveryDomainIntervalUpdateResponse)
+async def update_discovery_domains_interval(
+    payload: DiscoveryDomainIntervalUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> DiscoveryDomainIntervalUpdateResponse:
+    del admin
+    unique_ids = list(dict.fromkeys(payload.domain_ids))
+    result = await db.execute(
+        select(DiscoveryDomain)
+        .where(DiscoveryDomain.id.in_(unique_ids))
+        .order_by(DiscoveryDomain.id.asc())
+    )
+    domains = list(result.scalars().all())
+    if not domains:
+        raise HTTPException(status_code=404, detail="Discovery domains not found")
+
+    base_check_at = utcnow()
+    active_domains = [
+        domain
+        for domain in domains
+        if domain.is_enabled and domain.status not in {"available", "ignored"}
+    ]
+    active_index = {domain.id: index for index, domain in enumerate(active_domains)}
+    for domain in domains:
+        domain.check_interval_seconds = payload.check_interval_seconds
+        if payload.reschedule_pending and domain.id in active_index:
+            domain.next_check_at = stagger_initial_check_at(
+                base_check_at,
+                index=active_index[domain.id],
+                total=len(active_domains),
+            )
+
+    await db.commit()
+    return DiscoveryDomainIntervalUpdateResponse(
+        updated=len(domains),
+        check_interval_seconds=payload.check_interval_seconds,
+    )
 
 
 @router.post(

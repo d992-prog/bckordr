@@ -136,6 +136,11 @@ export type DiscoveryDomainImportResponse = {
   skipped: string[];
 };
 
+export type DiscoveryDomainIntervalUpdateResponse = {
+  updated: number;
+  check_interval_seconds: number;
+};
+
 export type DiscoveryZoneStats = {
   zone: string;
   total: number;
@@ -691,6 +696,15 @@ export const api = {
   checkDiscoveryDomain: (id: number) =>
     request<DiscoveryDomain>(`/control/discovery/domains/${id}/check`, {
       method: "POST",
+    }),
+  updateDiscoveryDomainsInterval: (payload: {
+    domain_ids: number[];
+    check_interval_seconds: number;
+    reschedule_pending?: boolean;
+  }) =>
+    request<DiscoveryDomainIntervalUpdateResponse>("/control/discovery/domains/interval", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
     }),
   getDiscoveryZoneStats: () => request<DiscoveryZoneStats[]>("/control/discovery/zone-stats"),
   deleteDiscoveryDomain: (id: number) =>

@@ -16,6 +16,7 @@ from app.db.models import DiscoveryDomain
 from app.db.session import get_db
 from app.services.discovery import (
     DiscoveryObservationInput,
+    WHOIS_SERVERS,
     apply_discovery_observation,
     calculate_next_check_at,
     check_discovery_domain_rdap,
@@ -117,6 +118,51 @@ def test_discovery_parses_eurid_available_status_as_available():
     assert observation.lifecycle_stage == "not_found"
     assert observation.availability_status == "available"
     assert observation.status_codes == ["AVAILABLE"]
+
+
+@pytest.mark.parametrize(
+    ("zone", "server"),
+    [
+        ("hr", "whois.dns.hr"),
+        ("md", "whois.nic.md"),
+        ("mk", "whois.marnet.mk"),
+        ("tr", "whois.trabis.gov.tr"),
+    ],
+)
+def test_discovery_has_whois_fallback_for_requested_cctlds(zone: str, server: str):
+    assert WHOIS_SERVERS[zone] == server
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fqdn", "server"),
+    [
+        ("5senses.hr", "whois.dns.hr"),
+        ("agrosucces.md", "whois.nic.md"),
+        ("40burninghot.mk", "whois.marnet.mk"),
+        ("0058.tr", "whois.trabis.gov.tr"),
+    ],
+)
+async def test_discovery_falls_back_to_requested_cctld_whois_servers(fqdn: str, server: str):
+    domain = DiscoveryDomain(fqdn=fqdn, zone=fqdn.rsplit(".", 1)[-1])
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["com"], ["https://rdap.registry.example/"]]]})
+        return httpx.Response(404)
+
+    async def whois_lookup(received_fqdn: str, received_server: str, timeout_seconds: float) -> str:
+        assert received_fqdn == fqdn
+        assert received_server == server
+        assert timeout_seconds == 5.0
+        return f"domain: {fqdn}\nstatus: active\n"
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        observation = await check_discovery_domain_rdap(domain, client=client, whois_lookup=whois_lookup)
+
+    assert observation.source == "whois_fallback"
+    assert observation.lifecycle_stage == "registered"
+    assert observation.availability_status == "taken"
 
 
 @pytest.mark.asyncio
@@ -674,6 +720,63 @@ async def test_discovery_api_imports_and_lists_domains():
         first_check = datetime.fromisoformat(payload[0]["next_check_at"])
         second_check = datetime.fromisoformat(payload[1]["next_check_at"])
         assert 100 <= abs((second_check - first_check).total_seconds()) <= 200
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_discovery_api_bulk_updates_check_interval_and_reschedules_active_domains():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        import_response = await client.post(
+            "/control/discovery/domains/import",
+            json={"domains": ["alpha.com", "beta.com", "gamma.com"], "check_interval_seconds": 21600},
+        )
+        assert import_response.status_code == 201
+        inserted = import_response.json()["inserted"]
+        selected_ids = [inserted[0]["id"], inserted[1]["id"]]
+
+        update_response = await client.patch(
+            "/control/discovery/domains/interval",
+            json={
+                "domain_ids": selected_ids,
+                "check_interval_seconds": 120,
+                "reschedule_pending": True,
+            },
+        )
+        assert update_response.status_code == 200
+        assert update_response.json() == {"updated": 2, "check_interval_seconds": 120}
+
+        list_response = await client.get("/control/discovery/domains")
+        assert list_response.status_code == 200
+        domains = {item["fqdn"]: item for item in list_response.json()}
+
+    assert domains["alpha.com"]["check_interval_seconds"] == 120
+    assert domains["beta.com"]["check_interval_seconds"] == 120
+    assert domains["gamma.com"]["check_interval_seconds"] == 21600
+    assert domains["alpha.com"]["next_check_at"] != domains["beta.com"]["next_check_at"]
 
     await engine.dispose()
 

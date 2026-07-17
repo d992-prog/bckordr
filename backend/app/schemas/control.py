@@ -651,6 +651,17 @@ class DiscoveryDomainBulkCreateRequest(BaseModel):
     notes: str | None = None
 
 
+class DiscoveryDomainIntervalUpdateRequest(BaseModel):
+    domain_ids: list[int] = Field(min_length=1)
+    check_interval_seconds: int = Field(ge=10, le=86400)
+    reschedule_pending: bool = True
+
+
+class DiscoveryDomainIntervalUpdateResponse(BaseModel):
+    updated: int
+    check_interval_seconds: int
+
+
 class DiscoveryObservationCreateRequest(BaseModel):
     source: str = Field(default="manual", min_length=2, max_length=32)
     http_status: int | None = Field(default=None, ge=100, le=599)

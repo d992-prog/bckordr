@@ -766,6 +766,7 @@ export default function App() {
   const [discoveryForm, setDiscoveryForm] = useState(DEFAULT_DISCOVERY_FORM);
   const [discoveryObservationForm, setDiscoveryObservationForm] = useState(DEFAULT_DISCOVERY_OBSERVATION_FORM);
   const [discoveryFilters, setDiscoveryFilters] = useState(DEFAULT_DISCOVERY_FILTERS);
+  const [discoveryBulkIntervalSeconds, setDiscoveryBulkIntervalSeconds] = useState(DEFAULT_DISCOVERY_FORM.checkIntervalSeconds);
   const [discoveryPage, setDiscoveryPage] = useState(1);
   const [allZonefilesTokenForm, setAllZonefilesTokenForm] = useState("");
   const [zoneScanForm, setZoneScanForm] = useState(DEFAULT_ZONE_SCAN_FORM);
@@ -1309,6 +1310,34 @@ export default function App() {
       setToast({ type: "success", text: `Проверка discovery: ${domain.fqdn} -> ${formatStatusLabel(domain.status)}` });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка проверки discovery-домена" });
+    }
+  }
+
+  async function updateDiscoveryInterval(scope: "filtered" | "all") {
+    const checkIntervalSeconds = Number(discoveryBulkIntervalSeconds);
+    if (!Number.isFinite(checkIntervalSeconds) || checkIntervalSeconds < 10 || checkIntervalSeconds > 86400) {
+      setToast({ type: "error", text: "Интервал должен быть от 10 до 86400 секунд" });
+      return;
+    }
+    const targetDomains = scope === "filtered" ? filteredDiscoveryDomains : discoveryDomains;
+    const domainIds = targetDomains.map((domain) => domain.id);
+    if (domainIds.length === 0) {
+      setToast({ type: "error", text: "Нет доменов для обновления интервала" });
+      return;
+    }
+    try {
+      const result = await api.updateDiscoveryDomainsInterval({
+        domain_ids: domainIds,
+        check_interval_seconds: checkIntervalSeconds,
+        reschedule_pending: true,
+      });
+      await loadAll();
+      setToast({
+        type: "success",
+        text: `Базовый интервал ${result.check_interval_seconds} сек применен к доменам: ${result.updated}`,
+      });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обновления интервала discovery" });
     }
   }
 
@@ -2302,6 +2331,26 @@ export default function App() {
                 }}
               >
                 Сбросить фильтры
+              </button>
+            </div>
+          </div>
+          <div className="filter-panel">
+            <label>
+              <span>Базовый интервал, сек</span>
+              <input
+                type="number"
+                min="10"
+                max="86400"
+                value={discoveryBulkIntervalSeconds}
+                onChange={(event) => setDiscoveryBulkIntervalSeconds(event.target.value)}
+              />
+            </label>
+            <div className="form-actions compact-actions">
+              <button type="button" className="ghost" onClick={() => void updateDiscoveryInterval("filtered")}>
+                Применить к фильтру
+              </button>
+              <button type="button" className="ghost" onClick={() => void updateDiscoveryInterval("all")}>
+                Применить ко всем
               </button>
             </div>
           </div>
