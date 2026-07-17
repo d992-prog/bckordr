@@ -21,6 +21,7 @@ import {
   SessionResponse,
   StrategyPreview,
   WorkerNode,
+  WorkerMaintenanceJob,
   WorkerSetup,
   WorkerTask,
   ZoneScanCandidate,
@@ -189,18 +190,15 @@ const DEFAULT_WORKER_FORM = {
   name: "",
   registrarSlug: "gandi",
   assignedRegistrarAccountId: "",
-  apiBaseUrl: "",
-  controlToken: "",
-  status: "provisioning",
   ipAddress: "",
   region: "",
   maxRps: "16",
   targetRps: "16",
-  currentRps: "0",
-  currentCapacityRps: "0",
-  cpuLoad: "0",
-  ramUsagePercent: "0",
-  clockDriftMs: "0",
+  sshHost: "",
+  sshPort: "22",
+  sshUsername: "root",
+  sshPassword: "",
+  sshKeyPath: "",
   notes: "",
 };
 
@@ -250,18 +248,15 @@ function makeWorkerForm(worker?: WorkerNode | null) {
     name: worker.name,
     registrarSlug: worker.registrar_slug,
     assignedRegistrarAccountId: worker.assigned_registrar_account_id ? String(worker.assigned_registrar_account_id) : "",
-    apiBaseUrl: worker.api_base_url ?? "",
-    controlToken: worker.control_token ?? "",
-    status: worker.status,
     ipAddress: worker.ip_address ?? "",
     region: worker.region ?? "",
     maxRps: String(worker.max_rps),
     targetRps: String(worker.target_rps),
-    currentRps: String(worker.current_rps),
-    currentCapacityRps: String(worker.current_capacity_rps),
-    cpuLoad: String(worker.cpu_load),
-    ramUsagePercent: String(worker.ram_usage_percent),
-    clockDriftMs: String(worker.clock_drift_ms),
+    sshHost: worker.ssh_host ?? worker.ip_address ?? "",
+    sshPort: String(worker.ssh_port ?? 22),
+    sshUsername: worker.ssh_username ?? "root",
+    sshPassword: "",
+    sshKeyPath: worker.ssh_key_path ?? "",
     notes: worker.notes ?? "",
   };
 }
@@ -399,6 +394,7 @@ function formatStatusLabel(value: string | null | undefined) {
   const labels: Record<string, string> = {
     ready: "готово",
     success: "успех",
+    succeeded: "успех",
     scheduled: "запланировано",
     running: "в работе",
     attacking: "атака",
@@ -734,6 +730,7 @@ export default function App() {
   const [zoneScanCandidates, setZoneScanCandidates] = useState<ZoneScanCandidate[]>([]);
   const [selectedZoneScanJobId, setSelectedZoneScanJobId] = useState<number | null>(null);
   const [workers, setWorkers] = useState<WorkerNode[]>([]);
+  const [workerMaintenanceJobs, setWorkerMaintenanceJobs] = useState<WorkerMaintenanceJob[]>([]);
   const [accounts, setAccounts] = useState<RegistrarAccount[]>([]);
   const [contacts, setContacts] = useState<ContactProfile[]>([]);
   const [attacks, setAttacks] = useState<AttackRun[]>([]);
@@ -781,6 +778,15 @@ export default function App() {
   const contactMap = useMemo(() => new Map(contacts.map((item) => [item.id, item])), [contacts]);
   const domainMap = useMemo(() => new Map(domains.map((item) => [item.id, item])), [domains]);
   const strategyMap = useMemo(() => new Map(strategies.map((item) => [item.id, item])), [strategies]);
+  const latestWorkerMaintenanceJobByWorker = useMemo(() => {
+    const items = new Map<number, WorkerMaintenanceJob>();
+    for (const job of workerMaintenanceJobs) {
+      if (!items.has(job.worker_id)) {
+        items.set(job.worker_id, job);
+      }
+    }
+    return items;
+  }, [workerMaintenanceJobs]);
   const selectedStrategy = useMemo(
     () => strategies.find((item) => item.id === selectedStrategyId) ?? null,
     [selectedStrategyId, strategies],
@@ -925,6 +931,7 @@ export default function App() {
         zoneScanJobsData,
         zoneScanCandidatesData,
         workersData,
+        workerMaintenanceJobsData,
         accountsData,
         contactsData,
         attacksData,
@@ -941,6 +948,7 @@ export default function App() {
         api.getZoneScanJobs(),
         api.getZoneScanCandidates(),
         api.getWorkers(),
+        api.getWorkerMaintenanceJobs(),
         api.getRegistrarAccounts(),
         api.getContactProfiles(),
         api.getAttacks(),
@@ -957,6 +965,7 @@ export default function App() {
       setZoneScanJobs(zoneScanJobsData);
       setZoneScanCandidates(zoneScanCandidatesData);
       setWorkers(workersData);
+      setWorkerMaintenanceJobs(workerMaintenanceJobsData);
       setAccounts(accountsData);
       setContacts(contactsData);
       setAttacks(attacksData);
@@ -1611,24 +1620,23 @@ export default function App() {
 
   async function submitWorker(event: FormEvent) {
     event.preventDefault();
-    const payload = {
+    const payload: Record<string, unknown> = {
       name: workerForm.name,
       registrar_slug: workerForm.registrarSlug,
       assigned_registrar_account_id: parseNumber(workerForm.assignedRegistrarAccountId),
-      api_base_url: workerForm.apiBaseUrl || null,
-      control_token: workerForm.controlToken || null,
-      status: workerForm.status,
       ip_address: workerForm.ipAddress || null,
       region: workerForm.region || null,
       max_rps: Number(workerForm.maxRps),
       target_rps: Number(workerForm.targetRps),
-      current_rps: Number(workerForm.currentRps),
-      current_capacity_rps: Number(workerForm.currentCapacityRps),
-      cpu_load: Number(workerForm.cpuLoad),
-      ram_usage_percent: Number(workerForm.ramUsagePercent),
-      clock_drift_ms: Number(workerForm.clockDriftMs),
+      ssh_host: workerForm.sshHost || workerForm.ipAddress || null,
+      ssh_port: Number(workerForm.sshPort || 22),
+      ssh_username: workerForm.sshUsername || "root",
+      ssh_key_path: workerForm.sshKeyPath || null,
       notes: workerForm.notes || null,
     };
+    if (workerForm.sshPassword.trim()) {
+      payload.ssh_password = workerForm.sshPassword;
+    }
     try {
       if (editingWorkerId) {
         await api.updateWorker(editingWorkerId, payload);
@@ -1861,6 +1869,19 @@ export default function App() {
       await loadAll();
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обновления воркера" });
+    }
+  }
+
+  async function startWorkerMaintenance(worker: WorkerNode, action: "check" | "update") {
+    try {
+      const job = action === "check" ? await api.checkWorkerSsh(worker.id) : await api.updateWorkerServer(worker.id);
+      await loadAll();
+      setToast({
+        type: "success",
+        text: `${action === "check" ? "SSH-проверка" : "Обновление воркера"} запущено: job #${job.id}`,
+      });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обслуживания воркера" });
     }
   }
 
@@ -2971,7 +2992,8 @@ export default function App() {
           <form className="form" onSubmit={submitWorker}>
             <div className="form two-columns">
               <label><span>Имя</span><input value={workerForm.name} onChange={(event) => setWorkerForm((current) => ({ ...current, name: event.target.value }))} /></label>
-              <label><span>Регистратор</span><input value={workerForm.registrarSlug} onChange={(event) => setWorkerForm((current) => ({ ...current, registrarSlug: event.target.value }))} /></label>
+              <label><span>IP сервера</span><input value={workerForm.ipAddress} onChange={(event) => setWorkerForm((current) => ({ ...current, ipAddress: event.target.value, sshHost: current.sshHost || event.target.value }))} placeholder="2.27.x.x" /></label>
+              <label><span>Регион</span><input value={workerForm.region} onChange={(event) => setWorkerForm((current) => ({ ...current, region: event.target.value }))} placeholder="DE, NL, FI..." /></label>
               <label>
                 <span>Закрепленный аккаунт</span>
                 <select value={workerForm.assignedRegistrarAccountId} onChange={(event) => setWorkerForm((current) => ({ ...current, assignedRegistrarAccountId: event.target.value }))}>
@@ -2979,18 +3001,18 @@ export default function App() {
                   {accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
                 </select>
               </label>
-              <label><span>API base URL</span><input value={workerForm.apiBaseUrl} onChange={(event) => setWorkerForm((current) => ({ ...current, apiBaseUrl: event.target.value }))} /></label>
-              <label><span>Токен control</span><input value={workerForm.controlToken} onChange={(event) => setWorkerForm((current) => ({ ...current, controlToken: event.target.value }))} /></label>
-              <label><span>Статус</span><input value={workerForm.status} onChange={(event) => setWorkerForm((current) => ({ ...current, status: event.target.value }))} /></label>
-              <label><span>IP</span><input value={workerForm.ipAddress} onChange={(event) => setWorkerForm((current) => ({ ...current, ipAddress: event.target.value }))} /></label>
-              <label><span>Регион</span><input value={workerForm.region} onChange={(event) => setWorkerForm((current) => ({ ...current, region: event.target.value }))} /></label>
-              <label><span>Макс. RPS</span><input value={workerForm.maxRps} onChange={(event) => setWorkerForm((current) => ({ ...current, maxRps: event.target.value }))} /></label>
               <label><span>Целевой RPS</span><input value={workerForm.targetRps} onChange={(event) => setWorkerForm((current) => ({ ...current, targetRps: event.target.value }))} /></label>
-              <label><span>Текущий RPS</span><input value={workerForm.currentRps} onChange={(event) => setWorkerForm((current) => ({ ...current, currentRps: event.target.value }))} /></label>
-              <label><span>Текущая емкость</span><input value={workerForm.currentCapacityRps} onChange={(event) => setWorkerForm((current) => ({ ...current, currentCapacityRps: event.target.value }))} /></label>
-              <label><span>CPU %</span><input value={workerForm.cpuLoad} onChange={(event) => setWorkerForm((current) => ({ ...current, cpuLoad: event.target.value }))} /></label>
-              <label><span>RAM %</span><input value={workerForm.ramUsagePercent} onChange={(event) => setWorkerForm((current) => ({ ...current, ramUsagePercent: event.target.value }))} /></label>
-              <label><span>Сдвиг часов, мс</span><input value={workerForm.clockDriftMs} onChange={(event) => setWorkerForm((current) => ({ ...current, clockDriftMs: event.target.value }))} /></label>
+              <label><span>Макс. RPS</span><input value={workerForm.maxRps} onChange={(event) => setWorkerForm((current) => ({ ...current, maxRps: event.target.value }))} /></label>
+              <label><span>Регистратор</span><input value={workerForm.registrarSlug} onChange={(event) => setWorkerForm((current) => ({ ...current, registrarSlug: event.target.value }))} /></label>
+            </div>
+            <h3>SSH доступ для установки и обновления</h3>
+            <p className="muted">Пароль нужен для автоматизации через панель. API не возвращает пароль обратно в браузер.</p>
+            <div className="form two-columns">
+              <label><span>SSH host</span><input value={workerForm.sshHost} onChange={(event) => setWorkerForm((current) => ({ ...current, sshHost: event.target.value }))} placeholder="обычно IP сервера" /></label>
+              <label><span>SSH port</span><input value={workerForm.sshPort} onChange={(event) => setWorkerForm((current) => ({ ...current, sshPort: event.target.value }))} /></label>
+              <label><span>SSH логин</span><input value={workerForm.sshUsername} onChange={(event) => setWorkerForm((current) => ({ ...current, sshUsername: event.target.value }))} /></label>
+              <label><span>SSH пароль</span><input type="password" value={workerForm.sshPassword} onChange={(event) => setWorkerForm((current) => ({ ...current, sshPassword: event.target.value }))} placeholder={editingWorkerId ? "оставь пустым, чтобы не менять" : "root пароль"} /></label>
+              <label><span>SSH key path</span><input value={workerForm.sshKeyPath} onChange={(event) => setWorkerForm((current) => ({ ...current, sshKeyPath: event.target.value }))} placeholder="опционально, например /root/.ssh/id_ed25519" /></label>
             </div>
             <label><span>Заметки</span><textarea rows={3} value={workerForm.notes} onChange={(event) => setWorkerForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             <div className="actions">
@@ -3107,6 +3129,8 @@ export default function App() {
                   <div><span>Сдвиг часов</span><strong>{worker.clock_drift_ms} ms</strong></div>
                   <div><span>Режим воркера</span><strong>{formatWorkerRuntimeMode(worker.runtime_mode)}</strong></div>
                   <div><span>Параллельность реги</span><strong>{formatWorkerConcurrency(worker)}</strong></div>
+                  <div><span>SSH доступ</span><strong>{worker.ssh_access_configured ? `${worker.ssh_username ?? "root"}@${worker.ssh_host ?? worker.ip_address}:${worker.ssh_port}` : "не настроен"}</strong></div>
+                  <div><span>Последнее обслуживание</span><strong>{latestWorkerMaintenanceJobByWorker.get(worker.id) ? `#${latestWorkerMaintenanceJobByWorker.get(worker.id)?.id} ${latestWorkerMaintenanceJobByWorker.get(worker.id)?.action} / ${latestWorkerMaintenanceJobByWorker.get(worker.id)?.status}` : "—"}</strong></div>
                   <div><span>Доменов на воркере</span><strong>{worker.current_domain_count}</strong></div>
                   <div><span>Закрепленный аккаунт</span><strong>{worker.assigned_registrar_account_id ? accountMap.get(worker.assigned_registrar_account_id)?.name ?? worker.assigned_registrar_account_id : "не закреплен"}</strong></div>
                   <div><span>ID воркера</span><strong>{worker.id}</strong></div>
@@ -3114,6 +3138,8 @@ export default function App() {
                 </div>
                 <div className="actions">
                   <button type="button" className="ghost" onClick={() => void loadWorkerSetup(worker)}>Команды установки</button>
+                  <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "check")} disabled={!worker.ssh_access_configured}>Проверить SSH</button>
+                  <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "update")} disabled={!worker.ssh_access_configured}>Обновить сервер</button>
                   <button type="button" className="ghost" onClick={() => startEditWorker(worker)}>Редактировать</button>
                   <button type="button" className="ghost" onClick={() => void toggleWorker(worker)}>{worker.is_enabled ? "Выключить" : "Включить"}</button>
                   <button type="button" className="danger" onClick={() => void deleteItem("worker", worker.id)}>Удалить</button>
@@ -3121,6 +3147,43 @@ export default function App() {
               </article>
             ))}
           </div>
+        </div>
+
+        <div className="card full-span">
+          <div className="card-head">
+            <h2>Обслуживание серверов</h2>
+            <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
+          </div>
+          {workerMaintenanceJobs.length ? (
+            <div className="simple-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Воркер</th>
+                    <th>Действие</th>
+                    <th>Статус</th>
+                    <th>Создано</th>
+                    <th>Ошибка</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {workerMaintenanceJobs.slice(0, 10).map((job) => (
+                    <tr key={job.id}>
+                      <td>{job.id}</td>
+                      <td>{workers.find((worker) => worker.id === job.worker_id)?.name ?? job.worker_id}</td>
+                      <td>{job.action === "update" ? "обновление" : "проверка SSH"}</td>
+                      <td><span className={statusClass(job.status)}>{formatStatusLabel(job.status)}</span></td>
+                      <td>{formatDateTime(job.created_at)}</td>
+                      <td>{job.error_message ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="muted">Задач обслуживания пока нет.</p>
+          )}
         </div>
       </section>
     );

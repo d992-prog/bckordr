@@ -558,6 +558,14 @@ class WorkerNode(Base):
     registration_concurrency_multiplier: Mapped[float] = mapped_column(Float, default=2.0, server_default="2.0")
     registration_max_concurrency: Mapped[int] = mapped_column(Integer, default=64, server_default="64")
     current_domain_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    ssh_host: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ssh_port: Mapped[int] = mapped_column(Integer, default=22, server_default="22")
+    ssh_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ssh_password: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ssh_key_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ssh_last_check_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ssh_last_check_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ssh_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -573,6 +581,36 @@ class WorkerNode(Base):
     )
 
     assigned_registrar_account: Mapped[RegistrarAccount | None] = relationship()
+
+    @property
+    def ssh_access_configured(self) -> bool:
+        return bool((self.ssh_password or self.ssh_key_path) and (self.ssh_host or self.ip_address))
+
+
+class WorkerMaintenanceJob(Base):
+    __tablename__ = "worker_maintenance_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("worker_nodes.id", ondelete="CASCADE"), index=True)
+    action: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", server_default="queued", index=True)
+    log: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+    worker: Mapped[WorkerNode] = relationship()
 
 
 class DropDomain(Base):

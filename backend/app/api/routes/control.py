@@ -9,7 +9,7 @@ from pathlib import Path
 import shlex
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,7 @@ from app.db.models import (
     DropDomain,
     RegistrarAccount,
     User,
+    WorkerMaintenanceJob,
     WorkerNode,
     WorkerTask,
     ZoneScanCandidate,
@@ -80,6 +81,7 @@ from app.schemas.control import (
     RegistrarAccountUpdateRequest,
     RegistrarAccountValidateResponse,
     WorkerNodeCreateRequest,
+    WorkerMaintenanceJobResponse,
     WorkerNodeResponse,
     WorkerSetupResponse,
     WorkerNodeUpdateRequest,
@@ -129,6 +131,7 @@ from app.services.strategy_runtime import (
     resolve_effective_strategy,
 )
 from app.services.worker_allowlist import sync_worker_runtime_allowlist
+from app.services.worker_maintenance import run_worker_maintenance_job
 from app.services.security import generate_session_token
 from app.services.registrars import validate_registrar_account_remote
 from app.services.zone_scanner import (
@@ -1987,6 +1990,84 @@ async def get_worker_setup(
         runtime_base_url=effective_runtime_base_url,
         simulate_mode=simulate_mode,
     )
+
+
+@router.get("/workers/maintenance-jobs", response_model=list[WorkerMaintenanceJobResponse])
+async def list_worker_maintenance_jobs(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[WorkerMaintenanceJobResponse]:
+    del admin
+    result = await db.execute(select(WorkerMaintenanceJob).order_by(WorkerMaintenanceJob.id.desc()).limit(50))
+    return [WorkerMaintenanceJobResponse.model_validate(job) for job in result.scalars().all()]
+
+
+@router.post(
+    "/workers/{worker_id}/maintenance/check",
+    response_model=WorkerMaintenanceJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_worker_ssh_check(
+    worker_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> WorkerMaintenanceJobResponse:
+    return await _start_worker_maintenance_job(
+        worker_id=worker_id,
+        action="check",
+        background_tasks=background_tasks,
+        db=db,
+        admin=admin,
+    )
+
+
+@router.post(
+    "/workers/{worker_id}/maintenance/update",
+    response_model=WorkerMaintenanceJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_worker_update(
+    worker_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> WorkerMaintenanceJobResponse:
+    return await _start_worker_maintenance_job(
+        worker_id=worker_id,
+        action="update",
+        background_tasks=background_tasks,
+        db=db,
+        admin=admin,
+    )
+
+
+async def _start_worker_maintenance_job(
+    *,
+    worker_id: int,
+    action: str,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession,
+    admin: User,
+) -> WorkerMaintenanceJobResponse:
+    worker = await db.get(WorkerNode, worker_id)
+    if worker is None:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    if not worker.ssh_access_configured:
+        raise HTTPException(status_code=400, detail="Worker SSH access is not configured")
+    job = WorkerMaintenanceJob(worker_id=worker_id, action=action, status="queued")
+    db.add(job)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action=f"worker_maintenance_{action}",
+        details=f"worker_id={worker_id}",
+    )
+    await db.commit()
+    await db.refresh(job)
+    background_tasks.add_task(run_worker_maintenance_job, job.id)
+    return WorkerMaintenanceJobResponse.model_validate(job)
 
 
 @router.post("/workers", response_model=WorkerNodeResponse, status_code=status.HTTP_201_CREATED)

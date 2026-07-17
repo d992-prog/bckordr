@@ -406,10 +406,17 @@ class WorkerNodeBase(BaseModel):
     registration_concurrency_multiplier: float = Field(default=2.0, ge=1.0)
     registration_max_concurrency: int = Field(default=64, ge=1)
     current_domain_count: int = Field(default=0, ge=0)
+    ssh_host: str | None = Field(default=None, max_length=64)
+    ssh_port: int = Field(default=22, ge=1, le=65535)
+    ssh_username: str | None = Field(default=None, max_length=64)
+    ssh_key_path: str | None = Field(default=None, max_length=255)
+    ssh_last_check_status: str | None = Field(default=None, max_length=32)
+    ssh_last_check_message: str | None = None
+    ssh_last_checked_at: datetime | None = None
 
 
 class WorkerNodeCreateRequest(WorkerNodeBase):
-    pass
+    ssh_password: str | None = Field(default=None, max_length=4096)
 
 
 class WorkerNodeUpdateRequest(BaseModel):
@@ -434,10 +441,19 @@ class WorkerNodeUpdateRequest(BaseModel):
     registration_concurrency_multiplier: float | None = Field(default=None, ge=1.0)
     registration_max_concurrency: int | None = Field(default=None, ge=1)
     current_domain_count: int | None = Field(default=None, ge=0)
+    ssh_host: str | None = Field(default=None, max_length=64)
+    ssh_port: int | None = Field(default=None, ge=1, le=65535)
+    ssh_username: str | None = Field(default=None, max_length=64)
+    ssh_password: str | None = Field(default=None, max_length=4096)
+    ssh_key_path: str | None = Field(default=None, max_length=255)
+    ssh_last_check_status: str | None = Field(default=None, max_length=32)
+    ssh_last_check_message: str | None = None
+    ssh_last_checked_at: datetime | None = None
 
 
 class WorkerNodeResponse(WorkerNodeBase):
     id: int
+    ssh_access_configured: bool = False
     last_seen_at: datetime | None
     last_heartbeat_at: datetime | None
     created_at: datetime
@@ -459,6 +475,21 @@ class WorkerSetupResponse(BaseModel):
     switch_to_test_commands: list[str]
     switch_to_live_commands: list[str]
     verify_commands: list[str]
+
+
+class WorkerMaintenanceJobResponse(BaseModel):
+    id: int
+    worker_id: int
+    action: str
+    status: str
+    log: str | None
+    error_message: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DropDomainBase(BaseModel):

@@ -354,6 +354,14 @@ export type WorkerNode = {
   registration_concurrency_multiplier: number;
   registration_max_concurrency: number;
   current_domain_count: number;
+  ssh_host: string | null;
+  ssh_port: number;
+  ssh_username: string | null;
+  ssh_key_path: string | null;
+  ssh_last_check_status: string | null;
+  ssh_last_check_message: string | null;
+  ssh_last_checked_at: string | null;
+  ssh_access_configured: boolean;
   last_seen_at: string | null;
   last_heartbeat_at: string | null;
   created_at: string;
@@ -373,6 +381,19 @@ export type WorkerSetup = {
   switch_to_test_commands: string[];
   switch_to_live_commands: string[];
   verify_commands: string[];
+};
+
+export type WorkerMaintenanceJob = {
+  id: number;
+  worker_id: number;
+  action: string;
+  status: string;
+  log: string | null;
+  error_message: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type RegistrarAccount = {
@@ -752,6 +773,11 @@ export const api = {
     }
     return request<WorkerSetup>(`/control/workers/${id}/setup?${params.toString()}`);
   },
+  getWorkerMaintenanceJobs: () => request<WorkerMaintenanceJob[]>("/control/workers/maintenance-jobs"),
+  checkWorkerSsh: (id: number) =>
+    request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/check`, { method: "POST" }),
+  updateWorkerServer: (id: number) =>
+    request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/update`, { method: "POST" }),
   deleteWorker: (id: number) => request<{ detail: string }>(`/control/workers/${id}`, { method: "DELETE" }),
 
   getRegistrarAccounts: () => request<RegistrarAccount[]>("/control/registrar-accounts"),
