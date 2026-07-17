@@ -2042,6 +2042,26 @@ async def start_worker_update(
     )
 
 
+@router.post(
+    "/workers/{worker_id}/maintenance/install",
+    response_model=WorkerMaintenanceJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_worker_install(
+    worker_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> WorkerMaintenanceJobResponse:
+    return await _start_worker_maintenance_job(
+        worker_id=worker_id,
+        action="install",
+        background_tasks=background_tasks,
+        db=db,
+        admin=admin,
+    )
+
+
 async def _start_worker_maintenance_job(
     *,
     worker_id: int,
@@ -2055,6 +2075,20 @@ async def _start_worker_maintenance_job(
         raise HTTPException(status_code=404, detail="Worker not found")
     if not worker.ssh_access_configured:
         raise HTTPException(status_code=400, detail="Worker SSH access is not configured")
+    if action == "install":
+        installed_job_result = await db.execute(
+            select(WorkerMaintenanceJob.id)
+            .where(
+                WorkerMaintenanceJob.worker_id == worker_id,
+                WorkerMaintenanceJob.action == "install",
+                WorkerMaintenanceJob.status.in_(("queued", "running", "succeeded")),
+            )
+            .limit(1)
+        )
+        if worker.last_seen_at is not None or installed_job_result.scalar_one_or_none() is not None:
+            raise HTTPException(status_code=400, detail="Worker is already installed")
+        if not worker.control_token:
+            worker.control_token = generate_session_token()
     job = WorkerMaintenanceJob(worker_id=worker_id, action=action, status="queued")
     db.add(job)
     await add_audit_log(

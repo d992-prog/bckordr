@@ -787,6 +787,18 @@ export default function App() {
     }
     return items;
   }, [workerMaintenanceJobs]);
+  const activeOrSucceededInstallJobByWorker = useMemo(() => {
+    const items = new Map<number, WorkerMaintenanceJob>();
+    for (const job of workerMaintenanceJobs) {
+      if (job.action !== "install" || !["queued", "running", "succeeded"].includes(job.status)) {
+        continue;
+      }
+      if (!items.has(job.worker_id)) {
+        items.set(job.worker_id, job);
+      }
+    }
+    return items;
+  }, [workerMaintenanceJobs]);
   const selectedStrategy = useMemo(
     () => strategies.find((item) => item.id === selectedStrategyId) ?? null,
     [selectedStrategyId, strategies],
@@ -1872,13 +1884,17 @@ export default function App() {
     }
   }
 
-  async function startWorkerMaintenance(worker: WorkerNode, action: "check" | "update") {
+  async function startWorkerMaintenance(worker: WorkerNode, action: "check" | "install" | "update") {
     try {
-      const job = action === "check" ? await api.checkWorkerSsh(worker.id) : await api.updateWorkerServer(worker.id);
+      const job = action === "check"
+        ? await api.checkWorkerSsh(worker.id)
+        : action === "install"
+          ? await api.installWorkerServer(worker.id)
+          : await api.updateWorkerServer(worker.id);
       await loadAll();
       setToast({
         type: "success",
-        text: `${action === "check" ? "SSH-проверка" : "Обновление воркера"} запущено: job #${job.id}`,
+        text: `${action === "check" ? "SSH-проверка" : action === "install" ? "Установка воркера" : "Обновление воркера"} запущено: job #${job.id}`,
       });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обслуживания воркера" });
@@ -3110,8 +3126,20 @@ export default function App() {
             <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
           </div>
           <div className="user-list">
-            {workers.map((worker) => (
-              <article key={worker.id} className="user-card">
+            {workers.map((worker) => {
+              const installJob = activeOrSucceededInstallJobByWorker.get(worker.id);
+              const workerInstalled = Boolean(worker.last_seen_at || worker.last_heartbeat_at || installJob?.status === "succeeded");
+              const installInProgress = installJob?.status === "queued" || installJob?.status === "running";
+              const installDisabled = !worker.ssh_access_configured || workerInstalled || installInProgress;
+              const installState = workerInstalled
+                ? "уже установлен"
+                : installInProgress
+                  ? `установка ${formatStatusLabel(installJob?.status)}`
+                  : worker.ssh_access_configured
+                    ? "можно установить"
+                    : "SSH не настроен";
+              return (
+                <article key={worker.id} className="user-card">
                 <div className="user-card-head">
                   <div>
                     <strong>{worker.name}</strong>
@@ -3130,6 +3158,7 @@ export default function App() {
                   <div><span>Режим воркера</span><strong>{formatWorkerRuntimeMode(worker.runtime_mode)}</strong></div>
                   <div><span>Параллельность реги</span><strong>{formatWorkerConcurrency(worker)}</strong></div>
                   <div><span>SSH доступ</span><strong>{worker.ssh_access_configured ? `${worker.ssh_username ?? "root"}@${worker.ssh_host ?? worker.ip_address}:${worker.ssh_port}` : "не настроен"}</strong></div>
+                  <div><span>Установка</span><strong>{installState}</strong></div>
                   <div><span>Последнее обслуживание</span><strong>{latestWorkerMaintenanceJobByWorker.get(worker.id) ? `#${latestWorkerMaintenanceJobByWorker.get(worker.id)?.id} ${latestWorkerMaintenanceJobByWorker.get(worker.id)?.action} / ${latestWorkerMaintenanceJobByWorker.get(worker.id)?.status}` : "—"}</strong></div>
                   <div><span>Доменов на воркере</span><strong>{worker.current_domain_count}</strong></div>
                   <div><span>Закрепленный аккаунт</span><strong>{worker.assigned_registrar_account_id ? accountMap.get(worker.assigned_registrar_account_id)?.name ?? worker.assigned_registrar_account_id : "не закреплен"}</strong></div>
@@ -3139,13 +3168,15 @@ export default function App() {
                 <div className="actions">
                   <button type="button" className="ghost" onClick={() => void loadWorkerSetup(worker)}>Команды установки</button>
                   <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "check")} disabled={!worker.ssh_access_configured}>Проверить SSH</button>
+                  <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "install")} disabled={installDisabled}>Установить воркер</button>
                   <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "update")} disabled={!worker.ssh_access_configured}>Обновить сервер</button>
                   <button type="button" className="ghost" onClick={() => startEditWorker(worker)}>Редактировать</button>
                   <button type="button" className="ghost" onClick={() => void toggleWorker(worker)}>{worker.is_enabled ? "Выключить" : "Включить"}</button>
                   <button type="button" className="danger" onClick={() => void deleteItem("worker", worker.id)}>Удалить</button>
                 </div>
               </article>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -3172,7 +3203,7 @@ export default function App() {
                     <tr key={job.id}>
                       <td>{job.id}</td>
                       <td>{workers.find((worker) => worker.id === job.worker_id)?.name ?? job.worker_id}</td>
-                      <td>{job.action === "update" ? "обновление" : "проверка SSH"}</td>
+                      <td>{job.action === "update" ? "обновление" : job.action === "install" ? "установка" : "проверка SSH"}</td>
                       <td><span className={statusClass(job.status)}>{formatStatusLabel(job.status)}</span></td>
                       <td>{formatDateTime(job.created_at)}</td>
                       <td>{job.error_message ?? "—"}</td>

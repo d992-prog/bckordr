@@ -776,6 +776,8 @@ export const api = {
   getWorkerMaintenanceJobs: () => request<WorkerMaintenanceJob[]>("/control/workers/maintenance-jobs"),
   checkWorkerSsh: (id: number) =>
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/check`, { method: "POST" }),
+  installWorkerServer: (id: number) =>
+    request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/install`, { method: "POST" }),
   updateWorkerServer: (id: number) =>
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/update`, { method: "POST" }),
   deleteWorker: (id: number) => request<{ detail: string }>(`/control/workers/${id}`, { method: "DELETE" }),

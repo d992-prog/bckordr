@@ -10,10 +10,12 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.deps import require_admin
 from app.api.routes.control import router as control_router
+from app.core.config import get_settings
 from app.db.base import Base
 from app.db.models import WorkerNode
 from app.db.session import get_db
 from app.services.worker_allowlist import render_worker_runtime_allowlist
+from app.services.worker_maintenance import build_worker_maintenance_commands
 
 
 def test_render_worker_runtime_allowlist_includes_worker_ips_and_deny_all():
@@ -302,4 +304,91 @@ async def test_worker_update_job_can_be_started_from_control_panel(monkeypatch: 
     assert payload["action"] == "update"
     assert payload["status"] == "queued"
     assert started_jobs == [payload["id"]]
+    await engine.dispose()
+
+
+def test_worker_install_commands_create_env_and_systemd_service(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("WORKER_RUNTIME_PUBLIC_BASE_URL", "http://2.27.21.88:8080")
+    get_settings.cache_clear()
+    worker = SimpleNamespace(id=7, control_token="token-7")
+
+    try:
+        commands = build_worker_maintenance_commands("install", worker=worker)
+    finally:
+        get_settings.cache_clear()
+
+    joined = "\n".join(commands)
+    assert "apt-get install -y git python3.11 python3.11-venv python3.11-dev build-essential" in joined
+    assert "CONTROL_BASE_URL=http://2.27.21.88:8080" in joined
+    assert "WORKER_ID=7" in joined
+    assert "CONTROL_TOKEN=token-7" in joined
+    assert "SIMULATE_MODE=false" in joined
+    assert "/etc/systemd/system/domain-drop-worker.service" in joined
+    assert "systemctl enable --now domain-drop-worker.service" in commands
+
+
+@pytest.mark.asyncio
+async def test_worker_install_job_can_be_started_once_from_control_panel(monkeypatch: pytest.MonkeyPatch):
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async def fake_sync(session, settings):
+        del session, settings
+        return False
+
+    started_jobs: list[int] = []
+
+    async def fake_run_job(job_id: int) -> None:
+        started_jobs.append(job_id)
+
+    monkeypatch.setattr("app.api.routes.control.sync_worker_runtime_allowlist", fake_sync)
+    monkeypatch.setattr("app.api.routes.control.run_worker_maintenance_job", fake_run_job)
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        create_response = await client.post(
+            "/control/workers",
+            json={
+                "name": "worker-install-job",
+                "registrar_slug": "gandi",
+                "ip_address": "2.27.20.255",
+                "ssh_host": "2.27.20.255",
+                "ssh_username": "root",
+                "ssh_password": "temporary-root-password",
+                "max_rps": 16,
+                "target_rps": 16,
+            },
+        )
+        worker_id = create_response.json()["id"]
+
+        job_response = await client.post(f"/control/workers/{worker_id}/maintenance/install")
+        second_response = await client.post(f"/control/workers/{worker_id}/maintenance/install")
+
+    assert job_response.status_code == 202
+    payload = job_response.json()
+    assert payload["worker_id"] == worker_id
+    assert payload["action"] == "install"
+    assert payload["status"] == "queued"
+    assert started_jobs == [payload["id"]]
+    assert second_response.status_code == 400
+    assert "already" in second_response.json()["detail"].lower()
     await engine.dispose()
