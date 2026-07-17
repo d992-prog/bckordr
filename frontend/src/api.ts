@@ -396,6 +396,14 @@ export type WorkerMaintenanceJob = {
   updated_at: string;
 };
 
+export type WorkerMaintenanceBulkResponse = {
+  action: string;
+  started_count: number;
+  skipped_count: number;
+  jobs: WorkerMaintenanceJob[];
+  skipped_worker_ids: number[];
+};
+
 export type RegistrarAccount = {
   id: number;
   name: string;
@@ -780,6 +788,8 @@ export const api = {
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/install`, { method: "POST" }),
   updateWorkerServer: (id: number) =>
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/update`, { method: "POST" }),
+  updateAllWorkerServers: () =>
+    request<WorkerMaintenanceBulkResponse>("/control/workers/maintenance/update-all", { method: "POST" }),
   deleteWorker: (id: number) => request<{ detail: string }>(`/control/workers/${id}`, { method: "DELETE" }),
 
   getRegistrarAccounts: () => request<RegistrarAccount[]>("/control/registrar-accounts"),

@@ -12,7 +12,7 @@ from app.api.deps import require_admin
 from app.api.routes.control import router as control_router
 from app.core.config import get_settings
 from app.db.base import Base
-from app.db.models import WorkerNode
+from app.db.models import WorkerMaintenanceJob, WorkerNode
 from app.db.session import get_db
 from app.services.worker_allowlist import render_worker_runtime_allowlist
 from app.services.worker_maintenance import build_worker_maintenance_commands
@@ -391,4 +391,96 @@ async def test_worker_install_job_can_be_started_once_from_control_panel(monkeyp
     assert started_jobs == [payload["id"]]
     assert second_response.status_code == 400
     assert "already" in second_response.json()["detail"].lower()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_bulk_update_starts_only_configured_idle_workers(monkeypatch: pytest.MonkeyPatch):
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async def fake_sync(session, settings):
+        del session, settings
+        return False
+
+    started_jobs: list[int] = []
+
+    async def fake_run_job(job_id: int) -> None:
+        started_jobs.append(job_id)
+
+    monkeypatch.setattr("app.api.routes.control.sync_worker_runtime_allowlist", fake_sync)
+    monkeypatch.setattr("app.api.routes.control.run_worker_maintenance_job", fake_run_job)
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        ready_response = await client.post(
+            "/control/workers",
+            json={
+                "name": "ready-worker",
+                "registrar_slug": "gandi",
+                "ip_address": "2.27.20.1",
+                "ssh_host": "2.27.20.1",
+                "ssh_username": "root",
+                "ssh_password": "pw",
+                "max_rps": 16,
+                "target_rps": 16,
+            },
+        )
+        busy_response = await client.post(
+            "/control/workers",
+            json={
+                "name": "busy-worker",
+                "registrar_slug": "gandi",
+                "ip_address": "2.27.20.2",
+                "ssh_host": "2.27.20.2",
+                "ssh_username": "root",
+                "ssh_password": "pw",
+                "max_rps": 16,
+                "target_rps": 16,
+            },
+        )
+        await client.post(
+            "/control/workers",
+            json={
+                "name": "no-ssh-worker",
+                "registrar_slug": "gandi",
+                "ip_address": "2.27.20.3",
+                "max_rps": 16,
+                "target_rps": 16,
+            },
+        )
+
+        busy_worker_id = busy_response.json()["id"]
+        async with session_factory() as session:
+            session.add(WorkerMaintenanceJob(worker_id=busy_worker_id, action="update", status="running"))
+            await session.commit()
+
+        bulk_response = await client.post("/control/workers/maintenance/update-all")
+
+    assert bulk_response.status_code == 202
+    payload = bulk_response.json()
+    assert payload["started_count"] == 1
+    assert payload["skipped_count"] == 2
+    assert payload["jobs"][0]["worker_id"] == ready_response.json()["id"]
+    assert payload["jobs"][0]["action"] == "update"
+    assert started_jobs == [payload["jobs"][0]["id"]]
     await engine.dispose()

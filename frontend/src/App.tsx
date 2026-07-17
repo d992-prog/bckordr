@@ -423,6 +423,22 @@ function formatStatusLabel(value: string | null | undefined) {
   return value ? labels[value] ?? value : "—";
 }
 
+function formatMaintenanceAction(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    check: "проверка SSH",
+    install: "установка",
+    update: "обновление",
+  };
+  return value ? labels[value] ?? value : "—";
+}
+
+function formatMaintenanceSummary(job: WorkerMaintenanceJob | undefined) {
+  if (!job) {
+    return "—";
+  }
+  return `${formatMaintenanceAction(job.action)}: ${formatStatusLabel(job.status)}`;
+}
+
 function formatLifecycleLabel(value: string | null | undefined) {
   const labels: Record<string, string> = {
     registered: "зарегистрирован",
@@ -731,6 +747,14 @@ export default function App() {
   const [selectedZoneScanJobId, setSelectedZoneScanJobId] = useState<number | null>(null);
   const [workers, setWorkers] = useState<WorkerNode[]>([]);
   const [workerMaintenanceJobs, setWorkerMaintenanceJobs] = useState<WorkerMaintenanceJob[]>([]);
+  const [workerSearch, setWorkerSearch] = useState("");
+  const [workerStatusFilter, setWorkerStatusFilter] = useState("all");
+  const [workerPage, setWorkerPage] = useState(1);
+  const [workerPageSize, setWorkerPageSize] = useState(10);
+  const [maintenanceActionFilter, setMaintenanceActionFilter] = useState("all");
+  const [maintenanceStatusFilter, setMaintenanceStatusFilter] = useState("all");
+  const [maintenancePage, setMaintenancePage] = useState(1);
+  const [maintenancePageSize, setMaintenancePageSize] = useState(10);
   const [accounts, setAccounts] = useState<RegistrarAccount[]>([]);
   const [contacts, setContacts] = useState<ContactProfile[]>([]);
   const [attacks, setAttacks] = useState<AttackRun[]>([]);
@@ -799,6 +823,46 @@ export default function App() {
     }
     return items;
   }, [workerMaintenanceJobs]);
+  const filteredWorkers = useMemo(() => {
+    const search = workerSearch.trim().toLowerCase();
+    return workers.filter((worker) => {
+      if (workerStatusFilter !== "all" && worker.status !== workerStatusFilter) {
+        return false;
+      }
+      if (!search) {
+        return true;
+      }
+      return [
+        worker.name,
+        worker.ip_address,
+        worker.region,
+        worker.registrar_slug,
+        worker.ssh_host,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(search));
+    });
+  }, [workerSearch, workerStatusFilter, workers]);
+  const workerTotalPages = Math.max(1, Math.ceil(filteredWorkers.length / workerPageSize));
+  const workerCurrentPage = Math.min(workerPage, workerTotalPages);
+  const visibleWorkers = filteredWorkers.slice((workerCurrentPage - 1) * workerPageSize, workerCurrentPage * workerPageSize);
+  const filteredMaintenanceJobs = useMemo(() => {
+    return workerMaintenanceJobs.filter((job) => {
+      if (maintenanceActionFilter !== "all" && job.action !== maintenanceActionFilter) {
+        return false;
+      }
+      if (maintenanceStatusFilter !== "all" && job.status !== maintenanceStatusFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [maintenanceActionFilter, maintenanceStatusFilter, workerMaintenanceJobs]);
+  const maintenanceTotalPages = Math.max(1, Math.ceil(filteredMaintenanceJobs.length / maintenancePageSize));
+  const maintenanceCurrentPage = Math.min(maintenancePage, maintenanceTotalPages);
+  const visibleMaintenanceJobs = filteredMaintenanceJobs.slice(
+    (maintenanceCurrentPage - 1) * maintenancePageSize,
+    maintenanceCurrentPage * maintenancePageSize,
+  );
   const selectedStrategy = useMemo(
     () => strategies.find((item) => item.id === selectedStrategyId) ?? null,
     [selectedStrategyId, strategies],
@@ -1898,6 +1962,19 @@ export default function App() {
       });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обслуживания воркера" });
+    }
+  }
+
+  async function startAllWorkerUpdates() {
+    try {
+      const result = await api.updateAllWorkerServers();
+      await loadAll();
+      setToast({
+        type: "success",
+        text: `Массовое обновление запущено: ${result.started_count}; пропущено: ${result.skipped_count}`,
+      });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка массового обновления воркеров" });
     }
   }
 
@@ -3122,11 +3199,61 @@ export default function App() {
 
         <div className="card full-span">
           <div className="card-head">
-            <h2>Воркеры</h2>
-            <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
+            <div>
+              <h2>Воркеры</h2>
+              <p className="muted">Показано {visibleWorkers.length} из {filteredWorkers.length}; всего воркеров {workers.length}.</p>
+            </div>
+            <div className="actions">
+              <button type="button" className="ghost" onClick={() => void startAllWorkerUpdates()}>Обновить все серверы</button>
+              <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
+            </div>
+          </div>
+          <div className="filters-row">
+            <label>
+              <span>Поиск</span>
+              <input
+                value={workerSearch}
+                onChange={(event) => {
+                  setWorkerSearch(event.target.value);
+                  setWorkerPage(1);
+                }}
+                placeholder="имя, IP, регион"
+              />
+            </label>
+            <label>
+              <span>Статус</span>
+              <select
+                value={workerStatusFilter}
+                onChange={(event) => {
+                  setWorkerStatusFilter(event.target.value);
+                  setWorkerPage(1);
+                }}
+              >
+                <option value="all">Все</option>
+                <option value="ready">Готово</option>
+                <option value="offline">Офлайн</option>
+                <option value="disabled">Выключено</option>
+                <option value="provisioning">Настройка</option>
+              </select>
+            </label>
+            <label>
+              <span>На странице</span>
+              <select
+                value={workerPageSize}
+                onChange={(event) => {
+                  setWorkerPageSize(Number(event.target.value));
+                  setWorkerPage(1);
+                }}
+              >
+                <option value={5}>5</option>
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+              </select>
+            </label>
           </div>
           <div className="user-list">
-            {workers.map((worker) => {
+            {visibleWorkers.map((worker) => {
               const installJob = activeOrSucceededInstallJobByWorker.get(worker.id);
               const workerInstalled = Boolean(worker.last_seen_at || worker.last_heartbeat_at || installJob?.status === "succeeded");
               const installInProgress = installJob?.status === "queued" || installJob?.status === "running";
@@ -3159,7 +3286,7 @@ export default function App() {
                   <div><span>Параллельность реги</span><strong>{formatWorkerConcurrency(worker)}</strong></div>
                   <div><span>SSH доступ</span><strong>{worker.ssh_access_configured ? `${worker.ssh_username ?? "root"}@${worker.ssh_host ?? worker.ip_address}:${worker.ssh_port}` : "не настроен"}</strong></div>
                   <div><span>Установка</span><strong>{installState}</strong></div>
-                  <div><span>Последнее обслуживание</span><strong>{latestWorkerMaintenanceJobByWorker.get(worker.id) ? `#${latestWorkerMaintenanceJobByWorker.get(worker.id)?.id} ${latestWorkerMaintenanceJobByWorker.get(worker.id)?.action} / ${latestWorkerMaintenanceJobByWorker.get(worker.id)?.status}` : "—"}</strong></div>
+                  <div><span>Последнее обслуживание</span><strong>{formatMaintenanceSummary(latestWorkerMaintenanceJobByWorker.get(worker.id))}</strong></div>
                   <div><span>Доменов на воркере</span><strong>{worker.current_domain_count}</strong></div>
                   <div><span>Закрепленный аккаунт</span><strong>{worker.assigned_registrar_account_id ? accountMap.get(worker.assigned_registrar_account_id)?.name ?? worker.assigned_registrar_account_id : "не закреплен"}</strong></div>
                   <div><span>ID воркера</span><strong>{worker.id}</strong></div>
@@ -3177,15 +3304,71 @@ export default function App() {
               </article>
               );
             })}
+            {visibleWorkers.length === 0 ? <p className="empty">Воркеры по фильтрам не найдены.</p> : null}
+          </div>
+          <div className="pagination">
+            <button type="button" className="ghost" onClick={() => setWorkerPage((page) => Math.max(1, page - 1))} disabled={workerCurrentPage <= 1}>Назад</button>
+            <strong>Страница {workerCurrentPage} / {workerTotalPages}</strong>
+            <button type="button" className="ghost" onClick={() => setWorkerPage((page) => Math.min(workerTotalPages, page + 1))} disabled={workerCurrentPage >= workerTotalPages}>Вперед</button>
           </div>
         </div>
 
         <div className="card full-span">
           <div className="card-head">
-            <h2>Обслуживание серверов</h2>
+            <div>
+              <h2>Обслуживание серверов</h2>
+              <p className="muted">Показано {visibleMaintenanceJobs.length} из {filteredMaintenanceJobs.length}; всего задач {workerMaintenanceJobs.length}.</p>
+            </div>
             <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
           </div>
-          {workerMaintenanceJobs.length ? (
+          <div className="filters-row">
+            <label>
+              <span>Действие</span>
+              <select
+                value={maintenanceActionFilter}
+                onChange={(event) => {
+                  setMaintenanceActionFilter(event.target.value);
+                  setMaintenancePage(1);
+                }}
+              >
+                <option value="all">Все</option>
+                <option value="install">Установка</option>
+                <option value="update">Обновление</option>
+                <option value="check">Проверка SSH</option>
+              </select>
+            </label>
+            <label>
+              <span>Статус</span>
+              <select
+                value={maintenanceStatusFilter}
+                onChange={(event) => {
+                  setMaintenanceStatusFilter(event.target.value);
+                  setMaintenancePage(1);
+                }}
+              >
+                <option value="all">Все</option>
+                <option value="queued">В очереди</option>
+                <option value="running">В работе</option>
+                <option value="succeeded">Успех</option>
+                <option value="failed">Сбой</option>
+              </select>
+            </label>
+            <label>
+              <span>На странице</span>
+              <select
+                value={maintenancePageSize}
+                onChange={(event) => {
+                  setMaintenancePageSize(Number(event.target.value));
+                  setMaintenancePage(1);
+                }}
+              >
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+              </select>
+            </label>
+          </div>
+          {visibleMaintenanceJobs.length ? (
             <div className="simple-table">
               <table>
                 <thead>
@@ -3199,11 +3382,11 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {workerMaintenanceJobs.slice(0, 10).map((job) => (
+                  {visibleMaintenanceJobs.map((job) => (
                     <tr key={job.id}>
                       <td>{job.id}</td>
                       <td>{workers.find((worker) => worker.id === job.worker_id)?.name ?? job.worker_id}</td>
-                      <td>{job.action === "update" ? "обновление" : job.action === "install" ? "установка" : "проверка SSH"}</td>
+                      <td>{formatMaintenanceAction(job.action)}</td>
                       <td><span className={statusClass(job.status)}>{formatStatusLabel(job.status)}</span></td>
                       <td>{formatDateTime(job.created_at)}</td>
                       <td>{job.error_message ?? "—"}</td>
@@ -3213,8 +3396,13 @@ export default function App() {
               </table>
             </div>
           ) : (
-            <p className="muted">Задач обслуживания пока нет.</p>
+            <p className="muted">Задач обслуживания по фильтрам нет.</p>
           )}
+          <div className="pagination">
+            <button type="button" className="ghost" onClick={() => setMaintenancePage((page) => Math.max(1, page - 1))} disabled={maintenanceCurrentPage <= 1}>Назад</button>
+            <strong>Страница {maintenanceCurrentPage} / {maintenanceTotalPages}</strong>
+            <button type="button" className="ghost" onClick={() => setMaintenancePage((page) => Math.min(maintenanceTotalPages, page + 1))} disabled={maintenanceCurrentPage >= maintenanceTotalPages}>Вперед</button>
+          </div>
         </div>
       </section>
     );

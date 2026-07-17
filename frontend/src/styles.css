@@ -934,6 +934,32 @@ button:disabled {
   font-weight: 700;
 }
 
+.filters-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 14px 0 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+}
+
+.filters-row label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  color: var(--muted);
+}
+
 .error-text {
   color: var(--danger);
 }

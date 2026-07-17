@@ -492,6 +492,14 @@ class WorkerMaintenanceJobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class WorkerMaintenanceBulkResponse(BaseModel):
+    action: str
+    started_count: int
+    skipped_count: int
+    jobs: list[WorkerMaintenanceJobResponse]
+    skipped_worker_ids: list[int]
+
+
 class DropDomainBase(BaseModel):
     fqdn: str = Field(min_length=3, max_length=255)
     zone: str = Field(default="fr", min_length=2, max_length=32)
