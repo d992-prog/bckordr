@@ -22,6 +22,7 @@ from app.services.discovery import (
     apply_discovery_observation,
     calculate_next_check_at,
     check_discovery_domain_rdap,
+    check_discovery_domain_whois,
     extract_rdap_updated_at,
     normalize_lifecycle_stage,
     parse_whois_response,
@@ -182,6 +183,27 @@ async def test_discovery_falls_back_to_requested_cctld_whois_servers(fqdn: str, 
         observation = await check_discovery_domain_rdap(domain, client=client, whois_lookup=whois_lookup)
 
     assert observation.source == "whois_fallback"
+    assert observation.lifecycle_stage == "registered"
+    assert observation.availability_status == "taken"
+
+
+@pytest.mark.asyncio
+async def test_discovery_tries_ro_whois_fallback_server_when_primary_is_unreachable():
+    domain = DiscoveryDomain(fqdn="1acsisabsolut.ro", zone="ro")
+    attempted_servers: list[str] = []
+
+    async def whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+        assert fqdn == "1acsisabsolut.ro"
+        assert timeout_seconds == 5.0
+        attempted_servers.append(server)
+        if server == "whois.rotld.ro":
+            raise OSError("[Errno 113] No route to host")
+        return "Domain Name: 1acsisabsolut.ro\nDomain Status: OK\n"
+
+    observation = await check_discovery_domain_whois(domain, whois_lookup=whois_lookup)
+
+    assert attempted_servers == ["whois.rotld.ro", "whois.nic.ro"]
+    assert observation.error is None
     assert observation.lifecycle_stage == "registered"
     assert observation.availability_status == "taken"
 

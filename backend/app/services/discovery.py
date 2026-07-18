@@ -144,6 +144,9 @@ WHOIS_SERVERS: dict[str, str] = {
     "vn": "whois.vnnic.vn",
     "za": "whois.registry.net.za",
 }
+WHOIS_SERVER_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "ro": ("whois.rotld.ro", "whois.nic.ro"),
+}
 STATIC_RDAP_BASE_URLS: dict[str, str] = {
     "us": "https://rdap.nic.us",
 }
@@ -327,8 +330,8 @@ async def check_discovery_domain_whois(
     started = perf_counter() if started_at is None else started_at
     checked_at = observed_at or datetime.now(timezone.utc)
     zone = infer_zone(domain.fqdn)
-    server = WHOIS_SERVERS.get(zone)
-    if not server:
+    servers = _whois_servers_for_zone(zone)
+    if not servers:
         return DiscoveryObservationInput(
             source=WHOIS_FALLBACK_SOURCE,
             observed_at=checked_at,
@@ -337,28 +340,39 @@ async def check_discovery_domain_whois(
             availability_status="unknown",
             error=f"No WHOIS fallback configured for .{zone}",
         )
-    try:
-        lookup = whois_lookup or default_whois_lookup
-        raw_response = await lookup(domain.fqdn, server, timeout_seconds)
-        return parse_whois_response(
-            raw_response,
-            fqdn=domain.fqdn,
-            observed_at=checked_at,
-            latency_ms=int((perf_counter() - started) * 1000),
-        )
-    except Exception as exc:
-        return DiscoveryObservationInput(
-            source=WHOIS_FALLBACK_SOURCE,
-            observed_at=checked_at,
-            latency_ms=int((perf_counter() - started) * 1000),
-            lifecycle_stage="unknown",
-            availability_status="unknown",
-            error=str(exc),
-        )
+    lookup = whois_lookup or default_whois_lookup
+    last_error: Exception | None = None
+    for server in servers:
+        try:
+            raw_response = await lookup(domain.fqdn, server, timeout_seconds)
+            return parse_whois_response(
+                raw_response,
+                fqdn=domain.fqdn,
+                observed_at=checked_at,
+                latency_ms=int((perf_counter() - started) * 1000),
+            )
+        except Exception as exc:
+            last_error = exc
+            continue
+    return DiscoveryObservationInput(
+        source=WHOIS_FALLBACK_SOURCE,
+        observed_at=checked_at,
+        latency_ms=int((perf_counter() - started) * 1000),
+        lifecycle_stage="unknown",
+        availability_status="unknown",
+        error=str(last_error) if last_error else f"No WHOIS fallback configured for .{zone}",
+    )
 
 
 async def default_whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
     return await asyncio.to_thread(_query_whois, fqdn, server, timeout_seconds)
+
+
+def _whois_servers_for_zone(zone: str) -> tuple[str, ...]:
+    if zone in WHOIS_SERVER_FALLBACKS:
+        return WHOIS_SERVER_FALLBACKS[zone]
+    server = WHOIS_SERVERS.get(zone)
+    return (server,) if server else ()
 
 
 def _query_whois(fqdn: str, server: str, timeout_seconds: float) -> str:
