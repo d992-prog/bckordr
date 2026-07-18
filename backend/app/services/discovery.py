@@ -18,6 +18,7 @@ from app.db.models import DiscoveryDomain, DiscoveryObservation
 
 IANA_RDAP_BOOTSTRAP_URL = "https://data.iana.org/rdap/dns.json"
 WHOIS_FALLBACK_SOURCE = "whois_fallback"
+WHOIS_RATE_LIMIT_ERROR = "WHOIS rate limit or access denied"
 PENDING_DELETE_DURATION = timedelta(days=5)
 REDEMPTION_DURATION = timedelta(days=30)
 DROP_DAY_SCAN_INTERVAL = timedelta(seconds=10)
@@ -361,18 +362,33 @@ async def default_whois_lookup(fqdn: str, server: str, timeout_seconds: float) -
 
 
 def _query_whois(fqdn: str, server: str, timeout_seconds: float) -> str:
-    with socket.create_connection((server, 43), timeout=timeout_seconds) as sock:
-        sock.settimeout(timeout_seconds)
-        sock.sendall(f"{fqdn}\r\n".encode("utf-8"))
-        chunks: list[bytes] = []
-        received = 0
-        while received < WHOIS_RESPONSE_LIMIT_BYTES:
-            chunk = sock.recv(min(4096, WHOIS_RESPONSE_LIMIT_BYTES - received))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            received += len(chunk)
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    last_error: OSError | None = None
+    for family, socktype, proto, _, sockaddr in resolve_whois_addresses(server, 43):
+        try:
+            with socket.socket(family, socktype, proto) as sock:
+                sock.settimeout(timeout_seconds)
+                sock.connect(sockaddr)
+                sock.sendall(f"{fqdn}\r\n".encode("utf-8"))
+                chunks: list[bytes] = []
+                received = 0
+                while received < WHOIS_RESPONSE_LIMIT_BYTES:
+                    chunk = sock.recv(min(4096, WHOIS_RESPONSE_LIMIT_BYTES - received))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    received += len(chunk)
+                return b"".join(chunks).decode("utf-8", errors="replace")
+        except OSError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    raise OSError(f"WHOIS server {server} did not resolve")
+
+
+def resolve_whois_addresses(server: str, port: int = 43) -> list[tuple]:
+    addresses = list(socket.getaddrinfo(server, port, type=socket.SOCK_STREAM))
+    return sorted(addresses, key=lambda item: 0 if item[0] == socket.AF_INET else 1)
 
 
 def parse_whois_response(
@@ -391,7 +407,7 @@ def parse_whois_response(
     availability_status = _availability_for_lifecycle(lifecycle_stage)
     if error:
         lifecycle_stage = "unknown"
-        availability_status = "unknown"
+        availability_status = "taken" if error == WHOIS_RATE_LIMIT_ERROR else "unknown"
     return DiscoveryObservationInput(
         source=WHOIS_FALLBACK_SOURCE,
         observed_at=observed_at,
@@ -408,7 +424,7 @@ def parse_whois_response(
 def _detect_whois_error(normalized_raw: str) -> str | None:
     for pattern in WHOIS_RATE_LIMIT_PATTERNS:
         if pattern in normalized_raw:
-            return "WHOIS rate limit or access denied"
+            return WHOIS_RATE_LIMIT_ERROR
     return None
 
 
@@ -655,6 +671,10 @@ def _batch_next_check_offset(*, index: int, total: int) -> timedelta:
     return timedelta(seconds=max(index, 0) % (spread_seconds + 1))
 
 
+def _is_whois_rate_limit_observation(observation: DiscoveryObservationInput) -> bool:
+    return observation.source == WHOIS_FALLBACK_SOURCE and observation.error == WHOIS_RATE_LIMIT_ERROR
+
+
 def apply_discovery_observation(
     domain: DiscoveryDomain,
     observation: DiscoveryObservationInput,
@@ -711,7 +731,7 @@ def apply_discovery_observation(
     elif domain.status in {"tracking", "error"}:
         domain.status = "tracking"
 
-    if observation.error:
+    if observation.error and not _is_whois_rate_limit_observation(observation):
         domain.status = "error"
 
     next_check_at = calculate_next_check_at(domain, observed_at, include_active_jitter=include_active_jitter)

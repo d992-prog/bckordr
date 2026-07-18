@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+import socket
 
 import httpx
 import pytest
@@ -17,6 +18,7 @@ from app.db.session import get_db
 from app.services.discovery import (
     DiscoveryObservationInput,
     WHOIS_SERVERS,
+    WHOIS_RATE_LIMIT_ERROR,
     apply_discovery_observation,
     calculate_next_check_at,
     check_discovery_domain_rdap,
@@ -25,6 +27,7 @@ from app.services.discovery import (
     parse_whois_response,
     process_due_discovery_domains,
     resolve_rdap_domain_url,
+    resolve_whois_addresses,
     stagger_initial_check_at,
     _build_transition_notification,
 )
@@ -102,6 +105,24 @@ def test_discovery_parses_generic_whois_not_found():
     assert observation.availability_status == "available"
 
 
+def test_discovery_treats_whois_access_limit_as_safe_taken_without_hard_error_status():
+    domain = DiscoveryDomain(fqdn="365proservices.ae", zone="ae", status="tracking")
+    observation = parse_whois_response(
+        "BLACKLISTED: You have exceeded the query limit for your network or IP address.",
+        fqdn=domain.fqdn,
+        observed_at=datetime(2026, 7, 18, 0, 1, tzinfo=timezone.utc),
+        latency_ms=25,
+    )
+
+    apply_discovery_observation(domain, observation)
+
+    assert observation.error == WHOIS_RATE_LIMIT_ERROR
+    assert observation.lifecycle_stage == "unknown"
+    assert observation.availability_status == "taken"
+    assert domain.status == "tracking"
+    assert domain.last_error == WHOIS_RATE_LIMIT_ERROR
+
+
 def test_discovery_parses_eurid_available_status_as_available():
     observation = parse_whois_response(
         """
@@ -163,6 +184,23 @@ async def test_discovery_falls_back_to_requested_cctld_whois_servers(fqdn: str, 
     assert observation.source == "whois_fallback"
     assert observation.lifecycle_stage == "registered"
     assert observation.availability_status == "taken"
+
+
+def test_discovery_whois_address_resolution_prefers_ipv4(monkeypatch: pytest.MonkeyPatch):
+    def fake_getaddrinfo(host: str, port: int, *args, **kwargs):
+        assert host == "whois.rotld.ro"
+        assert port == 43
+        return [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2a03:5e80:0:4:192:162:16:18", 43, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.162.16.18", 43)),
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    addresses = resolve_whois_addresses("whois.rotld.ro", 43)
+
+    assert addresses[0][0] == socket.AF_INET
+    assert addresses[0][4] == ("192.162.16.18", 43)
 
 
 @pytest.mark.asyncio
