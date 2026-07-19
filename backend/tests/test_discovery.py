@@ -208,6 +208,39 @@ async def test_discovery_tries_ro_whois_fallback_server_when_primary_is_unreacha
     assert observation.availability_status == "taken"
 
 
+@pytest.mark.asyncio
+async def test_discovery_tries_rs_http_whois_fallback_when_port43_resets():
+    domain = DiscoveryDomain(fqdn="aluradom.rs", zone="rs")
+    attempted_servers: list[str] = []
+
+    async def whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+        assert fqdn == "aluradom.rs"
+        assert timeout_seconds == 5.0
+        attempted_servers.append(server)
+        if server == "whois.rnids.rs":
+            raise ConnectionResetError("[Errno 104] Connection reset by peer")
+        return "Naziv domena: aluradom.rs\nStatus domena: Active\n"
+
+    observation = await check_discovery_domain_whois(domain, whois_lookup=whois_lookup)
+
+    assert attempted_servers == ["whois.rnids.rs", "https://www.rnids.rs/sr/whois?search={fqdn}"]
+    assert observation.error is None
+    assert observation.lifecycle_stage == "registered"
+    assert observation.availability_status == "taken"
+
+
+def test_discovery_parses_rnids_available_phrase_as_available():
+    observation = parse_whois_response(
+        "Naziv domena slobodan-primer.rs je slobodan!",
+        fqdn="slobodan-primer.rs",
+        observed_at=datetime(2026, 7, 19, 17, 50, tzinfo=timezone.utc),
+        latency_ms=25,
+    )
+
+    assert observation.lifecycle_stage == "not_found"
+    assert observation.availability_status == "available"
+
+
 def test_discovery_whois_address_resolution_prefers_ipv4(monkeypatch: pytest.MonkeyPatch):
     def fake_getaddrinfo(host: str, port: int, *args, **kwargs):
         assert host == "whois.rotld.ro"

@@ -9,6 +9,7 @@ from time import perf_counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import delete, select
@@ -44,6 +45,7 @@ WHOIS_NOT_FOUND_PATTERNS = (
     "is available",
     "available for registration",
     "status: free",
+    "je slobodan",
 )
 WHOIS_RATE_LIMIT_PATTERNS = (
     "quota exceeded",
@@ -146,6 +148,7 @@ WHOIS_SERVERS: dict[str, str] = {
 }
 WHOIS_SERVER_FALLBACKS: dict[str, tuple[str, ...]] = {
     "ro": ("whois.rotld.ro", "whois.nic.ro"),
+    "rs": ("whois.rnids.rs", "https://www.rnids.rs/sr/whois?search={fqdn}"),
 }
 STATIC_RDAP_BASE_URLS: dict[str, str] = {
     "us": "https://rdap.nic.us",
@@ -365,7 +368,21 @@ async def check_discovery_domain_whois(
 
 
 async def default_whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+    if server.startswith(("http://", "https://")):
+        return await _query_http_whois(fqdn, server, timeout_seconds)
     return await asyncio.to_thread(_query_whois, fqdn, server, timeout_seconds)
+
+
+async def _query_http_whois(fqdn: str, url_template: str, timeout_seconds: float) -> str:
+    url = url_template.format(fqdn=quote(fqdn, safe=""))
+    async with httpx.AsyncClient(
+        timeout=timeout_seconds,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0"},
+    ) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.text
 
 
 def _whois_servers_for_zone(zone: str) -> tuple[str, ...]:
