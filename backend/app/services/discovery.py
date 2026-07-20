@@ -38,6 +38,7 @@ WHOIS_NOT_FOUND_PATTERNS = (
     "not found",
     "no data found",
     "does not exist in database",
+    "does not exist in the database",
     "domain not found",
     "domain not allocated",
     "no object found",

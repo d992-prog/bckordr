@@ -253,6 +253,18 @@ def test_discovery_parses_register_bg_missing_database_phrase_as_available():
     assert observation.availability_status == "available"
 
 
+def test_discovery_parses_register_bg_missing_the_database_phrase_as_available():
+    observation = parse_whois_response(
+        "DOMAIN NAME: 24travel.bg does not exist in the database!",
+        fqdn="24travel.bg",
+        observed_at=datetime(2026, 7, 20, 9, 10, tzinfo=timezone.utc),
+        latency_ms=25,
+    )
+
+    assert observation.lifecycle_stage == "not_found"
+    assert observation.availability_status == "available"
+
+
 def test_discovery_whois_address_resolution_prefers_ipv4(monkeypatch: pytest.MonkeyPatch):
     def fake_getaddrinfo(host: str, port: int, *args, **kwargs):
         assert host == "whois.rotld.ro"
