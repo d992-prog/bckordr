@@ -150,6 +150,8 @@ def test_discovery_parses_eurid_available_status_as_available():
         ("md", "whois.nic.md"),
         ("mk", "whois.marnet.mk"),
         ("tr", "whois.trabis.gov.tr"),
+        ("ge", "whois.nic.ge"),
+        ("no", "whois.norid.no"),
     ],
 )
 def test_discovery_has_whois_fallback_for_requested_cctlds(zone: str, server: str):
@@ -164,6 +166,8 @@ def test_discovery_has_whois_fallback_for_requested_cctlds(zone: str, server: st
         ("agrosucces.md", "whois.nic.md"),
         ("40burninghot.mk", "whois.marnet.mk"),
         ("0058.tr", "whois.trabis.gov.tr"),
+        ("babina.ge", "whois.nic.ge"),
+        ("countrywestern.no", "whois.norid.no"),
     ],
 )
 async def test_discovery_falls_back_to_requested_cctld_whois_servers(fqdn: str, server: str):
@@ -250,6 +254,29 @@ async def test_discovery_tries_external_availability_fallback_when_bg_registry_i
         WHOSE_DOMAINS_AVAILABILITY_LOOKUP,
     ]
     assert observation.error is None
+    assert observation.lifecycle_stage == "not_found"
+    assert observation.availability_status == "available"
+
+
+@pytest.mark.asyncio
+async def test_discovery_falls_back_to_no_whois_when_rdap_is_inconclusive():
+    domain = DiscoveryDomain(fqdn="countrywestern.no", zone="no")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://data.iana.org/rdap/dns.json":
+            return httpx.Response(200, json={"services": [[["no"], ["https://rdap.norid.example/"]]]})
+        return httpx.Response(200, json={"ldhName": "countrywestern.no"})
+
+    async def whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+        assert fqdn == "countrywestern.no"
+        assert server == "whois.norid.no"
+        assert timeout_seconds == 5.0
+        return "No match for domain \"countrywestern.no\"."
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        observation = await check_discovery_domain_rdap(domain, client=client, whois_lookup=whois_lookup)
+
+    assert observation.source == "whois_fallback"
     assert observation.lifecycle_stage == "not_found"
     assert observation.availability_status == "available"
 

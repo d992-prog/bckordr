@@ -64,6 +64,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "eu": "whois.eu",
     "fi": "whois.fi",
     "fr": "whois.nic.fr",
+    "ge": "whois.nic.ge",
     "hr": "whois.dns.hr",
     "lt": "whois.domreg.lt",
     "lv": "whois.nic.lv",
@@ -73,6 +74,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "mt": "whois.ripe.net",
     "net": "whois.verisign-grs.com",
     "nl": "whois.domain-registry.nl",
+    "no": "whois.norid.no",
     "org": "whois.publicinterestregistry.org",
     "pl": "whois.dns.pl",
     "ro": "whois.rotld.ro",
@@ -86,6 +88,7 @@ WHOIS_SERVERS: dict[str, str] = {
 }
 WHOIS_SERVER_FALLBACKS: dict[str, tuple[str, ...]] = {
     "bg": ("whois.register.bg", WHOSE_DOMAINS_AVAILABILITY_LOOKUP),
+    "no": ("whois.norid.no",),
     "ro": ("whois.rotld.ro", "whois.nic.ro"),
     "rs": ("whois.rnids.rs", "https://www.rnids.rs/sr/whois?search={fqdn}"),
 }
@@ -121,6 +124,10 @@ async def check_discovery_task(task: DiscoveryControlTask) -> dict:
             if task.zone == "org" and lifecycle_stage == "not_found":
                 whois_observation = await _check_whois(task.fqdn, task.zone, observed_at, started_at, timeout_seconds)
                 if whois_observation["lifecycle_stage"] == "dropzone":
+                    return whois_observation
+            if task.zone == "no" and lifecycle_stage == "unknown" and _whois_servers_for_zone(task.zone):
+                whois_observation = await _check_whois(task.fqdn, task.zone, observed_at, started_at, timeout_seconds)
+                if whois_observation["lifecycle_stage"] != "unknown" or whois_observation.get("error"):
                     return whois_observation
             return _result(
                 source="rdap",

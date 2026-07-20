@@ -100,6 +100,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "es": "whois.nic.es",
     "eu": "whois.eu",
     "fr": "whois.nic.fr",
+    "ge": "whois.nic.ge",
     "hk": "whois.hkirc.hk",
     "hr": "whois.dns.hr",
     "hu": "whois.nic.hu",
@@ -154,6 +155,7 @@ WHOIS_SERVERS: dict[str, str] = {
 }
 WHOIS_SERVER_FALLBACKS: dict[str, tuple[str, ...]] = {
     "bg": ("whois.register.bg", WHOSE_DOMAINS_AVAILABILITY_LOOKUP),
+    "no": ("whois.norid.no",),
     "ro": ("whois.rotld.ro", "whois.nic.ro"),
     "rs": ("whois.rnids.rs", "https://www.rnids.rs/sr/whois?search={fqdn}"),
 }
@@ -290,6 +292,17 @@ async def check_discovery_domain_rdap(
             )
             if whois_observation.lifecycle_stage == "dropzone":
                 return whois_observation
+        zone = infer_zone(domain.fqdn)
+        if zone == "no" and lifecycle_stage == "unknown" and _whois_servers_for_zone(zone):
+            whois_observation = await check_discovery_domain_whois(
+                domain,
+                observed_at=observed_at,
+                started_at=started_at,
+                timeout_seconds=timeout_seconds,
+                whois_lookup=whois_lookup,
+            )
+            if whois_observation.lifecycle_stage != "unknown" or whois_observation.error:
+                return whois_observation
         return DiscoveryObservationInput(
             source="rdap",
             observed_at=observed_at,
@@ -302,7 +315,7 @@ async def check_discovery_domain_rdap(
             raw_response=raw_response[:10000],
         )
     except Exception as exc:
-        if WHOIS_SERVERS.get(infer_zone(domain.fqdn)):
+        if _whois_servers_for_zone(infer_zone(domain.fqdn)):
             whois_observation = await check_discovery_domain_whois(
                 domain,
                 observed_at=observed_at,
