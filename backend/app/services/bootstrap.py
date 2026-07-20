@@ -120,6 +120,23 @@ DEFAULT_ZONE_STRATEGY_PRESETS = (
             "notes": "Observed safe window: 03:32:30-03:34:10 Asia/Dubai.",
         },
     },
+    {
+        "zone": "se",
+        "name": "IIS SE Daily Drop Window",
+        "timezone_name": "Europe/Stockholm",
+        "notes": "Preset from discovery availability export: .se domains became available at 06:01:18-06:03:42 Europe/Stockholm; safe window starts at 06:00:45.",
+        "rule": {
+            "name": "SE daily 06:00:45 Europe/Stockholm",
+            "schedule_type": "daily",
+            "hour": 6,
+            "minute": 0,
+            "second": 45,
+            "window_duration_seconds": 210,
+            "priority": 100,
+            "execution_profile_mode": "flat",
+            "notes": "Observed safe window: 06:00:45-06:04:15 Europe/Stockholm.",
+        },
+    },
 )
 
 
