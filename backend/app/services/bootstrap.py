@@ -103,6 +103,23 @@ DEFAULT_ZONE_STRATEGY_PRESETS = (
             "notes": "Observed safe window: 15:14:30-15:16:10 UTC.",
         },
     },
+    {
+        "zone": "ae",
+        "name": "TDRA AE Daily Drop Window",
+        "timezone_name": "Asia/Dubai",
+        "notes": "Preset from discovery availability export: .ae domains became available at 03:33:01-03:33:46 Asia/Dubai; safe window starts at 03:32:30.",
+        "rule": {
+            "name": "AE daily 03:32:30 Asia/Dubai",
+            "schedule_type": "daily",
+            "hour": 3,
+            "minute": 32,
+            "second": 30,
+            "window_duration_seconds": 100,
+            "priority": 100,
+            "execution_profile_mode": "flat",
+            "notes": "Observed safe window: 03:32:30-03:34:10 Asia/Dubai.",
+        },
+    },
 )
 
 

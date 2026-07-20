@@ -3586,6 +3586,7 @@ export default function App() {
       { zone: "com", title: ".com Verisign", description: "ежедневное окно 18:00 UTC" },
       { zone: "net", title: ".net Verisign", description: "ежедневное окно 18:00 UTC" },
       { zone: "org", title: ".org PIR", description: "короткое окно около 15:15 UTC" },
+      { zone: "ae", title: ".ae TDRA", description: "ежедневно 03:32:30 → 03:34:10, Asia/Dubai" },
     ];
 
     return (
