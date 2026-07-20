@@ -32,6 +32,8 @@ ACTIVE_NEXT_CHECK_JITTER = timedelta(seconds=10)
 BATCH_NEXT_CHECK_SPREAD = timedelta(seconds=10)
 INITIAL_DISCOVERY_IMPORT_SPREAD = timedelta(minutes=5)
 WHOIS_RESPONSE_LIMIT_BYTES = 10000
+WHOSE_DOMAINS_AVAILABILITY_LOOKUP = "whose-domains://availability"
+WHOSE_DOMAINS_BULK_SEARCH_URL = "https://whose.domains/api/tools/bulk-search"
 WHOIS_STATUS_PATTERN = re.compile(r"(?im)^\s*(?:domain\s+)?status\s*:\s*(.+?)\s*$")
 WHOIS_NOT_FOUND_PATTERNS = (
     "no match",
@@ -151,7 +153,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "za": "whois.registry.net.za",
 }
 WHOIS_SERVER_FALLBACKS: dict[str, tuple[str, ...]] = {
-    "bg": ("whois.register.bg", "https://whois.gandi.net/en/results?search={fqdn}"),
+    "bg": ("whois.register.bg", WHOSE_DOMAINS_AVAILABILITY_LOOKUP),
     "ro": ("whois.rotld.ro", "whois.nic.ro"),
     "rs": ("whois.rnids.rs", "https://www.rnids.rs/sr/whois?search={fqdn}"),
 }
@@ -380,9 +382,25 @@ async def check_discovery_domain_whois(
 
 
 async def default_whois_lookup(fqdn: str, server: str, timeout_seconds: float) -> str:
+    if server == WHOSE_DOMAINS_AVAILABILITY_LOOKUP:
+        return await _query_whose_domains_availability(fqdn, timeout_seconds)
     if server.startswith(("http://", "https://")):
         return await _query_http_whois(fqdn, server, timeout_seconds)
     return await asyncio.to_thread(_query_whois, fqdn, server, timeout_seconds)
+
+
+async def _query_whose_domains_availability(fqdn: str, timeout_seconds: float) -> str:
+    async with httpx.AsyncClient(
+        timeout=timeout_seconds,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0"},
+    ) as client:
+        response = await client.post(
+            WHOSE_DOMAINS_BULK_SEARCH_URL,
+            json={"domains": [fqdn], "searchType": "availability"},
+        )
+        response.raise_for_status()
+        return response.text
 
 
 async def _query_http_whois(fqdn: str, url_template: str, timeout_seconds: float) -> str:
@@ -484,6 +502,9 @@ def _extract_whois_status_codes(raw_response: str) -> list[str]:
 
 
 def _classify_whois_lifecycle(raw_response: str, status_codes: list[str]) -> str:
+    json_lifecycle = _classify_json_availability(raw_response)
+    if json_lifecycle is not None:
+        return json_lifecycle
     normalized_raw = raw_response.lower()
     normalized_statuses = {_normalize_status_code(item) for item in status_codes}
     if PIR_DROPZONE_PHRASE in normalized_raw:
@@ -499,6 +520,44 @@ def _classify_whois_lifecycle(raw_response: str, status_codes: list[str]) -> str
     if status_codes or raw_response.strip():
         return "registered"
     return "unknown"
+
+
+def _classify_json_availability(raw_response: str) -> str | None:
+    try:
+        payload = json.loads(raw_response)
+    except ValueError:
+        return None
+    for node in _walk_json_values(payload):
+        if not isinstance(node, dict):
+            continue
+        availability = node.get("availability")
+        available = node.get("available")
+        status = node.get("status")
+        if availability is not None:
+            value = str(availability).strip().lower()
+            if value in {"true", "available", "1", "yes"}:
+                return "not_found"
+            if value in {"false", "registered", "taken", "0", "no"}:
+                return "registered"
+        if isinstance(available, bool):
+            return "not_found" if available else "registered"
+        if isinstance(status, str):
+            normalized_status = status.strip().lower()
+            if normalized_status in {"available", "free"}:
+                return "not_found"
+            if normalized_status in {"registered", "taken", "unavailable"}:
+                return "registered"
+    return None
+
+
+def _walk_json_values(value):
+    yield value
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _walk_json_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_json_values(child)
 
 
 def _availability_for_lifecycle(lifecycle_stage: str) -> str:

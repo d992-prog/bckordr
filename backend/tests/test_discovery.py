@@ -18,6 +18,7 @@ from app.db.session import get_db
 from app.services.discovery import (
     DiscoveryObservationInput,
     WHOIS_SERVERS,
+    WHOSE_DOMAINS_AVAILABILITY_LOOKUP,
     WHOIS_RATE_LIMIT_ERROR,
     apply_discovery_observation,
     calculate_next_check_at,
@@ -230,7 +231,7 @@ async def test_discovery_tries_rs_http_whois_fallback_when_port43_resets():
 
 
 @pytest.mark.asyncio
-async def test_discovery_tries_gandi_whois_fallback_when_bg_registry_is_rate_limited():
+async def test_discovery_tries_external_availability_fallback_when_bg_registry_is_rate_limited():
     domain = DiscoveryDomain(fqdn="24travel.bg", zone="bg")
     attempted_servers: list[str] = []
 
@@ -240,13 +241,13 @@ async def test_discovery_tries_gandi_whois_fallback_when_bg_registry_is_rate_lim
         attempted_servers.append(server)
         if server == "whois.register.bg":
             return "Query limit exceeded, try again later."
-        return "24travel.bg does not appear registered yet"
+        return '{"code":0,"data":{"results":[{"domain":"24travel.bg","available":true}]}}'
 
     observation = await check_discovery_domain_whois(domain, whois_lookup=whois_lookup)
 
     assert attempted_servers == [
         "whois.register.bg",
-        "https://whois.gandi.net/en/results?search={fqdn}",
+        WHOSE_DOMAINS_AVAILABILITY_LOOKUP,
     ]
     assert observation.error is None
     assert observation.lifecycle_stage == "not_found"
@@ -265,7 +266,7 @@ def test_discovery_parses_rnids_available_phrase_as_available():
     assert observation.availability_status == "available"
 
 
-def test_discovery_parses_gandi_available_phrase_as_available():
+def test_discovery_parses_does_not_appear_registered_phrase_as_available():
     observation = parse_whois_response(
         "24travel.bg does not appear registered yet",
         fqdn="24travel.bg",
@@ -275,6 +276,30 @@ def test_discovery_parses_gandi_available_phrase_as_available():
 
     assert observation.lifecycle_stage == "not_found"
     assert observation.availability_status == "available"
+
+
+def test_discovery_parses_json_availability_as_available():
+    observation = parse_whois_response(
+        '{"code":0,"data":{"results":[{"domain":"24travel.bg","available":true}]}}',
+        fqdn="24travel.bg",
+        observed_at=datetime(2026, 7, 20, 9, 20, tzinfo=timezone.utc),
+        latency_ms=25,
+    )
+
+    assert observation.lifecycle_stage == "not_found"
+    assert observation.availability_status == "available"
+
+
+def test_discovery_parses_json_availability_as_registered():
+    observation = parse_whois_response(
+        '{"code":0,"data":{"results":[{"domain":"busy.bg","available":false}]}}',
+        fqdn="busy.bg",
+        observed_at=datetime(2026, 7, 20, 9, 20, tzinfo=timezone.utc),
+        latency_ms=25,
+    )
+
+    assert observation.lifecycle_stage == "registered"
+    assert observation.availability_status == "taken"
 
 
 def test_discovery_parses_register_bg_missing_database_phrase_as_available():
