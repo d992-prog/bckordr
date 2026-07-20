@@ -44,6 +44,7 @@ WHOIS_NOT_FOUND_PATTERNS = (
     "no object found",
     "object does not exist",
     "no entries found",
+    "does not appear registered yet",
     "is available",
     "available for registration",
     "status: free",
@@ -150,6 +151,7 @@ WHOIS_SERVERS: dict[str, str] = {
     "za": "whois.registry.net.za",
 }
 WHOIS_SERVER_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "bg": ("whois.register.bg", "https://whois.gandi.net/en/results?search={fqdn}"),
     "ro": ("whois.rotld.ro", "whois.nic.ro"),
     "rs": ("whois.rnids.rs", "https://www.rnids.rs/sr/whois?search={fqdn}"),
 }
@@ -348,18 +350,25 @@ async def check_discovery_domain_whois(
         )
     lookup = whois_lookup or default_whois_lookup
     last_error: Exception | None = None
+    last_observation: DiscoveryObservationInput | None = None
     for server in servers:
         try:
             raw_response = await lookup(domain.fqdn, server, timeout_seconds)
-            return parse_whois_response(
+            observation = parse_whois_response(
                 raw_response,
                 fqdn=domain.fqdn,
                 observed_at=checked_at,
                 latency_ms=int((perf_counter() - started) * 1000),
             )
+            if observation.error == WHOIS_RATE_LIMIT_ERROR and server != servers[-1]:
+                last_observation = observation
+                continue
+            return observation
         except Exception as exc:
             last_error = exc
             continue
+    if last_observation is not None:
+        return last_observation
     return DiscoveryObservationInput(
         source=WHOIS_FALLBACK_SOURCE,
         observed_at=checked_at,
