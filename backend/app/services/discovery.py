@@ -51,6 +51,7 @@ WHOIS_NOT_FOUND_PATTERNS = (
 )
 WHOIS_RATE_LIMIT_PATTERNS = (
     "quota exceeded",
+    "query limit exceeded",
     "rate limit",
     "too many requests",
     "access denied",

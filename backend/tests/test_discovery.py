@@ -265,6 +265,24 @@ def test_discovery_parses_register_bg_missing_the_database_phrase_as_available()
     assert observation.availability_status == "available"
 
 
+def test_discovery_treats_query_limit_exceeded_as_rate_limit_not_registered():
+    domain = DiscoveryDomain(fqdn="24travel.bg", zone="bg", status="tracking")
+    observation = parse_whois_response(
+        "Query limit exceeded, try again later.",
+        fqdn=domain.fqdn,
+        observed_at=datetime(2026, 7, 20, 9, 15, tzinfo=timezone.utc),
+        latency_ms=25,
+    )
+
+    apply_discovery_observation(domain, observation)
+
+    assert observation.error == WHOIS_RATE_LIMIT_ERROR
+    assert observation.lifecycle_stage == "unknown"
+    assert observation.availability_status == "taken"
+    assert domain.status == "tracking"
+    assert domain.last_error == WHOIS_RATE_LIMIT_ERROR
+
+
 def test_discovery_whois_address_resolution_prefers_ipv4(monkeypatch: pytest.MonkeyPatch):
     def fake_getaddrinfo(host: str, port: int, *args, **kwargs):
         assert host == "whois.rotld.ro"
