@@ -69,6 +69,8 @@ from app.schemas.control import (
     DiscoveryDomainResponse,
     DiscoveryObservationCreateRequest,
     DiscoveryObservationResponse,
+    DiscoveryRuntimeSettingsResponse,
+    DiscoveryRuntimeSettingsUpdateRequest,
     DiscoveryZoneStatsResponse,
     DomainOverrideSettingsResponse,
     DomainOverrideSettingsUpdateRequest,
@@ -127,6 +129,11 @@ from app.services.discovery import (
 )
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
+from app.services.app_settings import (
+    DiscoveryRuntimeSettings,
+    get_discovery_runtime_settings,
+    set_discovery_runtime_settings,
+)
 from app.services.strategy_runtime import (
     evaluate_domain_readiness,
     is_domain_due_today,
@@ -168,7 +175,32 @@ def _shell_quote(value: str | int | float | bool) -> str:
     return shlex.quote(str(value))
 
 
-def _build_worker_env_lines(worker: WorkerNode, *, runtime_base_url: str, simulate_mode: bool) -> list[str]:
+def _serialize_discovery_runtime_settings(
+    settings: DiscoveryRuntimeSettings,
+) -> DiscoveryRuntimeSettingsResponse:
+    return DiscoveryRuntimeSettingsResponse(**settings.__dict__)
+
+
+def _build_worker_env_lines(
+    worker: WorkerNode,
+    *,
+    runtime_base_url: str,
+    simulate_mode: bool,
+    discovery_settings: DiscoveryRuntimeSettings | None = None,
+) -> list[str]:
+    worker_discovery_enabled = (
+        discovery_settings.discovery_worker_enabled if discovery_settings is not None else get_settings().discovery_worker_enabled
+    )
+    worker_discovery_concurrency = (
+        discovery_settings.worker_discovery_concurrency
+        if discovery_settings is not None
+        else get_settings().worker_discovery_concurrency
+    )
+    worker_discovery_poll_interval_seconds = (
+        discovery_settings.worker_discovery_poll_interval_seconds
+        if discovery_settings is not None
+        else get_settings().worker_discovery_poll_interval_seconds
+    )
     return [
         f"CONTROL_BASE_URL={runtime_base_url.rstrip('/')}",
         f"WORKER_ID={worker.id}",
@@ -189,6 +221,9 @@ def _build_worker_env_lines(worker: WorkerNode, *, runtime_base_url: str, simula
         "GANDI_STATUS_POLL_MAX_ATTEMPTS=8",
         "REGISTRATION_CONCURRENCY_MULTIPLIER=8",
         "REGISTRATION_MAX_CONCURRENCY=160",
+        f"DISCOVERY_WORKER_ENABLED={'true' if worker_discovery_enabled else 'false'}",
+        f"DISCOVERY_WORKER_CONCURRENCY={worker_discovery_concurrency}",
+        f"DISCOVERY_WORKER_POLL_INTERVAL_SECONDS={worker_discovery_poll_interval_seconds}",
         "MAX_IDLE_BACKOFF_SECONDS=10",
     ]
 
@@ -223,13 +258,19 @@ def _build_worker_setup_response(
     *,
     runtime_base_url: str,
     simulate_mode: bool,
+    discovery_settings: DiscoveryRuntimeSettings | None = None,
 ) -> WorkerSetupResponse:
     settings = get_settings()
     env_path = "/opt/domain-drop-catcher/worker/.env"
     python_bin = settings.worker_setup_python_bin
     env_command = _build_printf_command(
         env_path,
-        _build_worker_env_lines(worker, runtime_base_url=runtime_base_url, simulate_mode=simulate_mode),
+        _build_worker_env_lines(
+            worker,
+            runtime_base_url=runtime_base_url,
+            simulate_mode=simulate_mode,
+            discovery_settings=discovery_settings,
+        ),
     )
     mode = "test" if simulate_mode else "live"
     full_install_commands = [
@@ -263,7 +304,7 @@ def _build_worker_setup_response(
     verify_commands = [
         "systemctl status domain-drop-worker.service --no-pager",
         "journalctl -u domain-drop-worker.service -n 120 --no-pager",
-        "grep -E '^(CONTROL_BASE_URL|WORKER_ID|SIMULATE_MODE|SIMULATE_SUCCESS_RATE|REGISTRATION_CONCURRENCY_MULTIPLIER|REGISTRATION_MAX_CONCURRENCY)=' /opt/domain-drop-catcher/worker/.env",
+        "grep -E '^(CONTROL_BASE_URL|WORKER_ID|SIMULATE_MODE|SIMULATE_SUCCESS_RATE|REGISTRATION_CONCURRENCY_MULTIPLIER|REGISTRATION_MAX_CONCURRENCY|DISCOVERY_WORKER_ENABLED|DISCOVERY_WORKER_CONCURRENCY|DISCOVERY_WORKER_POLL_INTERVAL_SECONDS)=' /opt/domain-drop-catcher/worker/.env",
     ]
     return WorkerSetupResponse(
         worker_id=worker.id,
@@ -1550,6 +1591,35 @@ async def update_discovery_domains_interval(
     )
 
 
+@router.get("/discovery/runtime-settings", response_model=DiscoveryRuntimeSettingsResponse)
+async def read_discovery_runtime_settings(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> DiscoveryRuntimeSettingsResponse:
+    del admin
+    runtime_settings = await get_discovery_runtime_settings(db, get_settings())
+    return _serialize_discovery_runtime_settings(runtime_settings)
+
+
+@router.patch("/discovery/runtime-settings", response_model=DiscoveryRuntimeSettingsResponse)
+async def update_discovery_runtime_settings(
+    payload: DiscoveryRuntimeSettingsUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> DiscoveryRuntimeSettingsResponse:
+    values = payload.model_dump(exclude_unset=True)
+    runtime_settings = await set_discovery_runtime_settings(db, get_settings(), values)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="discovery_runtime_settings_update",
+        details=json.dumps(values, sort_keys=True),
+    )
+    await db.commit()
+    return _serialize_discovery_runtime_settings(runtime_settings)
+
+
 @router.post(
     "/discovery/domains/{domain_id}/observations",
     response_model=DiscoveryDomainResponse,
@@ -2028,10 +2098,12 @@ async def get_worker_setup(
         worker.control_token = generate_session_token()
         await db.commit()
         await db.refresh(worker)
+    discovery_settings = await get_discovery_runtime_settings(db, get_settings())
     return _build_worker_setup_response(
         worker,
         runtime_base_url=effective_runtime_base_url,
         simulate_mode=simulate_mode,
+        discovery_settings=discovery_settings,
     )
 
 

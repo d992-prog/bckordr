@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     discovery_batch_size: int = Field(default=10, alias="DISCOVERY_BATCH_SIZE")
     discovery_concurrency: int = Field(default=5, alias="DISCOVERY_CONCURRENCY")
     discovery_timeout_seconds: float = Field(default=5.0, alias="DISCOVERY_TIMEOUT_SECONDS")
+    discovery_worker_enabled: bool = Field(default=True, alias="DISCOVERY_WORKER_ENABLED")
+    discovery_worker_task_stale_seconds: int = Field(default=180, alias="DISCOVERY_WORKER_TASK_STALE_SECONDS")
+    discovery_local_fallback_enabled: bool = Field(default=True, alias="DISCOVERY_LOCAL_FALLBACK_ENABLED")
+    worker_discovery_concurrency: int = Field(default=4, alias="WORKER_DISCOVERY_CONCURRENCY")
+    worker_discovery_poll_interval_seconds: float = Field(default=1.0, alias="WORKER_DISCOVERY_POLL_INTERVAL_SECONDS")
     discovery_rdap_bootstrap_url: str = Field(
         default="https://data.iana.org/rdap/dns.json",
         alias="DISCOVERY_RDAP_BOOTSTRAP_URL",

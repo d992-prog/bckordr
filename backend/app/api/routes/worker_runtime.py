@@ -1,15 +1,31 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
-from app.db.models import AttackEvent, AttackRun, ContactProfile, DropDomain, RegistrarAccount, WorkerNode, WorkerTask
+from app.core.config import get_settings
+from app.db.models import (
+    AttackEvent,
+    AttackRun,
+    ContactProfile,
+    DiscoveryDomain,
+    DiscoveryWorkerTask,
+    DropDomain,
+    RegistrarAccount,
+    WorkerNode,
+    WorkerTask,
+)
 from app.db.session import get_db
 from app.schemas.runtime import (
     WorkerHeartbeatRequest,
     WorkerHeartbeatResponse,
+    DiscoveryWorkerTaskPayloadResponse,
+    DiscoveryWorkerTaskResponseEnvelope,
+    DiscoveryWorkerTaskResultRequest,
     WorkerTaskAckRequest,
     WorkerTaskPayloadResponse,
     WorkerTaskProgressRequest,
@@ -19,8 +35,12 @@ from app.schemas.runtime import (
     WorkerTaskResultResponse,
 )
 from app.services.attack_runtime import rebalance_worker_pool, recompute_run_statistics
+from app.services.app_settings import get_diagnostic_telegram_settings, get_discovery_runtime_settings
+from app.services.discovery_worker_runtime import apply_discovery_worker_task_result
+from app.services.notifier import TelegramNotifier
 
 router = APIRouter(prefix="/worker-runtime", tags=["worker-runtime"])
+logger = logging.getLogger(__name__)
 
 
 async def _get_worker_by_token(
@@ -328,3 +348,93 @@ async def report_task_result(
     await recompute_run_statistics(db)
     await db.commit()
     return WorkerTaskResultResponse(detail="task result accepted")
+
+
+@router.get("/discovery/tasks/next", response_model=DiscoveryWorkerTaskResponseEnvelope)
+async def get_next_discovery_task(
+    worker_id: int,
+    db: AsyncSession = Depends(get_db),
+    x_worker_token: str | None = Header(default=None),
+) -> DiscoveryWorkerTaskResponseEnvelope:
+    worker = await _get_worker_by_token(worker_id, db, x_worker_token)
+    result = await db.execute(
+        select(DiscoveryWorkerTask)
+        .where(DiscoveryWorkerTask.worker_id == worker.id, DiscoveryWorkerTask.status == "queued")
+        .order_by(DiscoveryWorkerTask.created_at.asc(), DiscoveryWorkerTask.id.asc())
+        .limit(1)
+    )
+    task = result.scalar_one_or_none()
+    if task is None:
+        return DiscoveryWorkerTaskResponseEnvelope(task=None)
+
+    discovery_domain = await db.get(DiscoveryDomain, task.discovery_domain_id)
+    if discovery_domain is None:
+        task.status = "failed"
+        task.error_message = "Discovery domain not found"
+        task.finished_at = utcnow()
+        await db.commit()
+        return DiscoveryWorkerTaskResponseEnvelope(task=None)
+
+    settings = get_settings()
+    discovery_settings = await get_discovery_runtime_settings(db, settings)
+    return DiscoveryWorkerTaskResponseEnvelope(
+        task=DiscoveryWorkerTaskPayloadResponse(
+            task_id=task.id,
+            discovery_domain_id=discovery_domain.id,
+            worker_id=worker.id,
+            fqdn=discovery_domain.fqdn,
+            zone=discovery_domain.zone,
+            source_mode=task.source_mode or discovery_domain.source_mode or "rdap",
+            bootstrap_url=settings.discovery_rdap_bootstrap_url,
+            timeout_seconds=discovery_settings.discovery_timeout_seconds,
+        )
+    )
+
+
+@router.post("/discovery/tasks/{task_id}/ack", response_model=WorkerTaskResultResponse)
+async def acknowledge_discovery_task(
+    task_id: int,
+    payload: WorkerTaskAckRequest,
+    db: AsyncSession = Depends(get_db),
+    x_worker_token: str | None = Header(default=None),
+) -> WorkerTaskResultResponse:
+    worker = await _get_worker_by_token(payload.worker_id, db, x_worker_token)
+    task = await db.get(DiscoveryWorkerTask, task_id)
+    if task is None or task.worker_id != worker.id:
+        raise HTTPException(status_code=404, detail="Discovery task not found")
+    now = utcnow()
+    task.acknowledged_at = now
+    if task.status == "queued":
+        task.status = "running"
+    task.updated_at = now
+    await db.commit()
+    return WorkerTaskResultResponse(detail="discovery task acknowledged")
+
+
+@router.post("/discovery/tasks/{task_id}/result", response_model=WorkerTaskResultResponse)
+async def report_discovery_task_result(
+    task_id: int,
+    payload: DiscoveryWorkerTaskResultRequest,
+    db: AsyncSession = Depends(get_db),
+    x_worker_token: str | None = Header(default=None),
+) -> WorkerTaskResultResponse:
+    worker = await _get_worker_by_token(payload.worker_id, db, x_worker_token)
+    task = await db.get(DiscoveryWorkerTask, task_id)
+    if task is None or task.worker_id != worker.id:
+        raise HTTPException(status_code=404, detail="Discovery task not found")
+    message = await apply_discovery_worker_task_result(db, task, payload)
+    worker.last_seen_at = utcnow()
+    await db.commit()
+    if message:
+        token, chat_id = await get_diagnostic_telegram_settings(db)
+        if token and chat_id:
+            try:
+                await TelegramNotifier(get_settings()).send_diagnostic(
+                    "Drop discovery",
+                    message,
+                    token=token,
+                    chat_id=chat_id,
+                )
+            except Exception:
+                logger.exception("Failed to send discovery Telegram notification")
+    return WorkerTaskResultResponse(detail="discovery task result accepted")

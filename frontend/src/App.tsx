@@ -11,6 +11,7 @@ import {
   DiagnosticTelegramSettings,
   DiscoveryDomain,
   DiscoveryObservation,
+  DiscoveryRuntimeSettings,
   DiscoveryZoneStats,
   DomainOverrideRule,
   DomainOverrideRulePhase,
@@ -91,6 +92,19 @@ const DEFAULT_DISCOVERY_FILTERS = {
   status: "",
   lifecycle: "",
   pageSize: "25",
+};
+
+const DEFAULT_DISCOVERY_RUNTIME_FORM = {
+  discoveryEnabled: true,
+  discoveryWorkerEnabled: true,
+  discoveryLocalFallbackEnabled: true,
+  discoverySchedulerIntervalSeconds: "2",
+  discoveryBatchSize: "50",
+  discoveryConcurrency: "10",
+  discoveryTimeoutSeconds: "4",
+  discoveryWorkerTaskStaleSeconds: "180",
+  workerDiscoveryConcurrency: "4",
+  workerDiscoveryPollIntervalSeconds: "1",
 };
 
 function formatUtcDateDaysAgo(daysAgo: number): string {
@@ -725,6 +739,21 @@ function splitDomains(value: string) {
     .filter(Boolean);
 }
 
+function discoveryRuntimeSettingsToForm(settings: DiscoveryRuntimeSettings) {
+  return {
+    discoveryEnabled: settings.discovery_enabled,
+    discoveryWorkerEnabled: settings.discovery_worker_enabled,
+    discoveryLocalFallbackEnabled: settings.discovery_local_fallback_enabled,
+    discoverySchedulerIntervalSeconds: String(settings.discovery_scheduler_interval_seconds),
+    discoveryBatchSize: String(settings.discovery_batch_size),
+    discoveryConcurrency: String(settings.discovery_concurrency),
+    discoveryTimeoutSeconds: String(settings.discovery_timeout_seconds),
+    discoveryWorkerTaskStaleSeconds: String(settings.discovery_worker_task_stale_seconds),
+    workerDiscoveryConcurrency: String(settings.worker_discovery_concurrency),
+    workerDiscoveryPollIntervalSeconds: String(settings.worker_discovery_poll_interval_seconds),
+  };
+}
+
 export default function App() {
   const [tab, setTab] = useState<Tab>("domains");
   const [session, setSession] = useState<SessionResponse | null>(null);
@@ -741,6 +770,7 @@ export default function App() {
   const [selectedDiscoveryDomainId, setSelectedDiscoveryDomainId] = useState<number | null>(null);
   const [discoveryObservations, setDiscoveryObservations] = useState<DiscoveryObservation[]>([]);
   const [discoveryZoneStats, setDiscoveryZoneStats] = useState<DiscoveryZoneStats[]>([]);
+  const [discoveryRuntimeSettings, setDiscoveryRuntimeSettings] = useState<DiscoveryRuntimeSettings | null>(null);
   const [allZonefilesSettings, setAllZonefilesSettings] = useState<AllZonefilesSettings | null>(null);
   const [zoneScanJobs, setZoneScanJobs] = useState<ZoneScanJob[]>([]);
   const [zoneScanCandidates, setZoneScanCandidates] = useState<ZoneScanCandidate[]>([]);
@@ -767,6 +797,7 @@ export default function App() {
   const [discoveryObservationForm, setDiscoveryObservationForm] = useState(DEFAULT_DISCOVERY_OBSERVATION_FORM);
   const [discoveryFilters, setDiscoveryFilters] = useState(DEFAULT_DISCOVERY_FILTERS);
   const [discoveryBulkIntervalSeconds, setDiscoveryBulkIntervalSeconds] = useState(DEFAULT_DISCOVERY_FORM.checkIntervalSeconds);
+  const [discoveryRuntimeForm, setDiscoveryRuntimeForm] = useState(DEFAULT_DISCOVERY_RUNTIME_FORM);
   const [discoveryPage, setDiscoveryPage] = useState(1);
   const [allZonefilesTokenForm, setAllZonefilesTokenForm] = useState("");
   const [zoneScanForm, setZoneScanForm] = useState(DEFAULT_ZONE_SCAN_FORM);
@@ -1004,6 +1035,7 @@ export default function App() {
         domainsData,
         discoveryDomainsData,
         discoveryZoneStatsData,
+        discoveryRuntimeSettingsData,
         allZonefilesSettingsData,
         zoneScanJobsData,
         zoneScanCandidatesData,
@@ -1021,6 +1053,7 @@ export default function App() {
         api.getDomains(),
         api.getDiscoveryDomains(),
         api.getDiscoveryZoneStats(),
+        api.getDiscoveryRuntimeSettings(),
         api.getAllZonefilesSettings(),
         api.getZoneScanJobs(),
         api.getZoneScanCandidates(),
@@ -1038,6 +1071,8 @@ export default function App() {
       setDomains(domainsData);
       setDiscoveryDomains(discoveryDomainsData);
       setDiscoveryZoneStats(discoveryZoneStatsData);
+      setDiscoveryRuntimeSettings(discoveryRuntimeSettingsData);
+      setDiscoveryRuntimeForm(discoveryRuntimeSettingsToForm(discoveryRuntimeSettingsData));
       setAllZonefilesSettings(allZonefilesSettingsData);
       setZoneScanJobs(zoneScanJobsData);
       setZoneScanCandidates(zoneScanCandidatesData);
@@ -1372,6 +1407,34 @@ export default function App() {
       });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка проверки AllZonefiles" });
+    }
+  }
+
+  async function saveDiscoveryRuntimeSettings(event: FormEvent) {
+    event.preventDefault();
+    const payload = {
+      discovery_enabled: discoveryRuntimeForm.discoveryEnabled,
+      discovery_worker_enabled: discoveryRuntimeForm.discoveryWorkerEnabled,
+      discovery_local_fallback_enabled: discoveryRuntimeForm.discoveryLocalFallbackEnabled,
+      discovery_scheduler_interval_seconds: Number(discoveryRuntimeForm.discoverySchedulerIntervalSeconds),
+      discovery_batch_size: Number(discoveryRuntimeForm.discoveryBatchSize),
+      discovery_concurrency: Number(discoveryRuntimeForm.discoveryConcurrency),
+      discovery_timeout_seconds: Number(discoveryRuntimeForm.discoveryTimeoutSeconds),
+      discovery_worker_task_stale_seconds: Number(discoveryRuntimeForm.discoveryWorkerTaskStaleSeconds),
+      worker_discovery_concurrency: Number(discoveryRuntimeForm.workerDiscoveryConcurrency),
+      worker_discovery_poll_interval_seconds: Number(discoveryRuntimeForm.workerDiscoveryPollIntervalSeconds),
+    };
+    if (Object.values(payload).some((value) => typeof value === "number" && !Number.isFinite(value))) {
+      setToast({ type: "error", text: "В настройках discovery есть некорректное число" });
+      return;
+    }
+    try {
+      const settings = await api.updateDiscoveryRuntimeSettings(payload);
+      setDiscoveryRuntimeSettings(settings);
+      setDiscoveryRuntimeForm(discoveryRuntimeSettingsToForm(settings));
+      setToast({ type: "success", text: "Настройки discovery сохранены" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка сохранения discovery-настроек" });
     }
   }
 
@@ -4179,6 +4242,62 @@ export default function App() {
               <button type="submit">Сохранить</button>
               <button type="button" className="ghost" onClick={() => void api.testDiagnosticTelegram().then((payload) => setToast({ type: "success", text: payload.detail })).catch((error: Error) => setToast({ type: "error", text: error.message }))}>Тест</button>
             </div>
+          </form>
+        </div>
+
+        <div className="card">
+          <div className="card-head">
+            <div>
+              <h2>Discovery-проверки</h2>
+              <p className="muted">
+                Эти настройки управляют фоновыми проверками доменов. Control применяет их сразу, а параметры воркера попадут в
+                `.env` после установки или обновления воркеров.
+              </p>
+            </div>
+            <span className={statusClass(discoveryRuntimeSettings?.discovery_worker_enabled ? "ready" : "paused")}>
+              {discoveryRuntimeSettings?.discovery_worker_enabled ? "через воркеры" : "воркеры выключены"}
+            </span>
+          </div>
+          <form className="form" onSubmit={saveDiscoveryRuntimeSettings}>
+            <label className="inline-check">
+              <input
+                type="checkbox"
+                checked={discoveryRuntimeForm.discoveryEnabled}
+                onChange={(event) => setDiscoveryRuntimeForm((current) => ({ ...current, discoveryEnabled: event.target.checked }))}
+              />
+              <span>Включить discovery-checker</span>
+            </label>
+            <label className="inline-check">
+              <input
+                type="checkbox"
+                checked={discoveryRuntimeForm.discoveryWorkerEnabled}
+                onChange={(event) => setDiscoveryRuntimeForm((current) => ({ ...current, discoveryWorkerEnabled: event.target.checked }))}
+              />
+              <span>Раздавать проверки подключенным воркерам</span>
+            </label>
+            <label className="inline-check">
+              <input
+                type="checkbox"
+                checked={discoveryRuntimeForm.discoveryLocalFallbackEnabled}
+                onChange={(event) => setDiscoveryRuntimeForm((current) => ({ ...current, discoveryLocalFallbackEnabled: event.target.checked }))}
+              />
+              <span>Fallback на control, если воркеров нет</span>
+            </label>
+            <div className="form-grid">
+              <label><span>Период планировщика, сек</span><input value={discoveryRuntimeForm.discoverySchedulerIntervalSeconds} onChange={(event) => setDiscoveryRuntimeForm((current) => ({ ...current, discoverySchedulerIntervalSeconds: event.target.value }))} /></label>
+              <label><span>Задач за цикл</span><input value={discoveryRuntimeForm.discoveryBatchSize} onChange={(event) => setDiscoveryRuntimeForm((current) => ({ ...current, discoveryBatchSize: event.target.value }))} /></label>
+              <label><span>Потоки control fallback</span><input value={discoveryRuntimeForm.discoveryConcurrency} onChange={(event) => setDiscoveryRuntimeForm((current) => ({ ...current, discoveryConcurrency: event.target.value }))} /></label>
+              <label><span>Timeout проверки, сек</span><input value={discoveryRuntimeForm.discoveryTimeoutSeconds} onChange={(event) => setDiscoveryRuntimeForm((current) => ({ ...current, discoveryTimeoutSeconds: event.target.value }))} /></label>
+              <label><span>TTL зависшей задачи, сек</span><input value={discoveryRuntimeForm.discoveryWorkerTaskStaleSeconds} onChange={(event) => setDiscoveryRuntimeForm((current) => ({ ...current, discoveryWorkerTaskStaleSeconds: event.target.value }))} /></label>
+              <label><span>Потоки discovery на воркер</span><input value={discoveryRuntimeForm.workerDiscoveryConcurrency} onChange={(event) => setDiscoveryRuntimeForm((current) => ({ ...current, workerDiscoveryConcurrency: event.target.value }))} /></label>
+              <label><span>Polling воркера, сек</span><input value={discoveryRuntimeForm.workerDiscoveryPollIntervalSeconds} onChange={(event) => setDiscoveryRuntimeForm((current) => ({ ...current, workerDiscoveryPollIntervalSeconds: event.target.value }))} /></label>
+            </div>
+            <div className="actions">
+              <button type="submit">Сохранить discovery-настройки</button>
+            </div>
+            <p className="muted">
+              После изменения потоков/polling нажми во вкладке workers кнопку обновления всех воркеров, чтобы новые значения попали на серверы.
+            </p>
           </form>
         </div>
 

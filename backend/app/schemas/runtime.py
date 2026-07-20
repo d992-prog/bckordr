@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WorkerHeartbeatRequest(BaseModel):
@@ -108,6 +108,34 @@ class WorkerTaskProgressRequest(BaseModel):
 
 class WorkerTaskResponseEnvelope(BaseModel):
     task: WorkerTaskPayloadResponse | None
+
+
+class DiscoveryWorkerTaskPayloadResponse(BaseModel):
+    task_id: int
+    discovery_domain_id: int
+    worker_id: int
+    fqdn: str
+    zone: str
+    source_mode: str = "rdap"
+    bootstrap_url: str
+    timeout_seconds: float = 5.0
+
+
+class DiscoveryWorkerTaskResponseEnvelope(BaseModel):
+    task: DiscoveryWorkerTaskPayloadResponse | None
+
+
+class DiscoveryWorkerTaskResultRequest(BaseModel):
+    worker_id: int
+    source: str
+    observed_at: datetime
+    http_status: int | None = None
+    latency_ms: int | None = None
+    lifecycle_stage: str | None = None
+    availability_status: str | None = None
+    status_codes: list[str] = Field(default_factory=list)
+    raw_response: str | None = None
+    error: str | None = None
 
 
 class WorkerTaskResultResponse(BaseModel):

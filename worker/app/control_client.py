@@ -33,6 +33,18 @@ class ControlTaskStatus:
     planned_rps: float
 
 
+@dataclass(slots=True)
+class DiscoveryControlTask:
+    task_id: int
+    discovery_domain_id: int
+    worker_id: int
+    fqdn: str
+    zone: str
+    source_mode: str
+    bootstrap_url: str
+    timeout_seconds: float
+
+
 class ControlClient:
     def __init__(self, settings: WorkerSettings) -> None:
         self.settings = settings
@@ -104,6 +116,41 @@ class ControlClient:
     async def report_result(self, task_id: int, payload: dict) -> None:
         response = await self.client.post(
             f"/api/worker-runtime/tasks/{task_id}/result",
+            json={"worker_id": self.settings.worker_id, **payload},
+        )
+        response.raise_for_status()
+
+    async def next_discovery_task(self) -> DiscoveryControlTask | None:
+        response = await self.client.get(
+            "/api/worker-runtime/discovery/tasks/next",
+            params={"worker_id": self.settings.worker_id},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        task = payload.get("task")
+        if not task:
+            return None
+        return DiscoveryControlTask(
+            task_id=task["task_id"],
+            discovery_domain_id=task["discovery_domain_id"],
+            worker_id=task["worker_id"],
+            fqdn=task["fqdn"],
+            zone=task["zone"],
+            source_mode=task.get("source_mode") or "rdap",
+            bootstrap_url=task["bootstrap_url"],
+            timeout_seconds=float(task.get("timeout_seconds", self.settings.request_timeout_seconds)),
+        )
+
+    async def acknowledge_discovery_task(self, task_id: int) -> None:
+        response = await self.client.post(
+            f"/api/worker-runtime/discovery/tasks/{task_id}/ack",
+            json={"worker_id": self.settings.worker_id},
+        )
+        response.raise_for_status()
+
+    async def report_discovery_result(self, task_id: int, payload: dict) -> None:
+        response = await self.client.post(
+            f"/api/worker-runtime/discovery/tasks/{task_id}/result",
             json={"worker_id": self.settings.worker_id, **payload},
         )
         response.raise_for_status()

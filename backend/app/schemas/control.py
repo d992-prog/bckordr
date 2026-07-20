@@ -500,6 +500,32 @@ class WorkerMaintenanceBulkResponse(BaseModel):
     skipped_worker_ids: list[int]
 
 
+class DiscoveryRuntimeSettingsResponse(BaseModel):
+    discovery_enabled: bool
+    discovery_worker_enabled: bool
+    discovery_local_fallback_enabled: bool
+    discovery_scheduler_interval_seconds: float
+    discovery_batch_size: int
+    discovery_concurrency: int
+    discovery_timeout_seconds: float
+    discovery_worker_task_stale_seconds: int
+    worker_discovery_concurrency: int
+    worker_discovery_poll_interval_seconds: float
+
+
+class DiscoveryRuntimeSettingsUpdateRequest(BaseModel):
+    discovery_enabled: bool | None = None
+    discovery_worker_enabled: bool | None = None
+    discovery_local_fallback_enabled: bool | None = None
+    discovery_scheduler_interval_seconds: float | None = Field(default=None, ge=0.25, le=3600.0)
+    discovery_batch_size: int | None = Field(default=None, ge=1, le=1000)
+    discovery_concurrency: int | None = Field(default=None, ge=1, le=500)
+    discovery_timeout_seconds: float | None = Field(default=None, ge=0.25, le=60.0)
+    discovery_worker_task_stale_seconds: int | None = Field(default=None, ge=10, le=3600)
+    worker_discovery_concurrency: int | None = Field(default=None, ge=1, le=128)
+    worker_discovery_poll_interval_seconds: float | None = Field(default=None, ge=0.1, le=60.0)
+
+
 class DropDomainBase(BaseModel):
     fqdn: str = Field(min_length=3, max_length=255)
     zone: str = Field(default="fr", min_length=2, max_length=32)

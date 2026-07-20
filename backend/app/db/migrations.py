@@ -242,6 +242,24 @@ MIGRATIONS = (
     """,
     "CREATE INDEX IF NOT EXISTS ix_discovery_observations_discovery_domain_id ON discovery_observations(discovery_domain_id)",
     """
+    CREATE TABLE IF NOT EXISTS discovery_worker_tasks (
+        id SERIAL PRIMARY KEY,
+        discovery_domain_id INTEGER NOT NULL REFERENCES discovery_domains(id) ON DELETE CASCADE,
+        worker_id INTEGER NOT NULL REFERENCES worker_nodes(id) ON DELETE CASCADE,
+        status VARCHAR(32) NOT NULL DEFAULT 'queued',
+        source_mode VARCHAR(32) NOT NULL DEFAULT 'rdap',
+        assigned_at TIMESTAMPTZ NULL,
+        acknowledged_at TIMESTAMPTZ NULL,
+        finished_at TIMESTAMPTZ NULL,
+        error_message TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_discovery_worker_tasks_discovery_domain_id ON discovery_worker_tasks(discovery_domain_id)",
+    "CREATE INDEX IF NOT EXISTS ix_discovery_worker_tasks_worker_id ON discovery_worker_tasks(worker_id)",
+    "CREATE INDEX IF NOT EXISTS ix_discovery_worker_tasks_status ON discovery_worker_tasks(status)",
+    """
     CREATE TABLE IF NOT EXISTS zone_scan_jobs (
         id SERIAL PRIMARY KEY,
         zone VARCHAR(32) NOT NULL,

@@ -29,6 +29,13 @@ class WorkerSettings(BaseSettings):
         le=32.0,
     )
     registration_max_concurrency: int = Field(default=64, alias="REGISTRATION_MAX_CONCURRENCY", ge=1, le=512)
+    discovery_worker_enabled: bool = Field(default=True, alias="DISCOVERY_WORKER_ENABLED")
+    discovery_worker_concurrency: int = Field(default=4, alias="DISCOVERY_WORKER_CONCURRENCY", ge=1, le=128)
+    discovery_worker_poll_interval_seconds: float = Field(
+        default=1.0,
+        alias="DISCOVERY_WORKER_POLL_INTERVAL_SECONDS",
+        ge=0.1,
+    )
     max_idle_backoff_seconds: float = Field(default=10.0, alias="MAX_IDLE_BACKOFF_SECONDS")
 
     model_config = SettingsConfigDict(

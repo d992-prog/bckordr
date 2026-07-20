@@ -160,6 +160,19 @@ export type AllZonefilesTestResult = {
   zones_count: number | null;
 };
 
+export type DiscoveryRuntimeSettings = {
+  discovery_enabled: boolean;
+  discovery_worker_enabled: boolean;
+  discovery_local_fallback_enabled: boolean;
+  discovery_scheduler_interval_seconds: number;
+  discovery_batch_size: number;
+  discovery_concurrency: number;
+  discovery_timeout_seconds: number;
+  discovery_worker_task_stale_seconds: number;
+  worker_discovery_concurrency: number;
+  worker_discovery_poll_interval_seconds: number;
+};
+
 export type ZoneScanJob = {
   id: number;
   zone: string;
@@ -707,6 +720,12 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getDiscoveryZoneStats: () => request<DiscoveryZoneStats[]>("/control/discovery/zone-stats"),
+  getDiscoveryRuntimeSettings: () => request<DiscoveryRuntimeSettings>("/control/discovery/runtime-settings"),
+  updateDiscoveryRuntimeSettings: (payload: Partial<DiscoveryRuntimeSettings>) =>
+    request<DiscoveryRuntimeSettings>("/control/discovery/runtime-settings", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
   deleteDiscoveryDomain: (id: number) =>
     request<{ detail: string }>(`/control/discovery/domains/${id}`, { method: "DELETE" }),
 

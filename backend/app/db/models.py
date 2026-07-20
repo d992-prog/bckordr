@@ -755,6 +755,37 @@ class DiscoveryObservation(Base):
     discovery_domain: Mapped[DiscoveryDomain] = relationship()
 
 
+class DiscoveryWorkerTask(Base):
+    __tablename__ = "discovery_worker_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    discovery_domain_id: Mapped[int] = mapped_column(
+        ForeignKey("discovery_domains.id", ondelete="CASCADE"),
+        index=True,
+    )
+    worker_id: Mapped[int] = mapped_column(ForeignKey("worker_nodes.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", server_default="queued", index=True)
+    source_mode: Mapped[str] = mapped_column(String(32), default="rdap", server_default="rdap")
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+    discovery_domain: Mapped[DiscoveryDomain] = relationship()
+    worker: Mapped[WorkerNode] = relationship()
+
+
 class ZoneScanJob(Base):
     __tablename__ = "zone_scan_jobs"
 

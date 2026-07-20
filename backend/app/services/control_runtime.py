@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.core.config import Settings
 from app.db.base import utcnow
 from app.db.models import ZoneScanJob
-from app.services.app_settings import get_diagnostic_telegram_settings
+from app.services.app_settings import get_diagnostic_telegram_settings, get_discovery_runtime_settings
 from app.services.attack_runtime import (
     autoplan_due_attack_runs,
     finalize_expired_attack_runs,
@@ -20,6 +20,11 @@ from app.services.attack_runtime import (
     supervise_worker_pool,
 )
 from app.services.discovery import process_due_discovery_domains
+from app.services.discovery_worker_runtime import (
+    enqueue_due_discovery_worker_tasks,
+    expire_stale_discovery_worker_tasks,
+    load_eligible_discovery_workers,
+)
 from app.services.notifier import TelegramNotifier
 from app.services.zone_scanner import run_zone_scan_job
 
@@ -48,6 +53,11 @@ class ControlRuntimeOrchestrator:
         self._discovery_batch_size = max(settings.discovery_batch_size, 1) if settings else 10
         self._discovery_concurrency = max(settings.discovery_concurrency, 1) if settings else 5
         self._discovery_timeout_seconds = max(settings.discovery_timeout_seconds, 0.25) if settings else 5.0
+        self._discovery_worker_enabled = settings.discovery_worker_enabled if settings else True
+        self._discovery_worker_task_stale_seconds = (
+            max(settings.discovery_worker_task_stale_seconds, 1) if settings else 180
+        )
+        self._discovery_local_fallback_enabled = settings.discovery_local_fallback_enabled if settings else True
         self._discovery_rdap_bootstrap_url = (
             settings.discovery_rdap_bootstrap_url if settings else "https://data.iana.org/rdap/dns.json"
         )
@@ -110,22 +120,82 @@ class ControlRuntimeOrchestrator:
             await rebalance_worker_pool(session, now=now)
             await recompute_worker_domain_counts(session)
             await recompute_run_statistics(session)
+            discovery_runtime_settings = (
+                await get_discovery_runtime_settings(session, self._settings)
+                if self._settings is not None
+                else None
+            )
+            discovery_enabled = (
+                discovery_runtime_settings.discovery_enabled
+                if discovery_runtime_settings is not None
+                else self._discovery_enabled
+            )
+            discovery_scheduler_interval_seconds = (
+                discovery_runtime_settings.discovery_scheduler_interval_seconds
+                if discovery_runtime_settings is not None
+                else self._discovery_scheduler_interval_seconds
+            )
             if (
-                self._discovery_enabled
+                discovery_enabled
                 and (
                     self._last_discovery_at is None
-                    or (now - self._last_discovery_at).total_seconds() >= self._discovery_scheduler_interval_seconds
+                    or (now - self._last_discovery_at).total_seconds() >= discovery_scheduler_interval_seconds
                 )
             ):
-                await process_due_discovery_domains(
-                    session,
-                    now=now,
-                    batch_size=self._discovery_batch_size,
-                    concurrency=self._discovery_concurrency,
-                    bootstrap_url=self._discovery_rdap_bootstrap_url,
-                    timeout_seconds=self._discovery_timeout_seconds,
-                    notify=lambda message: self._send_discovery_notification(session, message),
+                discovery_workers = []
+                discovery_worker_enabled = (
+                    discovery_runtime_settings.discovery_worker_enabled
+                    if discovery_runtime_settings is not None
+                    else self._discovery_worker_enabled
                 )
+                discovery_worker_task_stale_seconds = (
+                    discovery_runtime_settings.discovery_worker_task_stale_seconds
+                    if discovery_runtime_settings is not None
+                    else self._discovery_worker_task_stale_seconds
+                )
+                discovery_batch_size = (
+                    discovery_runtime_settings.discovery_batch_size
+                    if discovery_runtime_settings is not None
+                    else self._discovery_batch_size
+                )
+                if discovery_worker_enabled:
+                    await expire_stale_discovery_worker_tasks(
+                        session,
+                        now=now,
+                        stale_after_seconds=discovery_worker_task_stale_seconds,
+                    )
+                    discovery_workers = await load_eligible_discovery_workers(session)
+                    if discovery_workers:
+                        await enqueue_due_discovery_worker_tasks(
+                            session,
+                            now=now,
+                            batch_size=discovery_batch_size,
+                        )
+                discovery_local_fallback_enabled = (
+                    discovery_runtime_settings.discovery_local_fallback_enabled
+                    if discovery_runtime_settings is not None
+                    else self._discovery_local_fallback_enabled
+                )
+                if not discovery_workers and discovery_local_fallback_enabled:
+                    discovery_concurrency = (
+                        discovery_runtime_settings.discovery_concurrency
+                        if discovery_runtime_settings is not None
+                        else self._discovery_concurrency
+                    )
+                    discovery_timeout_seconds = (
+                        discovery_runtime_settings.discovery_timeout_seconds
+                        if discovery_runtime_settings is not None
+                        else self._discovery_timeout_seconds
+                    )
+                    await process_due_discovery_domains(
+                        session,
+                        now=now,
+                        batch_size=discovery_batch_size,
+                        concurrency=discovery_concurrency,
+                        bootstrap_url=self._discovery_rdap_bootstrap_url,
+                        timeout_seconds=discovery_timeout_seconds,
+                        notify=lambda message: self._send_discovery_notification(session, message),
+                    )
                 self._last_discovery_at = now
             await session.commit()
             await self._start_zone_scan_jobs_if_needed()

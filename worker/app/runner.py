@@ -27,7 +27,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in constrained envir
     psutil = _PsutilFallback()
 
 from app.config import WorkerSettings
-from app.control_client import ControlClient, ControlTask, ControlTaskStatus
+from app.control_client import ControlClient, ControlTask, ControlTaskStatus, DiscoveryControlTask
+from app.discovery_checker import check_discovery_task
 from app.gandi import register_domain
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,9 @@ class WorkerRunner:
         await self.control.close()
 
     async def run(self) -> None:
+        discovery_loop: asyncio.Task[None] | None = None
+        if self.settings.discovery_worker_enabled:
+            discovery_loop = asyncio.create_task(self._run_discovery_loop(), name="worker-discovery-loop")
         try:
             while not self._stop:
                 await self._heartbeat(status="ready")
@@ -98,7 +102,58 @@ class WorkerRunner:
                 await self.control.acknowledge_task(task.task_id)
                 await self._execute_task(task)
         finally:
+            self._stop = True
+            if discovery_loop is not None:
+                discovery_loop.cancel()
+                try:
+                    await discovery_loop
+                except asyncio.CancelledError:
+                    pass
             await self.close()
+
+    async def _run_discovery_loop(self) -> None:
+        active: set[asyncio.Task[None]] = set()
+        try:
+            while not self._stop:
+                active = {task for task in active if not task.done()}
+                while len(active) < self.settings.discovery_worker_concurrency:
+                    discovery_task = await self.control.next_discovery_task()
+                    if discovery_task is None:
+                        break
+                    await self.control.acknowledge_discovery_task(discovery_task.task_id)
+                    active.add(asyncio.create_task(self._execute_discovery_task(discovery_task)))
+                if active:
+                    done, _ = await asyncio.wait(
+                        active,
+                        timeout=self.settings.discovery_worker_poll_interval_seconds,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for completed in done:
+                        try:
+                            await completed
+                        except Exception:
+                            logger.exception("Discovery worker task failed")
+                else:
+                    await asyncio.sleep(self.settings.discovery_worker_poll_interval_seconds)
+        finally:
+            for task in active:
+                task.cancel()
+            if active:
+                await asyncio.gather(*active, return_exceptions=True)
+
+    async def _execute_discovery_task(self, task: DiscoveryControlTask) -> None:
+        try:
+            result = await check_discovery_task(task)
+        except Exception as exc:
+            result = {
+                "source": "worker_discovery",
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "lifecycle_stage": "unknown",
+                "availability_status": "unknown",
+                "status_codes": [],
+                "error": str(exc),
+            }
+        await self.control.report_discovery_result(task.task_id, result)
 
     async def _heartbeat(self, *, status: str) -> None:
         payload = {
@@ -309,6 +364,55 @@ class WorkerRunner:
                     await self._heartbeat(status="running")
                     next_progress_at = perf_counter() + 0.5
 
+            for queued in pending:
+                if not queued.done():
+                    continue
+                try:
+                    status_code, latency_ms, body_preview = await queued
+                except Exception as exc:
+                    last_error = str(exc)
+                    error_type = exc.__class__.__name__
+                    _add_count(response_error_counts, error_type)
+                    _record_response_sample(response_samples, error=last_error, error_type=error_type)
+                    continue
+                last_status = status_code
+                last_latency_ms = latency_ms
+                _add_count(response_status_counts, status_code)
+                _record_response_sample(
+                    response_samples,
+                    status_code=status_code,
+                    latency_ms=latency_ms,
+                    body_preview=body_preview,
+                )
+                if status_code == 200:
+                    success_attempts += 1
+                    for other in pending:
+                        if other is not queued:
+                            other.cancel()
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                    await self.control.report_result(
+                        task.task_id,
+                        {
+                            "status": "success",
+                            "total_attempts": total_attempts,
+                            "success_attempts": success_attempts,
+                            "latency_ms": latency_ms,
+                            "last_http_status": status_code,
+                            "response_status_counts": response_status_counts,
+                            "response_error_counts": response_error_counts,
+                            "response_samples": response_samples,
+                            "success_response_code": status_code,
+                            "success_message": body_preview[:500],
+                        },
+                    )
+                    self._current_rps = 0.0
+                    self._current_capacity_rps = 0.0
+                    await self._heartbeat(status="ready")
+                    return
+                last_error = body_preview[:500]
+
+            pending = {queued for queued in pending if not queued.done()}
             for queued in pending:
                 queued.cancel()
             if pending:

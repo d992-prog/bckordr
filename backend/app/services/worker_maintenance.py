@@ -6,6 +6,7 @@ from app.core.config import get_settings
 from app.db.base import utcnow
 from app.db.models import WorkerMaintenanceJob, WorkerNode
 from app.db.session import AsyncSessionLocal
+from app.services.app_settings import DiscoveryRuntimeSettings, get_discovery_runtime_settings
 
 
 def _shell_quote(value: str | int | float | bool) -> str:
@@ -17,7 +18,27 @@ def _build_printf_command(path: str, lines: list[str]) -> str:
     return f"printf '%s\\n' {quoted_lines} > {_shell_quote(path)}"
 
 
-def _build_worker_env_lines(worker: WorkerNode, *, runtime_base_url: str, simulate_mode: bool) -> list[str]:
+def _build_worker_env_lines(
+    worker: WorkerNode,
+    *,
+    runtime_base_url: str,
+    simulate_mode: bool,
+    discovery_settings: DiscoveryRuntimeSettings | None = None,
+) -> list[str]:
+    settings = get_settings()
+    worker_discovery_enabled = (
+        discovery_settings.discovery_worker_enabled if discovery_settings is not None else settings.discovery_worker_enabled
+    )
+    worker_discovery_concurrency = (
+        discovery_settings.worker_discovery_concurrency
+        if discovery_settings is not None
+        else settings.worker_discovery_concurrency
+    )
+    worker_discovery_poll_interval_seconds = (
+        discovery_settings.worker_discovery_poll_interval_seconds
+        if discovery_settings is not None
+        else settings.worker_discovery_poll_interval_seconds
+    )
     return [
         f"CONTROL_BASE_URL={runtime_base_url.rstrip('/')}",
         f"WORKER_ID={worker.id}",
@@ -38,7 +59,42 @@ def _build_worker_env_lines(worker: WorkerNode, *, runtime_base_url: str, simula
         "GANDI_STATUS_POLL_MAX_ATTEMPTS=8",
         "REGISTRATION_CONCURRENCY_MULTIPLIER=8",
         "REGISTRATION_MAX_CONCURRENCY=160",
+        f"DISCOVERY_WORKER_ENABLED={'true' if worker_discovery_enabled else 'false'}",
+        f"DISCOVERY_WORKER_CONCURRENCY={worker_discovery_concurrency}",
+        f"DISCOVERY_WORKER_POLL_INTERVAL_SECONDS={worker_discovery_poll_interval_seconds}",
         "MAX_IDLE_BACKOFF_SECONDS=10",
+    ]
+
+
+def _build_env_upsert_command(path: str, key: str, value: str | int | float | bool) -> str:
+    line = f"{key}={value}"
+    quoted_path = _shell_quote(path)
+    quoted_line = _shell_quote(line)
+    quoted_pattern = _shell_quote(f"^{key}=")
+    quoted_replacement = _shell_quote(f"s|^{key}=.*|{line}|")
+    return f"grep -q {quoted_pattern} {quoted_path} && sed -i {quoted_replacement} {quoted_path} || printf '%s\\n' {quoted_line} >> {quoted_path}"
+
+
+def _build_worker_discovery_env_commands(discovery_settings: DiscoveryRuntimeSettings | None = None) -> list[str]:
+    settings = get_settings()
+    worker_discovery_enabled = (
+        discovery_settings.discovery_worker_enabled if discovery_settings is not None else settings.discovery_worker_enabled
+    )
+    worker_discovery_concurrency = (
+        discovery_settings.worker_discovery_concurrency
+        if discovery_settings is not None
+        else settings.worker_discovery_concurrency
+    )
+    worker_discovery_poll_interval_seconds = (
+        discovery_settings.worker_discovery_poll_interval_seconds
+        if discovery_settings is not None
+        else settings.worker_discovery_poll_interval_seconds
+    )
+    env_path = "/opt/domain-drop-catcher/worker/.env"
+    return [
+        _build_env_upsert_command(env_path, "DISCOVERY_WORKER_ENABLED", "true" if worker_discovery_enabled else "false"),
+        _build_env_upsert_command(env_path, "DISCOVERY_WORKER_CONCURRENCY", worker_discovery_concurrency),
+        _build_env_upsert_command(env_path, "DISCOVERY_WORKER_POLL_INTERVAL_SECONDS", worker_discovery_poll_interval_seconds),
     ]
 
 
@@ -62,7 +118,12 @@ def _build_worker_service_command() -> str:
     return _build_printf_command("/etc/systemd/system/domain-drop-worker.service", lines)
 
 
-def build_worker_maintenance_commands(action: str, *, worker: WorkerNode | None = None) -> list[str]:
+def build_worker_maintenance_commands(
+    action: str,
+    *,
+    worker: WorkerNode | None = None,
+    discovery_settings: DiscoveryRuntimeSettings | None = None,
+) -> list[str]:
     if action == "check":
         return [
             "hostname",
@@ -76,7 +137,12 @@ def build_worker_maintenance_commands(action: str, *, worker: WorkerNode | None 
         runtime_base_url = settings.worker_runtime_public_base_url or "http://CONTROL_SERVER_IP:8080"
         env_command = _build_printf_command(
             "/opt/domain-drop-catcher/worker/.env",
-            _build_worker_env_lines(worker, runtime_base_url=runtime_base_url, simulate_mode=False),
+            _build_worker_env_lines(
+                worker,
+                runtime_base_url=runtime_base_url,
+                simulate_mode=False,
+                discovery_settings=discovery_settings,
+            ),
         )
         return [
             "apt-get update",
@@ -93,9 +159,11 @@ def build_worker_maintenance_commands(action: str, *, worker: WorkerNode | None 
             "systemctl is-active domain-drop-worker.service",
         ]
     if action == "update":
+        discovery_env_commands = _build_worker_discovery_env_commands(discovery_settings)
         return [
             "cd /opt/domain-drop-catcher && git pull --ff-only origin main",
             "/opt/domain-drop-catcher/worker/.venv/bin/pip install -e /opt/domain-drop-catcher/worker",
+            *discovery_env_commands,
             "systemctl daemon-reload",
             "systemctl restart domain-drop-worker.service",
             "systemctl is-active domain-drop-worker.service",
@@ -122,7 +190,12 @@ async def run_worker_maintenance_job(job_id: int) -> None:
         await session.commit()
 
         try:
-            commands = build_worker_maintenance_commands(job.action, worker=worker)
+            discovery_settings = await get_discovery_runtime_settings(session, get_settings())
+            commands = build_worker_maintenance_commands(
+                job.action,
+                worker=worker,
+                discovery_settings=discovery_settings,
+            )
             log = await execute_worker_ssh_commands(worker, commands)
         except Exception as exc:  # pragma: no cover - exact SSH errors depend on environment
             job.status = "failed"
