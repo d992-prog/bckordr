@@ -2523,6 +2523,12 @@ async def update_contact_profile(
     contact.updated_at = utcnow()
     if payload.is_default:
         await _enforce_single_default_contact(db, contact.id)
+    await db.flush()
+    affected_domains = (
+        await db.execute(select(DropDomain).where(DropDomain.contact_profile_id == contact.id))
+    ).scalars().all()
+    for domain in affected_domains:
+        await _apply_domain_readiness(db, domain)
     await add_audit_log(
         db,
         actor_user_id=admin.id,
