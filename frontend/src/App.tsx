@@ -331,6 +331,16 @@ function formatDomainWindow(domain: DropDomain) {
   )} + ${duration}s`;
 }
 
+function formatPreviewWindow(window: StrategyPreview["windows"][number], timezoneName: string) {
+  return `${formatTimeInZone(window.start_at, timezoneName)} → ${formatTimeInZone(window.end_at, timezoneName)}`;
+}
+
+function formatDomainStrategyFallbackWindow(form: typeof DEFAULT_DOMAIN_FORM) {
+  return `${String(Number(form.windowStartMinute) || 0).padStart(2, "0")}:${String(
+    Number(form.windowStartSecond) || 0,
+  ).padStart(2, "0")} + ${Number(form.windowDurationSeconds) || 0}s`;
+}
+
 function formatWorkerRuntimeMode(value: string | null | undefined) {
   if (value === "test") {
     return "Тест";
@@ -765,6 +775,7 @@ export default function App() {
   const [strategyRules, setStrategyRules] = useState<ZoneRule[]>([]);
   const [rulePhases, setRulePhases] = useState<Record<number, ZoneRulePhase[]>>({});
   const [strategyPreview, setStrategyPreview] = useState<StrategyPreview | null>(null);
+  const [domainStrategyPreview, setDomainStrategyPreview] = useState<StrategyPreview | null>(null);
   const [domains, setDomains] = useState<DropDomain[]>([]);
   const [discoveryDomains, setDiscoveryDomains] = useState<DiscoveryDomain[]>([]);
   const [selectedDiscoveryDomainId, setSelectedDiscoveryDomainId] = useState<number | null>(null);
@@ -793,6 +804,7 @@ export default function App() {
 
   const [loginForm, setLoginForm] = useState({ username: "", password: "", remember_me: true });
   const [domainForm, setDomainForm] = useState(DEFAULT_DOMAIN_FORM);
+  const [domainStrategyInitialized, setDomainStrategyInitialized] = useState(false);
   const [discoveryForm, setDiscoveryForm] = useState(DEFAULT_DISCOVERY_FORM);
   const [discoveryObservationForm, setDiscoveryObservationForm] = useState(DEFAULT_DISCOVERY_OBSERVATION_FORM);
   const [discoveryFilters, setDiscoveryFilters] = useState(DEFAULT_DISCOVERY_FILTERS);
@@ -907,10 +919,21 @@ export default function App() {
     () => manualOverrideDomains.find((item) => item.id === selectedOverrideDomainId) ?? null,
     [manualOverrideDomains, selectedOverrideDomainId],
   );
-  const matchingDomainStrategies = useMemo(
-    () => strategies.filter((item) => item.zone.toLowerCase() === domainForm.zone.trim().toLowerCase()),
-    [domainForm.zone, strategies],
+  const activeDomainStrategies = useMemo(
+    () =>
+      strategies
+        .filter((item) => item.is_active)
+        .sort((left, right) => left.zone.localeCompare(right.zone) || left.name.localeCompare(right.name)),
+    [strategies],
   );
+  const selectedDomainStrategy = useMemo(() => {
+    const explicitStrategyId = parseNumber(domainForm.zoneStrategyId);
+    if (explicitStrategyId) {
+      return strategies.find((item) => item.id === explicitStrategyId) ?? null;
+    }
+    const zone = domainForm.zone.trim().toLowerCase();
+    return activeDomainStrategies.find((item) => item.zone.toLowerCase() === zone) ?? null;
+  }, [activeDomainStrategies, domainForm.zone, domainForm.zoneStrategyId, strategies]);
   const selectedDiscoveryDomain = useMemo(
     () => discoveryDomains.find((item) => item.id === selectedDiscoveryDomainId) ?? null,
     [discoveryDomains, selectedDiscoveryDomainId],
@@ -1000,11 +1023,46 @@ export default function App() {
   }, [selectedStrategyId, strategies]);
 
   useEffect(() => {
+    if (domainStrategyInitialized || domainForm.zoneStrategyId || activeDomainStrategies.length === 0) {
+      return;
+    }
+    const currentZone = domainForm.zone.trim().toLowerCase();
+    const initialStrategy =
+      activeDomainStrategies.find((item) => item.zone.toLowerCase() === currentZone) ?? activeDomainStrategies[0];
+    selectDomainStrategy(String(initialStrategy.id));
+    setDomainStrategyInitialized(true);
+  }, [activeDomainStrategies, domainForm.zone, domainForm.zoneStrategyId, domainStrategyInitialized]);
+
+  useEffect(() => {
     if (!selectedStrategyId || !session) {
       return;
     }
     void loadStrategyDetails(selectedStrategyId, previewDate);
   }, [selectedStrategyId, previewDate, session?.user.id]);
+
+  useEffect(() => {
+    const strategyId = parseNumber(domainForm.zoneStrategyId);
+    if (!session || !strategyId || !domainForm.dropDate) {
+      setDomainStrategyPreview(null);
+      return;
+    }
+    let mounted = true;
+    api
+      .previewZoneStrategy(strategyId, domainForm.dropDate)
+      .then((preview) => {
+        if (mounted) {
+          setDomainStrategyPreview(preview);
+        }
+      })
+      .catch(() => {
+        if (mounted) {
+          setDomainStrategyPreview(null);
+        }
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [domainForm.dropDate, domainForm.zoneStrategyId, session?.user.id]);
 
   useEffect(() => {
     if (!selectedOverrideDomainId && manualOverrideDomains.length > 0) {
@@ -1155,6 +1213,24 @@ export default function App() {
     }
   }
 
+  function selectDomainStrategy(strategyIdValue: string) {
+    const strategyId = parseNumber(strategyIdValue);
+    const strategy = strategyId ? strategies.find((item) => item.id === strategyId) : null;
+    setDomainForm((current) => {
+      if (!strategy) {
+        return { ...current, zoneStrategyId: "", strategyMode: "inherit_zone" };
+      }
+      return {
+        ...current,
+        zone: strategy.zone,
+        timezoneName: strategy.timezone_name,
+        registrarSlug: strategy.default_registrar_slug || current.registrarSlug || "gandi",
+        zoneStrategyId: String(strategy.id),
+        strategyMode: "inherit_zone",
+      };
+    });
+  }
+
   async function submitLogin(event: FormEvent) {
     event.preventDefault();
     try {
@@ -1275,6 +1351,7 @@ export default function App() {
         ? await api.importDomains(importFile, payloadBase)
         : await api.createDomain({ domains: splitDomains(domainForm.domainsText), ...payloadBase });
       setDomainForm(DEFAULT_DOMAIN_FORM);
+      setDomainStrategyInitialized(false);
       setImportFile(null);
       await loadAll();
       setToast({
@@ -2794,8 +2871,7 @@ export default function App() {
 
           <form className="form" onSubmit={submitDomains}>
             <p className="muted">
-              `inherit_zone` использует общую стратегию зоны. `manual_override` переводит домен на собственные
-              окна/фазы, которые дальше настраиваются ниже в этой вкладке.
+              Выбери стратегию зоны, дату дропа и домены. Часовой пояс, окно и регистратор подтянутся из стратегии.
             </p>
             <label>
               <span>Домены по одному или пачкой</span>
@@ -2811,26 +2887,24 @@ export default function App() {
               <input type="file" accept=".txt,.csv,.xlsx" onChange={(event) => setImportFile(event.target.files?.[0] ?? null)} />
             </label>
             <div className="form two-columns">
-              <label><span>Дата дропа</span><input type="date" value={domainForm.dropDate} onChange={(event) => setDomainForm((current) => ({ ...current, dropDate: event.target.value }))} /></label>
-              <label><span>Приоритет</span><input value={domainForm.priority} onChange={(event) => setDomainForm((current) => ({ ...current, priority: event.target.value }))} /></label>
-              <label><span>Зона</span><input value={domainForm.zone} onChange={(event) => setDomainForm((current) => ({ ...current, zone: event.target.value }))} /></label>
-              <label><span>Часовой пояс</span><input value={domainForm.timezoneName} onChange={(event) => setDomainForm((current) => ({ ...current, timezoneName: event.target.value }))} /></label>
-              <label><span>Регистратор</span><input value={domainForm.registrarSlug} onChange={(event) => setDomainForm((current) => ({ ...current, registrarSlug: event.target.value }))} /></label>
-              <label><span>Лет регистрации</span><input value={domainForm.requestedDurationYears} onChange={(event) => setDomainForm((current) => ({ ...current, requestedDurationYears: event.target.value }))} /></label>
-              <label>
-                <span>Режим стратегии</span>
-                <select value={domainForm.strategyMode} onChange={(event) => setDomainForm((current) => ({ ...current, strategyMode: event.target.value }))}>
-                  <option value="inherit_zone">стратегия зоны</option>
-                  <option value="manual_override">ручной override</option>
-                </select>
-              </label>
               <label>
                 <span>Стратегия зоны</span>
-                <select value={domainForm.zoneStrategyId} onChange={(event) => setDomainForm((current) => ({ ...current, zoneStrategyId: event.target.value }))}>
-                  <option value="">Авто по зоне</option>
-                  {matchingDomainStrategies.map((strategy) => <option key={strategy.id} value={strategy.id}>{strategy.zone} | {strategy.name}</option>)}
+                <select value={domainForm.zoneStrategyId} onChange={(event) => selectDomainStrategy(event.target.value)}>
+                  <option value="">Без стратегии / ручные поля</option>
+                  {activeDomainStrategies.map((strategy) => (
+                    <option key={strategy.id} value={strategy.id}>
+                      .{strategy.zone} — {strategy.name}
+                    </option>
+                  ))}
                 </select>
               </label>
+              <label><span>Дата дропа</span><input type="date" value={domainForm.dropDate} onChange={(event) => setDomainForm((current) => ({ ...current, dropDate: event.target.value }))} /></label>
+              <label>
+                <span>Приоритет</span>
+                <input value={domainForm.priority} onChange={(event) => setDomainForm((current) => ({ ...current, priority: event.target.value }))} />
+                <small className="field-hint">Это вес, а не процент. Для 97% одному домену и 1% остальным ставь 1000 / 10 / 10 / 10.</small>
+              </label>
+              <label><span>Лет регистрации</span><input value={domainForm.requestedDurationYears} onChange={(event) => setDomainForm((current) => ({ ...current, requestedDurationYears: event.target.value }))} /></label>
               <label>
                 <span>Аккаунт регистратора</span>
                 <select value={domainForm.registrarAccountId} onChange={(event) => setDomainForm((current) => ({ ...current, registrarAccountId: event.target.value }))}>
@@ -2845,14 +2919,66 @@ export default function App() {
                   {contacts.map((contact) => <option key={contact.id} value={contact.id}>{contact.label}</option>)}
                 </select>
               </label>
-              <label><span>Override мин. RPS</span><input value={domainForm.overrideMinGuaranteedRps} onChange={(event) => setDomainForm((current) => ({ ...current, overrideMinGuaranteedRps: event.target.value }))} placeholder="пусто = значение зоны" /></label>
-              <label><span>Минута окна</span><input value={domainForm.windowStartMinute} onChange={(event) => setDomainForm((current) => ({ ...current, windowStartMinute: event.target.value }))} /></label>
-              <label><span>Секунда окна</span><input value={domainForm.windowStartSecond} onChange={(event) => setDomainForm((current) => ({ ...current, windowStartSecond: event.target.value }))} /></label>
-              <label><span>Длина окна, сек</span><input value={domainForm.windowDurationSeconds} onChange={(event) => setDomainForm((current) => ({ ...current, windowDurationSeconds: event.target.value }))} /></label>
               <label className="checkbox"><input type="checkbox" checked={domainForm.attackEnabled} onChange={(event) => setDomainForm((current) => ({ ...current, attackEnabled: event.target.checked }))} /><span>Атака активна</span></label>
               <label className="checkbox"><input type="checkbox" checked={domainForm.autoStartEnabled} onChange={(event) => setDomainForm((current) => ({ ...current, autoStartEnabled: event.target.checked }))} /><span>Автостарт по окну</span></label>
               <label><span>Автостарт за, сек</span><input value={domainForm.autoStartLeadSeconds} onChange={(event) => setDomainForm((current) => ({ ...current, autoStartLeadSeconds: event.target.value }))} /></label>
             </div>
+            <div className="domain-strategy-preview">
+              <div>
+                <span>Зона</span>
+                <strong>{selectedDomainStrategy ? `.${selectedDomainStrategy.zone}` : domainForm.zone ? `.${domainForm.zone}` : "—"}</strong>
+              </div>
+              <div>
+                <span>Часовой пояс</span>
+                <strong>{selectedDomainStrategy?.timezone_name ?? domainForm.timezoneName}</strong>
+              </div>
+              <div>
+                <span>Регистратор</span>
+                <strong>{selectedDomainStrategy?.default_registrar_slug ?? domainForm.registrarSlug}</strong>
+              </div>
+              <div>
+                <span>Мин. RPS</span>
+                <strong>
+                  {domainForm.overrideMinGuaranteedRps ||
+                    (selectedDomainStrategy ? String(selectedDomainStrategy.default_min_guaranteed_rps) : "—")}
+                </strong>
+              </div>
+              <div className="wide-input">
+                <span>Окно стратегии</span>
+                <strong>
+                  {domainStrategyPreview?.windows.length
+                    ? domainStrategyPreview.windows
+                        .slice(0, 3)
+                        .map((window) => formatPreviewWindow(window, domainStrategyPreview.timezone_name))
+                        .join("; ")
+                    : selectedDomainStrategy
+                      ? "Выбери дату дропа, чтобы увидеть расчет окна"
+                      : formatDomainStrategyFallbackWindow(domainForm)}
+                </strong>
+              </div>
+            </div>
+            <details className="collapsible-card domain-advanced-options">
+              <summary>
+                Расширенные настройки домена
+                <small>Нужны только для ручных override или зоны без готовой стратегии.</small>
+              </summary>
+              <div className="form two-columns">
+                <label>
+                  <span>Режим стратегии</span>
+                  <select value={domainForm.strategyMode} onChange={(event) => setDomainForm((current) => ({ ...current, strategyMode: event.target.value }))}>
+                    <option value="inherit_zone">наследовать стратегию зоны</option>
+                    <option value="manual_override">ручной override домена</option>
+                  </select>
+                </label>
+                <label><span>Зона</span><input value={domainForm.zone} onChange={(event) => setDomainForm((current) => ({ ...current, zone: event.target.value, zoneStrategyId: "" }))} /></label>
+                <label><span>Часовой пояс</span><input value={domainForm.timezoneName} onChange={(event) => setDomainForm((current) => ({ ...current, timezoneName: event.target.value }))} /></label>
+                <label><span>Регистратор</span><input value={domainForm.registrarSlug} onChange={(event) => setDomainForm((current) => ({ ...current, registrarSlug: event.target.value }))} /></label>
+                <label><span>Override мин. RPS</span><input value={domainForm.overrideMinGuaranteedRps} onChange={(event) => setDomainForm((current) => ({ ...current, overrideMinGuaranteedRps: event.target.value }))} placeholder="пусто = значение зоны" /></label>
+                <label><span>Минута окна</span><input value={domainForm.windowStartMinute} onChange={(event) => setDomainForm((current) => ({ ...current, windowStartMinute: event.target.value }))} /></label>
+                <label><span>Секунда окна</span><input value={domainForm.windowStartSecond} onChange={(event) => setDomainForm((current) => ({ ...current, windowStartSecond: event.target.value }))} /></label>
+                <label><span>Длина окна, сек</span><input value={domainForm.windowDurationSeconds} onChange={(event) => setDomainForm((current) => ({ ...current, windowDurationSeconds: event.target.value }))} /></label>
+              </div>
+            </details>
             <label>
               <span>Дополнительные параметры регистрации Gandi (JSON)</span>
               <textarea

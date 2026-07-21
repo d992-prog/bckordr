@@ -574,6 +574,35 @@ button:disabled {
   margin-bottom: 6px;
 }
 
+.domain-strategy-preview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.domain-strategy-preview div {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 250, 242, 0.74);
+  border: 1px solid rgba(79, 57, 29, 0.1);
+}
+
+.domain-strategy-preview span {
+  display: block;
+  color: var(--muted);
+  margin-bottom: 6px;
+  font-size: 0.9rem;
+}
+
+.domain-strategy-preview strong {
+  line-height: 1.35;
+}
+
+.domain-advanced-options {
+  background: rgba(255, 250, 242, 0.5);
+}
+
 .strategies-page {
   gap: 18px;
 }
@@ -989,6 +1018,7 @@ button:disabled {
 
   .domain-metrics,
   .domain-snapshot-grid,
+  .domain-strategy-preview,
   .preset-actions,
   .strategy-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1045,6 +1075,7 @@ button:disabled {
 
   .domain-metrics,
   .domain-snapshot-grid,
+  .domain-strategy-preview,
   .preset-actions,
   .strategy-controls,
   .strategy-summary,
