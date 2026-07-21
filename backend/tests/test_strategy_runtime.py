@@ -374,3 +374,47 @@ def test_manual_override_without_rules_is_not_ready():
 
     assert readiness.status == "draft"
     assert any("rule" in reason for reason in readiness.reasons)
+
+
+def test_gandi_se_domain_requires_contact_ident_number():
+    domain = SimpleNamespace(
+        zone="se",
+        registrar_slug="gandi",
+        strategy_mode="inherit_zone",
+        registrar_account_id=1,
+        contact_profile_id=1,
+        drop_date=date(2026, 5, 5),
+        attack_enabled=True,
+    )
+    effective_strategy = SimpleNamespace(rules=[SimpleNamespace(id=1)])
+
+    readiness = evaluate_domain_readiness(
+        domain,
+        effective_strategy=effective_strategy,
+        contact_profile=SimpleNamespace(extra_parameters=None),
+    )
+
+    assert readiness.status == "draft"
+    assert "contact extra parameter x-se_ident_number is missing" in readiness.reasons
+
+
+def test_gandi_se_domain_is_ready_with_contact_ident_number():
+    domain = SimpleNamespace(
+        zone="se",
+        registrar_slug="gandi",
+        strategy_mode="inherit_zone",
+        registrar_account_id=1,
+        contact_profile_id=1,
+        drop_date=date(2026, 5, 5),
+        attack_enabled=True,
+    )
+    effective_strategy = SimpleNamespace(rules=[SimpleNamespace(id=1)])
+
+    readiness = evaluate_domain_readiness(
+        domain,
+        effective_strategy=effective_strategy,
+        contact_profile=SimpleNamespace(extra_parameters='{"x-se_ident_number":"AB1234567"}'),
+    )
+
+    assert readiness.status == "ready"
+    assert readiness.reasons == []

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
+
+GANDI_CONTACT_EXTRA_PARAMETER_REQUIREMENTS = {
+    "se": "x-se_ident_number",
+    "nu": "x-se_ident_number",
+    "fi": "x-se_ident_number",
+}
 
 
 @dataclass(slots=True)
@@ -108,7 +115,7 @@ def match_rule_windows(domain, *, strategy, rules, now: datetime) -> list[RuleWi
     return matches
 
 
-def evaluate_domain_readiness(domain, *, effective_strategy) -> DomainReadinessResult:
+def evaluate_domain_readiness(domain, *, effective_strategy, contact_profile=None) -> DomainReadinessResult:
     reasons: list[str] = []
     if effective_strategy is None:
         reasons.append("strategy is missing")
@@ -118,9 +125,32 @@ def evaluate_domain_readiness(domain, *, effective_strategy) -> DomainReadinessR
         reasons.append("registrar account is missing")
     if not getattr(domain, "contact_profile_id", None):
         reasons.append("contact profile is missing")
+    else:
+        required_contact_parameter = GANDI_CONTACT_EXTRA_PARAMETER_REQUIREMENTS.get(
+            str(getattr(domain, "zone", "") or "").lower().lstrip(".")
+        )
+        if (
+            required_contact_parameter
+            and str(getattr(domain, "registrar_slug", "") or "").lower() == "gandi"
+            and not _contact_has_extra_parameter(contact_profile, required_contact_parameter)
+        ):
+            reasons.append(f"contact extra parameter {required_contact_parameter} is missing")
     if not getattr(domain, "drop_date", None):
         reasons.append("drop date is missing")
     return DomainReadinessResult(status="draft" if reasons else "ready", reasons=reasons)
+
+
+def _contact_has_extra_parameter(contact_profile, parameter_name: str) -> bool:
+    if contact_profile is None:
+        return False
+    raw_extra_parameters = getattr(contact_profile, "extra_parameters", None)
+    if not raw_extra_parameters:
+        return False
+    try:
+        extra_parameters = json.loads(raw_extra_parameters) if isinstance(raw_extra_parameters, str) else raw_extra_parameters
+    except (TypeError, ValueError):
+        return False
+    return isinstance(extra_parameters, dict) and bool(extra_parameters.get(parameter_name))
 
 
 def is_domain_due_today(domain, now: datetime) -> bool:

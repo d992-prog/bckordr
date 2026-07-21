@@ -834,6 +834,7 @@ export default function App() {
   const [workerSetupLoading, setWorkerSetupLoading] = useState(false);
   const [accountForm, setAccountForm] = useState(DEFAULT_ACCOUNT_FORM);
   const [contactForm, setContactForm] = useState(DEFAULT_CONTACT_FORM);
+  const [editingContactId, setEditingContactId] = useState<number | null>(null);
   const [passwordForm, setPasswordForm] = useState({ current_password: "", new_password: "" });
   const [telegramForm, setTelegramForm] = useState({ telegram_token: "", telegram_chat_id: "" });
   const [diagnosticTelegram, setDiagnosticTelegram] = useState<DiagnosticTelegramSettings>({
@@ -1960,7 +1961,7 @@ export default function App() {
   async function submitContact(event: FormEvent) {
     event.preventDefault();
     try {
-      await api.createContactProfile({
+      const payload = {
         label: contactForm.label,
         person_type: contactForm.personType,
         given_name: contactForm.givenName,
@@ -1982,12 +1983,18 @@ export default function App() {
         extra_parameters: contactForm.extraParameters || null,
         is_default: contactForm.isDefault,
         notes: contactForm.notes || null,
-      });
+      };
+      if (editingContactId) {
+        await api.updateContactProfile(editingContactId, payload);
+      } else {
+        await api.createContactProfile(payload);
+      }
       setContactForm(DEFAULT_CONTACT_FORM);
+      setEditingContactId(null);
       await loadAll();
-      setToast({ type: "success", text: "Профиль контакта добавлен" });
+      setToast({ type: "success", text: editingContactId ? "Профиль контакта обновлен" : "Профиль контакта добавлен" });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления профиля контакта" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка сохранения профиля контакта" });
     }
   }
 
@@ -2231,6 +2238,7 @@ export default function App() {
       "registrar account is missing": "не выбран аккаунт регистратора",
       "contact profile is missing": "не выбран контакт",
       "drop date is missing": "не указана дата дропа",
+      "contact extra parameter x-se_ident_number is missing": "для .se/.nu/.fi в контакте нужен x-se_ident_number",
     };
     return domain.readiness_reasons
       .split(";")
@@ -2263,6 +2271,34 @@ export default function App() {
       isDefault: payload.is_default,
       notes: payload.notes ?? "",
     });
+  }
+
+  function editContact(contact: ContactProfile) {
+    setEditingContactId(contact.id);
+    setContactForm({
+      label: contact.label,
+      personType: contact.person_type,
+      givenName: contact.given_name,
+      familyName: contact.family_name,
+      organizationName: contact.organization_name ?? "",
+      email: contact.email,
+      phone: contact.phone,
+      mobile: contact.mobile ?? "",
+      fax: contact.fax ?? "",
+      lang: contact.lang ?? "",
+      streetAddress: contact.street_address,
+      city: contact.city,
+      state: contact.state ?? "",
+      zipCode: contact.zip_code,
+      countryCode: contact.country_code,
+      dataObfuscated: Boolean(contact.data_obfuscated),
+      mailObfuscated: Boolean(contact.mail_obfuscated),
+      icannContractAccept: Boolean(contact.icann_contract_accept),
+      extraParameters: contact.extra_parameters ?? "",
+      isDefault: contact.is_default,
+      notes: contact.notes ?? "",
+    });
+    setTab("contacts");
   }
 
   function renderDiscovery() {
@@ -4078,7 +4114,10 @@ export default function App() {
     return (
       <section className="grid two">
         <div className="card">
-          <h2>Профиль контакта</h2>
+          <h2>{editingContactId ? "Редактирование контакта" : "Профиль контакта"}</h2>
+          {editingContactId ? (
+            <p className="row-hint">Сейчас редактируется существующий профиль контакта. Сохрани изменения или нажми отмену.</p>
+          ) : null}
           <form className="form" onSubmit={submitContact}>
             <div className="form two-columns">
               <label><span>Метка</span><input value={contactForm.label} onChange={(event) => setContactForm((current) => ({ ...current, label: event.target.value }))} /></label>
@@ -4101,9 +4140,24 @@ export default function App() {
               <label className="checkbox"><input type="checkbox" checked={contactForm.icannContractAccept} onChange={(event) => setContactForm((current) => ({ ...current, icannContractAccept: event.target.checked }))} /><span>ICANN принят</span></label>
               <label className="checkbox"><input type="checkbox" checked={contactForm.isDefault} onChange={(event) => setContactForm((current) => ({ ...current, isDefault: event.target.checked }))} /><span>По умолчанию</span></label>
             </div>
-            <label><span>Дополнительные параметры контакта (JSON)</span><textarea rows={3} value={contactForm.extraParameters} onChange={(event) => setContactForm((current) => ({ ...current, extraParameters: event.target.value }))} placeholder='{"local_presence":"fr"}' /></label>
+            <label><span>Дополнительные параметры контакта (JSON)</span><textarea rows={3} value={contactForm.extraParameters} onChange={(event) => setContactForm((current) => ({ ...current, extraParameters: event.target.value }))} placeholder='{"x-se_ident_number":"паспорт или ID для .se/.nu/.fi"}' /></label>
+            <p className="row-hint">Для .se/.nu/.fi Gandi требует `x-se_ident_number` в JSON контакта. Без него боевой запуск будет заблокирован как неготовый.</p>
             <label><span>Заметки</span><textarea rows={3} value={contactForm.notes} onChange={(event) => setContactForm((current) => ({ ...current, notes: event.target.value }))} /></label>
-            <button type="submit">Добавить профиль контакта</button>
+            <div className="actions">
+              <button type="submit">{editingContactId ? "Сохранить контакт" : "Добавить профиль контакта"}</button>
+              {editingContactId ? (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    setEditingContactId(null);
+                    setContactForm(DEFAULT_CONTACT_FORM);
+                  }}
+                >
+                  Отмена
+                </button>
+              ) : null}
+            </div>
           </form>
         </div>
 
@@ -4131,6 +4185,7 @@ export default function App() {
                   </p>
                 ) : null}
                 <div className="actions">
+                  <button type="button" onClick={() => editContact(contact)}>Редактировать</button>
                   <button type="button" className="danger" onClick={() => void deleteItem("contact", contact.id)}>Удалить</button>
                 </div>
               </article>

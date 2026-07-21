@@ -490,7 +490,12 @@ async def _apply_domain_readiness(db: AsyncSession, domain: DropDomain) -> None:
             rules=rules,
             phases=phases,
         )
-    readiness = evaluate_domain_readiness(domain, effective_strategy=effective_strategy)
+    contact_profile = await db.get(ContactProfile, domain.contact_profile_id) if domain.contact_profile_id else None
+    readiness = evaluate_domain_readiness(
+        domain,
+        effective_strategy=effective_strategy,
+        contact_profile=contact_profile,
+    )
     domain.status = readiness.status if domain.attack_enabled else "paused"
     domain.readiness_reasons = "; ".join(readiness.reasons) if readiness.reasons else None
 
