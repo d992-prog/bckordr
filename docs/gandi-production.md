@@ -5,10 +5,10 @@
 The worker now uses Gandi's domain create flow as documented in the official API:
 
 1. `POST /v5/domain/domains`
-2. if the response is `202 Accepted`, follow `Location` or fallback to `GET /v5/domain/domains/{fqdn}/createstatus`
-3. treat `303` from `createstatus` as a successful registration handoff
-4. treat `ERROR` or `SUPPORT` create steps as failures
-5. if the create status remains `WAIT`, `RUN`, or `BILL` after the configured polling budget, keep the result as accepted/pending
+2. if the response is `202 Accepted`, stop the hot window and report the request as accepted by Gandi
+3. optional createstatus polling can be enabled with `GANDI_CREATE_STATUS_POLL_ENABLED=true` for slower diagnostics
+4. when polling is enabled, treat `303` from `createstatus` as a successful registration handoff
+5. when polling is enabled, treat `ERROR` or `SUPPORT` create steps as failures
 
 ## Contact Payload
 
@@ -39,11 +39,12 @@ This means the worker and the control-side dry-run both operate on the same expa
 Useful production knobs:
 
 ```env
+GANDI_CREATE_STATUS_POLL_ENABLED=false
 GANDI_STATUS_POLL_INTERVAL_SECONDS=0.5
 GANDI_STATUS_POLL_MAX_ATTEMPTS=8
 ```
 
-That means one accepted create request can spend about 4 seconds in create-status follow-up before the worker reports it as accepted/pending.
+With `GANDI_CREATE_STATUS_POLL_ENABLED=false`, the hot registration window stops as soon as Gandi returns `202 Creation operation launched`. This avoids wasting the rest of the window on duplicate create requests while Gandi is already processing the order.
 
 ## Control-Side Dry-Run
 

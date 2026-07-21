@@ -54,7 +54,7 @@ def _build_worker_env_lines(
         "SIMULATE_SUCCESS_STATUS_CODE=200",
         "SIMULATE_FAILURE_STATUS_CODE=503",
         "SIMULATE_RANDOM_SEED=12345",
-        "GANDI_CREATE_STATUS_POLL_ENABLED=true",
+        "GANDI_CREATE_STATUS_POLL_ENABLED=false",
         "GANDI_STATUS_POLL_INTERVAL_SECONDS=0.5",
         "GANDI_STATUS_POLL_MAX_ATTEMPTS=8",
         "REGISTRATION_CONCURRENCY_MULTIPLIER=8",
@@ -92,7 +92,7 @@ def _build_worker_discovery_env_commands(discovery_settings: DiscoveryRuntimeSet
     )
     env_path = "/opt/domain-drop-catcher/worker/.env"
     return [
-        _build_env_upsert_command(env_path, "GANDI_CREATE_STATUS_POLL_ENABLED", "true"),
+        _build_env_upsert_command(env_path, "GANDI_CREATE_STATUS_POLL_ENABLED", "false"),
         _build_env_upsert_command(env_path, "DISCOVERY_WORKER_ENABLED", "true" if worker_discovery_enabled else "false"),
         _build_env_upsert_command(env_path, "DISCOVERY_WORKER_CONCURRENCY", worker_discovery_concurrency),
         _build_env_upsert_command(env_path, "DISCOVERY_WORKER_POLL_INTERVAL_SECONDS", worker_discovery_poll_interval_seconds),

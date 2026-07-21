@@ -170,7 +170,7 @@ async def test_worker_setup_endpoint_generates_runtime_commands(monkeypatch: pyt
     assert "WORKER_ID=1" in payload["write_env_command"]
     assert "CONTROL_TOKEN=token-setup" in payload["write_env_command"]
     assert "SIMULATE_MODE=false" in payload["write_env_command"]
-    assert "GANDI_CREATE_STATUS_POLL_ENABLED=true" in payload["write_env_command"]
+    assert "GANDI_CREATE_STATUS_POLL_ENABLED=false" in payload["write_env_command"]
     assert any("systemctl enable --now domain-drop-worker.service" in command for command in payload["full_install_commands"])
     assert any("SIMULATE_MODE=true" in command for command in payload["switch_to_test_commands"])
     assert any("SIMULATE_MODE=false" in command for command in payload["switch_to_live_commands"])
@@ -324,16 +324,16 @@ def test_worker_install_commands_create_env_and_systemd_service(monkeypatch: pyt
     assert "WORKER_ID=7" in joined
     assert "CONTROL_TOKEN=token-7" in joined
     assert "SIMULATE_MODE=false" in joined
-    assert "GANDI_CREATE_STATUS_POLL_ENABLED=true" in joined
+    assert "GANDI_CREATE_STATUS_POLL_ENABLED=false" in joined
     assert "/etc/systemd/system/domain-drop-worker.service" in joined
     assert "systemctl enable --now domain-drop-worker.service" in commands
 
 
-def test_worker_update_commands_enable_gandi_create_status_polling():
+def test_worker_update_commands_disable_hot_window_createstatus_polling():
     commands = build_worker_maintenance_commands("update")
 
     joined = "\n".join(commands)
-    assert "GANDI_CREATE_STATUS_POLL_ENABLED=true" in joined
+    assert "GANDI_CREATE_STATUS_POLL_ENABLED=false" in joined
     assert "systemctl restart domain-drop-worker.service" in commands
 
 
