@@ -5,11 +5,15 @@ def test_normalize_domain_accepts_valid_fr_domain():
     assert normalize_domain("https://Example.FR/path") == "example.fr"
 
 
+def test_normalize_domain_accepts_non_fr_domain():
+    assert normalize_domain("Energiost.SE") == "energiost.se"
+
+
 def test_extract_domains_from_text_deduplicates_results():
-    content = "alpha.fr\nbeta.fr\nalpha.fr"
-    assert extract_domains_from_text(content) == ["alpha.fr", "beta.fr"]
+    content = "alpha.fr\nbeta.se\nalpha.fr"
+    assert extract_domains_from_text(content) == ["alpha.fr", "beta.se"]
 
 
 def test_extract_domains_from_rows_scans_all_columns():
-    rows = [["name", "target"], ["one", "drop-a.fr"], ["two", "drop-b.fr"]]
-    assert extract_domains_from_rows(rows) == ["drop-a.fr", "drop-b.fr"]
+    rows = [["name", "target"], ["one", "drop-a.fr"], ["two", "drop-b.se"]]
+    assert extract_domains_from_rows(rows) == ["drop-a.fr", "drop-b.se"]
