@@ -356,7 +356,7 @@ async def test_worker_runtime_harness_covers_live_rps_update_and_success_flow():
 
 
 @pytest.mark.asyncio
-async def test_worker_runtime_treats_accepted_create_as_pending_not_success():
+async def test_worker_runtime_treats_accepted_create_as_success():
     class StubControlClient:
         def __init__(self) -> None:
             self.results: list[dict] = []
@@ -411,8 +411,8 @@ async def test_worker_runtime_treats_accepted_create_as_pending_not_success():
     await runner._execute_task(task)
 
     assert stub_control.results
-    assert stub_control.results[-1]["status"] == "failed"
-    assert stub_control.results[-1]["success_attempts"] == 0
+    assert stub_control.results[-1]["status"] == "success"
+    assert stub_control.results[-1]["success_attempts"] == 1
     assert stub_control.results[-1]["total_attempts"] > 0
     assert stub_control.results[-1]["response_status_counts"]["202"] > 0
     assert stub_control.results[-1]["response_samples"]["first"][0]["status_code"] == 202

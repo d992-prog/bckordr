@@ -34,6 +34,7 @@ from app.gandi import register_domain
 logger = logging.getLogger(__name__)
 
 RESPONSE_SAMPLE_PREVIEW_LIMIT = 2000
+SUCCESSFUL_CREATE_STATUS_CODES = {200, 202}
 
 
 def _add_count(counter: dict[str, int], key: str | int | None) -> None:
@@ -73,6 +74,10 @@ def _record_response_sample(
         assert isinstance(status_samples, list)
         if len(status_samples) < 3:
             status_samples.append(sample)
+
+
+def _is_successful_create_status(status_code: int) -> bool:
+    return status_code in SUCCESSFUL_CREATE_STATUS_CODES
 
 
 class WorkerRunner:
@@ -316,7 +321,7 @@ class WorkerRunner:
                         latency_ms=latency_ms,
                         body_preview=body_preview,
                     )
-                    if status_code == 200:
+                    if _is_successful_create_status(status_code):
                         success_attempts += 1
                         for queued in pending:
                             queued.cancel()
@@ -384,7 +389,7 @@ class WorkerRunner:
                     latency_ms=latency_ms,
                     body_preview=body_preview,
                 )
-                if status_code == 200:
+                if _is_successful_create_status(status_code):
                     success_attempts += 1
                     for other in pending:
                         if other is not queued:
