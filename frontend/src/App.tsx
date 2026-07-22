@@ -291,6 +291,26 @@ function formatDateTime(value: string | null) {
   return `${formatted} MSK`;
 }
 
+function formatDateTimeInZone(value: string | null, timeZone: string, label = timeZone) {
+  if (!value) {
+    return "—";
+  }
+  try {
+    const formatted = new Intl.DateTimeFormat("ru-RU", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(new Date(value));
+    return `${formatted} ${label}`;
+  } catch {
+    return formatDateTime(value);
+  }
+}
+
 function formatTimeInZone(value: string | null, timeZone: string) {
   if (!value) {
     return "—";
@@ -332,7 +352,19 @@ function formatDomainWindow(domain: DropDomain) {
 }
 
 function formatPreviewWindow(window: StrategyPreview["windows"][number], timezoneName: string) {
-  return `${formatTimeInZone(window.start_at, timezoneName)} → ${formatTimeInZone(window.end_at, timezoneName)}`;
+  const localWindow = `${formatTimeInZone(window.start_at, timezoneName)} → ${formatTimeInZone(window.end_at, timezoneName)}`;
+  if (timezoneName === "Europe/Moscow") {
+    return `${localWindow} MSK`;
+  }
+  return `${localWindow} локально / ${formatPreviewWindowMsk(window)}`;
+}
+
+function formatPreviewWindowMsk(window: StrategyPreview["windows"][number]) {
+  return `${formatTimeInZone(window.start_at, "Europe/Moscow")} → ${formatTimeInZone(window.end_at, "Europe/Moscow")} MSK`;
+}
+
+function formatRuleLocalTime(rule: Pick<ZoneRule, "hour" | "minute" | "second">) {
+  return `${rule.hour ?? "*"}:${String(rule.minute).padStart(2, "0")}:${String(rule.second).padStart(2, "0")}`;
 }
 
 function formatDomainStrategyFallbackWindow(form: typeof DEFAULT_DOMAIN_FORM) {
@@ -3179,14 +3211,23 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody>
-                        {(domainOverridePreview?.windows ?? []).map((window) => (
+                        {(domainOverridePreview?.windows ?? []).map((window) => {
+                          const timezoneName = domainOverridePreview?.timezone_name ?? domainOverrideForm.timezoneName;
+                          return (
                           <tr key={`${window.rule_id}-${window.start_at}`}>
                             <td>{window.rule_name ?? `окно #${window.rule_id}`}</td>
                             <td>{window.priority}</td>
-                            <td>{formatDateTime(window.start_at)}</td>
-                            <td>{formatDateTime(window.end_at)}</td>
+                            <td>
+                              <div>{formatDateTimeInZone(window.start_at, timezoneName, "локально")}</div>
+                              <div className="row-hint">{formatDateTime(window.start_at)}</div>
+                            </td>
+                            <td>
+                              <div>{formatDateTimeInZone(window.end_at, timezoneName, "локально")}</div>
+                              <div className="row-hint">{formatDateTime(window.end_at)}</div>
+                            </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                         {(domainOverridePreview?.windows ?? []).length === 0 ? (
                           <tr>
                             <td colSpan={4} className="empty">На эту дату окна не найдены</td>
@@ -3199,7 +3240,9 @@ export default function App() {
               </div>
 
               <div className="promo-list">
-                {domainOverrideRules.map((rule) => (
+                {domainOverrideRules.map((rule) => {
+                  const previewWindow = domainOverridePreview?.windows.find((window) => window.rule_id === rule.id);
+                  return (
                   <article key={rule.id} className="strategy-rule-card">
                     <div className="domain-card-head compact-head">
                       <div>
@@ -3208,8 +3251,9 @@ export default function App() {
                           <span className={statusClass(rule.is_enabled ? "ready" : "inactive")}>{formatScheduleType(rule.schedule_type)}</span>
                         </div>
                         <p className="muted">
-                          приоритет {rule.priority} | время {rule.hour ?? "*"}:{String(rule.minute).padStart(2, "0")}:{String(rule.second).padStart(2, "0")} | окно {rule.window_duration_seconds} сек | запросы: {formatExecutionMode(rule.execution_profile_mode)}
+                          приоритет {rule.priority} | местное время {formatRuleLocalTime(rule)} | окно {rule.window_duration_seconds} сек | запросы: {formatExecutionMode(rule.execution_profile_mode)}
                         </p>
+                        {previewWindow ? <p className="row-hint">MSK по выбранной дате: {formatPreviewWindowMsk(previewWindow)}</p> : null}
                       </div>
                       <div className="actions">
                         <button type="button" className="danger" onClick={() => void removeDomainOverrideRule(rule.id)}>Удалить окно</button>
@@ -3251,7 +3295,8 @@ export default function App() {
                       </table>
                     </div>
                   </article>
-                ))}
+                  );
+                })}
                 {domainOverrideRules.length === 0 ? <p className="empty">Override-окон пока нет</p> : null}
               </div>
             </>
@@ -3745,6 +3790,7 @@ export default function App() {
   }
 
   function renderStrategies() {
+    const strategyNowIso = new Date().toISOString();
     const strategyPresets = [
       { zone: "fr", title: ".fr FRNIC", description: "каждый час 31:30 → 33:05, Europe/Paris" },
       { zone: "com", title: ".com Verisign", description: "ежедневное окно 18:00 UTC" },
@@ -3892,6 +3938,15 @@ export default function App() {
             <div><span>Режим выбранной стратегии</span><strong>{formatResolutionMode(selectedStrategy?.rule_resolution_mode)}</strong></div>
             <div><span>RPS по умолчанию</span><strong>{selectedStrategy?.default_min_guaranteed_rps ?? "—"}</strong></div>
             <div><span>Регистратор</span><strong>{selectedStrategy?.default_registrar_slug ?? "—"}</strong></div>
+            <div>
+              <span>Время стратегии</span>
+              <strong>{selectedStrategy?.timezone_name ?? "—"}</strong>
+              {selectedStrategy ? (
+                <div className="row-hint">
+                  сейчас: {formatTimeInZone(strategyNowIso, selectedStrategy.timezone_name)} локально / {formatTimeInZone(strategyNowIso, "Europe/Moscow")} MSK
+                </div>
+              ) : null}
+            </div>
           </div>
           </div>
         </section>
@@ -4028,7 +4083,9 @@ export default function App() {
             </div>
           </div>
           <div className="strategy-rule-list">
-            {strategyRules.map((rule) => (
+            {strategyRules.map((rule) => {
+              const previewWindow = strategyPreview?.windows.find((window) => window.rule_id === rule.id);
+              return (
               <article key={rule.id} className="strategy-rule-card">
                 <div className="domain-card-head compact-head">
                   <div>
@@ -4037,8 +4094,9 @@ export default function App() {
                       <span className={statusClass(rule.is_enabled ? "ready" : "inactive")}>{formatScheduleType(rule.schedule_type)}</span>
                     </div>
                     <p className="muted">
-                      приоритет {rule.priority} | время {rule.hour ?? "*"}:{String(rule.minute).padStart(2, "0")}:{String(rule.second).padStart(2, "0")} | окно {rule.window_duration_seconds} сек | запросы: {formatExecutionMode(rule.execution_profile_mode)}
+                      приоритет {rule.priority} | местное время {formatRuleLocalTime(rule)} | окно {rule.window_duration_seconds} сек | запросы: {formatExecutionMode(rule.execution_profile_mode)}
                     </p>
+                    {previewWindow ? <p className="row-hint">MSK по выбранной дате: {formatPreviewWindowMsk(previewWindow)}</p> : null}
                   </div>
                   <div className="actions">
                     <button type="button" className="danger" onClick={() => void removeZoneRule(rule.id)}>Удалить окно</button>
@@ -4080,7 +4138,8 @@ export default function App() {
                   </table>
                 </div>
               </article>
-            ))}
+              );
+            })}
             {strategyRules.length === 0 ? <p className="empty">У выбранной стратегии пока нет окон</p> : null}
           </div>
         </div>
@@ -4102,14 +4161,23 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {(strategyPreview?.windows ?? []).map((window) => (
+                {(strategyPreview?.windows ?? []).map((window) => {
+                  const timezoneName = strategyPreview?.timezone_name ?? selectedStrategy?.timezone_name ?? "UTC";
+                  return (
                   <tr key={`${window.rule_id}-${window.start_at}`}>
                     <td>{window.rule_name ?? `окно #${window.rule_id}`}</td>
                     <td>{window.priority}</td>
-                    <td>{formatDateTime(window.start_at)}</td>
-                    <td>{formatDateTime(window.end_at)}</td>
+                    <td>
+                      <div>{formatDateTimeInZone(window.start_at, timezoneName, "локально")}</div>
+                      <div className="row-hint">{formatDateTime(window.start_at)}</div>
+                    </td>
+                    <td>
+                      <div>{formatDateTimeInZone(window.end_at, timezoneName, "локально")}</div>
+                      <div className="row-hint">{formatDateTime(window.end_at)}</div>
+                    </td>
                   </tr>
-                ))}
+                  );
+                })}
                 {(strategyPreview?.windows ?? []).length === 0 ? (
                   <tr>
                     <td colSpan={4} className="empty">На эту дату окна не найдены</td>
