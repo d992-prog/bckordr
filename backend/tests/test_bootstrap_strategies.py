@@ -46,6 +46,7 @@ async def test_bootstrap_creates_discovered_zone_strategy_presets():
         "se",
         "sk",
         "tr",
+        "us",
     }
     assert strategy_by_zone["ae"].timezone_name == "Asia/Dubai"
     assert strategy_by_zone["bg"].timezone_name == "Europe/Sofia"
@@ -63,6 +64,7 @@ async def test_bootstrap_creates_discovered_zone_strategy_presets():
     assert strategy_by_zone["se"].timezone_name == "Europe/Stockholm"
     assert strategy_by_zone["sk"].timezone_name == "Europe/Bratislava"
     assert strategy_by_zone["tr"].timezone_name == "Europe/Istanbul"
+    assert strategy_by_zone["us"].timezone_name == "UTC"
 
     rule_by_zone = {strategy.zone: rule for strategy in strategies for rule in rules if rule.zone_strategy_id == strategy.id}
     assert rule_by_zone["ae"].schedule_type == "daily"
@@ -131,6 +133,10 @@ async def test_bootstrap_creates_discovered_zone_strategy_presets():
     assert rule_by_zone["tr"].minute == 49
     assert rule_by_zone["tr"].second == 30
     assert rule_by_zone["tr"].window_duration_seconds == 100
+    assert rule_by_zone["us"].hour == 0
+    assert rule_by_zone["us"].minute == 1
+    assert rule_by_zone["us"].second == 0
+    assert rule_by_zone["us"].window_duration_seconds == 120
 
     await ensure_default_zone_strategies(session_factory)
 
@@ -138,6 +144,6 @@ async def test_bootstrap_creates_discovered_zone_strategy_presets():
         strategy_count = await session.scalar(select(func.count()).select_from(ZoneStrategy))
         rule_count = await session.scalar(select(func.count()).select_from(ZoneRule))
 
-    assert strategy_count == 16
-    assert rule_count == 16
+    assert strategy_count == 17
+    assert rule_count == 17
     await engine.dispose()

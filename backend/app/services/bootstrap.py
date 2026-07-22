@@ -104,6 +104,23 @@ DEFAULT_ZONE_STRATEGY_PRESETS = (
         },
     },
     {
+        "zone": "us",
+        "name": "Registry Services US Daily Drop Window",
+        "timezone_name": "UTC",
+        "notes": "Preset from discovery availability export: .us domains became available at 00:01:54-00:02:10 UTC; safe window starts at 00:01:00.",
+        "rule": {
+            "name": "US daily 00:01:00 UTC",
+            "schedule_type": "daily",
+            "hour": 0,
+            "minute": 1,
+            "second": 0,
+            "window_duration_seconds": 120,
+            "priority": 100,
+            "execution_profile_mode": "flat",
+            "notes": "Observed safe window: 00:01:00-00:03:00 UTC.",
+        },
+    },
+    {
         "zone": "ae",
         "name": "TDRA AE Daily Drop Window",
         "timezone_name": "Asia/Dubai",
