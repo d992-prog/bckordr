@@ -323,6 +323,51 @@ function formatTimeInZone(value: string | null, timeZone: string) {
   }).format(new Date(value));
 }
 
+function getTimeZoneOffsetMs(utcDate: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(utcDate);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const zonedAsUtc = Date.UTC(
+    Number(values.year),
+    Number(values.month) - 1,
+    Number(values.day),
+    Number(values.hour),
+    Number(values.minute),
+    Number(values.second),
+  );
+  return zonedAsUtc - utcDate.getTime();
+}
+
+function zonedLocalTimeToIso(dateValue: string, timeValue: string, timeZone: string) {
+  const [year, month, day] = dateValue.split("-").map(Number);
+  const [hour = 0, minute = 0, second = 0] = timeValue.split(":").map(Number);
+  const localAsUtc = Date.UTC(year, month - 1, day, hour, minute, second);
+  let utcMs = localAsUtc;
+  for (let index = 0; index < 3; index += 1) {
+    utcMs = localAsUtc - getTimeZoneOffsetMs(new Date(utcMs), timeZone);
+  }
+  return new Date(utcMs).toISOString();
+}
+
+function formatPresetDescription(
+  preset: { scheduleLabel: string; startTime: string; endTime: string; timezoneName: string; localWindowLabel?: string },
+  previewDateValue: string,
+) {
+  const startAt = zonedLocalTimeToIso(previewDateValue, preset.startTime, preset.timezoneName);
+  const endAt = zonedLocalTimeToIso(previewDateValue, preset.endTime, preset.timezoneName);
+  const localWindow = preset.localWindowLabel ?? `${preset.startTime} → ${preset.endTime}`;
+  const mskWindow = `${formatTimeInZone(startAt, "Europe/Moscow")} → ${formatTimeInZone(endAt, "Europe/Moscow")}`;
+  return `${preset.scheduleLabel} ${localWindow}, ${preset.timezoneName} | MSK ${mskWindow}`;
+}
+
 function getEffectiveWindowDurationSeconds(domain: DropDomain) {
   if (!domain.runtime_window_start_at || !domain.runtime_window_end_at) {
     return domain.effective_window_duration_seconds ?? domain.window_duration_seconds;
@@ -3792,23 +3837,31 @@ export default function App() {
   function renderStrategies() {
     const strategyNowIso = new Date().toISOString();
     const strategyPresets = [
-      { zone: "fr", title: ".fr FRNIC", description: "каждый час 31:30 → 33:05, Europe/Paris" },
-      { zone: "com", title: ".com Verisign", description: "ежедневное окно 18:00 UTC" },
-      { zone: "net", title: ".net Verisign", description: "ежедневное окно 18:00 UTC" },
-      { zone: "org", title: ".org PIR", description: "короткое окно около 15:15 UTC" },
-      { zone: "us", title: ".us Registry Services", description: "ежедневно 00:01:00 → 00:03:00 UTC" },
-      { zone: "ae", title: ".ae TDRA", description: "ежедневно 03:32:30 → 03:34:10, Asia/Dubai" },
-      { zone: "se", title: ".se IIS", description: "ежедневно 06:00:45 → 06:04:15, Europe/Stockholm" },
-      { zone: "bg", title: ".bg Register.BG", description: "ежедневно 01:43:30 → 01:50:30, Europe/Sofia" },
-      { zone: "hr", title: ".hr CARNet", description: "ежедневно 05:29:30 → 05:56:30, Europe/Zagreb" },
-      { zone: "ee", title: ".ee EIS", description: "ежедневно 00:04:30 → 00:06:50, Europe/Tallinn" },
-      { zone: "rs", title: ".rs RNIDS", description: "ежедневно 20:15:30 → 20:16:50, Europe/Belgrade" },
-      { zone: "nl", title: ".nl SIDN", description: "ежедневно 01:59:30 → 02:04:30, Europe/Amsterdam" },
-      { zone: "no", title: ".no Norid", description: "ежедневно 03:16:30 → 03:20:15, Europe/Oslo" },
-      { zone: "me", title: ".me DoMEn", description: "ежедневно 18:59:30 → 19:01:30, Europe/Podgorica" },
-      { zone: "mk", title: ".mk MARnet", description: "ежедневно 21:59:30 → 22:15:30, Europe/Skopje" },
-      { zone: "sk", title: ".sk SK-NIC", description: "ежедневно 01:59:30 → 02:14:30, Europe/Bratislava" },
-      { zone: "tr", title: ".tr TRABIS", description: "ежедневно 00:49:30 → 00:51:10, Europe/Istanbul" },
+      {
+        zone: "fr",
+        title: ".fr FRNIC",
+        scheduleLabel: "каждый час",
+        startTime: "00:31:30",
+        endTime: "00:33:05",
+        localWindowLabel: "31:30 → 33:05",
+        timezoneName: "Europe/Paris",
+      },
+      { zone: "com", title: ".com Verisign", scheduleLabel: "ежедневно", startTime: "18:00:00", endTime: "18:45:00", timezoneName: "UTC" },
+      { zone: "net", title: ".net Verisign", scheduleLabel: "ежедневно", startTime: "18:00:00", endTime: "18:45:00", timezoneName: "UTC" },
+      { zone: "org", title: ".org PIR", scheduleLabel: "ежедневно", startTime: "15:14:30", endTime: "15:16:10", timezoneName: "UTC" },
+      { zone: "us", title: ".us Registry Services", scheduleLabel: "ежедневно", startTime: "00:01:00", endTime: "00:03:00", timezoneName: "UTC" },
+      { zone: "ae", title: ".ae TDRA", scheduleLabel: "ежедневно", startTime: "03:32:30", endTime: "03:34:10", timezoneName: "Asia/Dubai" },
+      { zone: "se", title: ".se IIS", scheduleLabel: "ежедневно", startTime: "06:00:45", endTime: "06:04:15", timezoneName: "Europe/Stockholm" },
+      { zone: "bg", title: ".bg Register.BG", scheduleLabel: "ежедневно", startTime: "01:43:30", endTime: "01:50:30", timezoneName: "Europe/Sofia" },
+      { zone: "hr", title: ".hr CARNet", scheduleLabel: "ежедневно", startTime: "05:29:30", endTime: "05:56:30", timezoneName: "Europe/Zagreb" },
+      { zone: "ee", title: ".ee EIS", scheduleLabel: "ежедневно", startTime: "00:04:30", endTime: "00:06:50", timezoneName: "Europe/Tallinn" },
+      { zone: "rs", title: ".rs RNIDS", scheduleLabel: "ежедневно", startTime: "20:15:30", endTime: "20:16:50", timezoneName: "Europe/Belgrade" },
+      { zone: "nl", title: ".nl SIDN", scheduleLabel: "ежедневно", startTime: "01:59:30", endTime: "02:04:30", timezoneName: "Europe/Amsterdam" },
+      { zone: "no", title: ".no Norid", scheduleLabel: "ежедневно", startTime: "03:16:30", endTime: "03:20:15", timezoneName: "Europe/Oslo" },
+      { zone: "me", title: ".me DoMEn", scheduleLabel: "ежедневно", startTime: "18:59:30", endTime: "19:01:30", timezoneName: "Europe/Podgorica" },
+      { zone: "mk", title: ".mk MARnet", scheduleLabel: "ежедневно", startTime: "21:59:30", endTime: "22:15:30", timezoneName: "Europe/Skopje" },
+      { zone: "sk", title: ".sk SK-NIC", scheduleLabel: "ежедневно", startTime: "01:59:30", endTime: "02:14:30", timezoneName: "Europe/Bratislava" },
+      { zone: "tr", title: ".tr TRABIS", scheduleLabel: "ежедневно", startTime: "00:49:30", endTime: "00:51:10", timezoneName: "Europe/Istanbul" },
     ];
 
     return (
@@ -3874,7 +3927,7 @@ export default function App() {
             {strategyPresets.map((preset) => (
               <button key={preset.zone} type="button" className="ghost preset-button" onClick={() => void createPresetStrategy(preset.zone)}>
                 <strong>{preset.title}</strong>
-                <span>{preset.description}</span>
+                <span>{formatPresetDescription(preset, previewDate)}</span>
               </button>
             ))}
           </div>
