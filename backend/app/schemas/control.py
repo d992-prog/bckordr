@@ -759,6 +759,7 @@ class DiscoveryZoneStatsResponse(BaseModel):
     pending_delete: int
     available: int
     predicted: int
+    has_strategy_pattern: bool = False
 
 
 class AllZonefilesSettingsResponse(BaseModel):

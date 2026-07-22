@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.deps import require_admin
 from app.api.routes.control import router as control_router
 from app.db.base import Base
-from app.db.models import DiscoveryDomain
+from app.db.models import DiscoveryDomain, ZoneRule, ZoneStrategy
 from app.db.session import get_db
 from app.services.discovery import (
     DiscoveryObservationInput,
@@ -938,6 +938,35 @@ async def test_discovery_api_imports_and_lists_domains():
         assert [item["fqdn"] for item in payload] == ["example.com", "test.org"]
         assert payload[0]["zone"] == "com"
         assert payload[0]["status"] == "tracking"
+
+        async with session_factory() as session:
+            strategy = ZoneStrategy(
+                zone="com",
+                name="COM window",
+                timezone_name="UTC",
+                is_active=True,
+            )
+            session.add(strategy)
+            await session.flush()
+            session.add(
+                ZoneRule(
+                    zone_strategy_id=strategy.id,
+                    name="COM daily",
+                    schedule_type="daily",
+                    hour=18,
+                    minute=0,
+                    second=0,
+                    window_duration_seconds=120,
+                    is_enabled=True,
+                )
+            )
+            await session.commit()
+
+        stats_response = await client.get("/control/discovery/zone-stats")
+        assert stats_response.status_code == 200
+        stats_by_zone = {item["zone"]: item for item in stats_response.json()}
+        assert stats_by_zone["com"]["has_strategy_pattern"] is True
+        assert stats_by_zone["org"]["has_strategy_pattern"] is False
         assert payload[0]["drop_prediction_enabled"] is False
         assert payload[1]["drop_prediction_enabled"] is False
         first_check = datetime.fromisoformat(payload[0]["next_check_at"])

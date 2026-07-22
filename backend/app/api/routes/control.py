@@ -1831,6 +1831,16 @@ async def list_discovery_zone_stats(
             func.sum(case((DiscoveryDomain.predicted_drop_start_at.is_not(None), 1), else_=0)),
         ).group_by(DiscoveryDomain.zone)
     )
+    strategy_result = await db.execute(
+        select(ZoneStrategy.zone)
+        .join(ZoneRule, ZoneRule.zone_strategy_id == ZoneStrategy.id)
+        .where(
+            ZoneStrategy.is_active.is_(True),
+            ZoneRule.is_enabled.is_(True),
+        )
+        .distinct()
+    )
+    zones_with_pattern = set(strategy_result.scalars().all())
     return [
         DiscoveryZoneStatsResponse(
             zone=row[0],
@@ -1838,6 +1848,7 @@ async def list_discovery_zone_stats(
             pending_delete=int(row[2] or 0),
             available=int(row[3] or 0),
             predicted=int(row[4] or 0),
+            has_strategy_pattern=row[0] in zones_with_pattern,
         )
         for row in result.all()
     ]

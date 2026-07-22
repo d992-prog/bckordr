@@ -2387,7 +2387,9 @@ export default function App() {
             {discoveryZoneStats.length === 0 ? <div><span>Нет данных</span><strong>0</strong></div> : null}
             {discoveryZoneStats.map((item) => (
               <div key={item.zone}>
-                <span>.{item.zone}</span>
+                <span>
+                  .{item.zone} {item.has_strategy_pattern ? <span className="status available">✓ паттерн</span> : null}
+                </span>
                 <strong>{item.total} всего | {item.pending_delete} pending | {item.predicted} с прогнозом | {item.available} доступно</strong>
               </div>
             ))}
@@ -3750,6 +3752,10 @@ export default function App() {
       { zone: "org", title: ".org PIR", description: "короткое окно около 15:15 UTC" },
       { zone: "ae", title: ".ae TDRA", description: "ежедневно 03:32:30 → 03:34:10, Asia/Dubai" },
       { zone: "se", title: ".se IIS", description: "ежедневно 06:00:45 → 06:04:15, Europe/Stockholm" },
+      { zone: "me", title: ".me DoMEn", description: "ежедневно 18:59:30 → 19:01:30, Europe/Podgorica" },
+      { zone: "mk", title: ".mk MARnet", description: "ежедневно 21:59:30 → 22:15:30, Europe/Skopje" },
+      { zone: "sk", title: ".sk SK-NIC", description: "ежедневно 01:59:30 → 02:14:30, Europe/Bratislava" },
+      { zone: "tr", title: ".tr TRABIS", description: "ежедневно 00:49:30 → 00:51:10, Europe/Istanbul" },
     ];
 
     return (

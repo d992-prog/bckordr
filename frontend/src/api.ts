@@ -147,6 +147,7 @@ export type DiscoveryZoneStats = {
   pending_delete: number;
   available: number;
   predicted: number;
+  has_strategy_pattern: boolean;
 };
 
 export type AllZonefilesSettings = {
