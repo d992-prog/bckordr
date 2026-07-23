@@ -49,6 +49,9 @@ def build_gandi_dry_run_request(
     domain: DropDomain,
     account: RegistrarAccount,
     contact: ContactProfile,
+    *,
+    contact_extra_parameters: str | dict | list | None = None,
+    registration_extra_parameters: str | dict | list | None = None,
 ) -> tuple[str, dict[str, str], dict]:
     if not account.api_token:
         raise ValueError("Registrar API token is missing")
@@ -86,9 +89,12 @@ def build_gandi_dry_run_request(
         contact_payload["mail_obfuscated"] = contact.mail_obfuscated
     if contact.icann_contract_accept is not None:
         contact_payload["icann_contract_accept"] = contact.icann_contract_accept
-    contact_extra_parameters = _coerce_extra_parameters(contact.extra_parameters, field_name="contact.extra_parameters")
-    if contact_extra_parameters is not None:
-        contact_payload["extra_parameters"] = contact_extra_parameters
+    resolved_contact_extra_parameters = _coerce_extra_parameters(
+        contact_extra_parameters if contact_extra_parameters is not None else contact.extra_parameters,
+        field_name="contact.extra_parameters",
+    )
+    if resolved_contact_extra_parameters is not None:
+        contact_payload["extra_parameters"] = resolved_contact_extra_parameters
 
     payload = {
         "fqdn": domain.fqdn,
@@ -98,12 +104,12 @@ def build_gandi_dry_run_request(
         "bill": dict(contact_payload),
         "tech": dict(contact_payload),
     }
-    domain_extra_parameters = _coerce_extra_parameters(
-        domain.registration_extra_parameters,
+    resolved_domain_extra_parameters = _coerce_extra_parameters(
+        registration_extra_parameters if registration_extra_parameters is not None else domain.registration_extra_parameters,
         field_name="domain.registration_extra_parameters",
     )
-    if domain_extra_parameters is not None:
-        payload["extra_parameters"] = domain_extra_parameters
+    if resolved_domain_extra_parameters is not None:
+        payload["extra_parameters"] = resolved_domain_extra_parameters
 
     headers = {
         "Authorization": f"Bearer {account.api_token}",
@@ -119,11 +125,19 @@ async def run_gandi_domain_dry_run(
     contact: ContactProfile,
     settings: Settings,
     *,
+    contact_extra_parameters: str | dict | list | None = None,
+    registration_extra_parameters: str | dict | list | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> GandiDryRunResult:
     checked_at = utcnow()
     try:
-        url, headers, payload = build_gandi_dry_run_request(domain, account, contact)
+        url, headers, payload = build_gandi_dry_run_request(
+            domain,
+            account,
+            contact,
+            contact_extra_parameters=contact_extra_parameters,
+            registration_extra_parameters=registration_extra_parameters,
+        )
     except ValueError as exc:
         return GandiDryRunResult(status="invalid", http_status=None, message=str(exc), checked_at=checked_at)
 

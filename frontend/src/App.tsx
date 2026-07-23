@@ -137,8 +137,15 @@ const DEFAULT_STRATEGY_FORM = {
   ruleResolutionMode: "priority",
   defaultMinGuaranteedRps: "1",
   defaultRegistrarSlug: "gandi",
+  gandiContactExtraParameters: "",
+  gandiRegistrationExtraParameters: "",
   isActive: true,
   notes: "",
+};
+
+const DEFAULT_STRATEGY_GANDI_FORM = {
+  contactExtraParameters: "",
+  registrationExtraParameters: "",
 };
 
 const DEFAULT_RULE_FORM = {
@@ -891,6 +898,7 @@ export default function App() {
   const [allZonefilesTokenForm, setAllZonefilesTokenForm] = useState("");
   const [zoneScanForm, setZoneScanForm] = useState(DEFAULT_ZONE_SCAN_FORM);
   const [strategyForm, setStrategyForm] = useState(DEFAULT_STRATEGY_FORM);
+  const [strategyGandiForm, setStrategyGandiForm] = useState(DEFAULT_STRATEGY_GANDI_FORM);
   const [ruleForm, setRuleForm] = useState(DEFAULT_RULE_FORM);
   const [phaseForm, setPhaseForm] = useState(DEFAULT_PHASE_FORM);
   const [selectedStrategyId, setSelectedStrategyId] = useState<number | null>(null);
@@ -1117,6 +1125,13 @@ export default function App() {
     }
     void loadStrategyDetails(selectedStrategyId, previewDate);
   }, [selectedStrategyId, previewDate, session?.user.id]);
+
+  useEffect(() => {
+    setStrategyGandiForm({
+      contactExtraParameters: selectedStrategy?.gandi_contact_extra_parameters ?? "",
+      registrationExtraParameters: selectedStrategy?.gandi_registration_extra_parameters ?? "",
+    });
+  }, [selectedStrategy?.id, selectedStrategy?.gandi_contact_extra_parameters, selectedStrategy?.gandi_registration_extra_parameters]);
 
   useEffect(() => {
     const strategyId = parseNumber(domainForm.zoneStrategyId);
@@ -1728,6 +1743,8 @@ export default function App() {
         rule_resolution_mode: strategyForm.ruleResolutionMode,
         default_min_guaranteed_rps: Number(strategyForm.defaultMinGuaranteedRps),
         default_registrar_slug: strategyForm.defaultRegistrarSlug,
+        gandi_contact_extra_parameters: strategyForm.gandiContactExtraParameters || null,
+        gandi_registration_extra_parameters: strategyForm.gandiRegistrationExtraParameters || null,
         is_active: strategyForm.isActive,
         notes: strategyForm.notes || null,
       });
@@ -1736,6 +1753,25 @@ export default function App() {
       setToast({ type: "success", text: "Стратегия зоны добавлена" });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка стратегии зоны" });
+    }
+  }
+
+  async function saveSelectedStrategyGandiParameters(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedStrategy) {
+      setToast({ type: "error", text: "Сначала выбери стратегию зоны" });
+      return;
+    }
+    try {
+      const updated = await api.updateZoneStrategy(selectedStrategy.id, {
+        gandi_contact_extra_parameters: strategyGandiForm.contactExtraParameters || null,
+        gandi_registration_extra_parameters: strategyGandiForm.registrationExtraParameters || null,
+      });
+      await loadAll({ silent: true });
+      setSelectedStrategyId(updated.id);
+      setToast({ type: "success", text: `Gandi параметры .${updated.zone} сохранены` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка сохранения Gandi параметров" });
     }
   }
 
@@ -3974,6 +4010,26 @@ export default function App() {
               </label>
             </div>
             <label>
+              <span>Gandi: параметры контакта (JSON)</span>
+              <textarea
+                rows={2}
+                value={strategyForm.gandiContactExtraParameters}
+                onChange={(event) => setStrategyForm((current) => ({ ...current, gandiContactExtraParameters: event.target.value }))}
+                placeholder='{"x-se_ident_number":"043171864"}'
+              />
+              <small>Уходит в owner/admin/bill/tech.extra_parameters. Используй для зон, где Gandi требует ID/паспорт.</small>
+            </label>
+            <label>
+              <span>Gandi: параметры регистрации (JSON)</span>
+              <textarea
+                rows={2}
+                value={strategyForm.gandiRegistrationExtraParameters}
+                onChange={(event) => setStrategyForm((current) => ({ ...current, gandiRegistrationExtraParameters: event.target.value }))}
+                placeholder='{"premium":false}'
+              />
+              <small>Уходит в верхний extra_parameters операции регистрации. Для .no сейчас оставь пустым, раз dry-run дает HTTP 200.</small>
+            </label>
+            <label>
               <span>Заметки</span>
               <textarea rows={3} value={strategyForm.notes} onChange={(event) => setStrategyForm((current) => ({ ...current, notes: event.target.value }))} />
             </label>
@@ -3992,6 +4048,14 @@ export default function App() {
             <div><span>RPS по умолчанию</span><strong>{selectedStrategy?.default_min_guaranteed_rps ?? "—"}</strong></div>
             <div><span>Регистратор</span><strong>{selectedStrategy?.default_registrar_slug ?? "—"}</strong></div>
             <div>
+              <span>Gandi контакт</span>
+              <strong>{selectedStrategy?.gandi_contact_extra_parameters ? "задан JSON" : "—"}</strong>
+            </div>
+            <div>
+              <span>Gandi регистрация</span>
+              <strong>{selectedStrategy?.gandi_registration_extra_parameters ? "задан JSON" : "—"}</strong>
+            </div>
+            <div>
               <span>Время стратегии</span>
               <strong>{selectedStrategy?.timezone_name ?? "—"}</strong>
               {selectedStrategy ? (
@@ -4001,6 +4065,31 @@ export default function App() {
               ) : null}
             </div>
           </div>
+          <form className="form" onSubmit={saveSelectedStrategyGandiParameters}>
+            <label>
+              <span>Gandi: параметры контакта выбранной зоны</span>
+              <textarea
+                rows={2}
+                value={strategyGandiForm.contactExtraParameters}
+                onChange={(event) => setStrategyGandiForm((current) => ({ ...current, contactExtraParameters: event.target.value }))}
+                placeholder='{"x-se_ident_number":"043171864"}'
+                disabled={!selectedStrategy}
+              />
+              <small>Пример для .se/.nu/.fi: номер документа. Для .no сейчас оставь пусто.</small>
+            </label>
+            <label>
+              <span>Gandi: параметры регистрации выбранной зоны</span>
+              <textarea
+                rows={2}
+                value={strategyGandiForm.registrationExtraParameters}
+                onChange={(event) => setStrategyGandiForm((current) => ({ ...current, registrationExtraParameters: event.target.value }))}
+                placeholder='{"premium":false}'
+                disabled={!selectedStrategy}
+              />
+              <small>Используется только если Gandi явно требует top-level extra_parameters.</small>
+            </label>
+            <button type="submit" disabled={!selectedStrategy}>Сохранить Gandi параметры</button>
+          </form>
           </div>
         </section>
 

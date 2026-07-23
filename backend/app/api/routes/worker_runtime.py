@@ -18,6 +18,7 @@ from app.db.models import (
     RegistrarAccount,
     WorkerNode,
     WorkerTask,
+    ZoneStrategy,
 )
 from app.db.session import get_db
 from app.schemas.runtime import (
@@ -38,6 +39,7 @@ from app.services.attack_runtime import rebalance_worker_pool, recompute_run_sta
 from app.services.app_settings import get_diagnostic_telegram_settings, get_discovery_runtime_settings
 from app.services.discovery_worker_runtime import apply_discovery_worker_task_result
 from app.services.notifier import TelegramNotifier
+from app.services.strategy_runtime import resolve_effective_gandi_parameters
 
 router = APIRouter(prefix="/worker-runtime", tags=["worker-runtime"])
 logger = logging.getLogger(__name__)
@@ -62,6 +64,18 @@ async def _resolve_contact_payload(db: AsyncSession, domain: DropDomain, account
     if account and account.default_contact_profile_id:
         return await db.get(ContactProfile, account.default_contact_profile_id)
     result = await db.execute(select(ContactProfile).where(ContactProfile.is_default.is_(True)).limit(1))
+    return result.scalar_one_or_none()
+
+
+async def _get_zone_strategy_for_domain(db: AsyncSession, domain: DropDomain) -> ZoneStrategy | None:
+    if domain.zone_strategy_id:
+        return await db.get(ZoneStrategy, domain.zone_strategy_id)
+    result = await db.execute(
+        select(ZoneStrategy)
+        .where(ZoneStrategy.zone == domain.zone, ZoneStrategy.is_active.is_(True))
+        .order_by(ZoneStrategy.id.asc())
+        .limit(1)
+    )
     return result.scalar_one_or_none()
 
 
@@ -113,6 +127,7 @@ async def get_next_task(
 
     account = await db.get(RegistrarAccount, domain.registrar_account_id) if domain.registrar_account_id else None
     contact = await _resolve_contact_payload(db, domain, account)
+    zone_strategy = await _get_zone_strategy_for_domain(db, domain)
     if contact is None:
         db.add(
             AttackEvent(
@@ -126,6 +141,7 @@ async def get_next_task(
         )
         await db.commit()
         return WorkerTaskResponseEnvelope(task=None)
+    gandi_parameters = resolve_effective_gandi_parameters(domain, contact=contact, zone_strategy=zone_strategy)
 
     payload = WorkerTaskPayloadResponse(
         task_id=task.id,
@@ -138,7 +154,7 @@ async def get_next_task(
         planned_end_at=run.planned_end_at,
         planned_rps=task.planned_rps,
         requested_duration_years=domain.requested_duration_years,
-        registration_extra_parameters=domain.registration_extra_parameters,
+        registration_extra_parameters=gandi_parameters.registration_extra_parameters,
         registrar={
             "id": account.id if account else None,
             "name": account.name if account else None,
@@ -168,7 +184,7 @@ async def get_next_task(
             "data_obfuscated": contact.data_obfuscated,
             "mail_obfuscated": contact.mail_obfuscated,
             "icann_contract_accept": contact.icann_contract_accept,
-            "extra_parameters": contact.extra_parameters,
+            "extra_parameters": gandi_parameters.contact_extra_parameters,
         },
     )
     return WorkerTaskResponseEnvelope(task=payload)

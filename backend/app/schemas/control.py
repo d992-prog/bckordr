@@ -33,6 +33,8 @@ class ZoneStrategyBase(BaseModel):
     rule_resolution_mode: str = "priority"
     default_min_guaranteed_rps: float = Field(default=1.0, ge=0.0)
     default_registrar_slug: str = Field(default="gandi", min_length=2, max_length=64)
+    gandi_contact_extra_parameters: str | None = None
+    gandi_registration_extra_parameters: str | None = None
     is_active: bool = True
     notes: str | None = None
 
@@ -48,6 +50,8 @@ class ZoneStrategyUpdateRequest(BaseModel):
     rule_resolution_mode: str | None = None
     default_min_guaranteed_rps: float | None = Field(default=None, ge=0.0)
     default_registrar_slug: str | None = Field(default=None, min_length=2, max_length=64)
+    gandi_contact_extra_parameters: str | None = None
+    gandi_registration_extra_parameters: str | None = None
     is_active: bool | None = None
     notes: str | None = None
 

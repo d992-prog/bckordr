@@ -91,8 +91,18 @@ async def test_domain_dry_run_endpoint_persists_gandi_result(monkeypatch: pytest
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[require_admin] = fake_admin
 
-    async def fake_run_gandi_domain_dry_run(domain, account, contact, settings):
+    async def fake_run_gandi_domain_dry_run(
+        domain,
+        account,
+        contact,
+        settings,
+        *,
+        contact_extra_parameters=None,
+        registration_extra_parameters=None,
+    ):
         assert domain.registration_extra_parameters == '{"fr_lock": true}'
+        assert contact_extra_parameters is None
+        assert registration_extra_parameters == '{"fr_lock":true}'
         assert account.api_token == "gandi-token"
         assert contact.lang == "fr"
         return GandiDryRunResult(
@@ -204,7 +214,17 @@ async def test_domain_dry_run_batch_endpoint_returns_summary(monkeypatch: pytest
     async def fake_admin():
         return SimpleNamespace(id=1, role="owner")
 
-    async def fake_run_gandi_domain_dry_run(domain, account, contact, settings):
+    async def fake_run_gandi_domain_dry_run(
+        domain,
+        account,
+        contact,
+        settings,
+        *,
+        contact_extra_parameters=None,
+        registration_extra_parameters=None,
+    ):
+        assert contact_extra_parameters is None
+        assert registration_extra_parameters is None
         status = "ready" if domain.fqdn == "alpha.fr" else "invalid"
         return GandiDryRunResult(
             status=status,

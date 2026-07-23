@@ -252,6 +252,8 @@ export type ZoneStrategy = {
   rule_resolution_mode: string;
   default_min_guaranteed_rps: number;
   default_registrar_slug: string;
+  gandi_contact_extra_parameters: string | null;
+  gandi_registration_extra_parameters: string | null;
   is_active: boolean;
   notes: string | null;
   created_at: string;
@@ -637,6 +639,11 @@ export const api = {
   createZoneStrategy: (payload: Record<string, unknown>) =>
     request<ZoneStrategy>("/control/zone-strategies", {
       method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateZoneStrategy: (id: number, payload: Record<string, unknown>) =>
+    request<ZoneStrategy>(`/control/zone-strategies/${id}`, {
+      method: "PATCH",
       body: JSON.stringify(payload),
     }),
   createZoneStrategyPreset: (zone: string) =>

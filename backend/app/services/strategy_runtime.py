@@ -25,6 +25,8 @@ class EffectiveStrategy:
     timezone_name: str
     rule_resolution_mode: str
     minimum_guaranteed_rps: float
+    gandi_contact_extra_parameters: str | None
+    gandi_registration_extra_parameters: str | None
     rules: list[object]
     phases_by_rule_id: dict[int, list[object]]
 
@@ -57,6 +59,12 @@ class DomainReadinessResult:
     reasons: list[str]
 
 
+@dataclass(slots=True)
+class EffectiveGandiParameters:
+    contact_extra_parameters: str | None
+    registration_extra_parameters: str | None
+
+
 def resolve_strategy_source(domain, *, zone_strategy, domain_override):
     if getattr(domain, "strategy_mode", "inherit_zone") == "manual_override" and domain_override is not None:
         return ResolvedStrategySource(source="domain", strategy=domain_override)
@@ -84,6 +92,8 @@ def resolve_effective_strategy(domain, *, zone_strategy, domain_override, rules,
         timezone_name=getattr(strategy, "timezone_name", "UTC"),
         rule_resolution_mode=getattr(strategy, "rule_resolution_mode", "priority"),
         minimum_guaranteed_rps=float(getattr(strategy, "default_min_guaranteed_rps", 1.0)),
+        gandi_contact_extra_parameters=getattr(strategy, "gandi_contact_extra_parameters", None),
+        gandi_registration_extra_parameters=getattr(strategy, "gandi_registration_extra_parameters", None),
         rules=list(rules),
         phases_by_rule_id=grouped_phases,
     )
@@ -132,7 +142,14 @@ def evaluate_domain_readiness(domain, *, effective_strategy, contact_profile=Non
         if (
             required_contact_parameter
             and str(getattr(domain, "registrar_slug", "") or "").lower() == "gandi"
-            and not _contact_has_extra_parameter(contact_profile, required_contact_parameter)
+            and not _has_extra_parameter(
+                resolve_effective_gandi_parameters(
+                    domain,
+                    contact=contact_profile,
+                    zone_strategy=effective_strategy,
+                ).contact_extra_parameters,
+                required_contact_parameter,
+            )
         ):
             reasons.append(f"contact extra parameter {required_contact_parameter} is missing")
     if not getattr(domain, "drop_date", None):
@@ -140,10 +157,22 @@ def evaluate_domain_readiness(domain, *, effective_strategy, contact_profile=Non
     return DomainReadinessResult(status="draft" if reasons else "ready", reasons=reasons)
 
 
-def _contact_has_extra_parameter(contact_profile, parameter_name: str) -> bool:
-    if contact_profile is None:
-        return False
-    raw_extra_parameters = getattr(contact_profile, "extra_parameters", None)
+def resolve_effective_gandi_parameters(domain, *, contact, zone_strategy) -> EffectiveGandiParameters:
+    contact_extra = _merge_json_parameters(
+        getattr(contact, "extra_parameters", None),
+        getattr(zone_strategy, "gandi_contact_extra_parameters", None),
+    )
+    registration_extra = _merge_json_parameters(
+        getattr(zone_strategy, "gandi_registration_extra_parameters", None),
+        getattr(domain, "registration_extra_parameters", None),
+    )
+    return EffectiveGandiParameters(
+        contact_extra_parameters=contact_extra,
+        registration_extra_parameters=registration_extra,
+    )
+
+
+def _has_extra_parameter(raw_extra_parameters, parameter_name: str) -> bool:
     if not raw_extra_parameters:
         return False
     try:
@@ -151,6 +180,37 @@ def _contact_has_extra_parameter(contact_profile, parameter_name: str) -> bool:
     except (TypeError, ValueError):
         return False
     return isinstance(extra_parameters, dict) and bool(extra_parameters.get(parameter_name))
+
+
+def _merge_json_parameters(*values: object) -> str | None:
+    merged_dict: dict | None = None
+    fallback_value: object | None = None
+    for value in values:
+        parsed = _parse_json_parameter(value)
+        if parsed is None:
+            continue
+        if isinstance(parsed, dict):
+            if merged_dict is None:
+                merged_dict = {}
+            merged_dict.update(parsed)
+            fallback_value = None
+        elif merged_dict is None:
+            fallback_value = parsed
+    if merged_dict is not None:
+        return json.dumps(merged_dict, ensure_ascii=True, separators=(",", ":"))
+    if fallback_value is None:
+        return None
+    return json.dumps(fallback_value, ensure_ascii=True, separators=(",", ":"))
+
+
+def _parse_json_parameter(value: object) -> object | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if not value.strip():
+            return None
+        return json.loads(value)
+    return value
 
 
 def is_domain_due_today(domain, now: datetime) -> bool:

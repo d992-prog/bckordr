@@ -74,6 +74,8 @@ MIGRATIONS = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_zone_strategies_zone ON zone_strategies(zone)",
+    "ALTER TABLE zone_strategies ADD COLUMN IF NOT EXISTS gandi_contact_extra_parameters TEXT NULL",
+    "ALTER TABLE zone_strategies ADD COLUMN IF NOT EXISTS gandi_registration_extra_parameters TEXT NULL",
     """
     CREATE TABLE IF NOT EXISTS zone_rules (
         id SERIAL PRIMARY KEY,

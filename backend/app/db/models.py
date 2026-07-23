@@ -369,6 +369,8 @@ class ZoneStrategy(Base):
     rule_resolution_mode: Mapped[str] = mapped_column(String(32), default="priority", server_default="priority")
     default_min_guaranteed_rps: Mapped[float] = mapped_column(Float, default=1.0, server_default="1.0")
     default_registrar_slug: Mapped[str] = mapped_column(String(64), default="gandi", server_default="gandi")
+    gandi_contact_extra_parameters: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gandi_registration_extra_parameters: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

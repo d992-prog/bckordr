@@ -138,6 +138,7 @@ from app.services.strategy_runtime import (
     evaluate_domain_readiness,
     is_domain_due_today,
     preview_strategy_windows,
+    resolve_effective_gandi_parameters,
     resolve_effective_strategy,
 )
 from app.services.worker_allowlist import sync_worker_runtime_allowlist
@@ -361,6 +362,7 @@ async def _resolve_contact_profile(db: AsyncSession, domain: DropDomain, account
 async def _run_and_persist_domain_dry_run(db: AsyncSession, domain: DropDomain) -> DomainDryRunResponse:
     account = await db.get(RegistrarAccount, domain.registrar_account_id) if domain.registrar_account_id else None
     contact = await _resolve_contact_profile(db, domain, account)
+    zone_strategy = await _resolve_zone_strategy_for_domain(db, domain)
 
     if account is None:
         result = GandiDryRunResult(status="invalid", http_status=None, message="Domain has no registrar account", checked_at=utcnow())
@@ -381,7 +383,15 @@ async def _run_and_persist_domain_dry_run(db: AsyncSession, domain: DropDomain) 
             checked_at=utcnow(),
         )
     else:
-        result = await run_gandi_domain_dry_run(domain, account, contact, get_settings())
+        gandi_parameters = resolve_effective_gandi_parameters(domain, contact=contact, zone_strategy=zone_strategy)
+        result = await run_gandi_domain_dry_run(
+            domain,
+            account,
+            contact,
+            get_settings(),
+            contact_extra_parameters=gandi_parameters.contact_extra_parameters,
+            registration_extra_parameters=gandi_parameters.registration_extra_parameters,
+        )
 
     domain.dry_run_checked_at = result.checked_at
     domain.dry_run_status = result.status
@@ -413,6 +423,12 @@ async def _get_zone_strategy_for_domain(db: AsyncSession, zone: str) -> ZoneStra
         .limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def _resolve_zone_strategy_for_domain(db: AsyncSession, domain: DropDomain) -> ZoneStrategy | None:
+    if domain.zone_strategy_id:
+        return await db.get(ZoneStrategy, domain.zone_strategy_id)
+    return await _get_zone_strategy_for_domain(db, domain.zone)
 
 
 async def _load_domain_override_rules_and_phases(

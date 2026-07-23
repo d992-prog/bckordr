@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from app.services.strategy_runtime import (
     calculate_phase_target_rps,
     evaluate_domain_readiness,
+    resolve_effective_gandi_parameters,
     is_domain_due_today,
     match_rule_windows,
     preview_strategy_windows,
@@ -56,6 +57,31 @@ def test_resolve_effective_strategy_uses_domain_override_when_requested():
     assert resolved.source == "domain"
     assert resolved.rule_resolution_mode == "merge"
     assert resolved.minimum_guaranteed_rps == 3.0
+
+
+def test_resolve_effective_gandi_parameters_merges_contact_strategy_and_domain_json():
+    contact = SimpleNamespace(extra_parameters='{"x-se_ident_number":"043171864","shared":"contact"}')
+    strategy = SimpleNamespace(
+        gandi_contact_extra_parameters='{"shared":"zone","zone_only":true}',
+        gandi_registration_extra_parameters='{"premium":false,"shared":"zone"}',
+    )
+    domain = SimpleNamespace(registration_extra_parameters='{"shared":"domain","domain_only":1}')
+
+    resolved = resolve_effective_gandi_parameters(domain, contact=contact, zone_strategy=strategy)
+
+    assert resolved.contact_extra_parameters == '{"x-se_ident_number":"043171864","shared":"zone","zone_only":true}'
+    assert resolved.registration_extra_parameters == '{"premium":false,"shared":"domain","domain_only":1}'
+
+
+def test_resolve_effective_gandi_parameters_keeps_empty_no_zone_parameters_empty():
+    contact = SimpleNamespace(extra_parameters=None)
+    strategy = SimpleNamespace(gandi_contact_extra_parameters=None, gandi_registration_extra_parameters=None)
+    domain = SimpleNamespace(registration_extra_parameters=None)
+
+    resolved = resolve_effective_gandi_parameters(domain, contact=contact, zone_strategy=strategy)
+
+    assert resolved.contact_extra_parameters is None
+    assert resolved.registration_extra_parameters is None
 
 
 def test_resolve_effective_strategy_groups_domain_override_phases_by_domain_rule():
@@ -414,6 +440,33 @@ def test_gandi_se_domain_is_ready_with_contact_ident_number():
         domain,
         effective_strategy=effective_strategy,
         contact_profile=SimpleNamespace(extra_parameters='{"x-se_ident_number":"AB1234567"}'),
+    )
+
+    assert readiness.status == "ready"
+    assert readiness.reasons == []
+
+
+def test_gandi_se_domain_is_ready_with_strategy_ident_number():
+    domain = SimpleNamespace(
+        zone="se",
+        registrar_slug="gandi",
+        strategy_mode="inherit_zone",
+        registrar_account_id=1,
+        contact_profile_id=1,
+        drop_date=date(2026, 5, 5),
+        attack_enabled=True,
+        registration_extra_parameters=None,
+    )
+    effective_strategy = SimpleNamespace(
+        rules=[SimpleNamespace(id=1)],
+        gandi_contact_extra_parameters='{"x-se_ident_number":"043171864"}',
+        gandi_registration_extra_parameters=None,
+    )
+
+    readiness = evaluate_domain_readiness(
+        domain,
+        effective_strategy=effective_strategy,
+        contact_profile=SimpleNamespace(extra_parameters=None),
     )
 
     assert readiness.status == "ready"
