@@ -4363,8 +4363,6 @@ export default function App() {
               <label className="checkbox"><input type="checkbox" checked={contactForm.icannContractAccept} onChange={(event) => setContactForm((current) => ({ ...current, icannContractAccept: event.target.checked }))} /><span>ICANN принят</span></label>
               <label className="checkbox"><input type="checkbox" checked={contactForm.isDefault} onChange={(event) => setContactForm((current) => ({ ...current, isDefault: event.target.checked }))} /><span>По умолчанию</span></label>
             </div>
-            <label><span>Дополнительные параметры контакта (JSON)</span><textarea rows={3} value={contactForm.extraParameters} onChange={(event) => setContactForm((current) => ({ ...current, extraParameters: event.target.value }))} placeholder='{"x-se_ident_number":"паспорт или ID для .se/.nu/.fi"}' /></label>
-            <p className="row-hint">Для .se/.nu/.fi Gandi требует `x-se_ident_number` в JSON контакта. Без него боевой запуск будет заблокирован как неготовый.</p>
             <label><span>Заметки</span><textarea rows={3} value={contactForm.notes} onChange={(event) => setContactForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             <div className="actions">
               <button type="submit">{editingContactId ? "Сохранить контакт" : "Добавить профиль контакта"}</button>
