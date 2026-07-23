@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 
 GANDI_CONTACT_EXTRA_PARAMETER_REQUIREMENTS = {
     "se": "x-se_ident_number",
-    "nu": "x-se_ident_number",
-    "fi": "x-se_ident_number",
+    "nu": "x-nu_registrant_idnumber",
+    "fi": "x-fi_ident_number",
 }
 
 

@@ -5,7 +5,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
 from app.db.models import ZoneRule, ZoneStrategy
-from app.services.bootstrap import ensure_default_zone_strategies
+from app.services.bootstrap import ensure_default_zone_strategies, ensure_zone_strategy_preset
 
 
 @pytest.mark.asyncio
@@ -62,6 +62,7 @@ async def test_bootstrap_creates_discovered_zone_strategy_presets():
     assert strategy_by_zone["org"].name == "PIR ORG Drop Window"
     assert strategy_by_zone["rs"].timezone_name == "Europe/Belgrade"
     assert strategy_by_zone["se"].timezone_name == "Europe/Stockholm"
+    assert strategy_by_zone["se"].gandi_contact_extra_parameters is None
     assert strategy_by_zone["sk"].timezone_name == "Europe/Bratislava"
     assert strategy_by_zone["tr"].timezone_name == "Europe/Istanbul"
     assert strategy_by_zone["us"].timezone_name == "UTC"
@@ -146,4 +147,80 @@ async def test_bootstrap_creates_discovered_zone_strategy_presets():
 
     assert strategy_count == 17
     assert rule_count == 17
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_backfills_se_gandi_contact_parameters_on_existing_preset():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
+        strategy = ZoneStrategy(
+            zone="se",
+            name="Existing SE",
+            timezone_name="Europe/Stockholm",
+            rule_resolution_mode="priority",
+            default_registrar_slug="gandi",
+            is_active=True,
+        )
+        session.add(strategy)
+        await session.flush()
+        session.add(
+            ZoneRule(
+                zone_strategy_id=strategy.id,
+                name="Existing SE rule",
+                schedule_type="daily",
+                hour=6,
+                minute=0,
+                second=45,
+                window_duration_seconds=210,
+                priority=100,
+                execution_profile_mode="flat",
+            )
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        strategy = await ensure_zone_strategy_preset(session, "se", default_ident_number="AB1234567")
+        await session.commit()
+
+    async with session_factory() as session:
+        strategy = await session.scalar(select(ZoneStrategy).where(ZoneStrategy.zone == "se"))
+        rule_count = await session.scalar(select(func.count()).select_from(ZoneRule))
+
+    assert strategy.gandi_contact_extra_parameters == '{"x-se_ident_number":"AB1234567"}'
+    assert rule_count == 1
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_can_fill_se_gandi_contact_parameters_from_env_default():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    await ensure_default_zone_strategies(session_factory, default_ident_number="AB1234567")
+
+    async with session_factory() as session:
+        strategies = (
+            await session.execute(select(ZoneStrategy).order_by(ZoneStrategy.zone.asc()))
+        ).scalars().all()
+
+    strategy_by_zone = {strategy.zone: strategy for strategy in strategies}
+    assert strategy_by_zone["se"].gandi_contact_extra_parameters == '{"x-se_ident_number":"AB1234567"}'
+    assert strategy_by_zone["com"].gandi_contact_extra_parameters is None
     await engine.dispose()

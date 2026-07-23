@@ -810,7 +810,11 @@ async def create_zone_strategy_preset(
     admin: User = Depends(require_admin),
 ) -> ZoneStrategyResponse:
     try:
-        strategy = await ensure_zone_strategy_preset(db, zone)
+        strategy = await ensure_zone_strategy_preset(
+            db,
+            zone,
+            default_ident_number=get_settings().gandi_default_ident_number,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await add_audit_log(

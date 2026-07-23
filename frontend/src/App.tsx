@@ -4015,7 +4015,7 @@ export default function App() {
                 rows={2}
                 value={strategyForm.gandiContactExtraParameters}
                 onChange={(event) => setStrategyForm((current) => ({ ...current, gandiContactExtraParameters: event.target.value }))}
-                placeholder='{"x-se_ident_number":"043171864"}'
+                placeholder='{"x-se_ident_number":"AB1234567"}'
               />
               <small>Уходит в owner/admin/bill/tech.extra_parameters. Используй для зон, где Gandi требует ID/паспорт.</small>
             </label>
@@ -4072,7 +4072,7 @@ export default function App() {
                 rows={2}
                 value={strategyGandiForm.contactExtraParameters}
                 onChange={(event) => setStrategyGandiForm((current) => ({ ...current, contactExtraParameters: event.target.value }))}
-                placeholder='{"x-se_ident_number":"043171864"}'
+                placeholder='{"x-se_ident_number":"AB1234567"}'
                 disabled={!selectedStrategy}
               />
               <small>Пример для .se/.nu/.fi: номер документа. Для .no сейчас оставь пусто.</small>

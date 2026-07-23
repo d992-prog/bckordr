@@ -1,9 +1,17 @@
+import json
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.db.models import User, ZoneRule, ZoneStrategy
 from app.services.security import hash_password
+
+GANDI_IDENTITY_PARAMETER_BY_ZONE = {
+    "se": "x-se_ident_number",
+    "fi": "x-fi_ident_number",
+    "nu": "x-nu_registrant_idnumber",
+}
 
 
 async def ensure_owner_account(
@@ -332,10 +340,24 @@ def get_zone_strategy_preset(zone: str) -> dict | None:
     return next((preset for preset in DEFAULT_ZONE_STRATEGY_PRESETS if preset["zone"] == normalized_zone), None)
 
 
-async def ensure_zone_strategy_preset(session: AsyncSession, zone: str) -> ZoneStrategy:
+def _gandi_identity_extra_parameters(zone: str, default_ident_number: str | None) -> str | None:
+    ident_number = (default_ident_number or "").strip()
+    parameter_name = GANDI_IDENTITY_PARAMETER_BY_ZONE.get(zone)
+    if not parameter_name or not ident_number:
+        return None
+    return json.dumps({parameter_name: ident_number}, separators=(",", ":"))
+
+
+async def ensure_zone_strategy_preset(
+    session: AsyncSession,
+    zone: str,
+    *,
+    default_ident_number: str | None = None,
+) -> ZoneStrategy:
     preset = get_zone_strategy_preset(zone)
     if preset is None:
         raise ValueError(f"No preset configured for zone {zone}")
+    default_contact_extra_parameters = _gandi_identity_extra_parameters(preset["zone"], default_ident_number)
 
     existing = await session.scalar(
         select(ZoneStrategy).where(
@@ -344,6 +366,10 @@ async def ensure_zone_strategy_preset(session: AsyncSession, zone: str) -> ZoneS
         )
     )
     if existing is not None:
+        if not existing.gandi_contact_extra_parameters and default_contact_extra_parameters:
+            existing.gandi_contact_extra_parameters = default_contact_extra_parameters
+        if not existing.gandi_registration_extra_parameters:
+            existing.gandi_registration_extra_parameters = preset.get("gandi_registration_extra_parameters")
         rules = (
             await session.execute(
                 select(ZoneRule).where(
@@ -365,6 +391,8 @@ async def ensure_zone_strategy_preset(session: AsyncSession, zone: str) -> ZoneS
             default_registrar_slug="gandi",
             is_active=True,
             notes=preset["notes"],
+            gandi_contact_extra_parameters=default_contact_extra_parameters,
+            gandi_registration_extra_parameters=preset.get("gandi_registration_extra_parameters"),
         )
         session.add(strategy)
         await session.flush()
@@ -390,8 +418,14 @@ async def ensure_zone_strategy_preset(session: AsyncSession, zone: str) -> ZoneS
 
 async def ensure_default_zone_strategies(
     session_factory: async_sessionmaker[AsyncSession],
+    *,
+    default_ident_number: str | None = None,
 ) -> None:
     async with session_factory() as session:
         for preset in DEFAULT_ZONE_STRATEGY_PRESETS:
-            await ensure_zone_strategy_preset(session, preset["zone"])
+            await ensure_zone_strategy_preset(
+                session,
+                preset["zone"],
+                default_ident_number=default_ident_number,
+            )
         await session.commit()

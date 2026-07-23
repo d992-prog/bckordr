@@ -30,7 +30,10 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     await run_startup_migrations(engine)
     await ensure_owner_account(AsyncSessionLocal, settings)
-    await ensure_default_zone_strategies(AsyncSessionLocal)
+    await ensure_default_zone_strategies(
+        AsyncSessionLocal,
+        default_ident_number=settings.gandi_default_ident_number,
+    )
 
     notifier = TelegramNotifier(settings)
     del notifier

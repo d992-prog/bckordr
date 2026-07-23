@@ -1,6 +1,8 @@
 from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.strategy_runtime import (
     calculate_phase_target_rps,
     evaluate_domain_readiness,
@@ -60,7 +62,7 @@ def test_resolve_effective_strategy_uses_domain_override_when_requested():
 
 
 def test_resolve_effective_gandi_parameters_merges_contact_strategy_and_domain_json():
-    contact = SimpleNamespace(extra_parameters='{"x-se_ident_number":"043171864","shared":"contact"}')
+    contact = SimpleNamespace(extra_parameters='{"x-se_ident_number":"AB1234567","shared":"contact"}')
     strategy = SimpleNamespace(
         gandi_contact_extra_parameters='{"shared":"zone","zone_only":true}',
         gandi_registration_extra_parameters='{"premium":false,"shared":"zone"}',
@@ -69,7 +71,7 @@ def test_resolve_effective_gandi_parameters_merges_contact_strategy_and_domain_j
 
     resolved = resolve_effective_gandi_parameters(domain, contact=contact, zone_strategy=strategy)
 
-    assert resolved.contact_extra_parameters == '{"x-se_ident_number":"043171864","shared":"zone","zone_only":true}'
+    assert resolved.contact_extra_parameters == '{"x-se_ident_number":"AB1234567","shared":"zone","zone_only":true}'
     assert resolved.registration_extra_parameters == '{"premium":false,"shared":"domain","domain_only":1}'
 
 
@@ -424,6 +426,35 @@ def test_gandi_se_domain_requires_contact_ident_number():
     assert "contact extra parameter x-se_ident_number is missing" in readiness.reasons
 
 
+@pytest.mark.parametrize(
+    ("zone", "required_key"),
+    [
+        ("fi", "x-fi_ident_number"),
+        ("nu", "x-nu_registrant_idnumber"),
+    ],
+)
+def test_gandi_identity_requirements_use_zone_specific_parameter_names(zone, required_key):
+    domain = SimpleNamespace(
+        zone=zone,
+        registrar_slug="gandi",
+        strategy_mode="inherit_zone",
+        registrar_account_id=1,
+        contact_profile_id=1,
+        drop_date=date(2026, 5, 5),
+        attack_enabled=True,
+    )
+    effective_strategy = SimpleNamespace(rules=[SimpleNamespace(id=1)])
+
+    readiness = evaluate_domain_readiness(
+        domain,
+        effective_strategy=effective_strategy,
+        contact_profile=SimpleNamespace(extra_parameters='{"x-se_ident_number":"AB1234567"}'),
+    )
+
+    assert readiness.status == "draft"
+    assert f"contact extra parameter {required_key} is missing" in readiness.reasons
+
+
 def test_gandi_se_domain_is_ready_with_contact_ident_number():
     domain = SimpleNamespace(
         zone="se",
@@ -459,7 +490,7 @@ def test_gandi_se_domain_is_ready_with_strategy_ident_number():
     )
     effective_strategy = SimpleNamespace(
         rules=[SimpleNamespace(id=1)],
-        gandi_contact_extra_parameters='{"x-se_ident_number":"043171864"}',
+        gandi_contact_extra_parameters='{"x-se_ident_number":"AB1234567"}',
         gandi_registration_extra_parameters=None,
     )
 
