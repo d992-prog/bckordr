@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -18,6 +19,7 @@ from app.db.models import (
     DomainRuleOverride,
     DropDomain,
     DiscoveryDomain,
+    RegistrarAccount,
     WorkerNode,
     WorkerTask,
     ZoneRule,
@@ -44,6 +46,7 @@ POST_WINDOW_RDAP_CHECK_EVENT_TYPES = {
     "post_window_rdap_inconclusive",
 }
 WHOIS_SAFETY_CONFIRMATION_ZONES = {"fr"}
+GANDI_DOMAIN_BASE_URL = "https://api.gandi.net/v5/domain/domains"
 
 
 @dataclass(slots=True)
@@ -61,6 +64,15 @@ class DomainRuntimeSnapshot:
     effective_window_start_second: int | None = None
     effective_window_duration_seconds: int | None = None
     effective_window_source: str = "domain"
+
+
+@dataclass(slots=True)
+class RegistrarOwnershipObservation:
+    owned: bool
+    http_status: int | None
+    source: str
+    message: str
+    error: str | None = None
 
 
 def _resolve_display_window_fields(domain: DropDomain, effective_strategy) -> tuple[int, int, int, str]:
@@ -141,6 +153,89 @@ def _is_registered_taken_observation(observation: object) -> bool:
     )
 
 
+async def _check_registrar_domain_ownership(
+    session: AsyncSession,
+    domain: DropDomain,
+    *,
+    client: httpx.AsyncClient,
+) -> RegistrarOwnershipObservation:
+    if domain.registrar_slug != "gandi" or domain.registrar_account_id is None:
+        return RegistrarOwnershipObservation(
+            owned=False,
+            http_status=None,
+            source="not_applicable",
+            message="Registrar ownership check is only available for configured Gandi accounts",
+        )
+
+    account = await session.get(RegistrarAccount, domain.registrar_account_id)
+    if account is None or account.registrar_slug != "gandi" or not account.api_token:
+        return RegistrarOwnershipObservation(
+            owned=False,
+            http_status=None,
+            source="gandi",
+            message="Gandi ownership check skipped because account/token is missing",
+        )
+
+    query: dict[str, str] = {}
+    if account.sharing_id:
+        query["sharing_id"] = account.sharing_id
+    base_url = (account.api_base_url or GANDI_DOMAIN_BASE_URL).rstrip("/")
+    url = f"{base_url}/{domain.fqdn}"
+    if query:
+        url = f"{url}?{urlencode(query)}"
+    headers = {"Authorization": f"Bearer {account.api_token}"}
+
+    try:
+        response = await client.get(url, headers=headers)
+    except Exception as exc:
+        return RegistrarOwnershipObservation(
+            owned=False,
+            http_status=None,
+            source="gandi",
+            message="Gandi ownership check failed",
+            error=str(exc),
+        )
+
+    if response.status_code == 200:
+        return RegistrarOwnershipObservation(
+            owned=True,
+            http_status=response.status_code,
+            source="gandi",
+            message="Gandi account owns this domain",
+        )
+    if response.status_code == 404:
+        return RegistrarOwnershipObservation(
+            owned=False,
+            http_status=response.status_code,
+            source="gandi",
+            message="Gandi account does not own this domain",
+        )
+    return RegistrarOwnershipObservation(
+        owned=False,
+        http_status=response.status_code,
+        source="gandi",
+        message=f"Gandi ownership check returned HTTP {response.status_code}",
+    )
+
+
+def _mark_attack_success_from_registrar_ownership(
+    run: AttackRun | None,
+    domain: DropDomain,
+    *,
+    now: datetime,
+    message: str,
+) -> None:
+    if run is not None:
+        run.status = "success"
+        run.finished_at = now
+        run.stop_reason = message
+    domain.status = "success"
+    domain.success_at = domain.success_at or now
+    domain.success_response_code = domain.success_response_code or 200
+    domain.success_message = message
+    domain.readiness_reasons = message
+
+
 async def _check_domain_safety_observation(
     domain: DropDomain,
     *,
@@ -195,6 +290,20 @@ async def _filter_domains_available_for_autostart(
                 whois_lookup=whois_lookup,
             )
             if _is_registered_taken_observation(observation):
+                ownership = await _check_registrar_domain_ownership(session, domain, client=http_client)
+                if ownership.owned:
+                    reason = "Gandi ownership check confirmed domain is already in this account"
+                    _mark_attack_success_from_registrar_ownership(None, domain, now=now, message=reason)
+                    session.add(
+                        AttackEvent(
+                            domain_id=domain.id,
+                            level="success",
+                            event_type="pre_start_domain_owned",
+                            message=f"{domain.fqdn} skipped before auto-start because {ownership.message}",
+                            created_at=now,
+                        )
+                    )
+                    continue
                 reason = "Pre-start RDAP safety check confirmed domain is already registered"
                 domain.status = "failed"
                 domain.attack_enabled = False
@@ -999,6 +1108,25 @@ async def finalize_expired_attack_runs(
             consecutive_registered = _count_consecutive_registered_checks(check_events)
             consecutive_registered = consecutive_registered + 1 if is_registered_taken else 0
             total_checks = len(check_events) + 1
+            if is_registered_taken:
+                ownership = await _check_registrar_domain_ownership(session, domain, client=http_client)
+                if ownership.owned:
+                    reason = "Gandi ownership check confirmed domain was registered in this account"
+                    _mark_attack_success_from_registrar_ownership(run, domain, now=effective_now, message=reason)
+                    session.add(
+                        AttackEvent(
+                            attack_run_id=run.id,
+                            domain_id=domain.id,
+                            level="success",
+                            event_type="post_window_domain_owned",
+                            message=(
+                                f"{domain.fqdn} marked successful after post-window ownership check: "
+                                f"http={ownership.http_status or 'n/a'} source={ownership.source}"
+                            ),
+                            created_at=effective_now,
+                        )
+                    )
+                    continue
             if consecutive_registered >= confirmation_threshold:
                 reason = "Post-window RDAP safety check confirmed domain is already registered"
                 run.status = "failed"
@@ -1020,6 +1148,24 @@ async def finalize_expired_attack_runs(
                 continue
 
             if total_checks >= confirmation_threshold and not is_registered_taken:
+                ownership = await _check_registrar_domain_ownership(session, domain, client=http_client)
+                if ownership.owned:
+                    reason = "Gandi ownership check confirmed domain was registered in this account"
+                    _mark_attack_success_from_registrar_ownership(run, domain, now=effective_now, message=reason)
+                    session.add(
+                        AttackEvent(
+                            attack_run_id=run.id,
+                            domain_id=domain.id,
+                            level="success",
+                            event_type="post_window_domain_owned",
+                            message=(
+                                f"{domain.fqdn} marked successful after inconclusive RDAP but positive ownership check: "
+                                f"http={ownership.http_status or 'n/a'} source={ownership.source}"
+                            ),
+                            created_at=effective_now,
+                        )
+                    )
+                    continue
                 reason = "Post-window RDAP safety checks were inconclusive; domain remains enabled"
                 run.status = "failed"
                 run.finished_at = effective_now

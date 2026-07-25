@@ -404,6 +404,131 @@ async def test_finalize_expired_attack_runs_disables_domain_after_repeated_regis
 
 
 @pytest.mark.asyncio
+async def test_finalize_expired_attack_runs_marks_success_when_gandi_account_owns_registered_domain():
+    engine, session_factory = await _make_session_factory()
+    now = datetime(2026, 7, 25, 3, 33, 10, tzinfo=timezone.utc)
+    try:
+        async with session_factory() as session:
+            contact = ContactProfile(
+                label="Default SK",
+                given_name="Jean",
+                family_name="Dupont",
+                email="ops@example.com",
+                phone="+33100000000",
+                street_address="1 Rue Test",
+                city="Paris",
+                zip_code="75001",
+                country_code="FR",
+                is_default=True,
+            )
+            session.add(contact)
+            await session.flush()
+
+            account = RegistrarAccount(
+                name="Gandi main",
+                registrar_slug="gandi",
+                api_token="gandi-token",
+                default_contact_profile_id=contact.id,
+                is_active=True,
+                supports_dry_run=False,
+            )
+            session.add(account)
+            await session.flush()
+
+            worker = WorkerNode(
+                name="worker-primary",
+                registrar_slug="gandi",
+                assigned_registrar_account_id=account.id,
+                status="running",
+                is_enabled=True,
+                target_rps=16.0,
+                max_rps=16.0,
+                last_heartbeat_at=now,
+            )
+            session.add(worker)
+            await session.flush()
+
+            domain = DropDomain(
+                fqdn="bbcenter.sk",
+                zone="sk",
+                timezone_name="Europe/Bratislava",
+                registrar_slug="gandi",
+                registrar_account_id=account.id,
+                contact_profile_id=contact.id,
+                drop_date=now.date(),
+                priority=200,
+                status="attacking",
+                attack_enabled=True,
+            )
+            session.add(domain)
+            await session.flush()
+
+            run = AttackRun(
+                domain_id=domain.id,
+                status="running",
+                planned_start_at=now - timedelta(seconds=95),
+                planned_end_at=now - timedelta(seconds=5),
+                started_at=now - timedelta(seconds=95),
+                assigned_worker_count=1,
+                planned_rps=240.0,
+                current_rps=0.0,
+                max_rps=240.0,
+            )
+            session.add(run)
+            await session.flush()
+
+            task = WorkerTask(
+                attack_run_id=run.id,
+                domain_id=domain.id,
+                worker_id=worker.id,
+                status="running",
+                planned_rps=16.0,
+                actual_rps=0.0,
+                assigned_at=now - timedelta(seconds=95),
+                acknowledged_at=now - timedelta(seconds=94),
+                started_at=now - timedelta(seconds=94),
+            )
+            session.add(task)
+            await session.commit()
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                if str(request.url) == "https://data.iana.org/rdap/dns.json":
+                    return httpx.Response(200, json={"services": [[["sk"], ["https://rdap.registry.example/"]]]})
+                if str(request.url) == "https://rdap.registry.example/domain/bbcenter.sk":
+                    return httpx.Response(200, json={"status": ["active"]})
+                if str(request.url) == "https://api.gandi.net/v5/domain/domains/bbcenter.sk":
+                    assert request.headers["Authorization"] == "Bearer gandi-token"
+                    return httpx.Response(200, json={"fqdn": "bbcenter.sk"})
+                return httpx.Response(404)
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                await finalize_expired_attack_runs(
+                    session,
+                    now=now,
+                    client=client,
+                    confirmation_threshold=1,
+                    check_interval_seconds=60,
+                )
+                await session.commit()
+
+        async with session_factory() as session:
+            domain = (await session.execute(select(DropDomain).where(DropDomain.fqdn == "bbcenter.sk"))).scalar_one()
+            run = (await session.execute(select(AttackRun).where(AttackRun.domain_id == domain.id))).scalar_one()
+            events = (
+                await session.execute(select(AttackEvent).where(AttackEvent.domain_id == domain.id).order_by(AttackEvent.id.asc()))
+            ).scalars().all()
+
+            assert domain.status == "success"
+            assert domain.success_at is not None
+            assert run.status == "success"
+            assert run.stop_reason == "Gandi ownership check confirmed domain was registered in this account"
+            assert any(event.event_type == "post_window_domain_owned" for event in events)
+            assert not any(event.event_type == "post_window_domain_taken" for event in events)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_finalize_expired_attack_runs_uses_fr_whois_when_rdap_is_stale_pending_delete():
     engine, session_factory = await _make_session_factory()
     now = datetime(2026, 7, 16, 22, 33, 5, tzinfo=timezone.utc)
