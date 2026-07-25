@@ -460,7 +460,7 @@ async def add_zone_scan_candidate_to_discovery(
     session: AsyncSession,
     *,
     candidate_id: int,
-    check_interval_seconds: int = 21600,
+    check_interval_seconds: int = 10,
 ) -> DiscoveryDomain:
     candidate = await session.get(ZoneScanCandidate, candidate_id)
     if candidate is None:

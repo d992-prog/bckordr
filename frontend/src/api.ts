@@ -113,6 +113,10 @@ export type DiscoveryDomain = {
   last_status_codes: string | null;
   last_availability: string | null;
   last_checked_at: string | null;
+  last_status_signature: string | null;
+  last_owner_signature: string | null;
+  last_change_at: string | null;
+  last_change_summary: string | null;
   next_check_at: string | null;
   first_seen_redemption_at: string | null;
   last_seen_redemption_at: string | null;
@@ -239,6 +243,13 @@ export type DiscoveryObservation = {
   lifecycle_stage: string | null;
   availability_status: string | null;
   status_codes: string | null;
+  registrar_name: string | null;
+  owner_handle: string | null;
+  name_servers: string | null;
+  status_signature: string | null;
+  owner_signature: string | null;
+  change_detected: boolean;
+  change_summary: string | null;
   raw_response: string | null;
   error: string | null;
   created_at: string;

@@ -24,7 +24,7 @@ PENDING_DELETE_DURATION = timedelta(days=5)
 REDEMPTION_DURATION = timedelta(days=30)
 DROP_DAY_SCAN_INTERVAL = timedelta(seconds=10)
 REDEMPTION_SCAN_INTERVAL = timedelta(minutes=15)
-DEFAULT_SCAN_INTERVAL = timedelta(hours=6)
+DEFAULT_SCAN_INTERVAL = timedelta(seconds=10)
 PENDING_DELETE_SCAN_INTERVAL = timedelta(minutes=5)
 ERROR_RETRY_INTERVAL = timedelta(minutes=3)
 ERROR_RETRY_JITTER = timedelta(minutes=1)
@@ -176,6 +176,13 @@ class DiscoveryObservationInput:
     availability_status: str | None = None
     status_codes: list[str] = field(default_factory=list)
     rdap_updated_at: datetime | None = None
+    registrar_name: str | None = None
+    owner_handle: str | None = None
+    name_servers: list[str] = field(default_factory=list)
+    status_signature: str | None = None
+    owner_signature: str | None = None
+    change_detected: bool = False
+    change_summary: str | None = None
     raw_response: str | None = None
     error: str | None = None
 
@@ -274,9 +281,15 @@ async def check_discovery_domain_rdap(
             payload = rdap_response.json()
             status_codes = [str(item) for item in payload.get("status", []) if item]
             rdap_updated_at = extract_rdap_updated_at(payload)
+            registrar_name = _extract_rdap_registrar_name(payload)
+            owner_handle = _extract_rdap_owner_handle(payload)
+            name_servers = _extract_rdap_name_servers(payload)
         else:
             payload = {}
             rdap_updated_at = None
+            registrar_name = None
+            owner_handle = None
+            name_servers = []
         lifecycle_stage, availability_status = classify_rdap_lifecycle_and_availability(
             status_codes,
             http_status=rdap_response.status_code,
@@ -312,6 +325,9 @@ async def check_discovery_domain_rdap(
             availability_status=availability_status,
             status_codes=status_codes,
             rdap_updated_at=rdap_updated_at,
+            registrar_name=registrar_name,
+            owner_handle=owner_handle,
+            name_servers=name_servers,
             raw_response=raw_response[:10000],
         )
     except Exception as exc:
@@ -472,7 +488,6 @@ def parse_whois_response(
     observed_at: datetime,
     latency_ms: int | None = None,
 ) -> DiscoveryObservationInput:
-    del fqdn
     raw = raw_response or ""
     normalized_raw = raw.lower()
     error = _detect_whois_error(normalized_raw)
@@ -490,6 +505,19 @@ def parse_whois_response(
         lifecycle_stage=lifecycle_stage,
         availability_status=availability_status,
         status_codes=status_codes,
+        registrar_name=_extract_whois_first_value(raw, ["registrar", "registrar name"]),
+        owner_handle=_extract_whois_first_value(
+            raw,
+            [
+                "registrant name",
+                "registrant organization",
+                "holder-c",
+                "holder",
+                "owner",
+                "admin-c",
+            ],
+        ),
+        name_servers=_extract_whois_values(raw, ["name server", "nserver", "nameserver"]),
         raw_response=raw[:WHOIS_RESPONSE_LIMIT_BYTES],
         error=error,
     )
@@ -573,6 +601,75 @@ def _walk_json_values(value):
             yield from _walk_json_values(child)
 
 
+def _extract_rdap_registrar_name(payload: dict) -> str | None:
+    for entity in payload.get("entities", []):
+        if not isinstance(entity, dict):
+            continue
+        roles = {str(item).strip().lower() for item in entity.get("roles", []) if item}
+        if "registrar" not in roles:
+            continue
+        return _extract_rdap_entity_label(entity)
+    return None
+
+
+def _extract_rdap_owner_handle(payload: dict) -> str | None:
+    preferred_roles = {"registrant", "administrative", "technical"}
+    for entity in payload.get("entities", []):
+        if not isinstance(entity, dict):
+            continue
+        roles = {str(item).strip().lower() for item in entity.get("roles", []) if item}
+        if not roles.intersection(preferred_roles):
+            continue
+        return _extract_rdap_entity_label(entity)
+    return None
+
+
+def _extract_rdap_entity_label(entity: dict) -> str | None:
+    for card in entity.get("vcardArray", []):
+        if not isinstance(card, list):
+            continue
+        for item in card:
+            if not isinstance(item, list) or len(item) < 4:
+                continue
+            if str(item[0]).strip().lower() in {"fn", "org"} and item[3]:
+                return _compact_text(str(item[3]))
+    handle = entity.get("handle")
+    return _compact_text(str(handle)) if handle else None
+
+
+def _extract_rdap_name_servers(payload: dict) -> list[str]:
+    nameservers: list[str] = []
+    for item in payload.get("nameservers", []):
+        if not isinstance(item, dict):
+            continue
+        value = item.get("ldhName") or item.get("unicodeName")
+        if value:
+            normalized = _compact_text(str(value).rstrip(".").lower())
+            if normalized and normalized not in nameservers:
+                nameservers.append(normalized)
+    return nameservers
+
+
+def _extract_whois_first_value(raw_response: str, labels: list[str]) -> str | None:
+    values = _extract_whois_values(raw_response, labels)
+    return values[0] if values else None
+
+
+def _extract_whois_values(raw_response: str, labels: list[str]) -> list[str]:
+    labels_pattern = "|".join(re.escape(label) for label in labels)
+    pattern = re.compile(rf"(?im)^\s*(?:{labels_pattern})\s*:\s*(.+?)\s*$")
+    values: list[str] = []
+    for match in pattern.finditer(raw_response):
+        value = _compact_text(match.group(1).split("http://", 1)[0].split("https://", 1)[0])
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
+def _compact_text(value: str) -> str:
+    return " ".join(value.strip().split())
+
+
 def _availability_for_lifecycle(lifecycle_stage: str) -> str:
     if lifecycle_stage == "not_found":
         return "available"
@@ -641,7 +738,7 @@ async def process_due_discovery_domains(
             previous_pending_at = domain.first_seen_pending_delete_at
             previous_available_at = domain.available_first_seen_at
             observation = replace(observation, observed_at=now)
-            apply_discovery_observation(
+            observation = apply_discovery_observation(
                 domain,
                 observation,
                 next_check_offset=_batch_next_check_offset(index=index, total=len(domains)),
@@ -674,12 +771,20 @@ async def trim_discovery_observations(
     *,
     keep: int = 5,
 ) -> None:
-    result = await session.execute(
+    protected_result = await session.execute(
         select(DiscoveryObservation.id)
         .where(DiscoveryObservation.discovery_domain_id == discovery_domain_id)
         .order_by(DiscoveryObservation.observed_at.desc(), DiscoveryObservation.id.desc())
-        .offset(max(keep, 0))
+        .limit(max(keep, 0))
     )
+    protected_ids = set(protected_result.scalars().all())
+    stale_query = select(DiscoveryObservation.id).where(
+        DiscoveryObservation.discovery_domain_id == discovery_domain_id,
+        DiscoveryObservation.change_detected.is_(False),
+    )
+    if protected_ids:
+        stale_query = stale_query.where(DiscoveryObservation.id.not_in(protected_ids))
+    result = await session.execute(stale_query)
     stale_ids = list(result.scalars().all())
     if stale_ids:
         await session.execute(delete(DiscoveryObservation).where(DiscoveryObservation.id.in_(stale_ids)))
@@ -796,7 +901,7 @@ def apply_discovery_observation(
     *,
     next_check_offset: timedelta = timedelta(0),
     include_active_jitter: bool = True,
-) -> None:
+) -> DiscoveryObservationInput:
     observed_at = _ensure_aware(observation.observed_at)
     lifecycle_stage = observation.lifecycle_stage or normalize_lifecycle_stage(
         observation.status_codes,
@@ -804,6 +909,23 @@ def apply_discovery_observation(
     )
     status_codes_json = json.dumps(observation.status_codes, ensure_ascii=True) if observation.status_codes else None
     drop_prediction_enabled = getattr(domain, "drop_prediction_enabled", True) is not False
+    status_signature = _build_status_signature(
+        lifecycle_stage=lifecycle_stage,
+        availability_status=observation.availability_status,
+        status_codes=observation.status_codes,
+    )
+    owner_signature = _build_owner_signature(
+        registrar_name=observation.registrar_name,
+        owner_handle=observation.owner_handle,
+        name_servers=observation.name_servers,
+    )
+    change_parts: list[str] = []
+    if status_signature and domain.last_status_signature and domain.last_status_signature != status_signature:
+        change_parts.append("status changed")
+    if owner_signature and domain.last_owner_signature and domain.last_owner_signature != owner_signature:
+        change_parts.append("owner changed")
+    change_detected = bool(change_parts)
+    change_summary = "; ".join(change_parts) if change_parts else None
 
     previous_checked_at = domain.last_checked_at
     domain.last_checked_at = observed_at
@@ -811,6 +933,13 @@ def apply_discovery_observation(
     domain.last_status_codes = status_codes_json
     domain.last_availability = observation.availability_status
     domain.last_error = observation.error
+    if status_signature:
+        domain.last_status_signature = status_signature
+    if owner_signature:
+        domain.last_owner_signature = owner_signature
+    if change_detected:
+        domain.last_change_at = observed_at
+        domain.last_change_summary = change_summary
 
     if lifecycle_stage == "redemption":
         domain.status = "redemption"
@@ -854,6 +983,51 @@ def apply_discovery_observation(
         next_check_at += next_check_offset
     domain.next_check_at = next_check_at
     domain.updated_at = observed_at
+    return replace(
+        observation,
+        observed_at=observed_at,
+        lifecycle_stage=lifecycle_stage,
+        status_signature=status_signature,
+        owner_signature=owner_signature,
+        change_detected=change_detected,
+        change_summary=change_summary,
+    )
+
+
+def _build_status_signature(
+    *,
+    lifecycle_stage: str | None,
+    availability_status: str | None,
+    status_codes: list[str],
+) -> str | None:
+    normalized_codes = sorted({_normalize_status_code(value) for value in status_codes if value})
+    payload = {
+        "availability": availability_status or "",
+        "codes": normalized_codes,
+        "lifecycle": lifecycle_stage or "",
+    }
+    if not payload["availability"] and not payload["codes"] and not payload["lifecycle"]:
+        return None
+    return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _build_owner_signature(
+    *,
+    registrar_name: str | None,
+    owner_handle: str | None,
+    name_servers: list[str],
+) -> str | None:
+    normalized_name_servers = sorted(
+        {_compact_text(value).rstrip(".").lower() for value in name_servers if _compact_text(value)}
+    )
+    payload = {
+        "name_servers": normalized_name_servers,
+        "owner": _compact_text(owner_handle or "").lower(),
+        "registrar": _compact_text(registrar_name or "").lower(),
+    }
+    if not payload["name_servers"] and not payload["owner"] and not payload["registrar"]:
+        return None
+    return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 def _ensure_aware(value: datetime) -> datetime:
@@ -920,6 +1094,13 @@ def _build_observation_model(
         lifecycle_stage=observation.lifecycle_stage,
         availability_status=observation.availability_status,
         status_codes=json.dumps(observation.status_codes, ensure_ascii=True) if observation.status_codes else None,
+        registrar_name=observation.registrar_name,
+        owner_handle=observation.owner_handle,
+        name_servers=json.dumps(observation.name_servers, ensure_ascii=True) if observation.name_servers else None,
+        status_signature=observation.status_signature,
+        owner_signature=observation.owner_signature,
+        change_detected=observation.change_detected,
+        change_summary=observation.change_summary,
         raw_response=observation.raw_response,
         error=observation.error,
     )

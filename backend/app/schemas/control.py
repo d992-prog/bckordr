@@ -666,7 +666,7 @@ class DomainDryRunBatchResponse(BaseModel):
 class DiscoveryDomainCreateRequest(BaseModel):
     fqdn: str = Field(min_length=3, max_length=255)
     zone: str | None = Field(default=None, min_length=2, max_length=32)
-    check_interval_seconds: int = Field(default=21600, ge=10, le=86400)
+    check_interval_seconds: int = Field(default=10, ge=10, le=86400)
     source_mode: str = Field(default="rdap", min_length=2, max_length=32)
     drop_prediction_enabled: bool = True
     notes: str | None = None
@@ -675,7 +675,7 @@ class DiscoveryDomainCreateRequest(BaseModel):
 class DiscoveryDomainBulkCreateRequest(BaseModel):
     domains: list[str] = Field(min_length=1)
     zone: str | None = Field(default=None, min_length=2, max_length=32)
-    check_interval_seconds: int = Field(default=21600, ge=10, le=86400)
+    check_interval_seconds: int = Field(default=10, ge=10, le=86400)
     source_mode: str = Field(default="rdap", min_length=2, max_length=32)
     drop_prediction_enabled: bool = True
     notes: str | None = None
@@ -715,6 +715,10 @@ class DiscoveryDomainResponse(BaseModel):
     last_status_codes: str | None
     last_availability: str | None
     last_checked_at: datetime | None
+    last_status_signature: str | None
+    last_owner_signature: str | None
+    last_change_at: datetime | None
+    last_change_summary: str | None
     next_check_at: datetime | None
     first_seen_redemption_at: datetime | None
     last_seen_redemption_at: datetime | None
@@ -750,6 +754,13 @@ class DiscoveryObservationResponse(BaseModel):
     lifecycle_stage: str | None
     availability_status: str | None
     status_codes: str | None
+    registrar_name: str | None
+    owner_handle: str | None
+    name_servers: str | None
+    status_signature: str | None
+    owner_signature: str | None
+    change_detected: bool
+    change_summary: str | None
     raw_response: str | None
     error: str | None
     created_at: datetime

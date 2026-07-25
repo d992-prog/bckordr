@@ -199,7 +199,7 @@ MIGRATIONS = (
         zone VARCHAR(32) NOT NULL,
         status VARCHAR(32) NOT NULL DEFAULT 'tracking',
         is_enabled BOOLEAN NOT NULL DEFAULT true,
-        check_interval_seconds INTEGER NOT NULL DEFAULT 21600,
+        check_interval_seconds INTEGER NOT NULL DEFAULT 10,
         source_mode VARCHAR(32) NOT NULL DEFAULT 'rdap',
         drop_prediction_enabled BOOLEAN NOT NULL DEFAULT true,
         last_lifecycle_stage VARCHAR(32) NULL,
@@ -232,6 +232,43 @@ MIGRATIONS = (
     "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS redemption_anchor_source VARCHAR(64) NULL",
     "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS predicted_pending_delete_at TIMESTAMPTZ NULL",
     "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS drop_prediction_enabled BOOLEAN NOT NULL DEFAULT true",
+    "ALTER TABLE discovery_domains ALTER COLUMN check_interval_seconds SET DEFAULT 10",
+    "UPDATE discovery_domains SET check_interval_seconds = 10 WHERE check_interval_seconds = 21600",
+    "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS last_status_signature TEXT NULL",
+    "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS last_owner_signature TEXT NULL",
+    "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS last_change_at TIMESTAMPTZ NULL",
+    "ALTER TABLE discovery_domains ADD COLUMN IF NOT EXISTS last_change_summary TEXT NULL",
+    """
+    INSERT INTO discovery_domains (
+        fqdn,
+        zone,
+        status,
+        is_enabled,
+        check_interval_seconds,
+        source_mode,
+        drop_prediction_enabled,
+        next_check_at,
+        notes,
+        created_at,
+        updated_at
+    )
+    SELECT
+        dd.fqdn,
+        dd.zone,
+        'tracking',
+        true,
+        10,
+        'rdap',
+        true,
+        NOW(),
+        'auto-created from existing drop domain',
+        NOW(),
+        NOW()
+    FROM drop_domains dd
+    WHERE NOT EXISTS (
+        SELECT 1 FROM discovery_domains existing WHERE existing.fqdn = dd.fqdn
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS discovery_observations (
         id SERIAL PRIMARY KEY,
@@ -243,12 +280,26 @@ MIGRATIONS = (
         lifecycle_stage VARCHAR(32) NULL,
         availability_status VARCHAR(32) NULL,
         status_codes TEXT NULL,
+        registrar_name TEXT NULL,
+        owner_handle TEXT NULL,
+        name_servers TEXT NULL,
+        status_signature TEXT NULL,
+        owner_signature TEXT NULL,
+        change_detected BOOLEAN NOT NULL DEFAULT false,
+        change_summary TEXT NULL,
         raw_response TEXT NULL,
         error TEXT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW()
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_discovery_observations_discovery_domain_id ON discovery_observations(discovery_domain_id)",
+    "ALTER TABLE discovery_observations ADD COLUMN IF NOT EXISTS registrar_name TEXT NULL",
+    "ALTER TABLE discovery_observations ADD COLUMN IF NOT EXISTS owner_handle TEXT NULL",
+    "ALTER TABLE discovery_observations ADD COLUMN IF NOT EXISTS name_servers TEXT NULL",
+    "ALTER TABLE discovery_observations ADD COLUMN IF NOT EXISTS status_signature TEXT NULL",
+    "ALTER TABLE discovery_observations ADD COLUMN IF NOT EXISTS owner_signature TEXT NULL",
+    "ALTER TABLE discovery_observations ADD COLUMN IF NOT EXISTS change_detected BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE discovery_observations ADD COLUMN IF NOT EXISTS change_summary TEXT NULL",
     """
     CREATE TABLE IF NOT EXISTS discovery_worker_tasks (
         id SERIAL PRIMARY KEY,

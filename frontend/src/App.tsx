@@ -70,7 +70,7 @@ const DEFAULT_DOMAIN_FORM = {
 const DEFAULT_DISCOVERY_FORM = {
   domainsText: "",
   zone: "",
-  checkIntervalSeconds: "21600",
+  checkIntervalSeconds: "10",
   sourceMode: "rdap",
   disableDropPrediction: false,
   notes: "",
@@ -2535,6 +2535,10 @@ export default function App() {
                   <strong>{formatStatusLabel(selectedDiscoveryDomain.status)} | {formatLifecycleLabel(selectedDiscoveryDomain.last_lifecycle_stage)}</strong>
                 </div>
                 <div>
+                  <span>Последнее изменение</span>
+                  <strong>{formatDateTime(selectedDiscoveryDomain.last_change_at)} | {selectedDiscoveryDomain.last_change_summary ?? "—"}</strong>
+                </div>
+                <div>
                   <span>Автопрогноз</span>
                   <strong>{selectedDiscoveryDomain.drop_prediction_enabled ? "включен" : "выключен"}</strong>
                 </div>
@@ -2562,6 +2566,7 @@ export default function App() {
                       <th>Время</th>
                       <th>Источник</th>
                       <th>Lifecycle</th>
+                      <th>Регистратор / владелец</th>
                       <th>Коды статуса</th>
                       <th>HTTP / latency</th>
                       <th>Ошибка / ответ</th>
@@ -2570,7 +2575,7 @@ export default function App() {
                   <tbody>
                     {discoveryObservations.length === 0 ? (
                       <tr>
-                        <td colSpan={6}>Истории пока нет. Нажми “Проверить сейчас” или дождись автоматического RDAP-чека.</td>
+                        <td colSpan={7}>Истории пока нет. Нажми “Проверить сейчас” или дождись автоматического RDAP-чека.</td>
                       </tr>
                     ) : null}
                     {discoveryObservations.map((observation) => (
@@ -2580,6 +2585,13 @@ export default function App() {
                         <td>
                           <div>{formatLifecycleLabel(observation.lifecycle_stage)}</div>
                           <div className="row-hint">доступность: {formatAvailabilityLabel(observation.availability_status)}</div>
+                          {observation.change_detected ? <span className="status warning">изменение</span> : null}
+                          {observation.change_summary ? <div className="row-hint">{observation.change_summary}</div> : null}
+                        </td>
+                        <td>
+                          <div>{observation.registrar_name ?? "—"}</div>
+                          <div className="row-hint">holder: {observation.owner_handle ?? "—"}</div>
+                          <div className="row-hint clipped-text">NS: {observation.name_servers ?? "—"}</div>
                         </td>
                         <td><span className="code-inline">{observation.status_codes ?? "—"}</span></td>
                         <td>
@@ -2740,6 +2752,8 @@ export default function App() {
                       <div>{formatLifecycleLabel(domain.last_lifecycle_stage)}</div>
                       <div className="row-hint">коды: {domain.last_status_codes ?? "—"}</div>
                       <div className="row-hint">проверено: {formatDateTime(domain.last_checked_at)}</div>
+                      <div className="row-hint">изменение: {formatDateTime(domain.last_change_at)}</div>
+                      {domain.last_change_summary ? <div className="row-hint">{domain.last_change_summary}</div> : null}
                     </td>
                     <td>
                       <div>{formatDateTime(domain.predicted_pending_delete_at)}</div>

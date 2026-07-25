@@ -152,7 +152,7 @@ async def apply_discovery_worker_task_result(
         raw_response=payload.raw_response,
         error=payload.error,
     )
-    apply_discovery_observation(domain, observation)
+    observation = apply_discovery_observation(domain, observation)
     session.add(_build_observation_model(domain, observation))
     await session.flush()
     await trim_discovery_observations(session, domain.id)

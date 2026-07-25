@@ -120,6 +120,7 @@ from app.services.bootstrap import ensure_zone_strategy_preset
 from app.services.domain_parser import normalize_domain, parse_upload
 from app.services.discovery import (
     DiscoveryObservationInput,
+    _build_observation_model,
     apply_discovery_observation,
     check_discovery_domain_rdap,
     infer_zone,
@@ -516,6 +517,40 @@ async def _apply_domain_readiness(db: AsyncSession, domain: DropDomain) -> None:
     domain.readiness_reasons = "; ".join(readiness.reasons) if readiness.reasons else None
 
 
+async def _ensure_drop_domain_discovery_tracking(
+    db: AsyncSession,
+    *,
+    fqdn: str,
+    zone: str,
+    now: datetime | None = None,
+) -> DiscoveryDomain:
+    effective_now = now or utcnow()
+    result = await db.execute(select(DiscoveryDomain).where(DiscoveryDomain.fqdn == fqdn).limit(1))
+    discovery_domain = result.scalar_one_or_none()
+    if discovery_domain is None:
+        discovery_domain = DiscoveryDomain(
+            fqdn=fqdn,
+            zone=zone.lower(),
+            check_interval_seconds=10,
+            source_mode="rdap",
+            drop_prediction_enabled=True,
+            next_check_at=effective_now,
+            notes="auto-created from drop domain",
+        )
+        db.add(discovery_domain)
+        return discovery_domain
+
+    discovery_domain.is_enabled = True
+    discovery_domain.check_interval_seconds = 10
+    discovery_domain.source_mode = discovery_domain.source_mode or "rdap"
+    discovery_domain.zone = discovery_domain.zone or zone.lower()
+    if discovery_domain.status in {"available", "ignored", "error"}:
+        discovery_domain.status = "tracking"
+    discovery_domain.next_check_at = effective_now
+    discovery_domain.updated_at = effective_now
+    return discovery_domain
+
+
 async def _insert_domains_from_bulk(
     payload: DropDomainBulkCreateRequest,
     db: AsyncSession,
@@ -564,6 +599,7 @@ async def _insert_domains_from_bulk(
         )
         await _apply_domain_readiness(db, domain)
         db.add(domain)
+        await _ensure_drop_domain_discovery_tracking(db, fqdn=normalized, zone=payload.zone.lower())
         inserted.append(domain)
         existing_domains.add(normalized)
 
@@ -1672,20 +1708,8 @@ async def create_discovery_observation(
         raw_response=payload.raw_response,
         error=payload.error,
     )
-    apply_discovery_observation(domain, observation_input)
-    db.add(
-        DiscoveryObservation(
-            discovery_domain_id=domain.id,
-            source=payload.source,
-            observed_at=observed_at,
-            http_status=payload.http_status,
-            lifecycle_stage=domain.last_lifecycle_stage,
-            availability_status=payload.availability_status,
-            status_codes=json.dumps(payload.status_codes, ensure_ascii=True) if payload.status_codes else None,
-            raw_response=payload.raw_response,
-            error=payload.error,
-        )
-    )
+    observation_input = apply_discovery_observation(domain, observation_input)
+    db.add(_build_observation_model(domain, observation_input))
     await db.flush()
     await trim_discovery_observations(db, domain.id)
     await db.commit()
@@ -1709,21 +1733,8 @@ async def check_discovery_domain_now(
         bootstrap_url=get_settings().discovery_rdap_bootstrap_url,
         timeout_seconds=get_settings().discovery_timeout_seconds,
     )
-    apply_discovery_observation(domain, observation)
-    db.add(
-        DiscoveryObservation(
-            discovery_domain_id=domain.id,
-            source=observation.source,
-            observed_at=observation.observed_at,
-            http_status=observation.http_status,
-            latency_ms=observation.latency_ms,
-            lifecycle_stage=observation.lifecycle_stage,
-            availability_status=observation.availability_status,
-            status_codes=json.dumps(observation.status_codes, ensure_ascii=True) if observation.status_codes else None,
-            raw_response=observation.raw_response,
-            error=observation.error,
-        )
-    )
+    observation = apply_discovery_observation(domain, observation)
+    db.add(_build_observation_model(domain, observation))
     await db.flush()
     await trim_discovery_observations(db, domain.id)
     await db.commit()
@@ -1753,6 +1764,11 @@ async def export_available_discovery_domains(
         "last_lifecycle_stage",
         "last_availability",
         "last_error",
+        "last_change_at",
+        "last_change_summary",
+        "last_status_signature",
+        "last_owner_signature",
+        "change_history",
         "predicted_drop_start_at",
         "predicted_drop_end_at",
     ]
@@ -1765,6 +1781,11 @@ async def export_available_discovery_domains(
                 f"attempt_{index}_lifecycle",
                 f"attempt_{index}_availability",
                 f"attempt_{index}_status_codes",
+                f"attempt_{index}_registrar_name",
+                f"attempt_{index}_owner_handle",
+                f"attempt_{index}_name_servers",
+                f"attempt_{index}_change_detected",
+                f"attempt_{index}_change_summary",
                 f"attempt_{index}_error",
             ]
         )
@@ -1780,6 +1801,19 @@ async def export_available_discovery_domains(
             .limit(5)
         )
         observations = list(observations_result.scalars().all())
+        change_result = await db.execute(
+            select(DiscoveryObservation)
+            .where(
+                DiscoveryObservation.discovery_domain_id == domain.id,
+                DiscoveryObservation.change_detected.is_(True),
+            )
+            .order_by(DiscoveryObservation.observed_at.desc(), DiscoveryObservation.id.desc())
+            .limit(20)
+        )
+        change_observations = list(change_result.scalars().all())
+        change_history = " | ".join(
+            f"{_csv_datetime(item.observed_at)} {item.change_summary or ''}".strip() for item in change_observations
+        )
         row = {
             "fqdn": domain.fqdn,
             "zone": domain.zone,
@@ -1789,6 +1823,11 @@ async def export_available_discovery_domains(
             "last_lifecycle_stage": domain.last_lifecycle_stage or "",
             "last_availability": domain.last_availability or "",
             "last_error": domain.last_error or "",
+            "last_change_at": _csv_datetime(domain.last_change_at),
+            "last_change_summary": domain.last_change_summary or "",
+            "last_status_signature": domain.last_status_signature or "",
+            "last_owner_signature": domain.last_owner_signature or "",
+            "change_history": change_history,
             "predicted_drop_start_at": _csv_datetime(domain.predicted_drop_start_at),
             "predicted_drop_end_at": _csv_datetime(domain.predicted_drop_end_at),
         }
@@ -1799,6 +1838,11 @@ async def export_available_discovery_domains(
             row[f"attempt_{index}_lifecycle"] = observation.lifecycle_stage or ""
             row[f"attempt_{index}_availability"] = observation.availability_status or ""
             row[f"attempt_{index}_status_codes"] = observation.status_codes or ""
+            row[f"attempt_{index}_registrar_name"] = observation.registrar_name or ""
+            row[f"attempt_{index}_owner_handle"] = observation.owner_handle or ""
+            row[f"attempt_{index}_name_servers"] = observation.name_servers or ""
+            row[f"attempt_{index}_change_detected"] = _csv_bool(observation.change_detected)
+            row[f"attempt_{index}_change_summary"] = observation.change_summary or ""
             row[f"attempt_{index}_error"] = observation.error or ""
         writer.writerow(row)
 
@@ -1812,6 +1856,10 @@ async def export_available_discovery_domains(
 
 def _csv_datetime(value: datetime | None) -> str:
     return value.isoformat() if value else ""
+
+
+def _csv_bool(value: bool | None) -> str:
+    return "1" if value else ""
 
 
 @router.get(

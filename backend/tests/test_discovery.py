@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.deps import require_admin
 from app.api.routes.control import router as control_router
 from app.db.base import Base
-from app.db.models import DiscoveryDomain, ZoneRule, ZoneStrategy
+from app.db.models import DiscoveryDomain, DiscoveryObservation, ZoneRule, ZoneStrategy
 from app.db.session import get_db
 from app.services.discovery import (
     DiscoveryObservationInput,
@@ -31,6 +31,7 @@ from app.services.discovery import (
     resolve_rdap_domain_url,
     resolve_whois_addresses,
     stagger_initial_check_at,
+    trim_discovery_observations,
     _build_transition_notification,
 )
 
@@ -75,6 +76,45 @@ def test_discovery_ignores_rdap_database_update_as_redemption_anchor():
     }
 
     assert extract_rdap_updated_at(payload) is None
+
+
+def test_discovery_observation_marks_status_and_owner_change_with_exact_time():
+    domain = DiscoveryDomain(fqdn="example.com", zone="com", status="tracking")
+    first_seen = datetime(2026, 7, 25, 10, 0, 0, tzinfo=timezone.utc)
+    changed_at = datetime(2026, 7, 25, 10, 0, 7, tzinfo=timezone.utc)
+
+    first_observation = apply_discovery_observation(
+        domain,
+        DiscoveryObservationInput(
+            source="rdap",
+            observed_at=first_seen,
+            lifecycle_stage="pending_delete",
+            availability_status="taken",
+            status_codes=["pendingDelete"],
+            registrar_name="Old Registrar",
+            owner_handle="OLD-HOLDER",
+            name_servers=["ns1.old.example"],
+        ),
+    )
+    changed_observation = apply_discovery_observation(
+        domain,
+        DiscoveryObservationInput(
+            source="rdap",
+            observed_at=changed_at,
+            lifecycle_stage="registered",
+            availability_status="taken",
+            status_codes=["active"],
+            registrar_name="New Registrar",
+            owner_handle="NEW-HOLDER",
+            name_servers=["ns1.new.example"],
+        ),
+    )
+
+    assert first_observation.change_detected is False
+    assert changed_observation.change_detected is True
+    assert domain.last_change_at == changed_at
+    assert "status" in (changed_observation.change_summary or "")
+    assert "owner" in (changed_observation.change_summary or "")
 
 
 def test_discovery_parses_generic_whois_pending_delete():
@@ -1034,6 +1074,113 @@ async def test_discovery_api_bulk_updates_check_interval_and_reschedules_active_
 
 
 @pytest.mark.asyncio
+async def test_discovery_trim_keeps_change_observations_beyond_recent_attempts():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    base_time = datetime(2026, 7, 25, 10, 0, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        domain = DiscoveryDomain(fqdn="changed.example", zone="com")
+        session.add(domain)
+        await session.flush()
+        session.add(
+            DiscoveryObservation(
+                discovery_domain_id=domain.id,
+                source="rdap",
+                observed_at=base_time,
+                lifecycle_stage="pending_delete",
+                availability_status="taken",
+                change_detected=True,
+                change_summary="status changed",
+            )
+        )
+        for index in range(6):
+            session.add(
+                DiscoveryObservation(
+                    discovery_domain_id=domain.id,
+                    source="rdap",
+                    observed_at=base_time + timedelta(seconds=index + 1),
+                    lifecycle_stage="pending_delete",
+                    availability_status="taken",
+                    change_detected=False,
+                )
+            )
+        await session.flush()
+
+        await trim_discovery_observations(session, domain.id)
+        await session.commit()
+
+    async with session_factory() as session:
+        result = await session.execute(
+            select(DiscoveryObservation).order_by(DiscoveryObservation.observed_at.asc())
+        )
+        observations = list(result.scalars().all())
+
+    assert len(observations) == 6
+    assert observations[0].change_detected is True
+    assert observations[0].change_summary == "status changed"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_drop_domain_import_auto_creates_discovery_tracking_with_short_interval():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/control/domains",
+            json={
+                "domains": ["auto-discovery.com"],
+                "zone": "com",
+                "drop_date": "2026-07-26",
+                "attack_enabled": False,
+            },
+        )
+        assert response.status_code == 201
+
+    async with session_factory() as session:
+        discovery_domain = await session.scalar(
+            select(DiscoveryDomain).where(DiscoveryDomain.fqdn == "auto-discovery.com")
+        )
+
+    assert discovery_domain is not None
+    assert discovery_domain.status == "tracking"
+    assert discovery_domain.check_interval_seconds == 10
+    assert discovery_domain.next_check_at is not None
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_discovery_api_keeps_recent_attempts_and_exports_available_csv():
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
@@ -1102,7 +1249,12 @@ async def test_discovery_api_keeps_recent_attempts_and_exports_available_csv():
         csv_body = export_response.text
         assert "fqdn,zone,status,available_first_seen_at" in csv_body
         assert "drop-example.com,com,available," in csv_body
+        assert "last_change_at" in csv_body
+        assert "last_change_summary" in csv_body
+        assert "change_history" in csv_body
         assert "attempt_1_observed_at" in csv_body
+        assert "attempt_1_change_detected" in csv_body
+        assert "attempt_1_change_summary" in csv_body
         assert "temporary RDAP error" in csv_body
 
     await engine.dispose()
@@ -1153,7 +1305,7 @@ async def test_process_due_discovery_domains_persists_observation_and_notificati
     assert domain.status == "pending_delete"
     assert domain.next_check_at is not None
     next_check_delay = domain.next_check_at - now.replace(tzinfo=None)
-    assert timedelta(minutes=5) <= next_check_delay <= timedelta(minutes=5, seconds=10)
+    assert timedelta(seconds=10) <= next_check_delay <= timedelta(seconds=20)
     assert notifications
     assert "pendingDelete" in notifications[0]
 
