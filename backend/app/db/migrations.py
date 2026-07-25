@@ -37,6 +37,12 @@ MIGRATIONS = (
     "ALTER TABLE worker_tasks ADD COLUMN IF NOT EXISTS response_status_counts JSONB NULL",
     "ALTER TABLE worker_tasks ADD COLUMN IF NOT EXISTS response_error_counts JSONB NULL",
     "ALTER TABLE worker_tasks ADD COLUMN IF NOT EXISTS response_samples JSONB NULL",
+    "ALTER TABLE attack_runs ADD COLUMN IF NOT EXISTS live_create_lease_worker_id INTEGER NULL",
+    "ALTER TABLE attack_runs ADD COLUMN IF NOT EXISTS live_create_lease_task_id INTEGER NULL",
+    "ALTER TABLE attack_runs ADD COLUMN IF NOT EXISTS live_create_lease_expires_at TIMESTAMPTZ NULL",
+    "ALTER TABLE attack_runs ADD COLUMN IF NOT EXISTS live_create_accepted_worker_id INTEGER NULL",
+    "ALTER TABLE attack_runs ADD COLUMN IF NOT EXISTS live_create_accepted_task_id INTEGER NULL",
+    "ALTER TABLE attack_runs ADD COLUMN IF NOT EXISTS live_create_accepted_at TIMESTAMPTZ NULL",
     """
     CREATE TABLE IF NOT EXISTS worker_maintenance_jobs (
         id SERIAL PRIMARY KEY,

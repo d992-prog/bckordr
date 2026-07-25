@@ -192,6 +192,65 @@ async def _seed_runtime_state(session_factory: async_sessionmaker[AsyncSession])
 
 
 @pytest.mark.asyncio
+async def test_live_create_permit_allows_only_one_worker_at_a_time():
+    engine, session_factory = await _make_test_session_factory()
+    try:
+        ids = await _seed_runtime_state(session_factory)
+        app = _make_test_app(session_factory)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://control.test",
+        ) as client:
+            primary_response = await client.post(
+                f"/api/worker-runtime/tasks/{ids['primary_task_id']}/create-permit/acquire",
+                headers={"X-Worker-Token": "worker-token"},
+                json={"worker_id": ids["worker_primary_id"]},
+            )
+            assert primary_response.status_code == 200
+            assert primary_response.json()["allowed"] is True
+
+            repeat_primary_response = await client.post(
+                f"/api/worker-runtime/tasks/{ids['primary_task_id']}/create-permit/acquire",
+                headers={"X-Worker-Token": "worker-token"},
+                json={"worker_id": ids["worker_primary_id"]},
+            )
+            assert repeat_primary_response.status_code == 200
+            repeat_primary_payload = repeat_primary_response.json()
+            assert repeat_primary_payload["allowed"] is False
+            assert repeat_primary_payload["stop"] is False
+            assert "in flight" in repeat_primary_payload["reason"]
+
+            sibling_response = await client.post(
+                f"/api/worker-runtime/tasks/{ids['sibling_task_id']}/create-permit/acquire",
+                headers={"X-Worker-Token": "worker-token-2"},
+                json={"worker_id": ids["worker_sibling_id"]},
+            )
+            assert sibling_response.status_code == 200
+            sibling_payload = sibling_response.json()
+            assert sibling_payload["allowed"] is False
+            assert sibling_payload["stop"] is False
+            assert "in flight" in sibling_payload["reason"]
+
+            release_response = await client.post(
+                f"/api/worker-runtime/tasks/{ids['primary_task_id']}/create-permit/release",
+                headers={"X-Worker-Token": "worker-token"},
+                json={"worker_id": ids["worker_primary_id"]},
+            )
+            assert release_response.status_code == 200
+
+            retry_response = await client.post(
+                f"/api/worker-runtime/tasks/{ids['sibling_task_id']}/create-permit/acquire",
+                headers={"X-Worker-Token": "worker-token-2"},
+                json={"worker_id": ids["worker_sibling_id"]},
+            )
+            assert retry_response.status_code == 200
+            assert retry_response.json()["allowed"] is True
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_worker_heartbeat_reports_clock_offset_instead_of_elapsed_time(monkeypatch: pytest.MonkeyPatch):
     class StubControlClient:
         def __init__(self, responses: list[str]) -> None:
@@ -346,6 +405,9 @@ async def test_worker_runtime_harness_covers_live_rps_update_and_success_flow():
 
             assert domain is not None and domain.status == "success"
             assert run is not None and run.status == "success"
+            assert run.live_create_accepted_at is not None
+            assert run.live_create_accepted_worker_id == ids["worker_primary_id"]
+            assert run.live_create_accepted_task_id == ids["primary_task_id"]
             assert primary_task is not None and primary_task.status == "success"
             assert sibling_task is not None and sibling_task.status == "cancelled"
             assert worker is not None and worker.last_seen_at is not None
@@ -462,7 +524,7 @@ async def test_worker_runtime_samples_include_exception_type():
         task_id=1,
         registrar={"registrar_slug": "gandi"},
         planned_start_at=datetime.now(timezone.utc) - timedelta(seconds=1),
-        planned_end_at=datetime.now(timezone.utc) + timedelta(seconds=0.25),
+        planned_end_at=datetime.now(timezone.utc) + timedelta(seconds=0.75),
         planned_rps=20.0,
     )
 
@@ -674,14 +736,16 @@ async def test_worker_simulate_mode_supports_controlled_failure_and_success_rate
     runner = WorkerRunner(settings)
     task = types.SimpleNamespace()
     try:
-        status_code, _latency_ms, body = await runner._attempt_register(client=None, task=task)
+        status_code, _latency_ms, body, submitted = await runner._attempt_register(client=None, task=task)
         assert status_code == 503
         assert body == "simulated failure"
+        assert submitted is True
 
         runner.settings.simulate_success_rate = 1.0
-        status_code, _latency_ms, body = await runner._attempt_register(client=None, task=task)
+        status_code, _latency_ms, body, submitted = await runner._attempt_register(client=None, task=task)
         assert status_code == 200
         assert body == "simulated success"
+        assert submitted is True
     finally:
         await runner.close()
 

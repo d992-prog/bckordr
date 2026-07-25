@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     )
     worker_setup_python_bin: str = Field(default="python3.11", alias="WORKER_SETUP_PYTHON_BIN")
     gandi_default_ident_number: str = Field(default="", alias="GANDI_DEFAULT_IDENT_NUMBER")
+    live_create_lease_seconds: float = Field(default=30.0, alias="LIVE_CREATE_LEASE_SECONDS")
     max_upload_bytes: int = 5 * 1024 * 1024
 
     model_config = SettingsConfigDict(

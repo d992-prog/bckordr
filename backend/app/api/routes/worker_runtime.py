@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select
@@ -28,6 +29,9 @@ from app.schemas.runtime import (
     DiscoveryWorkerTaskResponseEnvelope,
     DiscoveryWorkerTaskResultRequest,
     WorkerTaskAckRequest,
+    WorkerTaskCreatePermitReleaseRequest,
+    WorkerTaskCreatePermitRequest,
+    WorkerTaskCreatePermitResponse,
     WorkerTaskPayloadResponse,
     WorkerTaskProgressRequest,
     WorkerTaskStatusResponse,
@@ -79,6 +83,31 @@ async def _get_zone_strategy_for_domain(db: AsyncSession, domain: DropDomain) ->
     return result.scalar_one_or_none()
 
 
+async def _get_worker_task_for_update(
+    task_id: int,
+    worker: WorkerNode,
+    db: AsyncSession,
+) -> tuple[WorkerTask, AttackRun, DropDomain]:
+    task_result = await db.execute(select(WorkerTask).where(WorkerTask.id == task_id).with_for_update())
+    task = task_result.scalar_one_or_none()
+    if task is None or task.worker_id != worker.id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    run_result = await db.execute(select(AttackRun).where(AttackRun.id == task.attack_run_id).with_for_update())
+    run = run_result.scalar_one_or_none()
+    domain = await db.get(DropDomain, task.domain_id)
+    if run is None or domain is None:
+        raise HTTPException(status_code=404, detail="Related run/domain not found")
+    return task, run, domain
+
+
+def _as_aware_utc(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 @router.post("/heartbeat", response_model=WorkerHeartbeatResponse)
 async def worker_heartbeat(
     payload: WorkerHeartbeatRequest,
@@ -123,6 +152,13 @@ async def get_next_task(
     run = await db.get(AttackRun, task.attack_run_id)
     domain = await db.get(DropDomain, task.domain_id)
     if run is None or domain is None:
+        return WorkerTaskResponseEnvelope(task=None)
+    if run.status == "success" or run.live_create_accepted_at is not None or domain.status == "success":
+        now = utcnow()
+        task.status = "cancelled"
+        task.finished_at = now
+        task.stop_reason = "Domain already has an accepted live create"
+        await db.commit()
         return WorkerTaskResponseEnvelope(task=None)
 
     account = await db.get(RegistrarAccount, domain.registrar_account_id) if domain.registrar_account_id else None
@@ -248,6 +284,74 @@ async def get_task_status(
     )
 
 
+@router.post("/tasks/{task_id}/create-permit/acquire", response_model=WorkerTaskCreatePermitResponse)
+async def acquire_create_permit(
+    task_id: int,
+    payload: WorkerTaskCreatePermitRequest,
+    db: AsyncSession = Depends(get_db),
+    x_worker_token: str | None = Header(default=None),
+) -> WorkerTaskCreatePermitResponse:
+    worker = await _get_worker_by_token(payload.worker_id, db, x_worker_token)
+    task, run, domain = await _get_worker_task_for_update(task_id, worker, db)
+    now = utcnow()
+
+    if run.status == "success" or run.live_create_accepted_at is not None or domain.status == "success":
+        task.status = "cancelled"
+        task.finished_at = task.finished_at or now
+        task.stop_reason = "Domain already has an accepted live create"
+        await db.commit()
+        return WorkerTaskCreatePermitResponse(allowed=False, stop=True, reason=task.stop_reason)
+    if task.status not in {"queued", "running"}:
+        await db.commit()
+        return WorkerTaskCreatePermitResponse(allowed=False, stop=True, reason=f"Task is {task.status}")
+
+    lease_expires_at = _as_aware_utc(run.live_create_lease_expires_at)
+    lease_is_active = lease_expires_at is not None and lease_expires_at > now
+    if lease_is_active:
+        await db.commit()
+        return WorkerTaskCreatePermitResponse(
+            allowed=False,
+            stop=False,
+            reason="Another live create request is already in flight",
+            lease_expires_at=run.live_create_lease_expires_at,
+        )
+
+    lease_seconds = max(1.0, float(get_settings().live_create_lease_seconds))
+    run.live_create_lease_worker_id = worker.id
+    run.live_create_lease_task_id = task.id
+    run.live_create_lease_expires_at = now + timedelta(seconds=lease_seconds)
+    run.updated_at = now
+    await db.commit()
+    return WorkerTaskCreatePermitResponse(
+        allowed=True,
+        stop=False,
+        reason=None,
+        lease_expires_at=run.live_create_lease_expires_at,
+    )
+
+
+@router.post("/tasks/{task_id}/create-permit/release", response_model=WorkerTaskResultResponse)
+async def release_create_permit(
+    task_id: int,
+    payload: WorkerTaskCreatePermitReleaseRequest,
+    db: AsyncSession = Depends(get_db),
+    x_worker_token: str | None = Header(default=None),
+) -> WorkerTaskResultResponse:
+    worker = await _get_worker_by_token(payload.worker_id, db, x_worker_token)
+    _task, run, _domain = await _get_worker_task_for_update(task_id, worker, db)
+    if (
+        run.live_create_accepted_at is None
+        and run.live_create_lease_task_id == task_id
+        and run.live_create_lease_worker_id == worker.id
+    ):
+        run.live_create_lease_worker_id = None
+        run.live_create_lease_task_id = None
+        run.live_create_lease_expires_at = None
+        run.updated_at = utcnow()
+    await db.commit()
+    return WorkerTaskResultResponse(detail="create permit released")
+
+
 @router.post("/tasks/{task_id}/progress", response_model=WorkerTaskResultResponse)
 async def report_task_progress(
     task_id: int,
@@ -306,6 +410,12 @@ async def report_task_result(
         run.status = "success"
         run.finished_at = now
         run.success_worker_id = worker.id
+        run.live_create_accepted_worker_id = worker.id
+        run.live_create_accepted_task_id = task.id
+        run.live_create_accepted_at = now
+        run.live_create_lease_worker_id = worker.id
+        run.live_create_lease_task_id = task.id
+        run.live_create_lease_expires_at = None
         domain.status = "success"
         domain.success_at = now
         domain.success_worker_id = worker.id

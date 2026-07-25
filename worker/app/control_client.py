@@ -34,6 +34,14 @@ class ControlTaskStatus:
 
 
 @dataclass(slots=True)
+class CreatePermitResponse:
+    allowed: bool
+    stop: bool
+    reason: str | None
+    lease_expires_at: datetime | None
+
+
+@dataclass(slots=True)
 class DiscoveryControlTask:
     task_id: int
     discovery_domain_id: int
@@ -117,6 +125,28 @@ class ControlClient:
         response = await self.client.post(
             f"/api/worker-runtime/tasks/{task_id}/result",
             json={"worker_id": self.settings.worker_id, **payload},
+        )
+        response.raise_for_status()
+
+    async def acquire_create_permit(self, task_id: int) -> CreatePermitResponse:
+        response = await self.client.post(
+            f"/api/worker-runtime/tasks/{task_id}/create-permit/acquire",
+            json={"worker_id": self.settings.worker_id},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        lease_expires_at = payload.get("lease_expires_at")
+        return CreatePermitResponse(
+            allowed=bool(payload.get("allowed")),
+            stop=bool(payload.get("stop")),
+            reason=payload.get("reason"),
+            lease_expires_at=_parse_control_datetime(lease_expires_at) if lease_expires_at else None,
+        )
+
+    async def release_create_permit(self, task_id: int) -> None:
+        response = await self.client.post(
+            f"/api/worker-runtime/tasks/{task_id}/create-permit/release",
+            json={"worker_id": self.settings.worker_id},
         )
         response.raise_for_status()
 

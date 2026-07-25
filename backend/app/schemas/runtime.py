@@ -78,6 +78,21 @@ class WorkerTaskAckRequest(BaseModel):
     worker_id: int
 
 
+class WorkerTaskCreatePermitRequest(BaseModel):
+    worker_id: int
+
+
+class WorkerTaskCreatePermitResponse(BaseModel):
+    allowed: bool
+    stop: bool = False
+    reason: str | None = None
+    lease_expires_at: datetime | None = None
+
+
+class WorkerTaskCreatePermitReleaseRequest(BaseModel):
+    worker_id: int
+
+
 class WorkerTaskResultRequest(BaseModel):
     worker_id: int
     status: str

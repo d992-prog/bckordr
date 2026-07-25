@@ -80,6 +80,14 @@ def _is_successful_create_status(status_code: int) -> bool:
     return status_code in SUCCESSFUL_CREATE_STATUS_CODES
 
 
+def _normalize_attempt_result(result: tuple) -> tuple[int | None, float, str, bool]:
+    if len(result) == 3:
+        status_code, latency_ms, body_preview = result
+        return status_code, latency_ms, body_preview, True
+    status_code, latency_ms, body_preview, submitted = result
+    return status_code, latency_ms, body_preview, submitted
+
+
 class WorkerRunner:
     def __init__(self, settings: WorkerSettings) -> None:
         self.settings = settings
@@ -237,7 +245,7 @@ class WorkerRunner:
             next_dispatch_at = perf_counter()
             next_status_poll_at = perf_counter()
             next_progress_at = perf_counter() + 0.5
-            pending: set[asyncio.Task[tuple[int, float, str]]] = set()
+            pending: set[asyncio.Task[tuple[int | None, float, str, bool]]] = set()
             attempt_times: deque[float] = deque()
             total_attempts = 0
             success_attempts = 0
@@ -276,9 +284,6 @@ class WorkerRunner:
                     and loop_now >= next_dispatch_at
                 ):
                     pending.add(asyncio.create_task(self._attempt_register(client, task)))
-                    total_attempts += 1
-                    attempt_times.append(loop_now)
-                    self._current_rps = float(len(attempt_times))
                     next_dispatch_at += dispatch_interval
                     loop_now = perf_counter()
                     utc_now = datetime.now(timezone.utc)
@@ -304,7 +309,7 @@ class WorkerRunner:
 
                 for completed in done:
                     try:
-                        status_code, latency_ms, body_preview = await completed
+                        status_code, latency_ms, body_preview, submitted = _normalize_attempt_result(await completed)
                     except Exception as exc:
                         last_error = str(exc)
                         error_type = exc.__class__.__name__
@@ -312,6 +317,13 @@ class WorkerRunner:
                         _record_response_sample(response_samples, error=last_error, error_type=error_type)
                         continue
 
+                    if not submitted:
+                        last_error = body_preview[:500]
+                        if body_preview.lower().startswith("stop:"):
+                            stop_requested = True
+                        continue
+                    total_attempts += 1
+                    attempt_times.append(perf_counter())
                     last_status = status_code
                     last_latency_ms = latency_ms
                     _add_count(response_status_counts, status_code)
@@ -321,7 +333,7 @@ class WorkerRunner:
                         latency_ms=latency_ms,
                         body_preview=body_preview,
                     )
-                    if _is_successful_create_status(status_code):
+                    if status_code is not None and _is_successful_create_status(status_code):
                         success_attempts += 1
                         for queued in pending:
                             queued.cancel()
@@ -373,13 +385,18 @@ class WorkerRunner:
                 if not queued.done():
                     continue
                 try:
-                    status_code, latency_ms, body_preview = await queued
+                    status_code, latency_ms, body_preview, submitted = _normalize_attempt_result(await queued)
                 except Exception as exc:
                     last_error = str(exc)
                     error_type = exc.__class__.__name__
                     _add_count(response_error_counts, error_type)
                     _record_response_sample(response_samples, error=last_error, error_type=error_type)
                     continue
+                if not submitted:
+                    last_error = body_preview[:500]
+                    continue
+                total_attempts += 1
+                attempt_times.append(perf_counter())
                 last_status = status_code
                 last_latency_ms = latency_ms
                 _add_count(response_status_counts, status_code)
@@ -389,7 +406,7 @@ class WorkerRunner:
                     latency_ms=latency_ms,
                     body_preview=body_preview,
                 )
-                if _is_successful_create_status(status_code):
+                if status_code is not None and _is_successful_create_status(status_code):
                     success_attempts += 1
                     for other in pending:
                         if other is not queued:
@@ -447,7 +464,7 @@ class WorkerRunner:
             logger.warning("http2 extras are unavailable; falling back to http1 client")
             return httpx.AsyncClient(timeout=self.settings.request_timeout_seconds, http2=False)
 
-    async def _attempt_register(self, client: httpx.AsyncClient, task: ControlTask) -> tuple[int, float, str]:
+    async def _attempt_register(self, client: httpx.AsyncClient, task: ControlTask) -> tuple[int | None, float, str, bool]:
         started = perf_counter()
         if self.settings.simulate_mode:
             delay_ms = max(0, self.settings.simulate_latency_ms)
@@ -461,13 +478,29 @@ class WorkerRunner:
                 else self.settings.simulate_failure_status_code
             )
             body = "simulated success" if is_success else "simulated failure"
-            return status_code, (perf_counter() - started) * 1000, body
-        status_code, body = await register_domain(
-            task,
-            client,
-            poll_create_status=self.settings.gandi_create_status_poll_enabled,
-            status_poll_interval_seconds=self.settings.gandi_status_poll_interval_seconds,
-            status_poll_max_attempts=self.settings.gandi_status_poll_max_attempts,
-        )
+            return status_code, (perf_counter() - started) * 1000, body, True
+
+        permit = await self.control.acquire_create_permit(task.task_id)
+        if not permit.allowed:
+            await asyncio.sleep(0.05)
+            reason = permit.reason or "live create permit denied"
+            if permit.stop:
+                reason = f"stop: {reason}"
+            return None, (perf_counter() - started) * 1000, reason, False
+
+        try:
+            status_code, body = await register_domain(
+                task,
+                client,
+                poll_create_status=self.settings.gandi_create_status_poll_enabled,
+                status_poll_interval_seconds=self.settings.gandi_status_poll_interval_seconds,
+                status_poll_max_attempts=self.settings.gandi_status_poll_max_attempts,
+            )
+        except Exception:
+            # Do not immediately release on transport errors: the registrar may still
+            # process a request that timed out locally. The control lease will expire.
+            raise
         latency_ms = (perf_counter() - started) * 1000
-        return status_code, latency_ms, body
+        if not _is_successful_create_status(status_code):
+            await self.control.release_create_permit(task.task_id)
+        return status_code, latency_ms, body, True

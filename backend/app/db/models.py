@@ -887,6 +887,12 @@ class AttackRun(Base):
         nullable=True,
         index=True,
     )
+    live_create_lease_worker_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    live_create_lease_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    live_create_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    live_create_accepted_worker_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    live_create_accepted_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    live_create_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stop_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
