@@ -567,6 +567,66 @@ function formatAvailabilityLabel(value: string | null | undefined) {
   return value ? labels[value] ?? value : "неизвестно";
 }
 
+function formatDiscoveryChangeSummary(value: string | null | undefined) {
+  if (!value) {
+    return "—";
+  }
+  return value
+    .replace(/first seen/g, "впервые увидели")
+    .replace(/status changed/g, "изменился статус")
+    .replace(/owner changed/g, "изменился владелец");
+}
+
+function buildDiscoveryStateHistory(observations: DiscoveryObservation[]) {
+  const ordered = [...observations].sort(
+    (left, right) =>
+      new Date(left.observed_at).getTime() - new Date(right.observed_at).getTime() || left.id - right.id,
+  );
+  const seen = new Set<string>();
+  return ordered.reduce<
+    Array<{
+      key: string;
+      firstSeenAt: string;
+      lifecycleStage: string | null;
+      availabilityStatus: string | null;
+      statusCodes: string | null;
+      registrarName: string | null;
+      ownerHandle: string | null;
+      nameServers: string | null;
+      changeSummary: string | null;
+    }>
+  >((history, observation) => {
+    const key = [
+      observation.status_signature,
+      observation.owner_signature,
+      observation.lifecycle_stage,
+      observation.availability_status,
+      observation.status_codes,
+      observation.registrar_name,
+      observation.owner_handle,
+      observation.name_servers,
+    ]
+      .map((item) => item ?? "")
+      .join("|");
+    if (!key.replace(/\|/g, "").trim() || seen.has(key)) {
+      return history;
+    }
+    seen.add(key);
+    history.push({
+      key,
+      firstSeenAt: observation.observed_at,
+      lifecycleStage: observation.lifecycle_stage,
+      availabilityStatus: observation.availability_status,
+      statusCodes: observation.status_codes,
+      registrarName: observation.registrar_name,
+      ownerHandle: observation.owner_handle,
+      nameServers: observation.name_servers,
+      changeSummary: observation.change_summary,
+    });
+    return history;
+  }, []);
+}
+
 function formatSourceType(value: string | null | undefined) {
   const labels: Record<string, string> = {
     zone_latest: "актуальный zonefile",
@@ -1023,6 +1083,10 @@ export default function App() {
   const selectedDiscoveryDomain = useMemo(
     () => discoveryDomains.find((item) => item.id === selectedDiscoveryDomainId) ?? null,
     [discoveryDomains, selectedDiscoveryDomainId],
+  );
+  const discoveryStateHistory = useMemo(
+    () => buildDiscoveryStateHistory(discoveryObservations),
+    [discoveryObservations],
   );
   const discoveryZoneOptions = useMemo(
     () => [...new Set(discoveryDomains.map((item) => item.zone).filter(Boolean))].sort(),
@@ -2536,7 +2600,7 @@ export default function App() {
                 </div>
                 <div>
                   <span>Последнее изменение</span>
-                  <strong>{formatDateTime(selectedDiscoveryDomain.last_change_at)} | {selectedDiscoveryDomain.last_change_summary ?? "—"}</strong>
+                  <strong>{formatDateTime(selectedDiscoveryDomain.last_change_at)} | {formatDiscoveryChangeSummary(selectedDiscoveryDomain.last_change_summary)}</strong>
                 </div>
                 <div>
                   <span>Автопрогноз</span>
@@ -2559,6 +2623,38 @@ export default function App() {
                   <strong>{formatDateTime(selectedDiscoveryDomain.predicted_drop_start_at)} {"->"} {formatDateTime(selectedDiscoveryDomain.predicted_drop_end_at)}</strong>
                 </div>
               </div>
+              <section className="state-history">
+                <div>
+                  <h3>История состояний</h3>
+                  <p className="muted">
+                    Здесь показан только первый момент, когда мы увидели новое состояние домена. Повторные одинаковые чеки скрыты из этой сводки.
+                  </p>
+                </div>
+                {discoveryStateHistory.length === 0 ? (
+                  <p className="muted">Состояний пока нет. Нужен хотя бы один автоматический или ручной чек.</p>
+                ) : (
+                  <div className="state-history-list">
+                    {discoveryStateHistory.map((item, index) => (
+                      <article className="state-history-item" key={`${item.key}-${item.firstSeenAt}`}>
+                        <div className="state-history-index">{index + 1}</div>
+                        <div>
+                          <strong>{formatDateTime(item.firstSeenAt)}</strong>
+                          <div>
+                            {formatLifecycleLabel(item.lifecycleStage)} / {formatAvailabilityLabel(item.availabilityStatus)}
+                          </div>
+                          <div className="row-hint">коды: {item.statusCodes ?? "—"}</div>
+                          <div className="row-hint">регистратор: {item.registrarName ?? "—"} | holder: {item.ownerHandle ?? "—"}</div>
+                          <div className="row-hint clipped-text">NS: {item.nameServers ?? "—"}</div>
+                          {item.changeSummary ? (
+                            <span className="status warning">{formatDiscoveryChangeSummary(item.changeSummary)}</span>
+                          ) : null}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+              <h3 className="subsection-title">Технический журнал последних проверок</h3>
               <div className="table-wrap">
                 <table>
                   <thead>
@@ -2586,7 +2682,7 @@ export default function App() {
                           <div>{formatLifecycleLabel(observation.lifecycle_stage)}</div>
                           <div className="row-hint">доступность: {formatAvailabilityLabel(observation.availability_status)}</div>
                           {observation.change_detected ? <span className="status warning">изменение</span> : null}
-                          {observation.change_summary ? <div className="row-hint">{observation.change_summary}</div> : null}
+                          {observation.change_summary ? <div className="row-hint">{formatDiscoveryChangeSummary(observation.change_summary)}</div> : null}
                         </td>
                         <td>
                           <div>{observation.registrar_name ?? "—"}</div>
@@ -2753,7 +2849,7 @@ export default function App() {
                       <div className="row-hint">коды: {domain.last_status_codes ?? "—"}</div>
                       <div className="row-hint">проверено: {formatDateTime(domain.last_checked_at)}</div>
                       <div className="row-hint">изменение: {formatDateTime(domain.last_change_at)}</div>
-                      {domain.last_change_summary ? <div className="row-hint">{domain.last_change_summary}</div> : null}
+                      {domain.last_change_summary ? <div className="row-hint">{formatDiscoveryChangeSummary(domain.last_change_summary)}</div> : null}
                     </td>
                     <td>
                       <div>{formatDateTime(domain.predicted_pending_delete_at)}</div>

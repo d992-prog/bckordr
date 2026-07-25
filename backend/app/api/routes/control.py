@@ -1769,6 +1769,7 @@ async def export_available_discovery_domains(
         "last_status_signature",
         "last_owner_signature",
         "change_history",
+        "state_history",
         "predicted_drop_start_at",
         "predicted_drop_end_at",
     ]
@@ -1812,7 +1813,12 @@ async def export_available_discovery_domains(
         )
         change_observations = list(change_result.scalars().all())
         change_history = " | ".join(
-            f"{_csv_datetime(item.observed_at)} {item.change_summary or ''}".strip() for item in change_observations
+            f"{_csv_datetime(item.observed_at)} {item.change_summary or ''}".strip()
+            for item in reversed(change_observations)
+        )
+        state_history = " | ".join(
+            _csv_observation_state(item)
+            for item in reversed(change_observations)
         )
         row = {
             "fqdn": domain.fqdn,
@@ -1828,6 +1834,7 @@ async def export_available_discovery_domains(
             "last_status_signature": domain.last_status_signature or "",
             "last_owner_signature": domain.last_owner_signature or "",
             "change_history": change_history,
+            "state_history": state_history,
             "predicted_drop_start_at": _csv_datetime(domain.predicted_drop_start_at),
             "predicted_drop_end_at": _csv_datetime(domain.predicted_drop_end_at),
         }
@@ -1862,6 +1869,20 @@ def _csv_bool(value: bool | None) -> str:
     return "1" if value else ""
 
 
+def _csv_observation_state(observation: DiscoveryObservation) -> str:
+    parts = [
+        _csv_datetime(observation.observed_at),
+        f"lifecycle={observation.lifecycle_stage or ''}",
+        f"availability={observation.availability_status or ''}",
+        f"codes={observation.status_codes or ''}",
+        f"registrar={observation.registrar_name or ''}",
+        f"holder={observation.owner_handle or ''}",
+        f"ns={observation.name_servers or ''}",
+        f"change={observation.change_summary or ''}",
+    ]
+    return "; ".join(parts)
+
+
 @router.get(
     "/discovery/domains/{domain_id}/observations",
     response_model=list[DiscoveryObservationResponse],
@@ -1881,7 +1902,25 @@ async def list_discovery_observations(
         .order_by(DiscoveryObservation.observed_at.desc(), DiscoveryObservation.id.desc())
         .limit(200)
     )
-    return [DiscoveryObservationResponse.model_validate(item) for item in result.scalars().all()]
+    latest_observations = list(result.scalars().all())
+    change_result = await db.execute(
+        select(DiscoveryObservation)
+        .where(
+            DiscoveryObservation.discovery_domain_id == domain_id,
+            DiscoveryObservation.change_detected.is_(True),
+        )
+        .order_by(DiscoveryObservation.observed_at.desc(), DiscoveryObservation.id.desc())
+        .limit(500)
+    )
+    observations_by_id = {item.id: item for item in latest_observations}
+    for item in change_result.scalars().all():
+        observations_by_id[item.id] = item
+    observations = sorted(
+        observations_by_id.values(),
+        key=lambda item: (item.observed_at, item.id),
+        reverse=True,
+    )
+    return [DiscoveryObservationResponse.model_validate(item) for item in observations]
 
 
 @router.get("/discovery/zone-stats", response_model=list[DiscoveryZoneStatsResponse])

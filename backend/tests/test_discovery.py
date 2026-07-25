@@ -110,7 +110,8 @@ def test_discovery_observation_marks_status_and_owner_change_with_exact_time():
         ),
     )
 
-    assert first_observation.change_detected is False
+    assert first_observation.change_detected is True
+    assert first_observation.change_summary == "first seen"
     assert changed_observation.change_detected is True
     assert domain.last_change_at == changed_at
     assert "status" in (changed_observation.change_summary or "")
@@ -1239,9 +1240,10 @@ async def test_discovery_api_keeps_recent_attempts_and_exports_available_csv():
         observations_response = await client.get(f"/control/discovery/domains/{domain_id}/observations")
         assert observations_response.status_code == 200
         observations = observations_response.json()
-        assert len(observations) == 5
+        assert len(observations) == 6
         assert observations[0]["availability_status"] == "available"
         assert observations[-1]["error"] is None
+        assert observations[-1]["change_summary"] == "first seen"
 
         export_response = await client.get("/control/discovery/domains/available/export.csv?zone=com")
         assert export_response.status_code == 200
@@ -1252,10 +1254,78 @@ async def test_discovery_api_keeps_recent_attempts_and_exports_available_csv():
         assert "last_change_at" in csv_body
         assert "last_change_summary" in csv_body
         assert "change_history" in csv_body
+        assert "state_history" in csv_body
         assert "attempt_1_observed_at" in csv_body
         assert "attempt_1_change_detected" in csv_body
         assert "attempt_1_change_summary" in csv_body
+        assert "first seen" in csv_body
         assert "temporary RDAP error" in csv_body
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_discovery_observations_endpoint_includes_preserved_status_changes():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    base_time = datetime(2026, 7, 25, 10, 0, tzinfo=timezone.utc)
+    async with session_factory() as session:
+        domain = DiscoveryDomain(fqdn="timeline.example", zone="com")
+        session.add(domain)
+        await session.flush()
+        session.add(
+            DiscoveryObservation(
+                discovery_domain_id=domain.id,
+                source="rdap",
+                observed_at=base_time,
+                lifecycle_stage="pending_delete",
+                availability_status="taken",
+                change_detected=True,
+                change_summary="first seen",
+            )
+        )
+        for index in range(205):
+            session.add(
+                DiscoveryObservation(
+                    discovery_domain_id=domain.id,
+                    source="rdap",
+                    observed_at=base_time + timedelta(seconds=index + 1),
+                    lifecycle_stage="pending_delete",
+                    availability_status="taken",
+                    change_detected=False,
+                )
+            )
+        await session.commit()
+        domain_id = domain.id
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.get(f"/control/discovery/domains/{domain_id}/observations")
+
+    assert response.status_code == 200
+    observations = response.json()
+    assert len(observations) == 201
+    assert any(item["change_summary"] == "first seen" for item in observations)
 
     await engine.dispose()
 

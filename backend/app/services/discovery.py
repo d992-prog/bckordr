@@ -920,6 +920,9 @@ def apply_discovery_observation(
         name_servers=observation.name_servers,
     )
     change_parts: list[str] = []
+    has_previous_signature = bool(domain.last_status_signature or domain.last_owner_signature)
+    if not has_previous_signature and (status_signature or owner_signature):
+        change_parts.append("first seen")
     if status_signature and domain.last_status_signature and domain.last_status_signature != status_signature:
         change_parts.append("status changed")
     if owner_signature and domain.last_owner_signature and domain.last_owner_signature != owner_signature:
