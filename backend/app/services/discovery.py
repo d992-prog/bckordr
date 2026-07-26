@@ -496,7 +496,7 @@ def parse_whois_response(
     availability_status = _availability_for_lifecycle(lifecycle_stage)
     if error:
         lifecycle_stage = "unknown"
-        availability_status = "taken" if error == WHOIS_RATE_LIMIT_ERROR else "unknown"
+        availability_status = "unknown"
     return DiscoveryObservationInput(
         source=WHOIS_FALLBACK_SOURCE,
         observed_at=observed_at,

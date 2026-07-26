@@ -148,7 +148,7 @@ def test_discovery_parses_generic_whois_not_found():
     assert observation.availability_status == "available"
 
 
-def test_discovery_treats_whois_access_limit_as_safe_taken_without_hard_error_status():
+def test_discovery_treats_whois_access_limit_as_unknown_without_hard_error_status():
     domain = DiscoveryDomain(fqdn="365proservices.ae", zone="ae", status="tracking")
     observation = parse_whois_response(
         "BLACKLISTED: You have exceeded the query limit for your network or IP address.",
@@ -161,7 +161,7 @@ def test_discovery_treats_whois_access_limit_as_safe_taken_without_hard_error_st
 
     assert observation.error == WHOIS_RATE_LIMIT_ERROR
     assert observation.lifecycle_stage == "unknown"
-    assert observation.availability_status == "taken"
+    assert observation.availability_status == "unknown"
     assert domain.status == "tracking"
     assert domain.last_error == WHOIS_RATE_LIMIT_ERROR
 
@@ -407,7 +407,7 @@ def test_discovery_treats_query_limit_exceeded_as_rate_limit_not_registered():
 
     assert observation.error == WHOIS_RATE_LIMIT_ERROR
     assert observation.lifecycle_stage == "unknown"
-    assert observation.availability_status == "taken"
+    assert observation.availability_status == "unknown"
     assert domain.status == "tracking"
     assert domain.last_error == WHOIS_RATE_LIMIT_ERROR
 

@@ -295,7 +295,7 @@ def _parse_whois(raw_response: str, observed_at: datetime, latency_ms: int) -> d
         availability_status = "dropzone"
     if error:
         lifecycle_stage = "unknown"
-        availability_status = "taken" if error == WHOIS_RATE_LIMIT_ERROR else "unknown"
+        availability_status = "unknown"
     return _result(
         source=WHOIS_FALLBACK_SOURCE,
         observed_at=observed_at,
