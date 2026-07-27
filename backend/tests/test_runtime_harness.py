@@ -192,6 +192,81 @@ async def _seed_runtime_state(session_factory: async_sessionmaker[AsyncSession])
 
 
 @pytest.mark.asyncio
+async def test_get_next_task_does_not_reissue_running_task():
+    engine, session_factory = await _make_test_session_factory()
+    try:
+        ids = await _seed_runtime_state(session_factory)
+        app = _make_test_app(session_factory)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://control.test",
+        ) as client:
+            running_response = await client.get(
+                f"/api/worker-runtime/tasks/next?worker_id={ids['worker_primary_id']}",
+                headers={"X-Worker-Token": "worker-token"},
+            )
+            assert running_response.status_code == 200
+            assert running_response.json() == {"task": None}
+
+            queued_response = await client.get(
+                f"/api/worker-runtime/tasks/next?worker_id={ids['worker_sibling_id']}",
+                headers={"X-Worker-Token": "worker-token-2"},
+            )
+            assert queued_response.status_code == 200
+            assert queued_response.json()["task"]["task_id"] == ids["sibling_task_id"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_acknowledge_task_is_idempotent_for_running_task():
+    engine, session_factory = await _make_test_session_factory()
+    try:
+        ids = await _seed_runtime_state(session_factory)
+        app = _make_test_app(session_factory)
+
+        async with session_factory() as session:
+            task = await session.get(WorkerTask, ids["primary_task_id"])
+            assert task is not None
+            original_acknowledged_at = task.acknowledged_at
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://control.test",
+        ) as client:
+            first_response = await client.post(
+                f"/api/worker-runtime/tasks/{ids['primary_task_id']}/ack",
+                headers={"X-Worker-Token": "worker-token"},
+                json={"worker_id": ids["worker_primary_id"]},
+            )
+            second_response = await client.post(
+                f"/api/worker-runtime/tasks/{ids['primary_task_id']}/ack",
+                headers={"X-Worker-Token": "worker-token"},
+                json={"worker_id": ids["worker_primary_id"]},
+            )
+            assert first_response.status_code == 200
+            assert second_response.status_code == 200
+
+        async with session_factory() as session:
+            task = await session.get(WorkerTask, ids["primary_task_id"])
+            assert task is not None
+            assert task.acknowledged_at == original_acknowledged_at
+            ack_events = (
+                await session.execute(
+                    select(AttackEvent).where(
+                        AttackEvent.attack_run_id == ids["run_id"],
+                        AttackEvent.worker_id == ids["worker_primary_id"],
+                        AttackEvent.event_type == "task_ack",
+                    )
+                )
+            ).scalars().all()
+            assert ack_events == []
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_live_create_permit_allows_only_one_worker_at_a_time():
     engine, session_factory = await _make_test_session_factory()
     try:
@@ -230,7 +305,7 @@ async def test_live_create_permit_allows_only_one_worker_at_a_time():
             sibling_payload = sibling_response.json()
             assert sibling_payload["allowed"] is False
             assert sibling_payload["stop"] is False
-            assert "in flight" in sibling_payload["reason"]
+            assert "capacity is full" in sibling_payload["reason"]
 
             release_response = await client.post(
                 f"/api/worker-runtime/tasks/{ids['primary_task_id']}/create-permit/release",
@@ -324,6 +399,14 @@ async def test_worker_runtime_harness_covers_live_rps_update_and_success_flow():
     engine, session_factory = await _make_test_session_factory()
     try:
         ids = await _seed_runtime_state(session_factory)
+        async with session_factory() as session:
+            primary_task = await session.get(WorkerTask, ids["primary_task_id"])
+            assert primary_task is not None
+            primary_task.status = "queued"
+            primary_task.acknowledged_at = None
+            primary_task.started_at = None
+            await session.commit()
+
         app = _make_test_app(session_factory)
 
         settings = WorkerSettings(
@@ -389,7 +472,7 @@ async def test_worker_runtime_harness_covers_live_rps_update_and_success_flow():
         await runner.control.client.aclose()
 
         assert observed_planned_rps[0] == 1.0
-        assert any(value >= 4.0 for value in observed_planned_rps[1:])
+        assert any(value >= 4.0 for value in observed_planned_rps[1:]), observed_planned_rps
 
         async with session_factory() as session:
             domain = await session.get(DropDomain, ids["domain_id"])
@@ -435,6 +518,12 @@ async def test_worker_runtime_treats_accepted_create_as_success():
 
         async def report_result(self, task_id: int, payload: dict) -> None:
             self.results.append({"task_id": task_id, **payload})
+
+        async def acquire_create_permit(self, task_id: int):
+            return SimpleNamespace(allowed=True, reason=None, stop=False)
+
+        async def release_create_permit(self, task_id: int) -> None:
+            return None
 
         async def close(self) -> None:
             return None
@@ -499,6 +588,12 @@ async def test_worker_runtime_samples_include_exception_type():
 
         async def report_result(self, task_id: int, payload: dict) -> None:
             self.results.append({"task_id": task_id, **payload})
+
+        async def acquire_create_permit(self, task_id: int):
+            return SimpleNamespace(allowed=True, reason=None, stop=False)
+
+        async def release_create_permit(self, task_id: int) -> None:
+            return None
 
         async def close(self) -> None:
             return None

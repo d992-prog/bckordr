@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta, timezone
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
@@ -16,6 +16,7 @@ from app.db.models import (
     DiscoveryDomain,
     DiscoveryWorkerTask,
     DropDomain,
+    LiveCreateLease,
     RegistrarAccount,
     WorkerNode,
     WorkerTask,
@@ -100,12 +101,31 @@ async def _get_worker_task_for_update(
     return task, run, domain
 
 
-def _as_aware_utc(value):
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+async def _clear_expired_live_create_leases(db: AsyncSession, run_id: int, now) -> None:
+    await db.execute(
+        delete(LiveCreateLease).where(
+            LiveCreateLease.attack_run_id == run_id,
+            LiveCreateLease.expires_at <= now,
+        )
+    )
+
+
+async def _sync_legacy_live_create_lease_fields(db: AsyncSession, run: AttackRun, now) -> None:
+    result = await db.execute(
+        select(LiveCreateLease)
+        .where(LiveCreateLease.attack_run_id == run.id, LiveCreateLease.expires_at > now)
+        .order_by(LiveCreateLease.expires_at.desc(), LiveCreateLease.id.desc())
+        .limit(1)
+    )
+    active_lease = result.scalar_one_or_none()
+    if active_lease is None:
+        run.live_create_lease_worker_id = None
+        run.live_create_lease_task_id = None
+        run.live_create_lease_expires_at = None
+        return
+    run.live_create_lease_worker_id = active_lease.worker_id
+    run.live_create_lease_task_id = active_lease.worker_task_id
+    run.live_create_lease_expires_at = active_lease.expires_at
 
 
 @router.post("/heartbeat", response_model=WorkerHeartbeatResponse)
@@ -141,7 +161,7 @@ async def get_next_task(
     worker = await _get_worker_by_token(worker_id, db, x_worker_token)
     result = await db.execute(
         select(WorkerTask)
-        .where(WorkerTask.worker_id == worker.id, WorkerTask.status.in_(["queued", "running"]))
+        .where(WorkerTask.worker_id == worker.id, WorkerTask.status == "queued")
         .order_by(WorkerTask.created_at.asc())
         .limit(1)
     )
@@ -238,29 +258,31 @@ async def acknowledge_task(
     if task is None or task.worker_id != worker.id:
         raise HTTPException(status_code=404, detail="Task not found")
     now = utcnow()
-    task.acknowledged_at = now
-    if task.status == "queued":
+    first_ack = task.status == "queued"
+    if first_ack:
+        task.acknowledged_at = task.acknowledged_at or now
         task.status = "running"
         task.started_at = task.started_at or now
 
     run = await db.get(AttackRun, task.attack_run_id)
     domain = await db.get(DropDomain, task.domain_id)
-    if run is not None and run.status == "planned":
+    if first_ack and run is not None and run.status == "planned":
         run.status = "running"
         run.started_at = run.started_at or now
-    if domain is not None and domain.status in {"scheduled", "queued", "ready"}:
+    if first_ack and domain is not None and domain.status in {"scheduled", "queued", "ready"}:
         domain.status = "attacking"
 
-    db.add(
-        AttackEvent(
-            attack_run_id=task.attack_run_id,
-            domain_id=task.domain_id,
-            worker_id=worker.id,
-            level="info",
-            event_type="task_ack",
-            message=f"Worker {worker.name} acknowledged task #{task.id}",
+    if first_ack:
+        db.add(
+            AttackEvent(
+                attack_run_id=task.attack_run_id,
+                domain_id=task.domain_id,
+                worker_id=worker.id,
+                level="info",
+                event_type="task_ack",
+                message=f"Worker {worker.name} acknowledged task #{task.id}",
+            )
         )
-    )
     await db.commit()
     return WorkerTaskResultResponse(detail="task acknowledged")
 
@@ -305,21 +327,55 @@ async def acquire_create_permit(
         await db.commit()
         return WorkerTaskCreatePermitResponse(allowed=False, stop=True, reason=f"Task is {task.status}")
 
-    lease_expires_at = _as_aware_utc(run.live_create_lease_expires_at)
-    lease_is_active = lease_expires_at is not None and lease_expires_at > now
-    if lease_is_active:
+    await _clear_expired_live_create_leases(db, run.id, now)
+    existing_task_lease = (
+        await db.execute(
+            select(LiveCreateLease)
+            .where(
+                LiveCreateLease.worker_task_id == task.id,
+                LiveCreateLease.expires_at > now,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing_task_lease is not None:
+        await _sync_legacy_live_create_lease_fields(db, run, now)
         await db.commit()
         return WorkerTaskCreatePermitResponse(
             allowed=False,
             stop=False,
-            reason="Another live create request is already in flight",
-            lease_expires_at=run.live_create_lease_expires_at,
+            reason="This task already has a live create request in flight",
+            lease_expires_at=existing_task_lease.expires_at,
         )
 
     lease_seconds = max(1.0, float(get_settings().live_create_lease_seconds))
+    max_in_flight = max(1, int(get_settings().live_create_max_in_flight_per_run))
+    active_lease_count = await db.scalar(
+        select(func.count(LiveCreateLease.id)).where(
+            LiveCreateLease.attack_run_id == run.id,
+            LiveCreateLease.expires_at > now,
+        )
+    )
+    if int(active_lease_count or 0) >= max_in_flight:
+        await _sync_legacy_live_create_lease_fields(db, run, now)
+        await db.commit()
+        return WorkerTaskCreatePermitResponse(
+            allowed=False,
+            stop=False,
+            reason="Live create capacity is full",
+            lease_expires_at=run.live_create_lease_expires_at,
+        )
+
+    lease = LiveCreateLease(
+        attack_run_id=run.id,
+        worker_id=worker.id,
+        worker_task_id=task.id,
+        expires_at=now + timedelta(seconds=lease_seconds),
+    )
+    db.add(lease)
     run.live_create_lease_worker_id = worker.id
     run.live_create_lease_task_id = task.id
-    run.live_create_lease_expires_at = now + timedelta(seconds=lease_seconds)
+    run.live_create_lease_expires_at = lease.expires_at
     run.updated_at = now
     await db.commit()
     return WorkerTaskCreatePermitResponse(
@@ -339,14 +395,14 @@ async def release_create_permit(
 ) -> WorkerTaskResultResponse:
     worker = await _get_worker_by_token(payload.worker_id, db, x_worker_token)
     _task, run, _domain = await _get_worker_task_for_update(task_id, worker, db)
-    if (
-        run.live_create_accepted_at is None
-        and run.live_create_lease_task_id == task_id
-        and run.live_create_lease_worker_id == worker.id
-    ):
-        run.live_create_lease_worker_id = None
-        run.live_create_lease_task_id = None
-        run.live_create_lease_expires_at = None
+    await db.execute(
+        delete(LiveCreateLease).where(
+            LiveCreateLease.worker_task_id == task_id,
+            LiveCreateLease.worker_id == worker.id,
+        )
+    )
+    if run.live_create_accepted_at is None:
+        await _sync_legacy_live_create_lease_fields(db, run, utcnow())
         run.updated_at = utcnow()
     await db.commit()
     return WorkerTaskResultResponse(detail="create permit released")
@@ -407,6 +463,7 @@ async def report_task_result(
     task.finished_at = now
 
     if payload.status == "success":
+        await db.execute(delete(LiveCreateLease).where(LiveCreateLease.attack_run_id == run.id))
         run.status = "success"
         run.finished_at = now
         run.success_worker_id = worker.id

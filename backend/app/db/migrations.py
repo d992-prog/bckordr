@@ -44,6 +44,22 @@ MIGRATIONS = (
     "ALTER TABLE attack_runs ADD COLUMN IF NOT EXISTS live_create_accepted_task_id INTEGER NULL",
     "ALTER TABLE attack_runs ADD COLUMN IF NOT EXISTS live_create_accepted_at TIMESTAMPTZ NULL",
     """
+    CREATE TABLE IF NOT EXISTS live_create_leases (
+        id SERIAL PRIMARY KEY,
+        attack_run_id INTEGER NOT NULL REFERENCES attack_runs(id) ON DELETE CASCADE,
+        worker_id INTEGER NOT NULL REFERENCES worker_nodes(id) ON DELETE CASCADE,
+        worker_task_id INTEGER NOT NULL REFERENCES worker_tasks(id) ON DELETE CASCADE,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT uq_live_create_leases_task UNIQUE (worker_task_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_live_create_leases_attack_run_id ON live_create_leases(attack_run_id)",
+    "CREATE INDEX IF NOT EXISTS ix_live_create_leases_worker_id ON live_create_leases(worker_id)",
+    "CREATE INDEX IF NOT EXISTS ix_live_create_leases_worker_task_id ON live_create_leases(worker_task_id)",
+    "CREATE INDEX IF NOT EXISTS ix_live_create_leases_expires_at ON live_create_leases(expires_at)",
+    """
     CREATE TABLE IF NOT EXISTS worker_maintenance_jobs (
         id SERIAL PRIMARY KEY,
         worker_id INTEGER NOT NULL REFERENCES worker_nodes(id) ON DELETE CASCADE,

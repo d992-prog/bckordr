@@ -961,6 +961,32 @@ class WorkerTask(Base):
     worker: Mapped[WorkerNode] = relationship()
 
 
+class LiveCreateLease(Base):
+    __tablename__ = "live_create_leases"
+    __table_args__ = (UniqueConstraint("worker_task_id", name="uq_live_create_leases_task"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    attack_run_id: Mapped[int] = mapped_column(ForeignKey("attack_runs.id", ondelete="CASCADE"), index=True)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("worker_nodes.id", ondelete="CASCADE"), index=True)
+    worker_task_id: Mapped[int] = mapped_column(ForeignKey("worker_tasks.id", ondelete="CASCADE"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+    attack_run: Mapped[AttackRun] = relationship()
+    worker: Mapped[WorkerNode] = relationship()
+    worker_task: Mapped[WorkerTask] = relationship()
+
+
 class AttackEvent(Base):
     __tablename__ = "attack_events"
 
