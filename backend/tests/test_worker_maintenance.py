@@ -27,6 +27,10 @@ def test_build_vpn_create_inbound_commands_use_3xui_api():
 
     combined = "\n".join(commands)
     assert "DROPCATCH_VPN_CREATE_INBOUND_BEGIN" in combined
+    assert "getApiToken" in combined
+    assert "extract_api_token" in combined
+    assert "API_TOKEN_SOURCE" in combined
+    assert "api_token_db_hash_detected" in combined
     assert "api_tokens" in combined
     assert "Authorization" in combined
     assert "session_fallback" in combined
@@ -52,6 +56,8 @@ def test_parse_vpn_autoconfig_output_reads_safe_fields_only():
                 "DROPCATCH_VPN_DB_DIAGNOSTIC=/etc/x-ui/x-ui.db: tables=settings,inbounds",
                 "DROPCATCH_VPN_INBOUND_CANDIDATES=inbounds.id",
                 "DROPCATCH_VPN_INBOUND_ROWS=inbounds:rows=1,enabled=1,ids=7",
+                "DROPCATCH_VPN_API_TOKEN_SOURCE=cli:/usr/local/x-ui/x-ui",
+                "DROPCATCH_VPN_API_TOKEN_STATUS=cli_token_detected",
                 "DROPCATCH_VPN_INBOUND_CREATE_AUTH=api_token",
                 "DROPCATCH_VPN_INBOUND_CREATE_STATUS=created",
                 "DROPCATCH_VPN_INBOUND_CREATE_ERROR=will be kept if API fails",
@@ -68,6 +74,8 @@ def test_parse_vpn_autoconfig_output_reads_safe_fields_only():
         "db_diagnostic": "/etc/x-ui/x-ui.db: tables=settings,inbounds",
         "inbound_candidates": "inbounds.id",
         "inbound_rows": "inbounds:rows=1,enabled=1,ids=7",
+        "api_token_source": "cli:/usr/local/x-ui/x-ui",
+        "api_token_status": "cli_token_detected",
         "inbound_create_auth": "api_token",
         "inbound_create_status": "created",
         "inbound_create_error": "will be kept if API fails",
