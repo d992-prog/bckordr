@@ -2400,6 +2400,26 @@ async def start_worker_vpn_autoconfig(
 
 
 @router.post(
+    "/workers/{worker_id}/maintenance/vpn-create-inbound",
+    response_model=WorkerMaintenanceJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_worker_vpn_create_inbound(
+    worker_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> WorkerMaintenanceJobResponse:
+    return await _start_worker_maintenance_job(
+        worker_id=worker_id,
+        action="vpn_create_inbound",
+        background_tasks=background_tasks,
+        db=db,
+        admin=admin,
+    )
+
+
+@router.post(
     "/workers/maintenance/update-all",
     response_model=WorkerMaintenanceBulkResponse,
     status_code=status.HTTP_202_ACCEPTED,

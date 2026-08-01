@@ -9,13 +9,21 @@ from app.db.models import VpnNodeEvent, WorkerMaintenanceJob, WorkerNode
 from app.db.session import AsyncSessionLocal
 from app.services.app_settings import DiscoveryRuntimeSettings, get_discovery_runtime_settings
 
-VPN_MAINTENANCE_ACTIONS = {"vpn_check", "vpn_install", "vpn_update", "vpn_restart", "vpn_autoconfig"}
+VPN_MAINTENANCE_ACTIONS = {
+    "vpn_check",
+    "vpn_install",
+    "vpn_update",
+    "vpn_restart",
+    "vpn_autoconfig",
+    "vpn_create_inbound",
+}
 VPN_RUNNING_STATUS_BY_ACTION = {
     "vpn_check": "checking",
     "vpn_install": "installing",
     "vpn_update": "updating",
     "vpn_restart": "restarting",
     "vpn_autoconfig": "autoconfiguring",
+    "vpn_create_inbound": "autoconfiguring",
 }
 VPN_AUTOCONFIG_KEYS = {
     "public_host",
@@ -26,6 +34,8 @@ VPN_AUTOCONFIG_KEYS = {
     "db_diagnostic",
     "inbound_candidates",
     "inbound_rows",
+    "inbound_create_status",
+    "inbound_create_error",
     "autoconfig_db_error",
 }
 
@@ -347,6 +357,235 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
     )
 
 
+def _build_vpn_create_inbound_command(worker: WorkerNode | None) -> str:
+    host = ""
+    existing_panel_url = ""
+    existing_inbound_id = ""
+    if worker is not None:
+        host = worker.vpn_public_host or worker.ssh_host or worker.ip_address or ""
+        existing_panel_url = worker.vpn_panel_url or ""
+        existing_inbound_id = str(worker.vpn_inbound_id or "")
+    return _bash(
+        "\n".join(
+            [
+                "set -e",
+                f"export DROPCATCH_HOST={_shell_quote(host)}",
+                f"export DROPCATCH_EXISTING_PANEL_URL={_shell_quote(existing_panel_url)}",
+                f"export DROPCATCH_EXISTING_INBOUND_ID={_shell_quote(existing_inbound_id)}",
+                "echo DROPCATCH_VPN_CREATE_INBOUND_BEGIN",
+                'printf "DROPCATCH_VPN_PUBLIC_HOST=%s\\n" "$DROPCATCH_HOST"',
+                "ACTIVE=$(systemctl is-active x-ui.service 2>/dev/null || systemctl is-active x-ui 2>/dev/null || systemctl is-active 3x-ui.service 2>/dev/null || true)",
+                'printf "DROPCATCH_VPN_XUI_ACTIVE=%s\\n" "$ACTIVE"',
+                "python3 - <<'PY'",
+                "import http.cookiejar, json, os, socket, sqlite3, time, urllib.error, urllib.parse, urllib.request",
+                "",
+                "host = os.environ.get('DROPCATCH_HOST', '')",
+                "existing_panel_url = os.environ.get('DROPCATCH_EXISTING_PANEL_URL', '')",
+                "existing_inbound_id = os.environ.get('DROPCATCH_EXISTING_INBOUND_ID', '')",
+                "db_paths = [",
+                "    '/etc/x-ui/x-ui.db',",
+                "    '/usr/local/x-ui/bin/x-ui.db',",
+                "    '/usr/local/x-ui/x-ui.db',",
+                "]",
+                "",
+                "def emit(key, value):",
+                "    if value is not None and str(value).strip():",
+                "        sanitized = str(value).strip().replace('\\n', ' ')[:1200]",
+                "        print(f'DROPCATCH_VPN_{key}={sanitized}')",
+                "",
+                "def rows_as_dicts(cursor):",
+                "    columns = [item[0] for item in cursor.description or []]",
+                "    return [dict(zip(columns, row)) for row in cursor.fetchall()]",
+                "",
+                "def table_columns(conn, table):",
+                "    quoted_table = '\"' + table.replace('\"', '\"\"') + '\"'",
+                "    return [row[1] for row in conn.execute(f'pragma table_info({quoted_table})')]",
+                "",
+                "def summarize_inbound_rows(conn, tables):",
+                "    notes = []",
+                "    for table in ('inbounds', 'client_inbounds', 'inbound_client_ips', 'inbound_fallbacks', 'nodes'):",
+                "        if table not in tables:",
+                "            continue",
+                "        quoted_table = '\"' + table.replace('\"', '\"\"') + '\"'",
+                "        columns = table_columns(conn, table)",
+                "        parts = []",
+                "        try:",
+                "            parts.append(f'rows={conn.execute(f\"select count(*) from {quoted_table}\").fetchone()[0]}')",
+                "        except Exception as exc:",
+                "            parts.append(f'rows_error={exc}')",
+                "        for enabled_column in ('enable', 'enabled'):",
+                "            if enabled_column in columns:",
+                "                quoted_enabled = '\"' + enabled_column.replace('\"', '\"\"') + '\"'",
+                "                try:",
+                "                    parts.append(f'enabled={conn.execute(f\"select count(*) from {quoted_table} where coalesce({quoted_enabled}, 1) != 0\").fetchone()[0]}')",
+                "                except Exception:",
+                "                    pass",
+                "                break",
+                "        if 'id' in columns:",
+                "            try:",
+                "                ids = [str(row[0]) for row in conn.execute(f'select id from {quoted_table} order by id limit 5').fetchall()]",
+                "                if ids:",
+                "                    parts.append('ids=' + ','.join(ids))",
+                "            except Exception:",
+                "                pass",
+                "        notes.append(f'{table}:' + ','.join(parts))",
+                "    return ';'.join(notes)",
+                "",
+                "def detect_inbound_id(conn, tables):",
+                "    if 'inbounds' not in tables:",
+                "        return ''",
+                "    columns = table_columns(conn, 'inbounds')",
+                "    if 'id' not in columns:",
+                "        return ''",
+                "    quoted_table = '\"inbounds\"'",
+                "    where_parts = ['id is not null']",
+                "    for enabled_column in ('enable', 'enabled'):",
+                "        if enabled_column in columns:",
+                "            quoted_enabled = '\"' + enabled_column.replace('\"', '\"\"') + '\"'",
+                "            where_parts.append(f'coalesce({quoted_enabled}, 1) != 0')",
+                "            break",
+                "    try:",
+                "        row = conn.execute(f'select id from {quoted_table} where ' + ' and '.join(where_parts) + ' order by id limit 1').fetchone()",
+                "    except Exception:",
+                "        return ''",
+                "    return str(row[0]).strip() if row and str(row[0]).strip().isdigit() else ''",
+                "",
+                "def read_db_state():",
+                "    state = {'settings': {}, 'username': '', 'password': '', 'inbound_id': '', 'diagnostics': [], 'rows': ''}",
+                "    for path in db_paths:",
+                "        if not os.path.exists(path):",
+                "            continue",
+                "        try:",
+                "            conn = sqlite3.connect(path)",
+                "            try:",
+                "                tables = {row[0] for row in conn.execute(\"select name from sqlite_master where type='table'\")}",
+                "                state['diagnostics'].append(path + ': tables=' + ','.join(sorted(tables)))",
+                "                rows_note = summarize_inbound_rows(conn, tables)",
+                "                state['rows'] = rows_note or state['rows']",
+                "                if 'settings' in tables and not state['settings']:",
+                "                    cur = conn.execute('select * from settings')",
+                "                    for row in rows_as_dicts(cur):",
+                "                        key = row.get('key') or row.get('name') or row.get('setting') or row.get('item')",
+                "                        value = row.get('value') if 'value' in row else row.get('val')",
+                "                        if key is not None and value is not None:",
+                "                            state['settings'][str(key)] = str(value)",
+                "                if 'users' in tables and not state['username']:",
+                "                    cur = conn.execute('select * from users order by id limit 1')",
+                "                    users = rows_as_dicts(cur)",
+                "                    if users:",
+                "                        user = users[0]",
+                "                        for column in ('username', 'user_name', 'login', 'email'):",
+                "                            if user.get(column):",
+                "                                state['username'] = str(user[column])",
+                "                                break",
+                "                        for column in ('password', 'passwd', 'pass'):",
+                "                            if user.get(column):",
+                "                                state['password'] = str(user[column])",
+                "                                break",
+                "                state['inbound_id'] = state['inbound_id'] or detect_inbound_id(conn, tables)",
+                "            finally:",
+                "                conn.close()",
+                "        except Exception as exc:",
+                "            emit('AUTOCONFIG_DB_ERROR', f'{path}: {exc}')",
+                "    return state",
+                "",
+                "def choose_port():",
+                "    for port in (443, 8443, 2053, 2083, 2096, 30000, 30001, 30002):",
+                "        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:",
+                "            sock.settimeout(0.2)",
+                "            if sock.connect_ex(('127.0.0.1', port)) != 0:",
+                "                return port",
+                "    return 30003",
+                "",
+                "def build_panel_url(settings):",
+                "    port = ''",
+                "    for key in ('webPort', 'web_port', 'port', 'panel_port'):",
+                "        if settings.get(key):",
+                "            port = settings[key]",
+                "            break",
+                "    base_path = ''",
+                "    for key in ('webBasePath', 'web_base_path', 'base_path', 'webPath'):",
+                "        if settings.get(key):",
+                "            base_path = settings[key]",
+                "            break",
+                "    if base_path and not base_path.startswith('/'):",
+                "        base_path = '/' + base_path",
+                "    panel_url = existing_panel_url",
+                "    local_url = ''",
+                "    if port:",
+                "        local_url = f'http://127.0.0.1:{port}{base_path}'",
+                "        if host:",
+                "            panel_url = f'http://{host}:{port}{base_path}'",
+                "    return panel_url, local_url",
+                "",
+                "def post_form(opener, url, data):",
+                "    encoded = urllib.parse.urlencode(data).encode()",
+                "    req = urllib.request.Request(url, data=encoded, headers={'Content-Type': 'application/x-www-form-urlencoded'})",
+                "    return opener.open(req, timeout=10)",
+                "",
+                "def post_json(opener, url, payload):",
+                "    encoded = json.dumps(payload).encode()",
+                "    req = urllib.request.Request(url, data=encoded, headers={'Content-Type': 'application/json'})",
+                "    return opener.open(req, timeout=10)",
+                "",
+                "state = read_db_state()",
+                "inbound_id = existing_inbound_id or state['inbound_id']",
+                "emit('DB_DIAGNOSTIC', ' | '.join(state['diagnostics']))",
+                "emit('INBOUND_ROWS', state['rows'])",
+                "panel_url, local_url = build_panel_url(state['settings'])",
+                "emit('PANEL_URL', panel_url)",
+                "emit('PANEL_USERNAME', state['username'])",
+                "if inbound_id:",
+                "    emit('INBOUND_CREATE_STATUS', 'existing')",
+                "    emit('INBOUND_ID', inbound_id)",
+                "else:",
+                "    if not local_url or not state['username'] or not state['password']:",
+                "        emit('INBOUND_CREATE_ERROR', 'Cannot create inbound: panel URL or local 3x-UI credentials were not found in x-ui database')",
+                "    else:",
+                "        inbound_port = choose_port()",
+                "        payload = {",
+                "            'up': 0,",
+                "            'down': 0,",
+                "            'total': 0,",
+                "            'remark': 'dropcatch-vpn',",
+                "            'enable': True,",
+                "            'expiryTime': 0,",
+                "            'listen': '',",
+                "            'port': inbound_port,",
+                "            'protocol': 'vless',",
+                "            'settings': json.dumps({'clients': [], 'decryption': 'none', 'fallbacks': []}),",
+                "            'streamSettings': json.dumps({'network': 'tcp', 'security': 'none', 'tcpSettings': {'acceptProxyProtocol': False, 'header': {'type': 'none'}}}),",
+                "            'sniffing': json.dumps({'enabled': True, 'destOverride': ['http', 'tls', 'quic'], 'metadataOnly': False, 'routeOnly': False}),",
+                "        }",
+                "        cookie_jar = http.cookiejar.CookieJar()",
+                "        opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))",
+                "        try:",
+                "            login_response = post_form(opener, local_url.rstrip('/') + '/login', {'username': state['username'], 'password': state['password']})",
+                "            login_response.read()",
+                "            add_response = post_json(opener, local_url.rstrip('/') + '/panel/api/inbounds/add', payload)",
+                "            body = add_response.read().decode('utf-8', errors='replace')[:600]",
+                "            emit('INBOUND_CREATE_STATUS', f'api_http_{add_response.status}: {body}')",
+                "            time.sleep(1)",
+                "            state = read_db_state()",
+                "            emit('INBOUND_ROWS', state['rows'])",
+                "            inbound_id = state['inbound_id']",
+                "            if inbound_id:",
+                "                emit('INBOUND_ID', inbound_id)",
+                "            else:",
+                "                emit('INBOUND_CREATE_ERROR', f'3x-UI API returned HTTP {add_response.status}, but inbound ID was not detected after create; body={body}')",
+                "        except urllib.error.HTTPError as exc:",
+                "            body = exc.read().decode('utf-8', errors='replace')[:600]",
+                "            emit('INBOUND_CREATE_ERROR', f'HTTP {exc.code}: {body}')",
+                "        except Exception as exc:",
+                "            emit('INBOUND_CREATE_ERROR', str(exc))",
+                "PY",
+                "systemctl restart x-ui.service || systemctl restart x-ui || systemctl restart 3x-ui.service || true",
+                "echo DROPCATCH_VPN_CREATE_INBOUND_END",
+            ]
+        )
+    )
+
+
 def parse_vpn_autoconfig_output(log: str) -> dict[str, str]:
     metadata: dict[str, str] = {}
     prefix = "DROPCATCH_VPN_"
@@ -397,6 +636,10 @@ def apply_vpn_autoconfig_metadata(worker: WorkerNode, metadata: Mapping[str, str
         diagnostic_bits.append(f"inbound candidates: {metadata['inbound_candidates'][:500]}")
     if metadata.get("inbound_rows"):
         diagnostic_bits.append(f"inbound rows: {metadata['inbound_rows'][:500]}")
+    if metadata.get("inbound_create_status"):
+        diagnostic_bits.append(f"inbound create status: {metadata['inbound_create_status'][:500]}")
+    if metadata.get("inbound_create_error"):
+        diagnostic_bits.append(f"inbound create error: {metadata['inbound_create_error'][:500]}")
     if metadata.get("db_diagnostic"):
         diagnostic_bits.append(f"db: {metadata['db_diagnostic'][:500]}")
     if metadata.get("autoconfig_db_error"):
@@ -404,9 +647,9 @@ def apply_vpn_autoconfig_metadata(worker: WorkerNode, metadata: Mapping[str, str
     suffix = f"; {'; '.join(diagnostic_bits)}" if diagnostic_bits else ""
     missing_text = ", ".join(missing_parts) or "required settings"
     worker.vpn_last_error = (
-        f"3x-UI установлен, но auto-config не нашел {missing_text}. "
-        "Если inbound ID отсутствует, в 3x-UI еще не создан или выключен VPN inbound; "
-        f"создай inbound в панели 3x-UI и снова нажми Автонастроить{suffix}"
+        f"3x-UI is installed, but auto-config did not detect {missing_text}. "
+        "If inbound ID is missing, create a VPN inbound from the control panel with 'Create inbound' "
+        f"or create it in 3x-UI, then run auto-config again{suffix}"
     )
 
 
@@ -506,6 +749,13 @@ def build_worker_maintenance_commands(
             "command -v sqlite3 || true",
             _build_vpn_autoconfig_command(worker),
         ]
+    if action == "vpn_create_inbound":
+        return [
+            "hostname",
+            "whoami",
+            "command -v python3",
+            _build_vpn_create_inbound_command(worker),
+        ]
     raise ValueError(f"Unsupported worker maintenance action: {action}")
 
 
@@ -572,7 +822,7 @@ async def run_worker_maintenance_job(job_id: int) -> None:
             worker.ssh_last_check_status = "ok"
             worker.ssh_last_check_message = "SSH check succeeded"
             worker.ssh_last_checked_at = utcnow()
-        if job.action == "vpn_autoconfig":
+        if job.action in {"vpn_autoconfig", "vpn_create_inbound"}:
             metadata = parse_vpn_autoconfig_output(log)
             apply_vpn_autoconfig_metadata(worker, metadata)
             session.add(
@@ -581,7 +831,7 @@ async def run_worker_maintenance_job(job_id: int) -> None:
                     level="info" if worker.vpn_runtime_status == "ready" else "warning",
                     event_type=job.action,
                     message=(
-                        "VPN auto-config finished: "
+                        "VPN config finished: "
                         f"status={worker.vpn_runtime_status} "
                         f"panel={'yes' if worker.vpn_panel_url else 'no'} "
                         f"inbound={'yes' if worker.vpn_inbound_id else 'no'}"
@@ -590,6 +840,9 @@ async def run_worker_maintenance_job(job_id: int) -> None:
                         "job_id": job.id,
                         "detected_keys": sorted(metadata.keys()),
                         "inbound_candidates": metadata.get("inbound_candidates"),
+                        "inbound_rows": metadata.get("inbound_rows"),
+                        "inbound_create_status": metadata.get("inbound_create_status"),
+                        "inbound_create_error": metadata.get("inbound_create_error"),
                         "db_diagnostic": metadata.get("db_diagnostic"),
                     },
                 )

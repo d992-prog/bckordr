@@ -20,6 +20,19 @@ def test_build_vpn_autoconfig_commands_include_detection_markers():
     assert "INBOUND_ID" in combined
 
 
+def test_build_vpn_create_inbound_commands_use_3xui_api():
+    worker = WorkerNode(name="vpn-1", ip_address="2.27.20.255")
+
+    commands = build_worker_maintenance_commands("vpn_create_inbound", worker=worker)
+
+    combined = "\n".join(commands)
+    assert "DROPCATCH_VPN_CREATE_INBOUND_BEGIN" in combined
+    assert "/panel/api/inbounds/add" in combined
+    assert "INBOUND_CREATE_STATUS" in combined
+    assert "INBOUND_CREATE_ERROR" in combined
+    assert "insert into inbounds" not in combined.lower()
+
+
 def test_parse_vpn_autoconfig_output_reads_safe_fields_only():
     metadata = parse_vpn_autoconfig_output(
         "\n".join(
@@ -33,6 +46,8 @@ def test_parse_vpn_autoconfig_output_reads_safe_fields_only():
                 "DROPCATCH_VPN_DB_DIAGNOSTIC=/etc/x-ui/x-ui.db: tables=settings,inbounds",
                 "DROPCATCH_VPN_INBOUND_CANDIDATES=inbounds.id",
                 "DROPCATCH_VPN_INBOUND_ROWS=inbounds:rows=1,enabled=1,ids=7",
+                "DROPCATCH_VPN_INBOUND_CREATE_STATUS=created",
+                "DROPCATCH_VPN_INBOUND_CREATE_ERROR=will be kept if API fails",
             ]
         )
     )
@@ -46,6 +61,8 @@ def test_parse_vpn_autoconfig_output_reads_safe_fields_only():
         "db_diagnostic": "/etc/x-ui/x-ui.db: tables=settings,inbounds",
         "inbound_candidates": "inbounds.id",
         "inbound_rows": "inbounds:rows=1,enabled=1,ids=7",
+        "inbound_create_status": "created",
+        "inbound_create_error": "will be kept if API fails",
     }
 
 
@@ -95,3 +112,21 @@ def test_apply_vpn_autoconfig_metadata_explains_missing_inbound():
     assert "inbound ID" in (worker.vpn_last_error or "")
     assert "rows=0" in (worker.vpn_last_error or "")
     assert "settings,users" in (worker.vpn_last_error or "")
+
+
+def test_apply_vpn_autoconfig_metadata_explains_create_error():
+    worker = WorkerNode(name="vpn-1", ip_address="2.27.20.255")
+
+    apply_vpn_autoconfig_metadata(
+        worker,
+        {
+            "public_host": "2.27.20.255",
+            "panel_url": "http://2.27.20.255:2053/panel/",
+            "xui_active": "active",
+            "inbound_rows": "inbounds:rows=0,enabled=0",
+            "inbound_create_error": "HTTP 404: API route not found",
+        },
+    )
+
+    assert worker.vpn_runtime_status == "needs_config"
+    assert "HTTP 404" in (worker.vpn_last_error or "")

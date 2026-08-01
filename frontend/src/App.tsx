@@ -608,6 +608,7 @@ function formatMaintenanceAction(value: string | null | undefined) {
     vpn_update: "обновление VPN",
     vpn_restart: "рестарт VPN",
     vpn_autoconfig: "автонастройка VPN",
+    vpn_create_inbound: "создание inbound VPN",
   };
   return value ? labels[value] ?? value : "—";
 }
@@ -2590,7 +2591,8 @@ export default function App() {
       | "vpn_install"
       | "vpn_update"
       | "vpn_restart"
-      | "vpn_autoconfig",
+      | "vpn_autoconfig"
+      | "vpn_create_inbound",
   ) {
     try {
       const actionTitle: Record<typeof action, string> = {
@@ -2602,6 +2604,7 @@ export default function App() {
         vpn_update: "Обновление VPN",
         vpn_restart: "Рестарт VPN",
         vpn_autoconfig: "Автонастройка VPN",
+        vpn_create_inbound: "Создание inbound VPN",
       };
       const job = action === "check"
         ? await api.checkWorkerSsh(worker.id)
@@ -2617,7 +2620,9 @@ export default function App() {
                   ? await api.updateWorkerVpn(worker.id)
                   : action === "vpn_restart"
                     ? await api.restartWorkerVpn(worker.id)
-                    : await api.autoconfigWorkerVpn(worker.id);
+                    : action === "vpn_autoconfig"
+                      ? await api.autoconfigWorkerVpn(worker.id)
+                      : await api.createWorkerVpnInbound(worker.id);
       await loadAll();
       setToast({
         type: "success",
@@ -4208,6 +4213,7 @@ export default function App() {
                         <>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить VPN</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_autoconfig")} disabled={!worker.ssh_access_configured}>Автонастроить VPN</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={!worker.ssh_access_configured || Boolean(worker.vpn_inbound_id)}>Создать inbound</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "VPN установлен" : vpnInstallInProgress ? "VPN устанавливается" : "Установить VPN"}</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={!worker.ssh_access_configured}>Обновить VPN</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={!worker.ssh_access_configured}>Рестарт VPN</button>
@@ -4264,6 +4270,7 @@ export default function App() {
                 <option value="vpn_restart">Рестарт VPN</option>
                 <option value="vpn_check">Проверка VPN</option>
                 <option value="vpn_autoconfig">Автонастройка VPN</option>
+                <option value="vpn_create_inbound">Создание inbound VPN</option>
               </select>
             </label>
             <label>
@@ -4511,6 +4518,7 @@ export default function App() {
                         <div className="actions">
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_autoconfig")} disabled={!worker.ssh_access_configured}>Автонастроить</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={!worker.ssh_access_configured || Boolean(worker.vpn_inbound_id)}>Создать inbound</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "Установлен" : vpnInstallInProgress ? "Установка" : "Установить"}</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={!worker.ssh_access_configured}>Обновить</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={!worker.ssh_access_configured}>Рестарт</button>

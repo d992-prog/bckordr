@@ -936,6 +936,8 @@ export const api = {
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-restart`, { method: "POST" }),
   autoconfigWorkerVpn: (id: number) =>
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-autoconfig`, { method: "POST" }),
+  createWorkerVpnInbound: (id: number) =>
+    request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-create-inbound`, { method: "POST" }),
   updateAllWorkerServers: () =>
     request<WorkerMaintenanceBulkResponse>("/control/workers/maintenance/update-all", { method: "POST" }),
   updateAllVpnNodes: () =>
