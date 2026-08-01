@@ -2563,6 +2563,20 @@ export default function App() {
     }
   }
 
+  async function enableWorkerVpnNode(worker: WorkerNode) {
+    try {
+      await api.updateWorker(worker.id, {
+        vpn_role: "drop_worker_vpn",
+        vpn_enabled: true,
+        vpn_public_host: worker.vpn_public_host ?? worker.ip_address,
+      });
+      await loadAll();
+      setToast({ type: "success", text: `VPN-нода включена для ${worker.name}` });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка включения VPN-ноды" });
+    }
+  }
+
   async function startWorkerMaintenance(
     worker: WorkerNode,
     action: "check" | "install" | "update" | "vpn_check" | "vpn_install" | "vpn_update" | "vpn_restart",
@@ -4146,6 +4160,9 @@ export default function App() {
                   <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "check")} disabled={!worker.ssh_access_configured}>Проверить SSH</button>
                   <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "install")} disabled={installDisabled}>Установить воркер</button>
                   <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "update")} disabled={!worker.ssh_access_configured}>Обновить сервер</button>
+                  {!isVpnNode ? (
+                    <button type="button" className="ghost" onClick={() => void enableWorkerVpnNode(worker)}>Включить VPN-ноду</button>
+                  ) : null}
                   {isVpnNode ? (
                     <>
                       <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить VPN</button>
