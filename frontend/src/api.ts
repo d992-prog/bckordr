@@ -934,10 +934,14 @@ export const api = {
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-update`, { method: "POST" }),
   restartWorkerVpn: (id: number) =>
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-restart`, { method: "POST" }),
+  autoconfigWorkerVpn: (id: number) =>
+    request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-autoconfig`, { method: "POST" }),
   updateAllWorkerServers: () =>
     request<WorkerMaintenanceBulkResponse>("/control/workers/maintenance/update-all", { method: "POST" }),
   updateAllVpnNodes: () =>
     request<WorkerMaintenanceBulkResponse>("/control/workers/maintenance/vpn-update-all", { method: "POST" }),
+  autoconfigAllVpnNodes: () =>
+    request<WorkerMaintenanceBulkResponse>("/control/workers/maintenance/vpn-autoconfig-all", { method: "POST" }),
   deleteWorker: (id: number) => request<{ detail: string }>(`/control/workers/${id}`, { method: "DELETE" }),
 
   getVpnOverview: () => request<VpnOverview>("/control/vpn/overview"),

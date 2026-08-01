@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Mapping
 
 from app.core.config import get_settings
 from app.db.base import utcnow
@@ -8,12 +9,20 @@ from app.db.models import VpnNodeEvent, WorkerMaintenanceJob, WorkerNode
 from app.db.session import AsyncSessionLocal
 from app.services.app_settings import DiscoveryRuntimeSettings, get_discovery_runtime_settings
 
-VPN_MAINTENANCE_ACTIONS = {"vpn_check", "vpn_install", "vpn_update", "vpn_restart"}
+VPN_MAINTENANCE_ACTIONS = {"vpn_check", "vpn_install", "vpn_update", "vpn_restart", "vpn_autoconfig"}
 VPN_RUNNING_STATUS_BY_ACTION = {
     "vpn_check": "checking",
     "vpn_install": "installing",
     "vpn_update": "updating",
     "vpn_restart": "restarting",
+    "vpn_autoconfig": "autoconfiguring",
+}
+VPN_AUTOCONFIG_KEYS = {
+    "public_host",
+    "panel_url",
+    "panel_username",
+    "inbound_id",
+    "xui_active",
 }
 
 
@@ -148,6 +157,151 @@ def _build_vpn_ready_command() -> str:
     )
 
 
+def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
+    host = ""
+    existing_panel_url = ""
+    existing_inbound_id = ""
+    if worker is not None:
+        host = worker.vpn_public_host or worker.ssh_host or worker.ip_address or ""
+        existing_panel_url = worker.vpn_panel_url or ""
+        existing_inbound_id = str(worker.vpn_inbound_id or "")
+    return _bash(
+        "\n".join(
+            [
+                "set -e",
+                f"export DROPCATCH_HOST={_shell_quote(host)}",
+                f"export DROPCATCH_EXISTING_PANEL_URL={_shell_quote(existing_panel_url)}",
+                f"export DROPCATCH_EXISTING_INBOUND_ID={_shell_quote(existing_inbound_id)}",
+                "echo DROPCATCH_VPN_AUTOCONFIG_BEGIN",
+                'printf "DROPCATCH_VPN_PUBLIC_HOST=%s\\n" "$DROPCATCH_HOST"',
+                "ACTIVE=$(systemctl is-active x-ui.service 2>/dev/null || systemctl is-active x-ui 2>/dev/null || systemctl is-active 3x-ui.service 2>/dev/null || true)",
+                'printf "DROPCATCH_VPN_XUI_ACTIVE=%s\\n" "$ACTIVE"',
+                "python3 - <<'PY'",
+                "import os, sqlite3",
+                "",
+                "host = os.environ.get('DROPCATCH_HOST', '')",
+                "existing_panel_url = os.environ.get('DROPCATCH_EXISTING_PANEL_URL', '')",
+                "existing_inbound_id = os.environ.get('DROPCATCH_EXISTING_INBOUND_ID', '')",
+                "db_paths = [",
+                "    '/etc/x-ui/x-ui.db',",
+                "    '/usr/local/x-ui/bin/x-ui.db',",
+                "    '/usr/local/x-ui/x-ui.db',",
+                "]",
+                "",
+                "def emit(key, value):",
+                "    if value is not None and str(value).strip():",
+                "        print(f'DROPCATCH_VPN_{key}={str(value).strip()}')",
+                "",
+                "def rows_as_dicts(cursor):",
+                "    columns = [item[0] for item in cursor.description or []]",
+                "    return [dict(zip(columns, row)) for row in cursor.fetchall()]",
+                "",
+                "settings = {}",
+                "username = ''",
+                "inbound_id = existing_inbound_id",
+                "db_loaded = False",
+                "for path in db_paths:",
+                "    if not os.path.exists(path):",
+                "        continue",
+                "    try:",
+                "        conn = sqlite3.connect(path)",
+                "        try:",
+                "            tables = {row[0] for row in conn.execute(\"select name from sqlite_master where type='table'\")}",
+                "            if 'settings' in tables:",
+                "                cur = conn.execute('select * from settings')",
+                "                for row in rows_as_dicts(cur):",
+                "                    key = row.get('key') or row.get('name') or row.get('setting') or row.get('item')",
+                "                    value = row.get('value') if 'value' in row else row.get('val')",
+                "                    if key is not None and value is not None:",
+                "                        settings[str(key)] = str(value)",
+                "            if 'users' in tables:",
+                "                cur = conn.execute('select * from users order by id limit 1')",
+                "                users = rows_as_dicts(cur)",
+                "                if users:",
+                "                    for column in ('username', 'user_name', 'login', 'email'):",
+                "                        if users[0].get(column):",
+                "                            username = str(users[0][column])",
+                "                            break",
+                "            if 'inbounds' in tables and not inbound_id:",
+                "                row = conn.execute('select id from inbounds order by id limit 1').fetchone()",
+                "                if row:",
+                "                    inbound_id = str(row[0])",
+                "            db_loaded = bool(settings or username or inbound_id)",
+                "        finally:",
+                "            conn.close()",
+                "    except Exception as exc:",
+                "        emit('AUTOCONFIG_DB_ERROR', f'{path}: {exc}')",
+                "    if db_loaded:",
+                "        break",
+                "",
+                "port = ''",
+                "for key in ('webPort', 'web_port', 'port', 'panel_port'):",
+                "    if settings.get(key):",
+                "        port = settings[key]",
+                "        break",
+                "base_path = ''",
+                "for key in ('webBasePath', 'web_base_path', 'base_path', 'webPath'):",
+                "    if settings.get(key):",
+                "        base_path = settings[key]",
+                "        break",
+                "if base_path and not base_path.startswith('/'):",
+                "    base_path = '/' + base_path",
+                "panel_url = existing_panel_url",
+                "if host and port:",
+                "    panel_url = f'http://{host}:{port}{base_path}'",
+                "emit('PANEL_URL', panel_url)",
+                "emit('PANEL_USERNAME', username)",
+                "emit('INBOUND_ID', inbound_id)",
+                "PY",
+                "echo DROPCATCH_VPN_AUTOCONFIG_END",
+            ]
+        )
+    )
+
+
+def parse_vpn_autoconfig_output(log: str) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    prefix = "DROPCATCH_VPN_"
+    for raw_line in log.splitlines():
+        line = raw_line.strip()
+        if not line.startswith(prefix) or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        normalized_key = key.removeprefix(prefix).lower()
+        if normalized_key in VPN_AUTOCONFIG_KEYS and value.strip():
+            metadata[normalized_key] = value.strip()
+    return metadata
+
+
+def apply_vpn_autoconfig_metadata(worker: WorkerNode, metadata: Mapping[str, str]) -> None:
+    public_host = metadata.get("public_host")
+    panel_url = metadata.get("panel_url")
+    panel_username = metadata.get("panel_username")
+    inbound_id = metadata.get("inbound_id")
+
+    if public_host:
+        worker.vpn_public_host = public_host
+    if panel_url:
+        worker.vpn_panel_url = panel_url
+    if panel_username:
+        worker.vpn_panel_username = panel_username
+    if inbound_id and inbound_id.isdigit():
+        worker.vpn_inbound_id = int(inbound_id)
+
+    active_state = (metadata.get("xui_active") or "").lower()
+    worker.vpn_last_checked_at = utcnow()
+    if active_state in {"active", "running"} and worker.vpn_panel_url and worker.vpn_inbound_id:
+        worker.vpn_runtime_status = "ready"
+        worker.vpn_last_error = None
+        return
+    if active_state not in {"active", "running"}:
+        worker.vpn_runtime_status = "error"
+        worker.vpn_last_error = "3x-UI service is not active or was not detected"
+        return
+    worker.vpn_runtime_status = "needs_config"
+    worker.vpn_last_error = "VPN auto-config did not detect panel URL or inbound ID"
+
+
 def build_worker_maintenance_commands(
     action: str,
     *,
@@ -237,6 +391,13 @@ def build_worker_maintenance_commands(
             "systemctl restart x-ui.service || systemctl restart x-ui || systemctl restart 3x-ui.service",
             _build_vpn_ready_command(),
         ]
+    if action == "vpn_autoconfig":
+        return [
+            "hostname",
+            "whoami",
+            "command -v sqlite3 || true",
+            _build_vpn_autoconfig_command(worker),
+        ]
     raise ValueError(f"Unsupported worker maintenance action: {action}")
 
 
@@ -303,7 +464,24 @@ async def run_worker_maintenance_job(job_id: int) -> None:
             worker.ssh_last_check_status = "ok"
             worker.ssh_last_check_message = "SSH check succeeded"
             worker.ssh_last_checked_at = utcnow()
-        if job.action in VPN_MAINTENANCE_ACTIONS:
+        if job.action == "vpn_autoconfig":
+            metadata = parse_vpn_autoconfig_output(log)
+            apply_vpn_autoconfig_metadata(worker, metadata)
+            session.add(
+                VpnNodeEvent(
+                    worker_id=worker.id,
+                    level="info" if worker.vpn_runtime_status == "ready" else "warning",
+                    event_type=job.action,
+                    message=(
+                        "VPN auto-config finished: "
+                        f"status={worker.vpn_runtime_status} "
+                        f"panel={'yes' if worker.vpn_panel_url else 'no'} "
+                        f"inbound={'yes' if worker.vpn_inbound_id else 'no'}"
+                    ),
+                    details={"job_id": job.id, "detected_keys": sorted(metadata.keys())},
+                )
+            )
+        elif job.action in VPN_MAINTENANCE_ACTIONS:
             worker.vpn_runtime_status = "ready"
             worker.vpn_last_error = None
             worker.vpn_last_checked_at = utcnow()

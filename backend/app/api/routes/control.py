@@ -2380,6 +2380,26 @@ async def start_worker_vpn_restart(
 
 
 @router.post(
+    "/workers/{worker_id}/maintenance/vpn-autoconfig",
+    response_model=WorkerMaintenanceJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_worker_vpn_autoconfig(
+    worker_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> WorkerMaintenanceJobResponse:
+    return await _start_worker_maintenance_job(
+        worker_id=worker_id,
+        action="vpn_autoconfig",
+        background_tasks=background_tasks,
+        db=db,
+        admin=admin,
+    )
+
+
+@router.post(
     "/workers/maintenance/update-all",
     response_model=WorkerMaintenanceBulkResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -2492,6 +2512,68 @@ async def start_all_vpn_node_updates(
 
     return WorkerMaintenanceBulkResponse(
         action="vpn_update",
+        started_count=len(jobs),
+        skipped_count=len(skipped_worker_ids),
+        jobs=[WorkerMaintenanceJobResponse.model_validate(job) for job in jobs],
+        skipped_worker_ids=skipped_worker_ids,
+    )
+
+
+@router.post(
+    "/workers/maintenance/vpn-autoconfig-all",
+    response_model=WorkerMaintenanceBulkResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_all_vpn_node_autoconfigs(
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> WorkerMaintenanceBulkResponse:
+    workers = (
+        await db.execute(
+            select(WorkerNode)
+            .where(
+                WorkerNode.is_enabled.is_(True),
+                WorkerNode.vpn_enabled.is_(True),
+                WorkerNode.vpn_role != "none",
+            )
+            .order_by(WorkerNode.id.asc())
+        )
+    ).scalars().all()
+    active_job_worker_ids = set(
+        (
+            await db.execute(
+                select(WorkerMaintenanceJob.worker_id).where(
+                    WorkerMaintenanceJob.status.in_(("queued", "running")),
+                )
+            )
+        ).scalars().all()
+    )
+
+    jobs: list[WorkerMaintenanceJob] = []
+    skipped_worker_ids: list[int] = []
+    for worker in workers:
+        if not worker.ssh_access_configured or worker.id in active_job_worker_ids:
+            skipped_worker_ids.append(worker.id)
+            continue
+        job = WorkerMaintenanceJob(worker_id=worker.id, action="vpn_autoconfig", status="queued")
+        db.add(job)
+        jobs.append(job)
+
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="worker_maintenance_vpn_autoconfig_all",
+        details=f"started={len(jobs)} skipped={len(skipped_worker_ids)}",
+    )
+    await db.commit()
+    for job in jobs:
+        await db.refresh(job)
+        background_tasks.add_task(run_worker_maintenance_job, job.id)
+
+    return WorkerMaintenanceBulkResponse(
+        action="vpn_autoconfig",
         started_count=len(jobs),
         skipped_count=len(skipped_worker_ids),
         jobs=[WorkerMaintenanceJobResponse.model_validate(job) for job in jobs],
