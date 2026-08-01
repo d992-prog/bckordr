@@ -23,6 +23,9 @@ VPN_AUTOCONFIG_KEYS = {
     "panel_username",
     "inbound_id",
     "xui_active",
+    "db_diagnostic",
+    "inbound_candidates",
+    "autoconfig_db_error",
 }
 
 
@@ -190,7 +193,8 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "",
                 "def emit(key, value):",
                 "    if value is not None and str(value).strip():",
-                "        print(f'DROPCATCH_VPN_{key}={str(value).strip()}')",
+                "        sanitized = str(value).strip().replace('\\n', ' ')[:1200]",
+                "        print(f'DROPCATCH_VPN_{key}={sanitized}')",
                 "",
                 "def rows_as_dicts(cursor):",
                 "    columns = [item[0] for item in cursor.description or []]",
@@ -198,36 +202,55 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "",
                 "def detect_inbound_id(conn, tables):",
                 "    candidate_tables = []",
-                "    for name in tables:",
+                "    table_notes = []",
+                "    for name in sorted(tables):",
                 "        lowered = name.lower()",
-                "        if lowered == 'inbounds':",
-                "            candidate_tables.insert(0, name)",
-                "        elif 'inbound' in lowered:",
-                "            candidate_tables.append(name)",
-                "    for table in candidate_tables:",
-                "        quoted_table = '\"' + table.replace('\"', '\"\"') + '\"'",
+                "        quoted_table = '\"' + name.replace('\"', '\"\"') + '\"'",
                 "        try:",
                 "            columns = [row[1] for row in conn.execute(f'pragma table_info({quoted_table})')]",
                 "        except Exception:",
                 "            continue",
+                "        lowered_columns = {column.lower() for column in columns}",
+                "        inbound_score = 0",
+                "        if 'inbound' in lowered:",
+                "            inbound_score += 3",
+                "        for feature in ('port', 'protocol', 'settings', 'stream_settings', 'remark', 'enable', 'enabled', 'listen'):",
+                "            if feature in lowered_columns:",
+                "                inbound_score += 1",
+                "        if lowered == 'inbounds':",
+                "            inbound_score += 5",
+                "        if inbound_score >= 3 and any(column in lowered_columns for column in ('id', 'inbound_id', 'inboundid')):",
+                "            candidate_tables.append((inbound_score, name, columns))",
+                "    candidate_tables.sort(key=lambda item: (-item[0], item[1]))",
+                "    for _, table, columns in candidate_tables:",
+                "        quoted_table = '\"' + table.replace('\"', '\"\"') + '\"'",
                 "        for column in ('id', 'inbound_id', 'inboundId'):",
                 "            if column not in columns:",
                 "                continue",
                 "            quoted_column = '\"' + column.replace('\"', '\"\"') + '\"'",
+                "            order_by = quoted_column",
+                "            where_parts = [f'{quoted_column} is not null']",
+                "            for enabled_column in ('enable', 'enabled'):",
+                "                if enabled_column in columns:",
+                "                    quoted_enabled = '\"' + enabled_column.replace('\"', '\"\"') + '\"'",
+                "                    where_parts.append(f'coalesce({quoted_enabled}, 1) != 0')",
+                "                    break",
                 "            try:",
                 "                row = conn.execute(",
-                "                    f'select {quoted_column} from {quoted_table} where {quoted_column} is not null order by {quoted_column} limit 1'",
+                "                    f'select {quoted_column} from {quoted_table} where ' + ' and '.join(where_parts) + f' order by {order_by} limit 1'",
                 "                ).fetchone()",
                 "            except Exception:",
                 "                continue",
+                "            table_notes.append(f'{table}.{column}')",
                 "            if row and str(row[0]).strip().isdigit():",
-                "                return str(row[0]).strip()",
-                "    return ''",
+                "                return str(row[0]).strip(), ','.join(table_notes[:20])",
+                "    return '', ';'.join(table + ':' + ','.join(columns[:8]) for _, table, columns in candidate_tables[:8])",
                 "",
                 "settings = {}",
                 "username = ''",
                 "inbound_id = existing_inbound_id",
-                "db_loaded = False",
+                "db_diagnostics = []",
+                "inbound_candidates = ''",
                 "for path in db_paths:",
                 "    if not os.path.exists(path):",
                 "        continue",
@@ -235,14 +258,15 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "        conn = sqlite3.connect(path)",
                 "        try:",
                 "            tables = {row[0] for row in conn.execute(\"select name from sqlite_master where type='table'\")}",
-                "            if 'settings' in tables:",
+                "            db_diagnostics.append(path + ': tables=' + ','.join(sorted(tables)))",
+                "            if 'settings' in tables and not settings:",
                 "                cur = conn.execute('select * from settings')",
                 "                for row in rows_as_dicts(cur):",
                 "                    key = row.get('key') or row.get('name') or row.get('setting') or row.get('item')",
                 "                    value = row.get('value') if 'value' in row else row.get('val')",
                 "                    if key is not None and value is not None:",
                 "                        settings[str(key)] = str(value)",
-                "            if 'users' in tables:",
+                "            if 'users' in tables and not username:",
                 "                cur = conn.execute('select * from users order by id limit 1')",
                 "                users = rows_as_dicts(cur)",
                 "                if users:",
@@ -251,14 +275,16 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "                            username = str(users[0][column])",
                 "                            break",
                 "            if not inbound_id:",
-                "                inbound_id = detect_inbound_id(conn, tables)",
-                "            db_loaded = bool(settings or username or inbound_id)",
+                "                detected_inbound_id, inbound_candidates = detect_inbound_id(conn, tables)",
+                "                inbound_id = detected_inbound_id or inbound_id",
                 "        finally:",
                 "            conn.close()",
                 "    except Exception as exc:",
                 "        emit('AUTOCONFIG_DB_ERROR', f'{path}: {exc}')",
-                "    if db_loaded:",
+                "    if settings and username and inbound_id:",
                 "        break",
+                "emit('DB_DIAGNOSTIC', ' | '.join(db_diagnostics))",
+                "emit('INBOUND_CANDIDATES', inbound_candidates)",
                 "",
                 "port = ''",
                 "for key in ('webPort', 'web_port', 'port', 'panel_port'):",
@@ -325,7 +351,20 @@ def apply_vpn_autoconfig_metadata(worker: WorkerNode, metadata: Mapping[str, str
         worker.vpn_last_error = "3x-UI service is not active or was not detected"
         return
     worker.vpn_runtime_status = "needs_config"
-    worker.vpn_last_error = "VPN auto-config did not detect panel URL or inbound ID"
+    missing_parts = []
+    if not worker.vpn_panel_url:
+        missing_parts.append("panel URL")
+    if not worker.vpn_inbound_id:
+        missing_parts.append("inbound ID")
+    diagnostic_bits = []
+    if metadata.get("inbound_candidates"):
+        diagnostic_bits.append(f"inbound candidates: {metadata['inbound_candidates'][:500]}")
+    if metadata.get("db_diagnostic"):
+        diagnostic_bits.append(f"db: {metadata['db_diagnostic'][:500]}")
+    if metadata.get("autoconfig_db_error"):
+        diagnostic_bits.append(f"db error: {metadata['autoconfig_db_error'][:500]}")
+    suffix = f"; {'; '.join(diagnostic_bits)}" if diagnostic_bits else ""
+    worker.vpn_last_error = f"VPN auto-config did not detect {', '.join(missing_parts) or 'required settings'}{suffix}"
 
 
 def build_worker_maintenance_commands(
@@ -504,7 +543,12 @@ async def run_worker_maintenance_job(job_id: int) -> None:
                         f"panel={'yes' if worker.vpn_panel_url else 'no'} "
                         f"inbound={'yes' if worker.vpn_inbound_id else 'no'}"
                     ),
-                    details={"job_id": job.id, "detected_keys": sorted(metadata.keys())},
+                    details={
+                        "job_id": job.id,
+                        "detected_keys": sorted(metadata.keys()),
+                        "inbound_candidates": metadata.get("inbound_candidates"),
+                        "db_diagnostic": metadata.get("db_diagnostic"),
+                    },
                 )
             )
         elif job.action in VPN_MAINTENANCE_ACTIONS:
