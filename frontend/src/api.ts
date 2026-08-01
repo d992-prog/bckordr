@@ -987,6 +987,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  provisionVpnAccessKey: (id: number) =>
+    request<VpnAccessKey>(`/control/vpn/access-keys/${id}/provision`, { method: "POST" }),
   getVpnNodeEvents: (workerId?: number) =>
     request<VpnNodeEvent[]>(
       `/control/vpn/node-events${workerId ? `?worker_id=${encodeURIComponent(String(workerId))}` : ""}`,

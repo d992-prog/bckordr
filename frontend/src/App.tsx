@@ -2352,7 +2352,7 @@ export default function App() {
   async function submitVpnAccessKey(event: FormEvent) {
     event.preventDefault();
     try {
-      await api.createVpnAccessKey({
+      const accessKey = await api.createVpnAccessKey({
         subscription_id: Number(vpnAccessKeyForm.subscriptionId),
         worker_id: parseNumber(vpnAccessKeyForm.workerId),
         protocol: vpnAccessKeyForm.protocol.trim() || "vless",
@@ -2360,9 +2360,27 @@ export default function App() {
       });
       setVpnAccessKeyForm(DEFAULT_VPN_ACCESS_KEY_FORM);
       await loadAll();
-      setToast({ type: "success", text: "VPN ключ добавлен" });
+      if (accessKey.status === "active" && accessKey.config_uri) {
+        setToast({ type: "success", text: "VPN доступ выдан" });
+      } else {
+        setToast({ type: "success", text: accessKey.last_error || "VPN ключ сохранен, но еще не выдан на ноду" });
+      }
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления VPN ключа" });
+    }
+  }
+
+  async function provisionVpnAccessKey(accessKey: VpnAccessKey) {
+    try {
+      const provisioned = await api.provisionVpnAccessKey(accessKey.id);
+      await loadAll();
+      if (provisioned.status === "active" && provisioned.config_uri) {
+        setToast({ type: "success", text: "VPN доступ выдан" });
+      } else {
+        setToast({ type: "success", text: provisioned.last_error || "VPN ключ пока не выдан на ноду" });
+      }
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка выдачи VPN доступа" });
     }
   }
 
@@ -4469,7 +4487,7 @@ export default function App() {
               </div>
               <button type="submit">Создать ключ</button>
             </form>
-            <p className="muted">Сейчас ключ создается в статусе `pending_sync`: это безопасная заготовка до интеграции с 3x-UI API.</p>
+            <p className="muted">Если выбрана готовая VPN-нода, панель сразу добавит клиента в 3x-UI и сохранит клиентскую ссылку. Ссылка 3x-UI выше — это админка сервера, клиенту ее не отправляем.</p>
           </div>
         </section>
 
@@ -4493,7 +4511,7 @@ export default function App() {
                   <th>Роль</th>
                   <th>Статус</th>
                   <th>Host</th>
-                  <th>3x-UI</th>
+                  <th>3x-UI админка</th>
                   <th>Inbound</th>
                   <th>Последняя проверка</th>
                   <th>Действия</th>
@@ -4634,6 +4652,7 @@ export default function App() {
                   <th>Статус</th>
                   <th>Срок</th>
                   <th>Ссылка</th>
+                  <th>Действия</th>
                 </tr>
               </thead>
               <tbody>
@@ -4646,6 +4665,16 @@ export default function App() {
                     <td><span className={statusClass(accessKey.status)}>{formatStatusLabel(accessKey.status)}</span>{accessKey.last_error ? <div className="row-hint">{accessKey.last_error}</div> : null}</td>
                     <td>{formatDateTime(accessKey.issued_at)} → {formatDateTime(accessKey.expires_at)}</td>
                     <td>{accessKey.config_uri ? <code>{accessKey.config_uri}</code> : "—"}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => void provisionVpnAccessKey(accessKey)}
+                        disabled={!accessKey.worker_id}
+                      >
+                        {accessKey.config_uri ? "Переиздать" : "Выдать доступ"}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

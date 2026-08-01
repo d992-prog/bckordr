@@ -149,6 +149,7 @@ from app.services.discovery import (
 )
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
+from app.services.vpn_provisioning import provision_vpn_access_key
 from app.services.app_settings import (
     DiscoveryRuntimeSettings,
     get_discovery_runtime_settings,
@@ -3000,7 +3001,8 @@ async def create_vpn_access_key(
     subscription = await db.get(VpnSubscription, payload.subscription_id)
     if subscription is None:
         raise HTTPException(status_code=404, detail="VPN subscription not found")
-    if payload.worker_id is not None and await db.get(WorkerNode, payload.worker_id) is None:
+    worker = await db.get(WorkerNode, payload.worker_id) if payload.worker_id is not None else None
+    if payload.worker_id is not None and worker is None:
         raise HTTPException(status_code=404, detail="Worker not found")
     now = utcnow()
     access_key = VpnAccessKey(
@@ -3012,15 +3014,40 @@ async def create_vpn_access_key(
         status="pending_sync",
         issued_at=now,
         expires_at=subscription.expires_at,
-        last_error="Key is stored in control panel but not synced to VPN node yet.",
+        last_error=None if worker is not None else "VPN node is not selected.",
     )
     db.add(access_key)
+    await db.flush()
+    if worker is not None:
+        await provision_vpn_access_key(db, access_key, subscription=subscription, worker=worker)
     await add_audit_log(
         db,
         actor_user_id=admin.id,
         target_user_id=None,
         action="vpn_access_key_create",
         details=f"subscription_id={payload.subscription_id} worker_id={payload.worker_id or '-'}",
+    )
+    await db.commit()
+    await db.refresh(access_key)
+    return VpnAccessKeyResponse.model_validate(access_key)
+
+
+@router.post("/vpn/access-keys/{access_key_id}/provision", response_model=VpnAccessKeyResponse)
+async def provision_existing_vpn_access_key(
+    access_key_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnAccessKeyResponse:
+    access_key = await db.get(VpnAccessKey, access_key_id)
+    if access_key is None:
+        raise HTTPException(status_code=404, detail="VPN access key not found")
+    await provision_vpn_access_key(db, access_key)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_access_key_provision",
+        details=f"access_key_id={access_key_id} worker_id={access_key.worker_id or '-'}",
     )
     await db.commit()
     await db.refresh(access_key)
