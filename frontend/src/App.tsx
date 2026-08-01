@@ -4482,7 +4482,13 @@ export default function App() {
                     {vpnNodes.map((worker) => <option key={worker.id} value={worker.id}>{worker.name} · {worker.ip_address ?? "no-ip"}</option>)}
                   </select>
                 </label>
-                <label><span>Протокол</span><input value={vpnAccessKeyForm.protocol} onChange={(event) => setVpnAccessKeyForm((current) => ({ ...current, protocol: event.target.value }))} /></label>
+                <label>
+                  <span>Протокол</span>
+                  <select value={vpnAccessKeyForm.protocol} onChange={(event) => setVpnAccessKeyForm((current) => ({ ...current, protocol: event.target.value }))}>
+                    <option value="vless">VLESS</option>
+                    <option value="vmess">VMess</option>
+                  </select>
+                </label>
                 <label><span>Название ключа</span><input value={vpnAccessKeyForm.publicName} onChange={(event) => setVpnAccessKeyForm((current) => ({ ...current, publicName: event.target.value }))} placeholder="опционально" /></label>
               </div>
               <button type="submit">Создать ключ</button>

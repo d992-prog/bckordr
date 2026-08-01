@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class CapacitySummaryResponse(BaseModel):
@@ -632,6 +632,14 @@ class VpnAccessKeyCreateRequest(BaseModel):
     worker_id: int | None = None
     protocol: str = Field(default="vless", min_length=2, max_length=32)
     public_name: str | None = Field(default=None, max_length=128)
+
+    @field_validator("protocol")
+    @classmethod
+    def validate_protocol(cls, value: str) -> str:
+        protocol = value.strip().lower()
+        if protocol not in {"vless", "vmess"}:
+            raise ValueError("protocol must be vless or vmess")
+        return protocol
 
 
 class VpnAccessKeyResponse(BaseModel):

@@ -1,11 +1,15 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from app.db.models import WorkerNode
+import pytest
+
+from app.db.models import VpnAccessKey, VpnNodeEvent, VpnSubscription, WorkerNode
 from app.services.vpn_provisioning import (
     VpnClientProvisionPayload,
     build_vpn_client_email,
     build_vpn_client_provision_command,
+    ensure_vpn_client_uuid,
+    provision_vpn_access_key,
     parse_vpn_client_provision_output,
 )
 
@@ -34,6 +38,15 @@ def test_build_vpn_client_email_is_stable_and_safe() -> None:
     assert build_vpn_client_email(12, None) == "dropcatch-12-client"
 
 
+def test_ensure_vpn_client_uuid_replaces_legacy_non_uuid_value() -> None:
+    access_key = VpnAccessKey(external_uuid="vpn-client-uuid")
+
+    client_uuid = ensure_vpn_client_uuid(access_key)
+
+    assert UUID(access_key.external_uuid or "") == client_uuid
+    assert access_key.external_uuid != "vpn-client-uuid"
+
+
 def test_build_vpn_client_provision_command_contains_payload_and_markers() -> None:
     worker = WorkerNode(
         id=3,
@@ -60,3 +73,53 @@ def test_build_vpn_client_provision_command_contains_payload_and_markers() -> No
     assert "DROPCATCH_VPN_CLIENT_URL" in command
     assert "11111111-1111-1111-1111-111111111111" in command
     assert "dropcatch-12-test-user" in command
+
+
+@pytest.mark.asyncio
+async def test_provision_vpn_access_key_records_failure_event_without_crashing(monkeypatch) -> None:
+    class FakeSession:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+
+        async def flush(self) -> None:
+            return None
+
+        def add(self, item: object) -> None:
+            self.added.append(item)
+
+    async def fail_ssh(*args, **kwargs) -> str:
+        raise RuntimeError("ssh failed")
+
+    monkeypatch.setattr("app.services.vpn_provisioning.execute_worker_ssh_commands", fail_ssh)
+    subscription = VpnSubscription(
+        customer_id=1,
+        plan_id=None,
+        status="active",
+        starts_at=datetime(2026, 8, 1, tzinfo=UTC),
+        expires_at=datetime(2026, 8, 2, tzinfo=UTC),
+    )
+    worker = WorkerNode(
+        id=7,
+        name="vpn-node",
+        ip_address="31.77.157.65",
+        ssh_host="31.77.157.65",
+        ssh_password="secret",
+        vpn_inbound_id=1,
+    )
+    access_key = VpnAccessKey(
+        id=12,
+        subscription_id=1,
+        worker_id=7,
+        protocol="vless",
+        public_name="phone",
+        external_uuid="11111111-1111-1111-1111-111111111111",
+    )
+
+    session = FakeSession()
+    await provision_vpn_access_key(session, access_key, subscription=subscription, worker=worker)  # type: ignore[arg-type]
+
+    assert access_key.status == "pending_sync"
+    assert access_key.last_error == "ssh failed"
+    event = next(item for item in session.added if isinstance(item, VpnNodeEvent))
+    assert event.event_type == "client_provision_failed"
+    assert event.details == {"access_key_id": 12}

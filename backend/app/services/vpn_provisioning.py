@@ -34,6 +34,17 @@ def build_vpn_client_email(access_key_id: int, public_name: str | None) -> str:
     return f"dropcatch-{access_key_id}-{suffix}"[:64].rstrip("-")
 
 
+def ensure_vpn_client_uuid(access_key: VpnAccessKey) -> UUID:
+    if access_key.external_uuid:
+        try:
+            return UUID(str(access_key.external_uuid))
+        except ValueError:
+            pass
+    client_uuid = uuid4()
+    access_key.external_uuid = str(client_uuid)
+    return client_uuid
+
+
 def parse_vpn_client_provision_output(log: str) -> dict[str, str]:
     metadata: dict[str, str] = {}
     for raw_line in log.splitlines():
@@ -364,8 +375,7 @@ async def provision_vpn_access_key(
         access_key.last_error = "VPN inbound ID is not configured for this worker"
         return access_key
 
-    if not access_key.external_uuid:
-        access_key.external_uuid = str(uuid4())
+    client_uuid = ensure_vpn_client_uuid(access_key)
     if not access_key.issued_at:
         access_key.issued_at = now
     access_key.expires_at = subscription.expires_at
@@ -374,7 +384,7 @@ async def provision_vpn_access_key(
     await db.flush()
 
     payload = VpnClientProvisionPayload(
-        client_uuid=UUID(access_key.external_uuid),
+        client_uuid=client_uuid,
         client_email=build_vpn_client_email(access_key.id, access_key.public_name),
         inbound_id=worker.vpn_inbound_id,
         protocol=access_key.protocol or "vless",
@@ -402,7 +412,7 @@ async def provision_vpn_access_key(
                 event_type="client_provisioned",
                 level="info",
                 message=f"VPN client {payload.client_email} provisioned for access key #{access_key.id}",
-                raw_payload={"access_key_id": access_key.id, "client_email": payload.client_email},
+                details={"access_key_id": access_key.id, "client_email": payload.client_email},
             )
         )
     except Exception as exc:
@@ -417,7 +427,7 @@ async def provision_vpn_access_key(
                 event_type="client_provision_failed",
                 level="error",
                 message=f"VPN client provisioning failed for access key #{access_key.id}: {access_key.last_error[:500]}",
-                raw_payload={"access_key_id": access_key.id},
+                details={"access_key_id": access_key.id},
             )
         )
     access_key.updated_at = utcnow()
