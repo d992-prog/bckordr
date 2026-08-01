@@ -446,6 +446,36 @@ button:disabled {
   gap: 8px;
 }
 
+.worker-card-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.worker-action-group {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(79, 57, 29, 0.1);
+  border-radius: 16px;
+  background: rgba(255, 250, 242, 0.58);
+}
+
+.worker-action-group > span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.worker-action-group small {
+  color: var(--muted);
+}
+
+.vpn-action-group {
+  background: linear-gradient(135deg, rgba(224, 245, 234, 0.72), rgba(255, 250, 242, 0.72));
+}
+
 .wrap {
   flex-wrap: wrap;
 }

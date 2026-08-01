@@ -4155,25 +4155,40 @@ export default function App() {
                   <div><span>ID воркера</span><strong>{worker.id}</strong></div>
                   <div><span>Токен control</span><strong>{worker.control_token ?? "создается автоматически"}</strong></div>
                 </div>
-                <div className="actions">
-                  <button type="button" className="ghost" onClick={() => void loadWorkerSetup(worker)}>Команды установки</button>
-                  <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "check")} disabled={!worker.ssh_access_configured}>Проверить SSH</button>
-                  <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "install")} disabled={installDisabled}>Установить воркер</button>
-                  <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "update")} disabled={!worker.ssh_access_configured}>Обновить сервер</button>
-                  {!isVpnNode ? (
-                    <button type="button" className="ghost" onClick={() => void enableWorkerVpnNode(worker)}>Включить VPN-ноду</button>
-                  ) : null}
-                  {isVpnNode ? (
-                    <>
-                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить VPN</button>
-                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "VPN установлен" : vpnInstallInProgress ? "VPN устанавливается" : "Установить VPN"}</button>
-                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={!worker.ssh_access_configured}>Обновить VPN</button>
-                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={!worker.ssh_access_configured}>Рестарт VPN</button>
-                    </>
-                  ) : null}
-                  <button type="button" className="ghost" onClick={() => startEditWorker(worker)}>Редактировать</button>
-                  <button type="button" className="ghost" onClick={() => void toggleWorker(worker)}>{worker.is_enabled ? "Выключить" : "Включить"}</button>
-                  <button type="button" className="danger" onClick={() => void deleteItem("worker", worker.id)}>Удалить</button>
+                <div className="worker-card-actions">
+                  <div className="worker-action-group">
+                    <span>Сервер</span>
+                    <div className="actions">
+                      <button type="button" className="ghost" onClick={() => void loadWorkerSetup(worker)}>Команды установки</button>
+                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "check")} disabled={!worker.ssh_access_configured}>Проверить SSH</button>
+                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "install")} disabled={installDisabled}>Установить воркер</button>
+                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "update")} disabled={!worker.ssh_access_configured}>Обновить сервер</button>
+                    </div>
+                  </div>
+                  <div className="worker-action-group vpn-action-group">
+                    <span>VPN</span>
+                    <div className="actions">
+                      {!isVpnNode ? (
+                        <button type="button" className="ghost" onClick={() => void enableWorkerVpnNode(worker)}>Включить VPN-ноду</button>
+                      ) : (
+                        <>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить VPN</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "VPN установлен" : vpnInstallInProgress ? "VPN устанавливается" : "Установить VPN"}</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={!worker.ssh_access_configured}>Обновить VPN</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={!worker.ssh_access_configured}>Рестарт VPN</button>
+                        </>
+                      )}
+                    </div>
+                    {!isVpnNode ? <small>Сначала включи VPN-ноду, затем появятся установка и обслуживание 3x-UI.</small> : null}
+                  </div>
+                  <div className="worker-action-group">
+                    <span>Карточка</span>
+                    <div className="actions">
+                      <button type="button" className="ghost" onClick={() => startEditWorker(worker)}>Редактировать</button>
+                      <button type="button" className="ghost" onClick={() => void toggleWorker(worker)}>{worker.is_enabled ? "Выключить" : "Включить"}</button>
+                      <button type="button" className="danger" onClick={() => void deleteItem("worker", worker.id)}>Удалить</button>
+                    </div>
+                  </div>
                 </div>
               </article>
               );
