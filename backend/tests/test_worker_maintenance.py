@@ -29,6 +29,8 @@ def test_build_vpn_create_inbound_commands_use_3xui_api():
     assert "DROPCATCH_VPN_CREATE_INBOUND_BEGIN" in combined
     assert "api_tokens" in combined
     assert "Authorization" in combined
+    assert "session_fallback" in combined
+    assert "request_form" in combined
     assert "/panel/api/inbounds/list" in combined
     assert "/panel/api/inbounds/add" in combined
     assert "INBOUND_CREATE_AUTH" in combined
