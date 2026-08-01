@@ -21,6 +21,12 @@ import {
   RegistrarAccount,
   SessionResponse,
   StrategyPreview,
+  VpnAccessKey,
+  VpnCustomer,
+  VpnNodeEvent,
+  VpnOverview,
+  VpnPlan,
+  VpnSubscription,
   WorkerNode,
   WorkerMaintenanceJob,
   WorkerSetup,
@@ -39,6 +45,7 @@ type Tab =
   | "scanner"
   | "strategies"
   | "workers"
+  | "vpn"
   | "accounts"
   | "contacts"
   | "attacks"
@@ -220,7 +227,53 @@ const DEFAULT_WORKER_FORM = {
   sshUsername: "root",
   sshPassword: "",
   sshKeyPath: "",
+  vpnRole: "none",
+  vpnEnabled: false,
+  vpnPublicHost: "",
+  vpnPanelUrl: "",
+  vpnPanelUsername: "",
+  vpnPanelPassword: "",
+  vpnInboundId: "",
   notes: "",
+};
+
+const DEFAULT_VPN_PLAN_FORM = {
+  slug: "",
+  name: "",
+  description: "",
+  durationDays: "30",
+  trafficLimitGb: "",
+  maxDevices: "1",
+  priceAmount: "0",
+  currency: "RUB",
+  isActive: true,
+};
+
+const DEFAULT_VPN_CUSTOMER_FORM = {
+  telegramUserId: "",
+  telegramUsername: "",
+  firstName: "",
+  lastName: "",
+  status: "active",
+  notes: "",
+};
+
+const DEFAULT_VPN_SUBSCRIPTION_FORM = {
+  customerId: "",
+  planId: "",
+  status: "active",
+  startsAt: "",
+  expiresAt: "",
+  trafficLimitGb: "",
+  maxDevices: "1",
+  notes: "",
+};
+
+const DEFAULT_VPN_ACCESS_KEY_FORM = {
+  subscriptionId: "",
+  workerId: "",
+  protocol: "vless",
+  publicName: "",
 };
 
 const DEFAULT_ACCOUNT_FORM = {
@@ -278,6 +331,13 @@ function makeWorkerForm(worker?: WorkerNode | null) {
     sshUsername: worker.ssh_username ?? "root",
     sshPassword: "",
     sshKeyPath: worker.ssh_key_path ?? "",
+    vpnRole: worker.vpn_role ?? "none",
+    vpnEnabled: worker.vpn_enabled ?? false,
+    vpnPublicHost: worker.vpn_public_host ?? "",
+    vpnPanelUrl: worker.vpn_panel_url ?? "",
+    vpnPanelUsername: worker.vpn_panel_username ?? "",
+    vpnPanelPassword: "",
+    vpnInboundId: worker.vpn_inbound_id ? String(worker.vpn_inbound_id) : "",
     notes: worker.notes ?? "",
   };
 }
@@ -644,6 +704,7 @@ function formatTabLabel(value: Tab) {
     scanner: "scanner",
     strategies: "стратегии",
     workers: "воркеры",
+    vpn: "VPN",
     accounts: "аккаунты",
     contacts: "контакты",
     attacks: "атаки",
@@ -677,6 +738,44 @@ function formatRps(value: number | null | undefined) {
     return "—";
   }
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function parseDateTimeLocal(value: string) {
+  if (!value.trim()) {
+    return null;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function formatVpnRole(value: string | null | undefined) {
+  const labels: Record<string, string> = {
+    none: "не используется",
+    vpn_node: "только VPN",
+    drop_worker_vpn: "drop + VPN",
+  };
+  return value ? labels[value] ?? value : "—";
+}
+
+function formatVpnCustomerName(customer: VpnCustomer | null | undefined) {
+  if (!customer) {
+    return "—";
+  }
+  const fullName = [customer.first_name, customer.last_name].filter(Boolean).join(" ").trim();
+  if (fullName) {
+    return fullName;
+  }
+  if (customer.telegram_username) {
+    return `@${customer.telegram_username}`;
+  }
+  if (customer.telegram_user_id) {
+    return `Telegram ID ${customer.telegram_user_id}`;
+  }
+  return `клиент #${customer.id}`;
+}
+
+function formatVpnTraffic(value: number | null | undefined) {
+  return value === null || value === undefined ? "без лимита" : `${value} GB`;
 }
 
 function formatSeconds(value: number | null | undefined) {
@@ -945,6 +1044,12 @@ export default function App() {
   const [attacks, setAttacks] = useState<AttackRun[]>([]);
   const [tasks, setTasks] = useState<WorkerTask[]>([]);
   const [events, setEvents] = useState<AttackEvent[]>([]);
+  const [vpnOverview, setVpnOverview] = useState<VpnOverview | null>(null);
+  const [vpnPlans, setVpnPlans] = useState<VpnPlan[]>([]);
+  const [vpnCustomers, setVpnCustomers] = useState<VpnCustomer[]>([]);
+  const [vpnSubscriptions, setVpnSubscriptions] = useState<VpnSubscription[]>([]);
+  const [vpnAccessKeys, setVpnAccessKeys] = useState<VpnAccessKey[]>([]);
+  const [vpnNodeEvents, setVpnNodeEvents] = useState<VpnNodeEvent[]>([]);
 
   const [loginForm, setLoginForm] = useState({ username: "", password: "", remember_me: true });
   const [domainForm, setDomainForm] = useState(DEFAULT_DOMAIN_FORM);
@@ -977,6 +1082,10 @@ export default function App() {
   const [workerSetupMode, setWorkerSetupMode] = useState<"test" | "live">("test");
   const [workerSetupRuntimeUrl, setWorkerSetupRuntimeUrl] = useState(DEFAULT_WORKER_RUNTIME_BASE_URL);
   const [workerSetupLoading, setWorkerSetupLoading] = useState(false);
+  const [vpnPlanForm, setVpnPlanForm] = useState(DEFAULT_VPN_PLAN_FORM);
+  const [vpnCustomerForm, setVpnCustomerForm] = useState(DEFAULT_VPN_CUSTOMER_FORM);
+  const [vpnSubscriptionForm, setVpnSubscriptionForm] = useState(DEFAULT_VPN_SUBSCRIPTION_FORM);
+  const [vpnAccessKeyForm, setVpnAccessKeyForm] = useState(DEFAULT_VPN_ACCESS_KEY_FORM);
   const [accountForm, setAccountForm] = useState(DEFAULT_ACCOUNT_FORM);
   const [contactForm, setContactForm] = useState(DEFAULT_CONTACT_FORM);
   const [editingContactId, setEditingContactId] = useState<number | null>(null);
@@ -992,6 +1101,13 @@ export default function App() {
   const contactMap = useMemo(() => new Map(contacts.map((item) => [item.id, item])), [contacts]);
   const domainMap = useMemo(() => new Map(domains.map((item) => [item.id, item])), [domains]);
   const strategyMap = useMemo(() => new Map(strategies.map((item) => [item.id, item])), [strategies]);
+  const vpnPlanMap = useMemo(() => new Map(vpnPlans.map((item) => [item.id, item])), [vpnPlans]);
+  const vpnCustomerMap = useMemo(() => new Map(vpnCustomers.map((item) => [item.id, item])), [vpnCustomers]);
+  const vpnSubscriptionMap = useMemo(() => new Map(vpnSubscriptions.map((item) => [item.id, item])), [vpnSubscriptions]);
+  const vpnNodes = useMemo(
+    () => workers.filter((worker) => worker.vpn_enabled || worker.vpn_role !== "none"),
+    [workers],
+  );
   const latestWorkerMaintenanceJobByWorker = useMemo(() => {
     const items = new Map<number, WorkerMaintenanceJob>();
     for (const job of workerMaintenanceJobs) {
@@ -1261,6 +1377,12 @@ export default function App() {
         attacksData,
         tasksData,
         eventsData,
+        vpnOverviewData,
+        vpnPlansData,
+        vpnCustomersData,
+        vpnSubscriptionsData,
+        vpnAccessKeysData,
+        vpnNodeEventsData,
         diagnosticData,
       ] = await Promise.all([
         api.getOverview(),
@@ -1279,6 +1401,12 @@ export default function App() {
         api.getAttacks(),
         api.getTasks(),
         api.getEvents(),
+        api.getVpnOverview(),
+        api.getVpnPlans(),
+        api.getVpnCustomers(),
+        api.getVpnSubscriptions(),
+        api.getVpnAccessKeys(),
+        api.getVpnNodeEvents(),
         api.getDiagnosticTelegram(),
       ]);
       setOverview(overviewData);
@@ -1298,6 +1426,12 @@ export default function App() {
       setAttacks(attacksData);
       setTasks(tasksData);
       setEvents(eventsData);
+      setVpnOverview(vpnOverviewData);
+      setVpnPlans(vpnPlansData);
+      setVpnCustomers(vpnCustomersData);
+      setVpnSubscriptions(vpnSubscriptionsData);
+      setVpnAccessKeys(vpnAccessKeysData);
+      setVpnNodeEvents(vpnNodeEventsData);
       setDiagnosticTelegram(diagnosticData);
     } catch (error) {
       if (!options?.silent) {
@@ -1422,6 +1556,12 @@ export default function App() {
     setAttacks([]);
     setTasks([]);
     setEvents([]);
+    setVpnOverview(null);
+    setVpnPlans([]);
+    setVpnCustomers([]);
+    setVpnSubscriptions([]);
+    setVpnAccessKeys([]);
+    setVpnNodeEvents([]);
   }
 
   function renderAuth() {
@@ -2055,10 +2195,19 @@ export default function App() {
       ssh_port: Number(workerForm.sshPort || 22),
       ssh_username: workerForm.sshUsername || "root",
       ssh_key_path: workerForm.sshKeyPath || null,
+      vpn_role: workerForm.vpnRole,
+      vpn_enabled: workerForm.vpnEnabled,
+      vpn_public_host: workerForm.vpnPublicHost || null,
+      vpn_panel_url: workerForm.vpnPanelUrl || null,
+      vpn_panel_username: workerForm.vpnPanelUsername || null,
+      vpn_inbound_id: parseNumber(workerForm.vpnInboundId),
       notes: workerForm.notes || null,
     };
     if (workerForm.sshPassword.trim()) {
       payload.ssh_password = workerForm.sshPassword;
+    }
+    if (workerForm.vpnPanelPassword.trim()) {
+      payload.vpn_panel_password = workerForm.vpnPanelPassword;
     }
     try {
       if (editingWorkerId) {
@@ -2110,6 +2259,98 @@ export default function App() {
       setToast({ type: "success", text: `${label}: команды скопированы` });
     } catch {
       setToast({ type: "error", text: "Не удалось скопировать команды" });
+    }
+  }
+
+  async function submitVpnPlan(event: FormEvent) {
+    event.preventDefault();
+    try {
+      await api.createVpnPlan({
+        slug: vpnPlanForm.slug.trim(),
+        name: vpnPlanForm.name.trim(),
+        description: vpnPlanForm.description.trim() || null,
+        duration_days: parseNumber(vpnPlanForm.durationDays),
+        traffic_limit_gb: parseNumber(vpnPlanForm.trafficLimitGb),
+        max_devices: Number(vpnPlanForm.maxDevices || 1),
+        price_amount: Number(vpnPlanForm.priceAmount || 0),
+        currency: vpnPlanForm.currency.trim() || "RUB",
+        is_active: vpnPlanForm.isActive,
+      });
+      setVpnPlanForm(DEFAULT_VPN_PLAN_FORM);
+      await loadAll();
+      setToast({ type: "success", text: "VPN тариф добавлен" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления VPN тарифа" });
+    }
+  }
+
+  async function submitVpnCustomer(event: FormEvent) {
+    event.preventDefault();
+    try {
+      await api.createVpnCustomer({
+        telegram_user_id: vpnCustomerForm.telegramUserId.trim() || null,
+        telegram_username: vpnCustomerForm.telegramUsername.replace(/^@/, "").trim() || null,
+        first_name: vpnCustomerForm.firstName.trim() || null,
+        last_name: vpnCustomerForm.lastName.trim() || null,
+        status: vpnCustomerForm.status,
+        notes: vpnCustomerForm.notes.trim() || null,
+      });
+      setVpnCustomerForm(DEFAULT_VPN_CUSTOMER_FORM);
+      await loadAll();
+      setToast({ type: "success", text: "VPN клиент добавлен" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления VPN клиента" });
+    }
+  }
+
+  async function submitVpnSubscription(event: FormEvent) {
+    event.preventDefault();
+    try {
+      await api.createVpnSubscription({
+        customer_id: Number(vpnSubscriptionForm.customerId),
+        plan_id: parseNumber(vpnSubscriptionForm.planId),
+        status: vpnSubscriptionForm.status,
+        starts_at: parseDateTimeLocal(vpnSubscriptionForm.startsAt),
+        expires_at: parseDateTimeLocal(vpnSubscriptionForm.expiresAt),
+        traffic_limit_gb: parseNumber(vpnSubscriptionForm.trafficLimitGb),
+        max_devices: Number(vpnSubscriptionForm.maxDevices || 1),
+        notes: vpnSubscriptionForm.notes.trim() || null,
+      });
+      setVpnSubscriptionForm(DEFAULT_VPN_SUBSCRIPTION_FORM);
+      await loadAll();
+      setToast({ type: "success", text: "VPN подписка добавлена" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления VPN подписки" });
+    }
+  }
+
+  async function submitVpnAccessKey(event: FormEvent) {
+    event.preventDefault();
+    try {
+      await api.createVpnAccessKey({
+        subscription_id: Number(vpnAccessKeyForm.subscriptionId),
+        worker_id: parseNumber(vpnAccessKeyForm.workerId),
+        protocol: vpnAccessKeyForm.protocol.trim() || "vless",
+        public_name: vpnAccessKeyForm.publicName.trim() || null,
+      });
+      setVpnAccessKeyForm(DEFAULT_VPN_ACCESS_KEY_FORM);
+      await loadAll();
+      setToast({ type: "success", text: "VPN ключ добавлен" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления VPN ключа" });
+    }
+  }
+
+  async function deleteVpnPlan(plan: VpnPlan) {
+    if (!window.confirm(`Удалить VPN тариф ${plan.name}?`)) {
+      return;
+    }
+    try {
+      const payload = await api.deleteVpnPlan(plan.id);
+      await loadAll();
+      setToast({ type: "success", text: payload.detail });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления VPN тарифа" });
     }
   }
 
@@ -3619,6 +3860,27 @@ export default function App() {
               <label><span>SSH пароль</span><input type="password" value={workerForm.sshPassword} onChange={(event) => setWorkerForm((current) => ({ ...current, sshPassword: event.target.value }))} placeholder={editingWorkerId ? "оставь пустым, чтобы не менять" : "root пароль"} /></label>
               <label><span>SSH key path</span><input value={workerForm.sshKeyPath} onChange={(event) => setWorkerForm((current) => ({ ...current, sshKeyPath: event.target.value }))} placeholder="опционально, например /root/.ssh/id_ed25519" /></label>
             </div>
+            <h3>VPN / 3x-UI</h3>
+            <p className="muted">Эти поля готовят сервер как VPN-node. Пароль 3x-UI сохраняется, но не возвращается обратно в браузер.</p>
+            <div className="form two-columns">
+              <label>
+                <span>Роль VPN</span>
+                <select value={workerForm.vpnRole} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnRole: event.target.value }))}>
+                  <option value="none">Не использовать для VPN</option>
+                  <option value="vpn_node">Только VPN</option>
+                  <option value="drop_worker_vpn">Drop worker + VPN</option>
+                </select>
+              </label>
+              <label className="checkbox">
+                <input type="checkbox" checked={workerForm.vpnEnabled} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnEnabled: event.target.checked }))} />
+                <span>Включить VPN на сервере</span>
+              </label>
+              <label><span>Публичный host</span><input value={workerForm.vpnPublicHost} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnPublicHost: event.target.value }))} placeholder="IP или домен VPN-node" /></label>
+              <label><span>3x-UI URL</span><input value={workerForm.vpnPanelUrl} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnPanelUrl: event.target.value }))} placeholder="https://node.example.com:2053" /></label>
+              <label><span>Логин 3x-UI</span><input value={workerForm.vpnPanelUsername} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnPanelUsername: event.target.value }))} /></label>
+              <label><span>Пароль 3x-UI</span><input type="password" value={workerForm.vpnPanelPassword} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnPanelPassword: event.target.value }))} placeholder={editingWorkerId ? "оставь пустым, чтобы не менять" : "пароль панели"} /></label>
+              <label><span>Inbound ID</span><input value={workerForm.vpnInboundId} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnInboundId: event.target.value }))} placeholder="опционально" /></label>
+            </div>
             <label><span>Заметки</span><textarea rows={3} value={workerForm.notes} onChange={(event) => setWorkerForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             <div className="actions">
               <button type="submit">{editingWorkerId ? "Обновить воркер" : "Сохранить воркер"}</button>
@@ -3796,6 +4058,11 @@ export default function App() {
                   <div><span>Сдвиг часов</span><strong>{worker.clock_drift_ms} ms</strong></div>
                   <div><span>Режим воркера</span><strong>{formatWorkerRuntimeMode(worker.runtime_mode)}</strong></div>
                   <div><span>Параллельность реги</span><strong>{formatWorkerConcurrency(worker)}</strong></div>
+                  <div><span>VPN роль</span><strong>{formatVpnRole(worker.vpn_role)}</strong></div>
+                  <div><span>VPN статус</span><strong>{worker.vpn_enabled ? formatStatusLabel(worker.vpn_runtime_status) : "выключен"}</strong></div>
+                  <div><span>VPN host</span><strong>{worker.vpn_public_host ?? "—"}</strong></div>
+                  <div><span>3x-UI</span><strong>{worker.vpn_panel_url ?? "—"}</strong></div>
+                  <div><span>VPN inbound</span><strong>{worker.vpn_inbound_id ?? "—"}</strong></div>
                   <div><span>SSH доступ</span><strong>{worker.ssh_access_configured ? `${worker.ssh_username ?? "root"}@${worker.ssh_host ?? worker.ip_address}:${worker.ssh_port}` : "не настроен"}</strong></div>
                   <div><span>Установка</span><strong>{installState}</strong></div>
                   <div><span>Последнее обслуживание</span><strong>{formatMaintenanceSummary(latestWorkerMaintenanceJobByWorker.get(worker.id))}</strong></div>
@@ -3915,6 +4182,321 @@ export default function App() {
             <strong>Страница {maintenanceCurrentPage} / {maintenanceTotalPages}</strong>
             <button type="button" className="ghost" onClick={() => setMaintenancePage((page) => Math.min(maintenanceTotalPages, page + 1))} disabled={maintenanceCurrentPage >= maintenanceTotalPages}>Вперед</button>
           </div>
+        </div>
+      </section>
+    );
+  }
+
+  function renderVpn() {
+    return (
+      <section className="stack">
+        <div className="card full-span">
+          <div className="card-head">
+            <div>
+              <h2>VPN сервис</h2>
+              <p className="muted">Админский слой для серверов, тарифов, клиентов, подписок и ключей. Синхронизация с 3x-UI и Telegram-ботом будет следующим отдельным этапом.</p>
+            </div>
+            <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
+          </div>
+          <div className="stats">
+            <article><span>VPN ноды</span><strong>{vpnOverview?.enabled_nodes ?? 0}</strong></article>
+            <article><span>Готовые ноды</span><strong>{vpnOverview?.ready_nodes ?? 0}</strong></article>
+            <article><span>Клиенты</span><strong>{vpnOverview?.active_customers ?? 0}</strong></article>
+            <article><span>Подписки</span><strong>{vpnOverview?.active_subscriptions ?? 0}</strong></article>
+            <article><span>Ключи</span><strong>{vpnOverview?.active_keys ?? 0}</strong></article>
+          </div>
+        </div>
+
+        <section className="grid two">
+          <div className="card">
+            <h2>Новый тариф</h2>
+            <form className="form" onSubmit={submitVpnPlan}>
+              <div className="form two-columns">
+                <label><span>Slug</span><input value={vpnPlanForm.slug} onChange={(event) => setVpnPlanForm((current) => ({ ...current, slug: event.target.value }))} placeholder="month-basic" required /></label>
+                <label><span>Название</span><input value={vpnPlanForm.name} onChange={(event) => setVpnPlanForm((current) => ({ ...current, name: event.target.value }))} placeholder="VPN 1 месяц" required /></label>
+                <label><span>Дней</span><input value={vpnPlanForm.durationDays} onChange={(event) => setVpnPlanForm((current) => ({ ...current, durationDays: event.target.value }))} /></label>
+                <label><span>Трафик, GB</span><input value={vpnPlanForm.trafficLimitGb} onChange={(event) => setVpnPlanForm((current) => ({ ...current, trafficLimitGb: event.target.value }))} placeholder="пусто = без лимита" /></label>
+                <label><span>Устройств</span><input value={vpnPlanForm.maxDevices} onChange={(event) => setVpnPlanForm((current) => ({ ...current, maxDevices: event.target.value }))} /></label>
+                <label><span>Цена</span><input value={vpnPlanForm.priceAmount} onChange={(event) => setVpnPlanForm((current) => ({ ...current, priceAmount: event.target.value }))} /></label>
+                <label><span>Валюта</span><input value={vpnPlanForm.currency} onChange={(event) => setVpnPlanForm((current) => ({ ...current, currency: event.target.value }))} /></label>
+                <label className="checkbox"><input type="checkbox" checked={vpnPlanForm.isActive} onChange={(event) => setVpnPlanForm((current) => ({ ...current, isActive: event.target.checked }))} /><span>Активен</span></label>
+              </div>
+              <label><span>Описание</span><textarea rows={3} value={vpnPlanForm.description} onChange={(event) => setVpnPlanForm((current) => ({ ...current, description: event.target.value }))} /></label>
+              <button type="submit">Добавить тариф</button>
+            </form>
+          </div>
+
+          <div className="card">
+            <h2>Новый клиент</h2>
+            <form className="form" onSubmit={submitVpnCustomer}>
+              <div className="form two-columns">
+                <label><span>Telegram ID</span><input value={vpnCustomerForm.telegramUserId} onChange={(event) => setVpnCustomerForm((current) => ({ ...current, telegramUserId: event.target.value }))} /></label>
+                <label><span>Telegram username</span><input value={vpnCustomerForm.telegramUsername} onChange={(event) => setVpnCustomerForm((current) => ({ ...current, telegramUsername: event.target.value }))} placeholder="@username" /></label>
+                <label><span>Имя</span><input value={vpnCustomerForm.firstName} onChange={(event) => setVpnCustomerForm((current) => ({ ...current, firstName: event.target.value }))} /></label>
+                <label><span>Фамилия</span><input value={vpnCustomerForm.lastName} onChange={(event) => setVpnCustomerForm((current) => ({ ...current, lastName: event.target.value }))} /></label>
+                <label>
+                  <span>Статус</span>
+                  <select value={vpnCustomerForm.status} onChange={(event) => setVpnCustomerForm((current) => ({ ...current, status: event.target.value }))}>
+                    <option value="active">Активен</option>
+                    <option value="blocked">Заблокирован</option>
+                    <option value="archived">Архив</option>
+                  </select>
+                </label>
+              </div>
+              <label><span>Заметки</span><textarea rows={3} value={vpnCustomerForm.notes} onChange={(event) => setVpnCustomerForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+              <button type="submit">Добавить клиента</button>
+            </form>
+          </div>
+
+          <div className="card">
+            <h2>Новая подписка</h2>
+            <form className="form" onSubmit={submitVpnSubscription}>
+              <div className="form two-columns">
+                <label>
+                  <span>Клиент</span>
+                  <select value={vpnSubscriptionForm.customerId} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, customerId: event.target.value }))} required>
+                    <option value="">Выбери клиента</option>
+                    {vpnCustomers.map((customer) => <option key={customer.id} value={customer.id}>{formatVpnCustomerName(customer)}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>Тариф</span>
+                  <select value={vpnSubscriptionForm.planId} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, planId: event.target.value }))}>
+                    <option value="">Без тарифа</option>
+                    {vpnPlans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
+                  </select>
+                </label>
+                <label>
+                  <span>Статус</span>
+                  <select value={vpnSubscriptionForm.status} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, status: event.target.value }))}>
+                    <option value="active">Активна</option>
+                    <option value="paused">Пауза</option>
+                    <option value="expired">Истекла</option>
+                    <option value="cancelled">Отменена</option>
+                  </select>
+                </label>
+                <label><span>Старт</span><input type="datetime-local" value={vpnSubscriptionForm.startsAt} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, startsAt: event.target.value }))} /></label>
+                <label><span>Конец</span><input type="datetime-local" value={vpnSubscriptionForm.expiresAt} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, expiresAt: event.target.value }))} /></label>
+                <label><span>Трафик, GB</span><input value={vpnSubscriptionForm.trafficLimitGb} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, trafficLimitGb: event.target.value }))} /></label>
+                <label><span>Устройств</span><input value={vpnSubscriptionForm.maxDevices} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, maxDevices: event.target.value }))} /></label>
+              </div>
+              <label><span>Заметки</span><textarea rows={3} value={vpnSubscriptionForm.notes} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+              <button type="submit">Добавить подписку</button>
+            </form>
+          </div>
+
+          <div className="card">
+            <h2>Новый ключ</h2>
+            <form className="form" onSubmit={submitVpnAccessKey}>
+              <div className="form two-columns">
+                <label>
+                  <span>Подписка</span>
+                  <select value={vpnAccessKeyForm.subscriptionId} onChange={(event) => setVpnAccessKeyForm((current) => ({ ...current, subscriptionId: event.target.value }))} required>
+                    <option value="">Выбери подписку</option>
+                    {vpnSubscriptions.map((subscription) => {
+                      const customer = vpnCustomerMap.get(subscription.customer_id);
+                      const plan = subscription.plan_id ? vpnPlanMap.get(subscription.plan_id) : null;
+                      return <option key={subscription.id} value={subscription.id}>#{subscription.id} · {formatVpnCustomerName(customer)} · {plan?.name ?? "без тарифа"}</option>;
+                    })}
+                  </select>
+                </label>
+                <label>
+                  <span>VPN node</span>
+                  <select value={vpnAccessKeyForm.workerId} onChange={(event) => setVpnAccessKeyForm((current) => ({ ...current, workerId: event.target.value }))}>
+                    <option value="">Авто / позже</option>
+                    {vpnNodes.map((worker) => <option key={worker.id} value={worker.id}>{worker.name} · {worker.ip_address ?? "no-ip"}</option>)}
+                  </select>
+                </label>
+                <label><span>Протокол</span><input value={vpnAccessKeyForm.protocol} onChange={(event) => setVpnAccessKeyForm((current) => ({ ...current, protocol: event.target.value }))} /></label>
+                <label><span>Название ключа</span><input value={vpnAccessKeyForm.publicName} onChange={(event) => setVpnAccessKeyForm((current) => ({ ...current, publicName: event.target.value }))} placeholder="опционально" /></label>
+              </div>
+              <button type="submit">Создать ключ</button>
+            </form>
+            <p className="muted">Сейчас ключ создается в статусе `pending_sync`: это безопасная заготовка до интеграции с 3x-UI API.</p>
+          </div>
+        </section>
+
+        <div className="card full-span">
+          <h2>VPN ноды</h2>
+          <div className="simple-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Воркер</th>
+                  <th>Роль</th>
+                  <th>Статус</th>
+                  <th>Host</th>
+                  <th>3x-UI</th>
+                  <th>Inbound</th>
+                  <th>Последняя проверка</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vpnNodes.map((worker) => (
+                  <tr key={worker.id}>
+                    <td><strong>{worker.name}</strong><div className="row-hint">{worker.ip_address ?? "нет IP"} | {worker.region ?? "нет региона"}</div></td>
+                    <td>{formatVpnRole(worker.vpn_role)}</td>
+                    <td><span className={statusClass(worker.vpn_enabled ? worker.vpn_runtime_status : "disabled")}>{worker.vpn_enabled ? formatStatusLabel(worker.vpn_runtime_status) : "выключен"}</span>{worker.vpn_last_error ? <div className="row-hint">{worker.vpn_last_error}</div> : null}</td>
+                    <td>{worker.vpn_public_host ?? "—"}</td>
+                    <td>{worker.vpn_panel_url ?? "—"}</td>
+                    <td>{worker.vpn_inbound_id ?? "—"}</td>
+                    <td>{formatDateTime(worker.vpn_last_checked_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {vpnNodes.length === 0 ? <p className="empty">VPN-ноды пока не включены. Открой воркер, задай роль VPN и включи VPN.</p> : null}
+        </div>
+
+        <div className="card full-span">
+          <h2>Тарифы</h2>
+          <div className="simple-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Тариф</th>
+                  <th>Срок</th>
+                  <th>Лимиты</th>
+                  <th>Цена</th>
+                  <th>Статус</th>
+                  <th>Действия</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vpnPlans.map((plan) => (
+                  <tr key={plan.id}>
+                    <td><strong>{plan.name}</strong><div className="row-hint">{plan.slug}</div>{plan.description ? <div className="row-hint">{plan.description}</div> : null}</td>
+                    <td>{plan.duration_days ? `${plan.duration_days} дней` : "ручной"}</td>
+                    <td>{formatVpnTraffic(plan.traffic_limit_gb)} · {plan.max_devices} устройств</td>
+                    <td>{plan.price_amount} {plan.currency}</td>
+                    <td><span className={statusClass(plan.is_active ? "ready" : "disabled")}>{plan.is_active ? "активен" : "выключен"}</span></td>
+                    <td><button type="button" className="danger" onClick={() => void deleteVpnPlan(plan)}>Удалить</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {vpnPlans.length === 0 ? <p className="empty">Тарифов пока нет.</p> : null}
+        </div>
+
+        <div className="card full-span">
+          <h2>Клиенты и подписки</h2>
+          <div className="simple-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Клиент</th>
+                  <th>Статус</th>
+                  <th>Telegram</th>
+                  <th>Заметки</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vpnCustomers.map((customer) => (
+                  <tr key={customer.id}>
+                    <td>{customer.id}</td>
+                    <td><strong>{formatVpnCustomerName(customer)}</strong></td>
+                    <td><span className={statusClass(customer.status)}>{formatStatusLabel(customer.status)}</span></td>
+                    <td>{customer.telegram_username ? `@${customer.telegram_username}` : "—"}{customer.telegram_user_id ? <div className="row-hint">{customer.telegram_user_id}</div> : null}</td>
+                    <td>{customer.notes ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {vpnCustomers.length === 0 ? <p className="empty">Клиентов пока нет.</p> : null}
+
+          <div className="simple-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Подписка</th>
+                  <th>Клиент</th>
+                  <th>Тариф</th>
+                  <th>Период</th>
+                  <th>Лимиты</th>
+                  <th>Статус</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vpnSubscriptions.map((subscription) => (
+                  <tr key={subscription.id}>
+                    <td>#{subscription.id}</td>
+                    <td>{formatVpnCustomerName(vpnCustomerMap.get(subscription.customer_id))}</td>
+                    <td>{subscription.plan_id ? vpnPlanMap.get(subscription.plan_id)?.name ?? `#${subscription.plan_id}` : "без тарифа"}</td>
+                    <td>{formatDateTime(subscription.starts_at)} → {formatDateTime(subscription.expires_at)}</td>
+                    <td>{formatVpnTraffic(subscription.traffic_limit_gb)} · {subscription.max_devices} устройств</td>
+                    <td><span className={statusClass(subscription.status)}>{formatStatusLabel(subscription.status)}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {vpnSubscriptions.length === 0 ? <p className="empty">Подписок пока нет.</p> : null}
+        </div>
+
+        <div className="card full-span">
+          <h2>Ключи доступа</h2>
+          <div className="simple-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ключ</th>
+                  <th>Подписка</th>
+                  <th>Нода</th>
+                  <th>Протокол</th>
+                  <th>Статус</th>
+                  <th>Срок</th>
+                  <th>Ссылка</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vpnAccessKeys.map((accessKey) => (
+                  <tr key={accessKey.id}>
+                    <td><strong>{accessKey.public_name ?? `ключ #${accessKey.id}`}</strong><div className="row-hint">{accessKey.external_uuid ?? "uuid будет создан"}</div></td>
+                    <td>#{accessKey.subscription_id}</td>
+                    <td>{accessKey.worker_id ? workers.find((worker) => worker.id === accessKey.worker_id)?.name ?? `#${accessKey.worker_id}` : "авто / позже"}</td>
+                    <td>{accessKey.protocol}</td>
+                    <td><span className={statusClass(accessKey.status)}>{formatStatusLabel(accessKey.status)}</span>{accessKey.last_error ? <div className="row-hint">{accessKey.last_error}</div> : null}</td>
+                    <td>{formatDateTime(accessKey.issued_at)} → {formatDateTime(accessKey.expires_at)}</td>
+                    <td>{accessKey.config_uri ? <code>{accessKey.config_uri}</code> : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {vpnAccessKeys.length === 0 ? <p className="empty">Ключей пока нет.</p> : null}
+        </div>
+
+        <div className="card full-span">
+          <h2>События VPN-нод</h2>
+          <div className="simple-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Время</th>
+                  <th>Воркер</th>
+                  <th>Уровень</th>
+                  <th>Событие</th>
+                  <th>Сообщение</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vpnNodeEvents.map((event) => (
+                  <tr key={event.id}>
+                    <td>{formatDateTime(event.created_at)}</td>
+                    <td>{workers.find((worker) => worker.id === event.worker_id)?.name ?? event.worker_id}</td>
+                    <td><span className={statusClass(event.level)}>{formatStatusLabel(event.level)}</span></td>
+                    <td>{event.event_type}</td>
+                    <td>{event.message}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {vpnNodeEvents.length === 0 ? <p className="empty">Событий пока нет.</p> : null}
         </div>
       </section>
     );
@@ -4871,7 +5453,7 @@ export default function App() {
 
       <div className="toolbar">
         <div className="tab-strip">
-          {(["domains", "discovery", "scanner", "strategies", "workers", "accounts", "contacts", "attacks", "settings"] as Tab[]).map((item) => (
+          {(["domains", "discovery", "scanner", "strategies", "workers", "vpn", "accounts", "contacts", "attacks", "settings"] as Tab[]).map((item) => (
             <button key={item} type="button" className={tab === item ? "ghost active-chip" : "ghost"} onClick={() => setTab(item)}>
               {formatTabLabel(item)}
             </button>
@@ -4890,6 +5472,7 @@ export default function App() {
       {tab === "scanner" ? renderZoneScanner() : null}
       {tab === "strategies" ? renderStrategies() : null}
       {tab === "workers" ? renderWorkers() : null}
+      {tab === "vpn" ? renderVpn() : null}
       {tab === "accounts" ? renderAccounts() : null}
       {tab === "contacts" ? renderContacts() : null}
       {tab === "attacks" ? renderAttacks() : null}

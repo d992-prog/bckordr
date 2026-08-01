@@ -7,6 +7,7 @@ from io import StringIO
 import json
 from pathlib import Path
 import shlex
+from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
@@ -27,6 +28,11 @@ from app.db.models import (
     DropDomain,
     RegistrarAccount,
     User,
+    VpnAccessKey,
+    VpnCustomer,
+    VpnNodeEvent,
+    VpnPlan,
+    VpnSubscription,
     WorkerMaintenanceJob,
     WorkerNode,
     WorkerTask,
@@ -84,6 +90,19 @@ from app.schemas.control import (
     RegistrarAccountResponse,
     RegistrarAccountUpdateRequest,
     RegistrarAccountValidateResponse,
+    VpnAccessKeyCreateRequest,
+    VpnAccessKeyResponse,
+    VpnCustomerCreateRequest,
+    VpnCustomerResponse,
+    VpnCustomerUpdateRequest,
+    VpnNodeEventResponse,
+    VpnOverviewResponse,
+    VpnPlanCreateRequest,
+    VpnPlanResponse,
+    VpnPlanUpdateRequest,
+    VpnSubscriptionCreateRequest,
+    VpnSubscriptionResponse,
+    VpnSubscriptionUpdateRequest,
     WorkerNodeCreateRequest,
     WorkerMaintenanceBulkResponse,
     WorkerMaintenanceJobResponse,
@@ -2463,6 +2482,310 @@ async def delete_worker(
     await db.commit()
     await sync_worker_runtime_allowlist(db, get_settings())
     return MessageResponse(detail="Worker deleted")
+
+
+@router.get("/vpn/overview", response_model=VpnOverviewResponse)
+async def get_vpn_overview(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnOverviewResponse:
+    del admin
+    enabled_nodes = await db.scalar(
+        select(func.count(WorkerNode.id)).where(WorkerNode.vpn_enabled.is_(True)),
+    )
+    ready_nodes = await db.scalar(
+        select(func.count(WorkerNode.id)).where(
+            WorkerNode.vpn_enabled.is_(True),
+            WorkerNode.vpn_runtime_status == "ready",
+        ),
+    )
+    active_customers = await db.scalar(
+        select(func.count(VpnCustomer.id)).where(VpnCustomer.status == "active"),
+    )
+    active_subscriptions = await db.scalar(
+        select(func.count(VpnSubscription.id)).where(VpnSubscription.status == "active"),
+    )
+    active_keys = await db.scalar(
+        select(func.count(VpnAccessKey.id)).where(VpnAccessKey.status == "active"),
+    )
+    return VpnOverviewResponse(
+        enabled_nodes=enabled_nodes or 0,
+        ready_nodes=ready_nodes or 0,
+        active_customers=active_customers or 0,
+        active_subscriptions=active_subscriptions or 0,
+        active_keys=active_keys or 0,
+    )
+
+
+@router.get("/vpn/plans", response_model=list[VpnPlanResponse])
+async def list_vpn_plans(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnPlanResponse]:
+    del admin
+    result = await db.execute(select(VpnPlan).order_by(VpnPlan.is_active.desc(), VpnPlan.name.asc()))
+    return [VpnPlanResponse.model_validate(plan) for plan in result.scalars().all()]
+
+
+@router.post("/vpn/plans", response_model=VpnPlanResponse, status_code=status.HTTP_201_CREATED)
+async def create_vpn_plan(
+    payload: VpnPlanCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnPlanResponse:
+    duplicate = await db.scalar(select(VpnPlan.id).where(VpnPlan.slug == payload.slug).limit(1))
+    if duplicate is not None:
+        raise HTTPException(status_code=400, detail="VPN plan slug already exists")
+    plan = VpnPlan(**payload.model_dump())
+    db.add(plan)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_plan_create",
+        details=f"slug={payload.slug}",
+    )
+    await db.commit()
+    await db.refresh(plan)
+    return VpnPlanResponse.model_validate(plan)
+
+
+@router.patch("/vpn/plans/{plan_id}", response_model=VpnPlanResponse)
+async def update_vpn_plan(
+    plan_id: int,
+    payload: VpnPlanUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnPlanResponse:
+    plan = await db.get(VpnPlan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="VPN plan not found")
+    updates = payload.model_dump(exclude_unset=True)
+    if "slug" in updates:
+        duplicate = await db.scalar(
+            select(VpnPlan.id)
+            .where(VpnPlan.slug == updates["slug"], VpnPlan.id != plan_id)
+            .limit(1),
+        )
+        if duplicate is not None:
+            raise HTTPException(status_code=400, detail="VPN plan slug already exists")
+    for field, value in updates.items():
+        setattr(plan, field, value)
+    plan.updated_at = utcnow()
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_plan_update",
+        details=f"plan_id={plan_id}",
+    )
+    await db.commit()
+    await db.refresh(plan)
+    return VpnPlanResponse.model_validate(plan)
+
+
+@router.delete("/vpn/plans/{plan_id}", response_model=MessageResponse)
+async def delete_vpn_plan(
+    plan_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> MessageResponse:
+    plan = await db.get(VpnPlan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="VPN plan not found")
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_plan_delete",
+        details=f"plan_id={plan_id}",
+    )
+    await db.delete(plan)
+    await db.commit()
+    return MessageResponse(detail="VPN plan deleted")
+
+
+@router.get("/vpn/customers", response_model=list[VpnCustomerResponse])
+async def list_vpn_customers(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnCustomerResponse]:
+    del admin
+    result = await db.execute(select(VpnCustomer).order_by(VpnCustomer.id.desc()).limit(500))
+    return [VpnCustomerResponse.model_validate(customer) for customer in result.scalars().all()]
+
+
+@router.post("/vpn/customers", response_model=VpnCustomerResponse, status_code=status.HTTP_201_CREATED)
+async def create_vpn_customer(
+    payload: VpnCustomerCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnCustomerResponse:
+    customer = VpnCustomer(**payload.model_dump())
+    db.add(customer)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_customer_create",
+        details=f"telegram_user_id={payload.telegram_user_id or '-'}",
+    )
+    await db.commit()
+    await db.refresh(customer)
+    return VpnCustomerResponse.model_validate(customer)
+
+
+@router.patch("/vpn/customers/{customer_id}", response_model=VpnCustomerResponse)
+async def update_vpn_customer(
+    customer_id: int,
+    payload: VpnCustomerUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnCustomerResponse:
+    customer = await db.get(VpnCustomer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="VPN customer not found")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(customer, field, value)
+    customer.updated_at = utcnow()
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_customer_update",
+        details=f"customer_id={customer_id}",
+    )
+    await db.commit()
+    await db.refresh(customer)
+    return VpnCustomerResponse.model_validate(customer)
+
+
+@router.get("/vpn/subscriptions", response_model=list[VpnSubscriptionResponse])
+async def list_vpn_subscriptions(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnSubscriptionResponse]:
+    del admin
+    result = await db.execute(select(VpnSubscription).order_by(VpnSubscription.id.desc()).limit(500))
+    return [VpnSubscriptionResponse.model_validate(subscription) for subscription in result.scalars().all()]
+
+
+@router.post("/vpn/subscriptions", response_model=VpnSubscriptionResponse, status_code=status.HTTP_201_CREATED)
+async def create_vpn_subscription(
+    payload: VpnSubscriptionCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnSubscriptionResponse:
+    customer = await db.get(VpnCustomer, payload.customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="VPN customer not found")
+    if payload.plan_id is not None and await db.get(VpnPlan, payload.plan_id) is None:
+        raise HTTPException(status_code=404, detail="VPN plan not found")
+    subscription = VpnSubscription(**payload.model_dump())
+    db.add(subscription)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_subscription_create",
+        details=f"customer_id={payload.customer_id} plan_id={payload.plan_id or '-'}",
+    )
+    await db.commit()
+    await db.refresh(subscription)
+    return VpnSubscriptionResponse.model_validate(subscription)
+
+
+@router.patch("/vpn/subscriptions/{subscription_id}", response_model=VpnSubscriptionResponse)
+async def update_vpn_subscription(
+    subscription_id: int,
+    payload: VpnSubscriptionUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnSubscriptionResponse:
+    subscription = await db.get(VpnSubscription, subscription_id)
+    if subscription is None:
+        raise HTTPException(status_code=404, detail="VPN subscription not found")
+    updates = payload.model_dump(exclude_unset=True)
+    if updates.get("plan_id") is not None and await db.get(VpnPlan, updates["plan_id"]) is None:
+        raise HTTPException(status_code=404, detail="VPN plan not found")
+    for field, value in updates.items():
+        setattr(subscription, field, value)
+    subscription.updated_at = utcnow()
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_subscription_update",
+        details=f"subscription_id={subscription_id}",
+    )
+    await db.commit()
+    await db.refresh(subscription)
+    return VpnSubscriptionResponse.model_validate(subscription)
+
+
+@router.get("/vpn/access-keys", response_model=list[VpnAccessKeyResponse])
+async def list_vpn_access_keys(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnAccessKeyResponse]:
+    del admin
+    result = await db.execute(select(VpnAccessKey).order_by(VpnAccessKey.id.desc()).limit(1000))
+    return [VpnAccessKeyResponse.model_validate(access_key) for access_key in result.scalars().all()]
+
+
+@router.post("/vpn/access-keys", response_model=VpnAccessKeyResponse, status_code=status.HTTP_201_CREATED)
+async def create_vpn_access_key(
+    payload: VpnAccessKeyCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnAccessKeyResponse:
+    subscription = await db.get(VpnSubscription, payload.subscription_id)
+    if subscription is None:
+        raise HTTPException(status_code=404, detail="VPN subscription not found")
+    if payload.worker_id is not None and await db.get(WorkerNode, payload.worker_id) is None:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    now = utcnow()
+    access_key = VpnAccessKey(
+        subscription_id=payload.subscription_id,
+        worker_id=payload.worker_id,
+        protocol=payload.protocol,
+        public_name=payload.public_name,
+        external_uuid=str(uuid4()),
+        status="pending_sync",
+        issued_at=now,
+        expires_at=subscription.expires_at,
+        last_error="Key is stored in control panel but not synced to VPN node yet.",
+    )
+    db.add(access_key)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_access_key_create",
+        details=f"subscription_id={payload.subscription_id} worker_id={payload.worker_id or '-'}",
+    )
+    await db.commit()
+    await db.refresh(access_key)
+    return VpnAccessKeyResponse.model_validate(access_key)
+
+
+@router.get("/vpn/node-events", response_model=list[VpnNodeEventResponse])
+async def list_vpn_node_events(
+    worker_id: int | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnNodeEventResponse]:
+    del admin
+    query = select(VpnNodeEvent).order_by(VpnNodeEvent.id.desc()).limit(200)
+    if worker_id is not None:
+        query = (
+            select(VpnNodeEvent)
+            .where(VpnNodeEvent.worker_id == worker_id)
+            .order_by(VpnNodeEvent.id.desc())
+            .limit(200)
+        )
+    result = await db.execute(query)
+    return [VpnNodeEventResponse.model_validate(event) for event in result.scalars().all()]
 
 
 @router.get("/registrar-accounts", response_model=list[RegistrarAccountResponse])

@@ -568,6 +568,16 @@ class WorkerNode(Base):
     ssh_last_check_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ssh_last_check_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     ssh_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    vpn_role: Mapped[str] = mapped_column(String(32), default="none", server_default="none")
+    vpn_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    vpn_runtime_status: Mapped[str] = mapped_column(String(32), default="not_installed", server_default="not_installed")
+    vpn_public_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    vpn_panel_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    vpn_panel_username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    vpn_panel_password: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vpn_inbound_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    vpn_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    vpn_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -583,6 +593,8 @@ class WorkerNode(Base):
     )
 
     assigned_registrar_account: Mapped[RegistrarAccount | None] = relationship()
+    vpn_access_keys: Mapped[list["VpnAccessKey"]] = relationship(back_populates="worker")
+    vpn_events: Mapped[list["VpnNodeEvent"]] = relationship(back_populates="worker")
 
     @property
     def ssh_access_configured(self) -> bool:
@@ -613,6 +625,169 @@ class WorkerMaintenanceJob(Base):
     )
 
     worker: Mapped[WorkerNode] = relationship()
+
+
+class VpnPlan(Base):
+    __tablename__ = "vpn_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    traffic_limit_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_devices: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    price_amount: Mapped[float] = mapped_column(Float, default=0.0, server_default="0.0")
+    currency: Mapped[str] = mapped_column(String(8), default="RUB", server_default="RUB")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+    subscriptions: Mapped[list["VpnSubscription"]] = relationship(back_populates="plan")
+
+
+class VpnCustomer(Base):
+    __tablename__ = "vpn_customers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_user_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    first_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", server_default="active")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+    subscriptions: Mapped[list["VpnSubscription"]] = relationship(back_populates="customer")
+    telegram_updates: Mapped[list["VpnTelegramUpdate"]] = relationship(back_populates="customer")
+
+
+class VpnSubscription(Base):
+    __tablename__ = "vpn_subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("vpn_customers.id", ondelete="CASCADE"), index=True)
+    plan_id: Mapped[int | None] = mapped_column(
+        ForeignKey("vpn_plans.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(32), default="active", server_default="active", index=True)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    traffic_limit_gb: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_devices: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+    customer: Mapped[VpnCustomer] = relationship(back_populates="subscriptions")
+    plan: Mapped[VpnPlan | None] = relationship(back_populates="subscriptions")
+    access_keys: Mapped[list["VpnAccessKey"]] = relationship(back_populates="subscription")
+
+
+class VpnAccessKey(Base):
+    __tablename__ = "vpn_access_keys"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(ForeignKey("vpn_subscriptions.id", ondelete="CASCADE"), index=True)
+    worker_id: Mapped[int | None] = mapped_column(
+        ForeignKey("worker_nodes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    protocol: Mapped[str] = mapped_column(String(32), default="vless", server_default="vless")
+    public_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    external_uuid: Mapped[str | None] = mapped_column(String(128), unique=True, index=True, nullable=True)
+    config_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", server_default="active", index=True)
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+    )
+
+    subscription: Mapped[VpnSubscription] = relationship(back_populates="access_keys")
+    worker: Mapped[WorkerNode | None] = relationship(back_populates="vpn_access_keys")
+
+
+class VpnNodeEvent(Base):
+    __tablename__ = "vpn_node_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("worker_nodes.id", ondelete="CASCADE"), index=True)
+    level: Mapped[str] = mapped_column(String(16), default="info", server_default="info")
+    event_type: Mapped[str] = mapped_column(String(64), index=True)
+    message: Mapped[str] = mapped_column(Text)
+    details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+
+    worker: Mapped[WorkerNode] = relationship(back_populates="vpn_events")
+
+
+class VpnTelegramUpdate(Base):
+    __tablename__ = "vpn_telegram_updates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    update_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("vpn_customers.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+    )
+
+    customer: Mapped[VpnCustomer | None] = relationship(back_populates="telegram_updates")
 
 
 class DropDomain(Base):

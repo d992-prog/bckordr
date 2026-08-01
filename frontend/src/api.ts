@@ -385,6 +385,15 @@ export type WorkerNode = {
   runtime_mode: string;
   registration_concurrency_multiplier: number;
   registration_max_concurrency: number;
+  vpn_role: string;
+  vpn_enabled: boolean;
+  vpn_runtime_status: string;
+  vpn_public_host: string | null;
+  vpn_panel_url: string | null;
+  vpn_panel_username: string | null;
+  vpn_inbound_id: number | null;
+  vpn_last_checked_at: string | null;
+  vpn_last_error: string | null;
   current_domain_count: number;
   ssh_host: string | null;
   ssh_port: number;
@@ -434,6 +443,83 @@ export type WorkerMaintenanceBulkResponse = {
   skipped_count: number;
   jobs: WorkerMaintenanceJob[];
   skipped_worker_ids: number[];
+};
+
+export type VpnOverview = {
+  enabled_nodes: number;
+  ready_nodes: number;
+  active_customers: number;
+  active_subscriptions: number;
+  active_keys: number;
+};
+
+export type VpnPlan = {
+  id: number;
+  slug: string;
+  name: string;
+  description: string | null;
+  duration_days: number | null;
+  traffic_limit_gb: number | null;
+  max_devices: number;
+  price_amount: number;
+  currency: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VpnCustomer = {
+  id: number;
+  telegram_user_id: string | null;
+  telegram_username: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  status: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VpnSubscription = {
+  id: number;
+  customer_id: number;
+  plan_id: number | null;
+  status: string;
+  starts_at: string | null;
+  expires_at: string | null;
+  traffic_limit_gb: number | null;
+  max_devices: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VpnAccessKey = {
+  id: number;
+  subscription_id: number;
+  worker_id: number | null;
+  protocol: string;
+  public_name: string | null;
+  external_uuid: string | null;
+  config_uri: string | null;
+  status: string;
+  issued_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_synced_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type VpnNodeEvent = {
+  id: number;
+  worker_id: number;
+  level: string;
+  event_type: string;
+  message: string;
+  details: Record<string, unknown> | null;
+  created_at: string;
 };
 
 export type RegistrarAccount = {
@@ -843,6 +929,52 @@ export const api = {
   updateAllWorkerServers: () =>
     request<WorkerMaintenanceBulkResponse>("/control/workers/maintenance/update-all", { method: "POST" }),
   deleteWorker: (id: number) => request<{ detail: string }>(`/control/workers/${id}`, { method: "DELETE" }),
+
+  getVpnOverview: () => request<VpnOverview>("/control/vpn/overview"),
+  getVpnPlans: () => request<VpnPlan[]>("/control/vpn/plans"),
+  createVpnPlan: (payload: Record<string, unknown>) =>
+    request<VpnPlan>("/control/vpn/plans", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateVpnPlan: (id: number, payload: Record<string, unknown>) =>
+    request<VpnPlan>(`/control/vpn/plans/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteVpnPlan: (id: number) => request<{ detail: string }>(`/control/vpn/plans/${id}`, { method: "DELETE" }),
+  getVpnCustomers: () => request<VpnCustomer[]>("/control/vpn/customers"),
+  createVpnCustomer: (payload: Record<string, unknown>) =>
+    request<VpnCustomer>("/control/vpn/customers", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateVpnCustomer: (id: number, payload: Record<string, unknown>) =>
+    request<VpnCustomer>(`/control/vpn/customers/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  getVpnSubscriptions: () => request<VpnSubscription[]>("/control/vpn/subscriptions"),
+  createVpnSubscription: (payload: Record<string, unknown>) =>
+    request<VpnSubscription>("/control/vpn/subscriptions", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateVpnSubscription: (id: number, payload: Record<string, unknown>) =>
+    request<VpnSubscription>(`/control/vpn/subscriptions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  getVpnAccessKeys: () => request<VpnAccessKey[]>("/control/vpn/access-keys"),
+  createVpnAccessKey: (payload: Record<string, unknown>) =>
+    request<VpnAccessKey>("/control/vpn/access-keys", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getVpnNodeEvents: (workerId?: number) =>
+    request<VpnNodeEvent[]>(
+      `/control/vpn/node-events${workerId ? `?worker_id=${encodeURIComponent(String(workerId))}` : ""}`,
+    ),
 
   getRegistrarAccounts: () => request<RegistrarAccount[]>("/control/registrar-accounts"),
   createRegistrarAccount: (payload: Record<string, unknown>) =>

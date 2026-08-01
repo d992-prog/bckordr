@@ -34,6 +34,16 @@ MIGRATIONS = (
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_last_check_status VARCHAR(32) NULL",
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_last_check_message TEXT NULL",
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_last_checked_at TIMESTAMPTZ NULL",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_role VARCHAR(32) DEFAULT 'none'",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_enabled BOOLEAN DEFAULT false",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_runtime_status VARCHAR(32) DEFAULT 'not_installed'",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_public_host VARCHAR(255) NULL",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_panel_url VARCHAR(255) NULL",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_panel_username VARCHAR(128) NULL",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_panel_password TEXT NULL",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_inbound_id INTEGER NULL",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_last_checked_at TIMESTAMPTZ NULL",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_last_error TEXT NULL",
     "ALTER TABLE worker_tasks ADD COLUMN IF NOT EXISTS response_status_counts JSONB NULL",
     "ALTER TABLE worker_tasks ADD COLUMN IF NOT EXISTS response_error_counts JSONB NULL",
     "ALTER TABLE worker_tasks ADD COLUMN IF NOT EXISTS response_samples JSONB NULL",
@@ -76,6 +86,107 @@ MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_worker_maintenance_jobs_worker_id ON worker_maintenance_jobs(worker_id)",
     "CREATE INDEX IF NOT EXISTS ix_worker_maintenance_jobs_status ON worker_maintenance_jobs(status)",
     "CREATE INDEX IF NOT EXISTS ix_worker_maintenance_jobs_action ON worker_maintenance_jobs(action)",
+    """
+    CREATE TABLE IF NOT EXISTS vpn_plans (
+        id SERIAL PRIMARY KEY,
+        slug VARCHAR(64) UNIQUE NOT NULL,
+        name VARCHAR(128) UNIQUE NOT NULL,
+        description TEXT NULL,
+        duration_days INTEGER NULL,
+        traffic_limit_gb INTEGER NULL,
+        max_devices INTEGER NOT NULL DEFAULT 1,
+        price_amount DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+        currency VARCHAR(8) NOT NULL DEFAULT 'RUB',
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_vpn_plans_slug ON vpn_plans(slug)",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_plans_name ON vpn_plans(name)",
+    """
+    CREATE TABLE IF NOT EXISTS vpn_customers (
+        id SERIAL PRIMARY KEY,
+        telegram_user_id VARCHAR(64) UNIQUE NULL,
+        telegram_username VARCHAR(128) NULL,
+        first_name VARCHAR(128) NULL,
+        last_name VARCHAR(128) NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'active',
+        notes TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_vpn_customers_telegram_user_id ON vpn_customers(telegram_user_id)",
+    """
+    CREATE TABLE IF NOT EXISTS vpn_subscriptions (
+        id SERIAL PRIMARY KEY,
+        customer_id INTEGER NOT NULL REFERENCES vpn_customers(id) ON DELETE CASCADE,
+        plan_id INTEGER NULL REFERENCES vpn_plans(id) ON DELETE SET NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'active',
+        starts_at TIMESTAMPTZ NULL,
+        expires_at TIMESTAMPTZ NULL,
+        traffic_limit_gb INTEGER NULL,
+        max_devices INTEGER NOT NULL DEFAULT 1,
+        notes TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_vpn_subscriptions_customer_id ON vpn_subscriptions(customer_id)",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_subscriptions_plan_id ON vpn_subscriptions(plan_id)",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_subscriptions_status ON vpn_subscriptions(status)",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_subscriptions_expires_at ON vpn_subscriptions(expires_at)",
+    """
+    CREATE TABLE IF NOT EXISTS vpn_access_keys (
+        id SERIAL PRIMARY KEY,
+        subscription_id INTEGER NOT NULL REFERENCES vpn_subscriptions(id) ON DELETE CASCADE,
+        worker_id INTEGER NULL REFERENCES worker_nodes(id) ON DELETE SET NULL,
+        protocol VARCHAR(32) NOT NULL DEFAULT 'vless',
+        public_name VARCHAR(128) NULL,
+        external_uuid VARCHAR(128) UNIQUE NULL,
+        config_uri TEXT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'active',
+        issued_at TIMESTAMPTZ NULL,
+        expires_at TIMESTAMPTZ NULL,
+        revoked_at TIMESTAMPTZ NULL,
+        last_synced_at TIMESTAMPTZ NULL,
+        last_error TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_subscription_id ON vpn_access_keys(subscription_id)",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_worker_id ON vpn_access_keys(worker_id)",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_external_uuid ON vpn_access_keys(external_uuid)",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_status ON vpn_access_keys(status)",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_expires_at ON vpn_access_keys(expires_at)",
+    """
+    CREATE TABLE IF NOT EXISTS vpn_node_events (
+        id SERIAL PRIMARY KEY,
+        worker_id INTEGER NOT NULL REFERENCES worker_nodes(id) ON DELETE CASCADE,
+        level VARCHAR(16) NOT NULL DEFAULT 'info',
+        event_type VARCHAR(64) NOT NULL,
+        message TEXT NOT NULL,
+        details JSONB NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_vpn_node_events_worker_id ON vpn_node_events(worker_id)",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_node_events_event_type ON vpn_node_events(event_type)",
+    """
+    CREATE TABLE IF NOT EXISTS vpn_telegram_updates (
+        id SERIAL PRIMARY KEY,
+        update_id VARCHAR(64) UNIQUE NOT NULL,
+        customer_id INTEGER NULL REFERENCES vpn_customers(id) ON DELETE SET NULL,
+        payload JSONB NULL,
+        processed_at TIMESTAMPTZ NULL,
+        error_message TEXT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_vpn_telegram_updates_update_id ON vpn_telegram_updates(update_id)",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_telegram_updates_customer_id ON vpn_telegram_updates(customer_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_domains_owner_domain ON domains(owner_id, domain)",
     "ALTER TABLE proxies ADD COLUMN IF NOT EXISTS owner_id INTEGER NULL REFERENCES users(id) ON DELETE CASCADE",
     "ALTER TABLE logs ADD COLUMN IF NOT EXISTS owner_id INTEGER NULL REFERENCES users(id) ON DELETE CASCADE",

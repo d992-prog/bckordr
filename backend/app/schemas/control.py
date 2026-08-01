@@ -417,10 +417,20 @@ class WorkerNodeBase(BaseModel):
     ssh_last_check_status: str | None = Field(default=None, max_length=32)
     ssh_last_check_message: str | None = None
     ssh_last_checked_at: datetime | None = None
+    vpn_role: str = "none"
+    vpn_enabled: bool = False
+    vpn_runtime_status: str = "not_installed"
+    vpn_public_host: str | None = Field(default=None, max_length=255)
+    vpn_panel_url: str | None = Field(default=None, max_length=255)
+    vpn_panel_username: str | None = Field(default=None, max_length=128)
+    vpn_inbound_id: int | None = Field(default=None, ge=1)
+    vpn_last_checked_at: datetime | None = None
+    vpn_last_error: str | None = None
 
 
 class WorkerNodeCreateRequest(WorkerNodeBase):
     ssh_password: str | None = Field(default=None, max_length=4096)
+    vpn_panel_password: str | None = Field(default=None, max_length=4096)
 
 
 class WorkerNodeUpdateRequest(BaseModel):
@@ -453,6 +463,16 @@ class WorkerNodeUpdateRequest(BaseModel):
     ssh_last_check_status: str | None = Field(default=None, max_length=32)
     ssh_last_check_message: str | None = None
     ssh_last_checked_at: datetime | None = None
+    vpn_role: str | None = None
+    vpn_enabled: bool | None = None
+    vpn_runtime_status: str | None = None
+    vpn_public_host: str | None = Field(default=None, max_length=255)
+    vpn_panel_url: str | None = Field(default=None, max_length=255)
+    vpn_panel_username: str | None = Field(default=None, max_length=128)
+    vpn_panel_password: str | None = Field(default=None, max_length=4096)
+    vpn_inbound_id: int | None = Field(default=None, ge=1)
+    vpn_last_checked_at: datetime | None = None
+    vpn_last_error: str | None = None
 
 
 class WorkerNodeResponse(WorkerNodeBase):
@@ -502,6 +522,156 @@ class WorkerMaintenanceBulkResponse(BaseModel):
     skipped_count: int
     jobs: list[WorkerMaintenanceJobResponse]
     skipped_worker_ids: list[int]
+
+
+class VpnPlanBase(BaseModel):
+    slug: str = Field(min_length=2, max_length=64)
+    name: str = Field(min_length=2, max_length=128)
+    description: str | None = None
+    duration_days: int | None = Field(default=None, ge=1, le=3650)
+    traffic_limit_gb: int | None = Field(default=None, ge=1)
+    max_devices: int = Field(default=1, ge=1, le=100)
+    price_amount: float = Field(default=0.0, ge=0.0)
+    currency: str = Field(default="RUB", min_length=3, max_length=8)
+    is_active: bool = True
+
+
+class VpnPlanCreateRequest(VpnPlanBase):
+    pass
+
+
+class VpnPlanUpdateRequest(BaseModel):
+    slug: str | None = Field(default=None, min_length=2, max_length=64)
+    name: str | None = Field(default=None, min_length=2, max_length=128)
+    description: str | None = None
+    duration_days: int | None = Field(default=None, ge=1, le=3650)
+    traffic_limit_gb: int | None = Field(default=None, ge=1)
+    max_devices: int | None = Field(default=None, ge=1, le=100)
+    price_amount: float | None = Field(default=None, ge=0.0)
+    currency: str | None = Field(default=None, min_length=3, max_length=8)
+    is_active: bool | None = None
+
+
+class VpnPlanResponse(VpnPlanBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VpnCustomerBase(BaseModel):
+    telegram_user_id: str | None = Field(default=None, max_length=64)
+    telegram_username: str | None = Field(default=None, max_length=128)
+    first_name: str | None = Field(default=None, max_length=128)
+    last_name: str | None = Field(default=None, max_length=128)
+    status: str = "active"
+    notes: str | None = None
+
+
+class VpnCustomerCreateRequest(VpnCustomerBase):
+    pass
+
+
+class VpnCustomerUpdateRequest(BaseModel):
+    telegram_user_id: str | None = Field(default=None, max_length=64)
+    telegram_username: str | None = Field(default=None, max_length=128)
+    first_name: str | None = Field(default=None, max_length=128)
+    last_name: str | None = Field(default=None, max_length=128)
+    status: str | None = None
+    notes: str | None = None
+
+
+class VpnCustomerResponse(VpnCustomerBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VpnSubscriptionCreateRequest(BaseModel):
+    customer_id: int
+    plan_id: int | None = None
+    status: str = "active"
+    starts_at: datetime | None = None
+    expires_at: datetime | None = None
+    traffic_limit_gb: int | None = Field(default=None, ge=1)
+    max_devices: int = Field(default=1, ge=1, le=100)
+    notes: str | None = None
+
+
+class VpnSubscriptionUpdateRequest(BaseModel):
+    plan_id: int | None = None
+    status: str | None = None
+    starts_at: datetime | None = None
+    expires_at: datetime | None = None
+    traffic_limit_gb: int | None = Field(default=None, ge=1)
+    max_devices: int | None = Field(default=None, ge=1, le=100)
+    notes: str | None = None
+
+
+class VpnSubscriptionResponse(BaseModel):
+    id: int
+    customer_id: int
+    plan_id: int | None
+    status: str
+    starts_at: datetime | None
+    expires_at: datetime | None
+    traffic_limit_gb: int | None
+    max_devices: int
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VpnAccessKeyCreateRequest(BaseModel):
+    subscription_id: int
+    worker_id: int | None = None
+    protocol: str = Field(default="vless", min_length=2, max_length=32)
+    public_name: str | None = Field(default=None, max_length=128)
+
+
+class VpnAccessKeyResponse(BaseModel):
+    id: int
+    subscription_id: int
+    worker_id: int | None
+    protocol: str
+    public_name: str | None
+    external_uuid: str | None
+    config_uri: str | None
+    status: str
+    issued_at: datetime | None
+    expires_at: datetime | None
+    revoked_at: datetime | None
+    last_synced_at: datetime | None
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VpnNodeEventResponse(BaseModel):
+    id: int
+    worker_id: int
+    level: str
+    event_type: str
+    message: str
+    details: dict | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VpnOverviewResponse(BaseModel):
+    enabled_nodes: int
+    ready_nodes: int
+    active_customers: int
+    active_subscriptions: int
+    active_keys: int
 
 
 class DiscoveryRuntimeSettingsResponse(BaseModel):
