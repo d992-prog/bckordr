@@ -25,6 +25,7 @@ VPN_AUTOCONFIG_KEYS = {
     "xui_active",
     "db_diagnostic",
     "inbound_candidates",
+    "inbound_rows",
     "autoconfig_db_error",
 }
 
@@ -203,6 +204,36 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "def detect_inbound_id(conn, tables):",
                 "    candidate_tables = []",
                 "    table_notes = []",
+                "    row_notes = []",
+                "",
+                "    def summarize_rows(table, columns):",
+                "        quoted_table = '\"' + table.replace('\"', '\"\"') + '\"'",
+                "        summary = []",
+                "        try:",
+                "            total = conn.execute(f'select count(*) from {quoted_table}').fetchone()[0]",
+                "            summary.append(f'rows={total}')",
+                "        except Exception as exc:",
+                "            return f'rows_error={exc}'",
+                "        for enabled_column in ('enable', 'enabled'):",
+                "            if enabled_column in columns:",
+                "                quoted_enabled = '\"' + enabled_column.replace('\"', '\"\"') + '\"'",
+                "                try:",
+                "                    enabled = conn.execute(f'select count(*) from {quoted_table} where coalesce({quoted_enabled}, 1) != 0').fetchone()[0]",
+                "                    summary.append(f'enabled={enabled}')",
+                "                except Exception:",
+                "                    pass",
+                "                break",
+                "        id_column = next((column for column in ('id', 'inbound_id', 'inboundId') if column in columns), None)",
+                "        if id_column:",
+                "            quoted_id = '\"' + id_column.replace('\"', '\"\"') + '\"'",
+                "            try:",
+                "                ids = [str(row[0]) for row in conn.execute(f'select {quoted_id} from {quoted_table} order by {quoted_id} limit 5').fetchall()]",
+                "                if ids:",
+                "                    summary.append('ids=' + ','.join(ids))",
+                "            except Exception:",
+                "                pass",
+                "        return ','.join(summary)",
+                "",
                 "    for name in sorted(tables):",
                 "        lowered = name.lower()",
                 "        quoted_table = '\"' + name.replace('\"', '\"\"') + '\"'",
@@ -222,6 +253,8 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "        if inbound_score >= 3 and any(column in lowered_columns for column in ('id', 'inbound_id', 'inboundid')):",
                 "            candidate_tables.append((inbound_score, name, columns))",
                 "    candidate_tables.sort(key=lambda item: (-item[0], item[1]))",
+                "    for _, table, columns in candidate_tables:",
+                "        row_notes.append(f'{table}:{summarize_rows(table, columns)}')",
                 "    for _, table, columns in candidate_tables:",
                 "        quoted_table = '\"' + table.replace('\"', '\"\"') + '\"'",
                 "        for column in ('id', 'inbound_id', 'inboundId'):",
@@ -243,14 +276,15 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "                continue",
                 "            table_notes.append(f'{table}.{column}')",
                 "            if row and str(row[0]).strip().isdigit():",
-                "                return str(row[0]).strip(), ','.join(table_notes[:20])",
-                "    return '', ';'.join(table + ':' + ','.join(columns[:8]) for _, table, columns in candidate_tables[:8])",
+                "                return str(row[0]).strip(), ','.join(table_notes[:20]), ';'.join(row_notes[:20])",
+                "    return '', ';'.join(table + ':' + ','.join(columns[:8]) for _, table, columns in candidate_tables[:8]), ';'.join(row_notes[:20])",
                 "",
                 "settings = {}",
                 "username = ''",
                 "inbound_id = existing_inbound_id",
                 "db_diagnostics = []",
                 "inbound_candidates = ''",
+                "inbound_rows = ''",
                 "for path in db_paths:",
                 "    if not os.path.exists(path):",
                 "        continue",
@@ -275,8 +309,9 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "                            username = str(users[0][column])",
                 "                            break",
                 "            if not inbound_id:",
-                "                detected_inbound_id, inbound_candidates = detect_inbound_id(conn, tables)",
+                "                detected_inbound_id, inbound_candidates, detected_inbound_rows = detect_inbound_id(conn, tables)",
                 "                inbound_id = detected_inbound_id or inbound_id",
+                "                inbound_rows = detected_inbound_rows or inbound_rows",
                 "        finally:",
                 "            conn.close()",
                 "    except Exception as exc:",
@@ -285,6 +320,7 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "        break",
                 "emit('DB_DIAGNOSTIC', ' | '.join(db_diagnostics))",
                 "emit('INBOUND_CANDIDATES', inbound_candidates)",
+                "emit('INBOUND_ROWS', inbound_rows)",
                 "",
                 "port = ''",
                 "for key in ('webPort', 'web_port', 'port', 'panel_port'):",
@@ -359,12 +395,19 @@ def apply_vpn_autoconfig_metadata(worker: WorkerNode, metadata: Mapping[str, str
     diagnostic_bits = []
     if metadata.get("inbound_candidates"):
         diagnostic_bits.append(f"inbound candidates: {metadata['inbound_candidates'][:500]}")
+    if metadata.get("inbound_rows"):
+        diagnostic_bits.append(f"inbound rows: {metadata['inbound_rows'][:500]}")
     if metadata.get("db_diagnostic"):
         diagnostic_bits.append(f"db: {metadata['db_diagnostic'][:500]}")
     if metadata.get("autoconfig_db_error"):
         diagnostic_bits.append(f"db error: {metadata['autoconfig_db_error'][:500]}")
     suffix = f"; {'; '.join(diagnostic_bits)}" if diagnostic_bits else ""
-    worker.vpn_last_error = f"VPN auto-config did not detect {', '.join(missing_parts) or 'required settings'}{suffix}"
+    missing_text = ", ".join(missing_parts) or "required settings"
+    worker.vpn_last_error = (
+        f"3x-UI установлен, но auto-config не нашел {missing_text}. "
+        "Если inbound ID отсутствует, в 3x-UI еще не создан или выключен VPN inbound; "
+        f"создай inbound в панели 3x-UI и снова нажми Автонастроить{suffix}"
+    )
 
 
 def build_worker_maintenance_commands(

@@ -16,6 +16,7 @@ def test_build_vpn_autoconfig_commands_include_detection_markers():
     assert "DROPCATCH_VPN_PUBLIC_HOST" in combined
     assert "DB_DIAGNOSTIC" in combined
     assert "INBOUND_CANDIDATES" in combined
+    assert "INBOUND_ROWS" in combined
     assert "INBOUND_ID" in combined
 
 
@@ -31,6 +32,7 @@ def test_parse_vpn_autoconfig_output_reads_safe_fields_only():
                 "DROPCATCH_VPN_XUI_ACTIVE=active",
                 "DROPCATCH_VPN_DB_DIAGNOSTIC=/etc/x-ui/x-ui.db: tables=settings,inbounds",
                 "DROPCATCH_VPN_INBOUND_CANDIDATES=inbounds.id",
+                "DROPCATCH_VPN_INBOUND_ROWS=inbounds:rows=1,enabled=1,ids=7",
             ]
         )
     )
@@ -43,6 +45,7 @@ def test_parse_vpn_autoconfig_output_reads_safe_fields_only():
         "xui_active": "active",
         "db_diagnostic": "/etc/x-ui/x-ui.db: tables=settings,inbounds",
         "inbound_candidates": "inbounds.id",
+        "inbound_rows": "inbounds:rows=1,enabled=1,ids=7",
     }
 
 
@@ -83,10 +86,12 @@ def test_apply_vpn_autoconfig_metadata_explains_missing_inbound():
             "panel_url": "http://2.27.20.255:2053/panel/",
             "xui_active": "active",
             "db_diagnostic": "/etc/x-ui/x-ui.db: tables=settings,users",
+            "inbound_rows": "inbounds:rows=0,enabled=0",
         },
     )
 
     assert worker.vpn_runtime_status == "needs_config"
     assert worker.vpn_panel_url == "http://2.27.20.255:2053/panel/"
     assert "inbound ID" in (worker.vpn_last_error or "")
+    assert "rows=0" in (worker.vpn_last_error or "")
     assert "settings,users" in (worker.vpn_last_error or "")
