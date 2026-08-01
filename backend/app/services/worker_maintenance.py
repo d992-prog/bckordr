@@ -4,9 +4,17 @@ import shlex
 
 from app.core.config import get_settings
 from app.db.base import utcnow
-from app.db.models import WorkerMaintenanceJob, WorkerNode
+from app.db.models import VpnNodeEvent, WorkerMaintenanceJob, WorkerNode
 from app.db.session import AsyncSessionLocal
 from app.services.app_settings import DiscoveryRuntimeSettings, get_discovery_runtime_settings
+
+VPN_MAINTENANCE_ACTIONS = {"vpn_check", "vpn_install", "vpn_update", "vpn_restart"}
+VPN_RUNNING_STATUS_BY_ACTION = {
+    "vpn_check": "checking",
+    "vpn_install": "installing",
+    "vpn_update": "updating",
+    "vpn_restart": "restarting",
+}
 
 
 def _shell_quote(value: str | int | float | bool) -> str:
@@ -119,6 +127,27 @@ def _build_worker_service_command() -> str:
     return _build_printf_command("/etc/systemd/system/domain-drop-worker.service", lines)
 
 
+def _bash(command: str) -> str:
+    return f"bash -lc {_shell_quote(command)}"
+
+
+def _build_vpn_status_command() -> str:
+    return _bash(
+        "systemctl is-active x-ui.service "
+        "|| systemctl is-active x-ui "
+        "|| systemctl is-active 3x-ui.service "
+        "|| true"
+    )
+
+
+def _build_vpn_ready_command() -> str:
+    return _bash(
+        "systemctl is-active x-ui.service "
+        "|| systemctl is-active x-ui "
+        "|| systemctl is-active 3x-ui.service"
+    )
+
+
 def build_worker_maintenance_commands(
     action: str,
     *,
@@ -169,6 +198,45 @@ def build_worker_maintenance_commands(
             "systemctl restart domain-drop-worker.service",
             "systemctl is-active domain-drop-worker.service",
         ]
+    if action == "vpn_check":
+        return [
+            "hostname",
+            "whoami",
+            "command -v x-ui || true",
+            _build_vpn_status_command(),
+            _build_vpn_ready_command(),
+            _bash("systemctl --no-pager --full status x-ui.service || systemctl --no-pager --full status x-ui || true"),
+            _bash("ss -lntp | grep -E ':(443|8443|2053|54321|62789)\\b' || true"),
+            "test -d /usr/local/x-ui && echo x-ui-dir-present || true",
+        ]
+    if action == "vpn_install":
+        return [
+            "apt-get update",
+            "apt-get install -y curl socat jq tar",
+            _bash(
+                "set -e; "
+                "if command -v x-ui >/dev/null 2>&1 || systemctl list-unit-files | grep -Eq '^x-ui(\\.service)?'; "
+                "then echo '3x-ui already installed'; "
+                "else curl -fsSL https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh -o /tmp/3x-ui-install.sh "
+                "&& chmod +x /tmp/3x-ui-install.sh "
+                "&& yes '' | timeout 600 bash /tmp/3x-ui-install.sh; "
+                "fi"
+            ),
+            "systemctl enable --now x-ui.service || systemctl enable --now x-ui || systemctl enable --now 3x-ui.service",
+            _build_vpn_ready_command(),
+        ]
+    if action == "vpn_update":
+        return [
+            "apt-get install -y curl || true",
+            _bash("if command -v x-ui >/dev/null 2>&1; then x-ui update; else echo 'x-ui command not found'; fi"),
+            "systemctl restart x-ui.service || systemctl restart x-ui || systemctl restart 3x-ui.service",
+            _build_vpn_ready_command(),
+        ]
+    if action == "vpn_restart":
+        return [
+            "systemctl restart x-ui.service || systemctl restart x-ui || systemctl restart 3x-ui.service",
+            _build_vpn_ready_command(),
+        ]
     raise ValueError(f"Unsupported worker maintenance action: {action}")
 
 
@@ -188,6 +256,10 @@ async def run_worker_maintenance_job(job_id: int) -> None:
         job.status = "running"
         job.started_at = utcnow()
         job.updated_at = utcnow()
+        if job.action in VPN_MAINTENANCE_ACTIONS:
+            worker.vpn_runtime_status = VPN_RUNNING_STATUS_BY_ACTION[job.action]
+            worker.vpn_last_error = None
+            worker.vpn_last_checked_at = utcnow()
         await session.commit()
 
         try:
@@ -203,9 +275,23 @@ async def run_worker_maintenance_job(job_id: int) -> None:
             job.error_message = str(exc)
             job.finished_at = utcnow()
             job.updated_at = utcnow()
-            worker.ssh_last_check_status = "failed"
-            worker.ssh_last_check_message = str(exc)
-            worker.ssh_last_checked_at = utcnow()
+            if job.action in VPN_MAINTENANCE_ACTIONS:
+                worker.vpn_runtime_status = "error"
+                worker.vpn_last_error = str(exc)
+                worker.vpn_last_checked_at = utcnow()
+                session.add(
+                    VpnNodeEvent(
+                        worker_id=worker.id,
+                        level="error",
+                        event_type=job.action,
+                        message=f"VPN maintenance failed: {str(exc)[:500]}",
+                        details={"job_id": job.id},
+                    )
+                )
+            else:
+                worker.ssh_last_check_status = "failed"
+                worker.ssh_last_check_message = str(exc)
+                worker.ssh_last_checked_at = utcnow()
             await session.commit()
             return
 
@@ -217,6 +303,19 @@ async def run_worker_maintenance_job(job_id: int) -> None:
             worker.ssh_last_check_status = "ok"
             worker.ssh_last_check_message = "SSH check succeeded"
             worker.ssh_last_checked_at = utcnow()
+        if job.action in VPN_MAINTENANCE_ACTIONS:
+            worker.vpn_runtime_status = "ready"
+            worker.vpn_last_error = None
+            worker.vpn_last_checked_at = utcnow()
+            session.add(
+                VpnNodeEvent(
+                    worker_id=worker.id,
+                    level="info",
+                    event_type=job.action,
+                    message="VPN maintenance succeeded",
+                    details={"job_id": job.id},
+                )
+            )
         await session.commit()
 
 

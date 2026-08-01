@@ -337,6 +337,18 @@ def test_worker_update_commands_disable_hot_window_createstatus_polling():
     assert "systemctl restart domain-drop-worker.service" in commands
 
 
+def test_worker_vpn_commands_manage_3x_ui():
+    check_commands = build_worker_maintenance_commands("vpn_check")
+    install_commands = build_worker_maintenance_commands("vpn_install")
+    update_commands = build_worker_maintenance_commands("vpn_update")
+    restart_commands = build_worker_maintenance_commands("vpn_restart")
+
+    assert "x-ui" in "\n".join(check_commands)
+    assert "mhsanaei/3x-ui" in "\n".join(install_commands)
+    assert "x-ui update" in "\n".join(update_commands)
+    assert "systemctl restart x-ui.service" in "\n".join(restart_commands)
+
+
 @pytest.mark.asyncio
 async def test_worker_install_job_can_be_started_once_from_control_panel(monkeypatch: pytest.MonkeyPatch):
     engine = create_async_engine(
@@ -492,5 +504,155 @@ async def test_worker_bulk_update_starts_only_configured_idle_workers(monkeypatc
     assert payload["skipped_count"] == 2
     assert payload["jobs"][0]["worker_id"] == ready_response.json()["id"]
     assert payload["jobs"][0]["action"] == "update"
+    assert started_jobs == [payload["jobs"][0]["id"]]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_vpn_install_requires_vpn_node(monkeypatch: pytest.MonkeyPatch):
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async def fake_sync(session, settings):
+        del session, settings
+        return False
+
+    async def fake_run_job(job_id: int) -> None:
+        del job_id
+
+    monkeypatch.setattr("app.api.routes.control.sync_worker_runtime_allowlist", fake_sync)
+    monkeypatch.setattr("app.api.routes.control.run_worker_maintenance_job", fake_run_job)
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        create_response = await client.post(
+            "/control/workers",
+            json={
+                "name": "drop-only-worker",
+                "registrar_slug": "gandi",
+                "ip_address": "2.27.20.255",
+                "ssh_host": "2.27.20.255",
+                "ssh_username": "root",
+                "ssh_password": "temporary-root-password",
+                "max_rps": 16,
+                "target_rps": 16,
+            },
+        )
+        worker_id = create_response.json()["id"]
+
+        response = await client.post(f"/control/workers/{worker_id}/maintenance/vpn-install")
+
+    assert response.status_code == 400
+    assert "VPN" in response.json()["detail"]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_bulk_vpn_update_starts_only_configured_vpn_nodes(monkeypatch: pytest.MonkeyPatch):
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async def fake_sync(session, settings):
+        del session, settings
+        return False
+
+    started_jobs: list[int] = []
+
+    async def fake_run_job(job_id: int) -> None:
+        started_jobs.append(job_id)
+
+    monkeypatch.setattr("app.api.routes.control.sync_worker_runtime_allowlist", fake_sync)
+    monkeypatch.setattr("app.api.routes.control.run_worker_maintenance_job", fake_run_job)
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        vpn_response = await client.post(
+            "/control/workers",
+            json={
+                "name": "vpn-ready-worker",
+                "registrar_slug": "gandi",
+                "ip_address": "2.27.20.1",
+                "ssh_host": "2.27.20.1",
+                "ssh_username": "root",
+                "ssh_password": "pw",
+                "max_rps": 16,
+                "target_rps": 16,
+                "vpn_role": "vpn_node",
+                "vpn_enabled": True,
+            },
+        )
+        await client.post(
+            "/control/workers",
+            json={
+                "name": "drop-only-worker",
+                "registrar_slug": "gandi",
+                "ip_address": "2.27.20.2",
+                "ssh_host": "2.27.20.2",
+                "ssh_username": "root",
+                "ssh_password": "pw",
+                "max_rps": 16,
+                "target_rps": 16,
+            },
+        )
+        await client.post(
+            "/control/workers",
+            json={
+                "name": "vpn-without-ssh",
+                "registrar_slug": "gandi",
+                "ip_address": "2.27.20.3",
+                "max_rps": 16,
+                "target_rps": 16,
+                "vpn_role": "vpn_node",
+                "vpn_enabled": True,
+            },
+        )
+
+        bulk_response = await client.post("/control/workers/maintenance/vpn-update-all")
+
+    assert bulk_response.status_code == 202
+    payload = bulk_response.json()
+    assert payload["action"] == "vpn_update"
+    assert payload["started_count"] == 1
+    assert payload["skipped_count"] == 1
+    assert payload["jobs"][0]["worker_id"] == vpn_response.json()["id"]
+    assert payload["jobs"][0]["action"] == "vpn_update"
     assert started_jobs == [payload["jobs"][0]["id"]]
     await engine.dispose()

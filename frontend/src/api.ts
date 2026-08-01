@@ -926,8 +926,18 @@ export const api = {
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/install`, { method: "POST" }),
   updateWorkerServer: (id: number) =>
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/update`, { method: "POST" }),
+  checkWorkerVpn: (id: number) =>
+    request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-check`, { method: "POST" }),
+  installWorkerVpn: (id: number) =>
+    request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-install`, { method: "POST" }),
+  updateWorkerVpn: (id: number) =>
+    request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-update`, { method: "POST" }),
+  restartWorkerVpn: (id: number) =>
+    request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-restart`, { method: "POST" }),
   updateAllWorkerServers: () =>
     request<WorkerMaintenanceBulkResponse>("/control/workers/maintenance/update-all", { method: "POST" }),
+  updateAllVpnNodes: () =>
+    request<WorkerMaintenanceBulkResponse>("/control/workers/maintenance/vpn-update-all", { method: "POST" }),
   deleteWorker: (id: number) => request<{ detail: string }>(`/control/workers/${id}`, { method: "DELETE" }),
 
   getVpnOverview: () => request<VpnOverview>("/control/vpn/overview"),

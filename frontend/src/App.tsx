@@ -583,6 +583,11 @@ function formatStatusLabel(value: string | null | undefined) {
     draft: "черновик",
     paused: "пауза",
     provisioning: "настройка",
+    checking: "проверка",
+    installing: "установка",
+    updating: "обновление",
+    restarting: "перезапуск",
+    not_installed: "не установлен",
     completed: "завершено",
     downloading: "скачивание",
     scanning: "сканирование",
@@ -596,6 +601,10 @@ function formatMaintenanceAction(value: string | null | undefined) {
     check: "проверка SSH",
     install: "установка",
     update: "обновление",
+    vpn_check: "проверка VPN",
+    vpn_install: "установка VPN",
+    vpn_update: "обновление VPN",
+    vpn_restart: "рестарт VPN",
   };
   return value ? labels[value] ?? value : "—";
 }
@@ -1121,6 +1130,18 @@ export default function App() {
     const items = new Map<number, WorkerMaintenanceJob>();
     for (const job of workerMaintenanceJobs) {
       if (job.action !== "install" || !["queued", "running", "succeeded"].includes(job.status)) {
+        continue;
+      }
+      if (!items.has(job.worker_id)) {
+        items.set(job.worker_id, job);
+      }
+    }
+    return items;
+  }, [workerMaintenanceJobs]);
+  const activeOrSucceededVpnInstallJobByWorker = useMemo(() => {
+    const items = new Map<number, WorkerMaintenanceJob>();
+    for (const job of workerMaintenanceJobs) {
+      if (job.action !== "vpn_install" || !["queued", "running", "succeeded"].includes(job.status)) {
         continue;
       }
       if (!items.has(job.worker_id)) {
@@ -2542,17 +2563,37 @@ export default function App() {
     }
   }
 
-  async function startWorkerMaintenance(worker: WorkerNode, action: "check" | "install" | "update") {
+  async function startWorkerMaintenance(
+    worker: WorkerNode,
+    action: "check" | "install" | "update" | "vpn_check" | "vpn_install" | "vpn_update" | "vpn_restart",
+  ) {
     try {
+      const actionTitle: Record<typeof action, string> = {
+        check: "SSH-проверка",
+        install: "Установка воркера",
+        update: "Обновление воркера",
+        vpn_check: "Проверка VPN",
+        vpn_install: "Установка VPN",
+        vpn_update: "Обновление VPN",
+        vpn_restart: "Рестарт VPN",
+      };
       const job = action === "check"
         ? await api.checkWorkerSsh(worker.id)
         : action === "install"
           ? await api.installWorkerServer(worker.id)
-          : await api.updateWorkerServer(worker.id);
+          : action === "update"
+            ? await api.updateWorkerServer(worker.id)
+            : action === "vpn_check"
+              ? await api.checkWorkerVpn(worker.id)
+              : action === "vpn_install"
+                ? await api.installWorkerVpn(worker.id)
+                : action === "vpn_update"
+                  ? await api.updateWorkerVpn(worker.id)
+                  : await api.restartWorkerVpn(worker.id);
       await loadAll();
       setToast({
         type: "success",
-        text: `${action === "check" ? "SSH-проверка" : action === "install" ? "Установка воркера" : "Обновление воркера"} запущено: job #${job.id}`,
+        text: `${actionTitle[action]} запущено: job #${job.id}`,
       });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обслуживания воркера" });
@@ -2569,6 +2610,19 @@ export default function App() {
       });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка массового обновления воркеров" });
+    }
+  }
+
+  async function startAllVpnUpdates() {
+    try {
+      const result = await api.updateAllVpnNodes();
+      await loadAll();
+      setToast({
+        type: "success",
+        text: `Обновление VPN-нод запущено: ${result.started_count}; пропущено: ${result.skipped_count}`,
+      });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка массового обновления VPN-нод" });
     }
   }
 
@@ -3979,6 +4033,7 @@ export default function App() {
             </div>
             <div className="actions">
               <button type="button" className="ghost" onClick={() => void startAllWorkerUpdates()}>Обновить все серверы</button>
+              <button type="button" className="ghost" onClick={() => void startAllVpnUpdates()}>Обновить VPN-ноды</button>
               <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
             </div>
           </div>
@@ -4029,9 +4084,14 @@ export default function App() {
           <div className="user-list">
             {visibleWorkers.map((worker) => {
               const installJob = activeOrSucceededInstallJobByWorker.get(worker.id);
+              const vpnInstallJob = activeOrSucceededVpnInstallJobByWorker.get(worker.id);
+              const isVpnNode = worker.vpn_enabled || worker.vpn_role !== "none";
               const workerInstalled = Boolean(worker.last_seen_at || worker.last_heartbeat_at || installJob?.status === "succeeded");
               const installInProgress = installJob?.status === "queued" || installJob?.status === "running";
               const installDisabled = !worker.ssh_access_configured || workerInstalled || installInProgress;
+              const vpnInstalled = worker.vpn_runtime_status === "ready" || vpnInstallJob?.status === "succeeded";
+              const vpnInstallInProgress = vpnInstallJob?.status === "queued" || vpnInstallJob?.status === "running";
+              const vpnInstallDisabled = !worker.ssh_access_configured || !isVpnNode || vpnInstalled || vpnInstallInProgress;
               const installState = workerInstalled
                 ? "уже установлен"
                 : installInProgress
@@ -4039,6 +4099,15 @@ export default function App() {
                   : worker.ssh_access_configured
                     ? "можно установить"
                     : "SSH не настроен";
+              const vpnInstallState = !isVpnNode
+                ? "не VPN-нода"
+                : vpnInstalled
+                  ? "VPN установлен"
+                  : vpnInstallInProgress
+                    ? `VPN ${formatStatusLabel(vpnInstallJob?.status)}`
+                    : worker.ssh_access_configured
+                      ? "можно установить VPN"
+                      : "SSH не настроен";
               return (
                 <article key={worker.id} className="user-card">
                 <div className="user-card-head">
@@ -4065,6 +4134,7 @@ export default function App() {
                   <div><span>VPN inbound</span><strong>{worker.vpn_inbound_id ?? "—"}</strong></div>
                   <div><span>SSH доступ</span><strong>{worker.ssh_access_configured ? `${worker.ssh_username ?? "root"}@${worker.ssh_host ?? worker.ip_address}:${worker.ssh_port}` : "не настроен"}</strong></div>
                   <div><span>Установка</span><strong>{installState}</strong></div>
+                  <div><span>Установка VPN</span><strong>{vpnInstallState}</strong></div>
                   <div><span>Последнее обслуживание</span><strong>{formatMaintenanceSummary(latestWorkerMaintenanceJobByWorker.get(worker.id))}</strong></div>
                   <div><span>Доменов на воркере</span><strong>{worker.current_domain_count}</strong></div>
                   <div><span>Закрепленный аккаунт</span><strong>{worker.assigned_registrar_account_id ? accountMap.get(worker.assigned_registrar_account_id)?.name ?? worker.assigned_registrar_account_id : "не закреплен"}</strong></div>
@@ -4076,6 +4146,14 @@ export default function App() {
                   <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "check")} disabled={!worker.ssh_access_configured}>Проверить SSH</button>
                   <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "install")} disabled={installDisabled}>Установить воркер</button>
                   <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "update")} disabled={!worker.ssh_access_configured}>Обновить сервер</button>
+                  {isVpnNode ? (
+                    <>
+                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить VPN</button>
+                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "VPN установлен" : vpnInstallInProgress ? "VPN устанавливается" : "Установить VPN"}</button>
+                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={!worker.ssh_access_configured}>Обновить VPN</button>
+                      <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={!worker.ssh_access_configured}>Рестарт VPN</button>
+                    </>
+                  ) : null}
                   <button type="button" className="ghost" onClick={() => startEditWorker(worker)}>Редактировать</button>
                   <button type="button" className="ghost" onClick={() => void toggleWorker(worker)}>{worker.is_enabled ? "Выключить" : "Включить"}</button>
                   <button type="button" className="danger" onClick={() => void deleteItem("worker", worker.id)}>Удалить</button>
@@ -4114,6 +4192,10 @@ export default function App() {
                 <option value="install">Установка</option>
                 <option value="update">Обновление</option>
                 <option value="check">Проверка SSH</option>
+                <option value="vpn_install">Установка VPN</option>
+                <option value="vpn_update">Обновление VPN</option>
+                <option value="vpn_restart">Рестарт VPN</option>
+                <option value="vpn_check">Проверка VPN</option>
               </select>
             </label>
             <label>
@@ -4317,7 +4399,16 @@ export default function App() {
         </section>
 
         <div className="card full-span">
-          <h2>VPN ноды</h2>
+          <div className="card-head">
+            <div>
+              <h2>VPN ноды</h2>
+              <p className="muted">Установка, проверка, обновление и рестарт 3x-UI выполняются через SSH данные воркера.</p>
+            </div>
+            <div className="actions">
+              <button type="button" className="ghost" onClick={() => void startAllVpnUpdates()}>Обновить VPN-ноды</button>
+              <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
+            </div>
+          </div>
           <div className="simple-table">
             <table>
               <thead>
@@ -4329,20 +4420,35 @@ export default function App() {
                   <th>3x-UI</th>
                   <th>Inbound</th>
                   <th>Последняя проверка</th>
+                  <th>Действия</th>
                 </tr>
               </thead>
               <tbody>
-                {vpnNodes.map((worker) => (
-                  <tr key={worker.id}>
-                    <td><strong>{worker.name}</strong><div className="row-hint">{worker.ip_address ?? "нет IP"} | {worker.region ?? "нет региона"}</div></td>
-                    <td>{formatVpnRole(worker.vpn_role)}</td>
-                    <td><span className={statusClass(worker.vpn_enabled ? worker.vpn_runtime_status : "disabled")}>{worker.vpn_enabled ? formatStatusLabel(worker.vpn_runtime_status) : "выключен"}</span>{worker.vpn_last_error ? <div className="row-hint">{worker.vpn_last_error}</div> : null}</td>
-                    <td>{worker.vpn_public_host ?? "—"}</td>
-                    <td>{worker.vpn_panel_url ?? "—"}</td>
-                    <td>{worker.vpn_inbound_id ?? "—"}</td>
-                    <td>{formatDateTime(worker.vpn_last_checked_at)}</td>
-                  </tr>
-                ))}
+                {vpnNodes.map((worker) => {
+                  const vpnInstallJob = activeOrSucceededVpnInstallJobByWorker.get(worker.id);
+                  const vpnInstalled = worker.vpn_runtime_status === "ready" || vpnInstallJob?.status === "succeeded";
+                  const vpnInstallInProgress = vpnInstallJob?.status === "queued" || vpnInstallJob?.status === "running";
+                  const vpnInstallDisabled = !worker.ssh_access_configured || vpnInstalled || vpnInstallInProgress;
+                  return (
+                    <tr key={worker.id}>
+                      <td><strong>{worker.name}</strong><div className="row-hint">{worker.ip_address ?? "нет IP"} | {worker.region ?? "нет региона"}</div></td>
+                      <td>{formatVpnRole(worker.vpn_role)}</td>
+                      <td><span className={statusClass(worker.vpn_enabled ? worker.vpn_runtime_status : "disabled")}>{worker.vpn_enabled ? formatStatusLabel(worker.vpn_runtime_status) : "выключен"}</span>{worker.vpn_last_error ? <div className="row-hint">{worker.vpn_last_error}</div> : null}</td>
+                      <td>{worker.vpn_public_host ?? "—"}</td>
+                      <td>{worker.vpn_panel_url ?? "—"}</td>
+                      <td>{worker.vpn_inbound_id ?? "—"}</td>
+                      <td>{formatDateTime(worker.vpn_last_checked_at)}</td>
+                      <td>
+                        <div className="actions">
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "Установлен" : vpnInstallInProgress ? "Установка" : "Установить"}</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={!worker.ssh_access_configured}>Обновить</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={!worker.ssh_access_configured}>Рестарт</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
