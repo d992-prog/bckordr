@@ -18,6 +18,19 @@ def test_build_vpn_autoconfig_commands_include_detection_markers():
     assert "INBOUND_CANDIDATES" in combined
     assert "INBOUND_ROWS" in combined
     assert "INBOUND_ID" in combined
+    assert "INBOUND_PORT" in combined
+    assert "LISTENER_STATUS" in combined
+    assert "detect_listener_status" in combined
+
+
+def test_build_vpn_check_commands_refresh_endpoint_metadata():
+    worker = WorkerNode(name="vpn-1", ip_address="2.27.20.255")
+
+    commands = build_worker_maintenance_commands("vpn_check", worker=worker)
+
+    combined = "\n".join(commands)
+    assert "DROPCATCH_VPN_AUTOCONFIG_BEGIN" in combined
+    assert "LISTENER_STATUS" in combined
 
 
 def test_build_vpn_create_inbound_commands_use_3xui_api():
@@ -40,6 +53,7 @@ def test_build_vpn_create_inbound_commands_use_3xui_api():
     assert "INBOUND_CREATE_AUTH" in combined
     assert "INBOUND_CREATE_STATUS" in combined
     assert "INBOUND_CREATE_ERROR" in combined
+    assert "DROPCATCH_VPN_AUTOCONFIG_BEGIN" in combined
     assert "insert into inbounds" not in combined.lower()
 
 
@@ -52,6 +66,11 @@ def test_parse_vpn_autoconfig_output_reads_safe_fields_only():
                 "DROPCATCH_VPN_PANEL_USERNAME=admin",
                 "DROPCATCH_VPN_PANEL_PASSWORD=secret",
                 "DROPCATCH_VPN_INBOUND_ID=7",
+                "DROPCATCH_VPN_INBOUND_PORT=443",
+                "DROPCATCH_VPN_INBOUND_PROTOCOL=vless",
+                "DROPCATCH_VPN_INBOUND_TRANSPORT=tcp",
+                "DROPCATCH_VPN_INBOUND_SECURITY=reality",
+                "DROPCATCH_VPN_LISTENER_STATUS=listening",
                 "DROPCATCH_VPN_XUI_ACTIVE=active",
                 "DROPCATCH_VPN_DB_DIAGNOSTIC=/etc/x-ui/x-ui.db: tables=settings,inbounds",
                 "DROPCATCH_VPN_INBOUND_CANDIDATES=inbounds.id",
@@ -70,6 +89,11 @@ def test_parse_vpn_autoconfig_output_reads_safe_fields_only():
         "panel_url": "http://2.27.20.255:2053/panel/",
         "panel_username": "admin",
         "inbound_id": "7",
+        "inbound_port": "443",
+        "inbound_protocol": "vless",
+        "inbound_transport": "tcp",
+        "inbound_security": "reality",
+        "listener_status": "listening",
         "xui_active": "active",
         "db_diagnostic": "/etc/x-ui/x-ui.db: tables=settings,inbounds",
         "inbound_candidates": "inbounds.id",
@@ -96,6 +120,11 @@ def test_apply_vpn_autoconfig_metadata_marks_ready_without_touching_password():
             "panel_url": "http://2.27.20.255:2053/panel/",
             "panel_username": "admin",
             "inbound_id": "7",
+            "inbound_port": "443",
+            "inbound_protocol": "vless",
+            "inbound_transport": "tcp",
+            "inbound_security": "reality",
+            "listener_status": "listening",
             "xui_active": "active",
         },
     )
@@ -105,8 +134,33 @@ def test_apply_vpn_autoconfig_metadata_marks_ready_without_touching_password():
     assert worker.vpn_panel_username == "admin"
     assert worker.vpn_panel_password == "existing-password"
     assert worker.vpn_inbound_id == 7
+    assert worker.vpn_inbound_port == 443
+    assert worker.vpn_inbound_protocol == "vless"
+    assert worker.vpn_inbound_transport == "tcp"
+    assert worker.vpn_inbound_security == "reality"
+    assert worker.vpn_listener_status == "listening"
     assert worker.vpn_runtime_status == "ready"
     assert worker.vpn_last_error is None
+
+
+def test_apply_vpn_autoconfig_metadata_marks_needs_config_when_port_is_closed():
+    worker = WorkerNode(name="vpn-1", ip_address="2.27.20.255")
+
+    apply_vpn_autoconfig_metadata(
+        worker,
+        {
+            "public_host": "2.27.20.255",
+            "panel_url": "http://2.27.20.255:2053/panel/",
+            "inbound_id": "7",
+            "inbound_port": "443",
+            "listener_status": "not_listening",
+            "xui_active": "active",
+        },
+    )
+
+    assert worker.vpn_runtime_status == "needs_config"
+    assert "443" in (worker.vpn_last_error or "")
+    assert "not listening" in (worker.vpn_last_error or "")
 
 
 def test_apply_vpn_autoconfig_metadata_explains_missing_inbound():

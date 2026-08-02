@@ -392,6 +392,11 @@ export type WorkerNode = {
   vpn_panel_url: string | null;
   vpn_panel_username: string | null;
   vpn_inbound_id: number | null;
+  vpn_inbound_port: number | null;
+  vpn_inbound_protocol: string | null;
+  vpn_inbound_transport: string | null;
+  vpn_inbound_security: string | null;
+  vpn_listener_status: string | null;
   vpn_last_checked_at: string | null;
   vpn_last_error: string | null;
   current_domain_count: number;

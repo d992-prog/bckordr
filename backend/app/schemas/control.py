@@ -424,6 +424,11 @@ class WorkerNodeBase(BaseModel):
     vpn_panel_url: str | None = Field(default=None, max_length=255)
     vpn_panel_username: str | None = Field(default=None, max_length=128)
     vpn_inbound_id: int | None = Field(default=None, ge=1)
+    vpn_inbound_port: int | None = Field(default=None, ge=1, le=65535)
+    vpn_inbound_protocol: str | None = Field(default=None, max_length=32)
+    vpn_inbound_transport: str | None = Field(default=None, max_length=32)
+    vpn_inbound_security: str | None = Field(default=None, max_length=32)
+    vpn_listener_status: str | None = Field(default=None, max_length=32)
     vpn_last_checked_at: datetime | None = None
     vpn_last_error: str | None = None
 
@@ -471,6 +476,11 @@ class WorkerNodeUpdateRequest(BaseModel):
     vpn_panel_username: str | None = Field(default=None, max_length=128)
     vpn_panel_password: str | None = Field(default=None, max_length=4096)
     vpn_inbound_id: int | None = Field(default=None, ge=1)
+    vpn_inbound_port: int | None = Field(default=None, ge=1, le=65535)
+    vpn_inbound_protocol: str | None = Field(default=None, max_length=32)
+    vpn_inbound_transport: str | None = Field(default=None, max_length=32)
+    vpn_inbound_security: str | None = Field(default=None, max_length=32)
+    vpn_listener_status: str | None = Field(default=None, max_length=32)
     vpn_last_checked_at: datetime | None = None
     vpn_last_error: str | None = None
 

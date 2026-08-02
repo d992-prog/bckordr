@@ -30,6 +30,11 @@ VPN_AUTOCONFIG_KEYS = {
     "panel_url",
     "panel_username",
     "inbound_id",
+    "inbound_port",
+    "inbound_protocol",
+    "inbound_transport",
+    "inbound_security",
+    "listener_status",
     "xui_active",
     "db_diagnostic",
     "inbound_candidates",
@@ -194,7 +199,7 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "ACTIVE=$(systemctl is-active x-ui.service 2>/dev/null || systemctl is-active x-ui 2>/dev/null || systemctl is-active 3x-ui.service 2>/dev/null || true)",
                 'printf "DROPCATCH_VPN_XUI_ACTIVE=%s\\n" "$ACTIVE"',
                 "python3 - <<'PY'",
-                "import os, sqlite3",
+                "import json, os, sqlite3, subprocess",
                 "",
                 "host = os.environ.get('DROPCATCH_HOST', '')",
                 "existing_panel_url = os.environ.get('DROPCATCH_EXISTING_PANEL_URL', '')",
@@ -213,6 +218,71 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "def rows_as_dicts(cursor):",
                 "    columns = [item[0] for item in cursor.description or []]",
                 "    return [dict(zip(columns, row)) for row in cursor.fetchall()]",
+                "",
+                "def parse_json_object(value):",
+                "    if not value:",
+                "        return {}",
+                "    try:",
+                "        parsed = json.loads(str(value))",
+                "    except Exception:",
+                "        return {}",
+                "    return parsed if isinstance(parsed, dict) else {}",
+                "",
+                "def detect_inbound_details(conn, tables, inbound_id):",
+                "    if 'inbounds' not in tables:",
+                "        return {}",
+                "    quoted_table = '\"inbounds\"'",
+                "    columns = [row[1] for row in conn.execute(f'pragma table_info({quoted_table})')]",
+                "    if 'id' not in columns:",
+                "        return {}",
+                "    args = []",
+                "    where_parts = []",
+                "    if inbound_id and str(inbound_id).isdigit():",
+                "        where_parts.append('id = ?')",
+                "        args.append(int(inbound_id))",
+                "    for enabled_column in ('enable', 'enabled'):",
+                "        if enabled_column in columns:",
+                "            where_parts.append(f'coalesce(\"{enabled_column}\", 1) != 0')",
+                "            break",
+                "    where_clause = (' where ' + ' and '.join(where_parts)) if where_parts else ''",
+                "    rows = rows_as_dicts(conn.execute(f'select * from {quoted_table}{where_clause} order by id limit 1', args))",
+                "    if not rows:",
+                "        return {}",
+                "    row = rows[0]",
+                "    details = {}",
+                "    if row.get('id') is not None:",
+                "        details['id'] = str(row['id'])",
+                "    if row.get('port') is not None:",
+                "        details['port'] = str(row['port'])",
+                "    if row.get('protocol') is not None:",
+                "        details['protocol'] = str(row['protocol']).lower()",
+                "    stream_raw = ''",
+                "    for key in ('streamSettings', 'stream_settings', 'stream_settings_json', 'stream'):",
+                "        if row.get(key):",
+                "            stream_raw = str(row[key])",
+                "            break",
+                "    stream = parse_json_object(stream_raw)",
+                "    if stream:",
+                "        network = stream.get('network') or stream.get('net')",
+                "        security = stream.get('security')",
+                "        if network:",
+                "            details['transport'] = str(network).lower()",
+                "        if security:",
+                "            details['security'] = str(security).lower()",
+                "    return details",
+                "",
+                "def detect_listener_status(port):",
+                "    if not str(port or '').isdigit():",
+                "        return ''",
+                "    try:",
+                "        output = subprocess.check_output(['ss', '-lnt'], stderr=subprocess.STDOUT, text=True, timeout=5)",
+                "    except Exception as exc:",
+                "        return f'unknown:{exc}'",
+                "    port_token = ':' + str(port)",
+                "    for line in output.splitlines():",
+                "        if 'LISTEN' in line.upper() and port_token in line:",
+                "            return 'listening'",
+                "    return 'not_listening'",
                 "",
                 "def detect_inbound_id(conn, tables):",
                 "    candidate_tables = []",
@@ -295,6 +365,7 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "settings = {}",
                 "username = ''",
                 "inbound_id = existing_inbound_id",
+                "inbound_details = {}",
                 "db_diagnostics = []",
                 "inbound_candidates = ''",
                 "inbound_rows = ''",
@@ -325,6 +396,10 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "                detected_inbound_id, inbound_candidates, detected_inbound_rows = detect_inbound_id(conn, tables)",
                 "                inbound_id = detected_inbound_id or inbound_id",
                 "                inbound_rows = detected_inbound_rows or inbound_rows",
+                "            if not inbound_details:",
+                "                inbound_details = detect_inbound_details(conn, tables, inbound_id)",
+                "                if not inbound_id and inbound_details.get('id'):",
+                "                    inbound_id = inbound_details['id']",
                 "        finally:",
                 "            conn.close()",
                 "    except Exception as exc:",
@@ -353,6 +428,11 @@ def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
                 "emit('PANEL_URL', panel_url)",
                 "emit('PANEL_USERNAME', username)",
                 "emit('INBOUND_ID', inbound_id)",
+                "emit('INBOUND_PORT', inbound_details.get('port', ''))",
+                "emit('INBOUND_PROTOCOL', inbound_details.get('protocol', ''))",
+                "emit('INBOUND_TRANSPORT', inbound_details.get('transport', ''))",
+                "emit('INBOUND_SECURITY', inbound_details.get('security', ''))",
+                "emit('LISTENER_STATUS', detect_listener_status(inbound_details.get('port', '')))",
                 "PY",
                 "echo DROPCATCH_VPN_AUTOCONFIG_END",
             ]
@@ -738,6 +818,7 @@ def apply_vpn_autoconfig_metadata(worker: WorkerNode, metadata: Mapping[str, str
     panel_url = metadata.get("panel_url")
     panel_username = metadata.get("panel_username")
     inbound_id = metadata.get("inbound_id")
+    inbound_port = metadata.get("inbound_port")
 
     if public_host:
         worker.vpn_public_host = public_host
@@ -747,12 +828,30 @@ def apply_vpn_autoconfig_metadata(worker: WorkerNode, metadata: Mapping[str, str
         worker.vpn_panel_username = panel_username
     if inbound_id and inbound_id.isdigit():
         worker.vpn_inbound_id = int(inbound_id)
+    if inbound_port and inbound_port.isdigit():
+        worker.vpn_inbound_port = int(inbound_port)
+    for attr, key in (
+        ("vpn_inbound_protocol", "inbound_protocol"),
+        ("vpn_inbound_transport", "inbound_transport"),
+        ("vpn_inbound_security", "inbound_security"),
+        ("vpn_listener_status", "listener_status"),
+    ):
+        value = metadata.get(key)
+        if value:
+            setattr(worker, attr, value[:32])
 
     active_state = (metadata.get("xui_active") or "").lower()
     worker.vpn_last_checked_at = utcnow()
     if active_state in {"active", "running"} and worker.vpn_panel_url and worker.vpn_inbound_id:
-        worker.vpn_runtime_status = "ready"
-        worker.vpn_last_error = None
+        if worker.vpn_listener_status == "not_listening" and worker.vpn_inbound_port:
+            worker.vpn_runtime_status = "needs_config"
+            worker.vpn_last_error = (
+                f"3x-UI inbound #{worker.vpn_inbound_id} detected, but VPN port "
+                f"{worker.vpn_inbound_port} is not listening. Restart 3x-UI or recreate inbound."
+            )
+        else:
+            worker.vpn_runtime_status = "ready"
+            worker.vpn_last_error = None
         return
     if active_state not in {"active", "running"}:
         worker.vpn_runtime_status = "error"
@@ -849,6 +948,7 @@ def build_worker_maintenance_commands(
             "command -v x-ui || true",
             _build_vpn_status_command(),
             _build_vpn_ready_command(),
+            _build_vpn_autoconfig_command(worker),
             _bash("systemctl --no-pager --full status x-ui.service || systemctl --no-pager --full status x-ui || true"),
             _bash("ss -lntp | grep -E ':(443|8443|2053|54321|62789)\\b' || true"),
             "test -d /usr/local/x-ui && echo x-ui-dir-present || true",
@@ -894,6 +994,7 @@ def build_worker_maintenance_commands(
             "whoami",
             "command -v python3",
             _build_vpn_create_inbound_command(worker),
+            _build_vpn_autoconfig_command(worker),
         ]
     raise ValueError(f"Unsupported worker maintenance action: {action}")
 
@@ -961,7 +1062,7 @@ async def run_worker_maintenance_job(job_id: int) -> None:
             worker.ssh_last_check_status = "ok"
             worker.ssh_last_check_message = "SSH check succeeded"
             worker.ssh_last_checked_at = utcnow()
-        if job.action in {"vpn_autoconfig", "vpn_create_inbound"}:
+        if job.action in {"vpn_autoconfig", "vpn_create_inbound", "vpn_check"}:
             metadata = parse_vpn_autoconfig_output(log)
             apply_vpn_autoconfig_metadata(worker, metadata)
             session.add(

@@ -770,6 +770,41 @@ function formatVpnRole(value: string | null | undefined) {
   return value ? labels[value] ?? value : "—";
 }
 
+function formatVpnEndpoint(worker: WorkerNode) {
+  if (!worker.vpn_public_host) {
+    return "—";
+  }
+  return worker.vpn_inbound_port ? `${worker.vpn_public_host}:${worker.vpn_inbound_port}` : worker.vpn_public_host;
+}
+
+function formatVpnRuntime(worker: WorkerNode) {
+  const parts = [worker.vpn_inbound_protocol, worker.vpn_inbound_transport, worker.vpn_inbound_security].filter(Boolean);
+  return parts.length ? parts.join(" / ") : "—";
+}
+
+function formatVpnListenerStatus(value: string | null | undefined) {
+  if (value === "listening") {
+    return "порт слушает";
+  }
+  if (value === "not_listening") {
+    return "порт не слушает";
+  }
+  if (value?.startsWith("unknown")) {
+    return "не удалось проверить";
+  }
+  return value || "не проверено";
+}
+
+function vpnListenerStatusClass(value: string | null | undefined) {
+  if (value === "listening") {
+    return "ready";
+  }
+  if (value === "not_listening") {
+    return "error";
+  }
+  return "unknown";
+}
+
 function formatVpnCustomerName(customer: VpnCustomer | null | undefined) {
   if (!customer) {
     return "—";
@@ -4194,6 +4229,14 @@ export default function App() {
                   <div><span>VPN роль</span><strong>{formatVpnRole(worker.vpn_role)}</strong></div>
                   <div><span>VPN статус</span><strong>{worker.vpn_enabled ? formatStatusLabel(worker.vpn_runtime_status) : "выключен"}</strong></div>
                   <div><span>VPN host</span><strong>{worker.vpn_public_host ?? "—"}</strong></div>
+                  <div><span>VPN endpoint</span><strong>{formatVpnEndpoint(worker)}</strong></div>
+                  <div><span>VPN протокол</span><strong>{formatVpnRuntime(worker)}</strong></div>
+                  <div>
+                    <span>VPN порт</span>
+                    <strong className={statusClass(vpnListenerStatusClass(worker.vpn_listener_status))}>
+                      {formatVpnListenerStatus(worker.vpn_listener_status)}
+                    </strong>
+                  </div>
                   <div>
                     <span>3x-UI</span>
                     <strong>
@@ -4202,7 +4245,7 @@ export default function App() {
                       ) : "—"}
                     </strong>
                   </div>
-                  <div><span>VPN inbound</span><strong>{worker.vpn_inbound_id ?? "—"}</strong></div>
+                  <div><span>VPN inbound</span><strong>{worker.vpn_inbound_id ? `#${worker.vpn_inbound_id}` : "—"}</strong></div>
                   <div><span>SSH доступ</span><strong>{worker.ssh_access_configured ? `${worker.ssh_username ?? "root"}@${worker.ssh_host ?? worker.ip_address}:${worker.ssh_port}` : "не настроен"}</strong></div>
                   <div><span>Установка</span><strong>{installState}</strong></div>
                   <div><span>Установка VPN</span><strong>{vpnInstallState}</strong></div>
@@ -4517,8 +4560,10 @@ export default function App() {
                   <th>Роль</th>
                   <th>Статус</th>
                   <th>Host</th>
+                  <th>Endpoint</th>
                   <th>3x-UI админка</th>
                   <th>Inbound</th>
+                  <th>Порт</th>
                   <th>Последняя проверка</th>
                   <th>Действия</th>
                 </tr>
@@ -4535,8 +4580,22 @@ export default function App() {
                       <td>{formatVpnRole(worker.vpn_role)}</td>
                       <td><span className={statusClass(worker.vpn_enabled ? worker.vpn_runtime_status : "disabled")}>{worker.vpn_enabled ? formatStatusLabel(worker.vpn_runtime_status) : "выключен"}</span>{worker.vpn_last_error ? <div className="row-hint">{worker.vpn_last_error}</div> : null}</td>
                       <td>{worker.vpn_public_host ?? "—"}</td>
-                      <td>{worker.vpn_panel_url ? <a href={worker.vpn_panel_url} target="_blank" rel="noreferrer">{worker.vpn_panel_url}</a> : "—"}</td>
-                      <td>{worker.vpn_inbound_id ?? "—"}</td>
+                      <td><strong>{formatVpnEndpoint(worker)}</strong><div className="row-hint">адрес для клиента</div></td>
+                      <td>
+                        {worker.vpn_panel_url ? (
+                          <>
+                            <a href={worker.vpn_panel_url} target="_blank" rel="noreferrer">открыть 3x-UI</a>
+                            <div className="row-hint">{worker.vpn_panel_url}</div>
+                          </>
+                        ) : "—"}
+                      </td>
+                      <td><strong>{worker.vpn_inbound_id ? `#${worker.vpn_inbound_id}` : "—"}</strong><div className="row-hint">{formatVpnRuntime(worker)}</div></td>
+                      <td>
+                        <span className={statusClass(vpnListenerStatusClass(worker.vpn_listener_status))}>
+                          {formatVpnListenerStatus(worker.vpn_listener_status)}
+                        </span>
+                        <div className="row-hint">{worker.vpn_inbound_port ? `порт ${worker.vpn_inbound_port}` : "порт неизвестен"}</div>
+                      </td>
                       <td>{formatDateTime(worker.vpn_last_checked_at)}</td>
                       <td>
                         <div className="actions">
