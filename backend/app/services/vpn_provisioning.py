@@ -247,6 +247,10 @@ def build_config_uri(inbound):
         params["encryption"] = "none"
     if client.get("flow"):
         params["flow"] = str(client["flow"])
+    tcp_settings = stream.get("tcpSettings") or stream.get("tcp_settings") or {}
+    if network == "tcp":
+        tcp_header = tcp_settings.get("header") if isinstance(tcp_settings.get("header"), dict) else {}
+        params["headerType"] = str(tcp_header.get("type") or "none").lower()
     ws_settings = stream.get("wsSettings") or stream.get("ws_settings") or {}
     if network == "ws":
         if ws_settings.get("path"):
