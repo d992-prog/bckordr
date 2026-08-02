@@ -274,6 +274,13 @@ def default_column_value(column, column_type):
     return ""
 
 
+def numeric_column_value(column_type):
+    type_upper = str(column_type or "").upper()
+    if any(token in type_upper for token in ("INT", "REAL", "FLOA", "DOUB", "NUM")):
+        return 0
+    return ""
+
+
 def values_with_required_defaults(conn, table, values):
     result = dict(values)
     for name, info in column_info_by_name(conn, table).items():
@@ -331,12 +338,34 @@ def first_matching_row(conn, table, matches):
     return None, ""
 
 
+def repair_client_telegram_ids(conn):
+    if "clients" not in table_names(conn):
+        return ""
+    columns = table_columns(conn, "clients")
+    info = column_info_by_name(conn, "clients")
+    repaired = 0
+    for column in ("tg_id", "tgId", "telegram_id"):
+        if column not in columns:
+            continue
+        if numeric_column_value(info.get(column, {}).get("type")) != 0:
+            continue
+        cursor = conn.execute(
+            f"update clients set {quote_identifier(column)} = 0 "
+            f"where {quote_identifier(column)} is null "
+            f"or trim(cast({quote_identifier(column)} as text)) = ''"
+        )
+        if cursor.rowcount and cursor.rowcount > 0:
+            repaired += int(cursor.rowcount)
+    return f"repaired telegram ids={repaired}" if repaired else ""
+
+
 def sync_clients_table(conn):
     if "clients" not in table_names(conn):
         return None, "clients table missing"
 
     columns = table_columns(conn, "clients")
     info = column_info_by_name(conn, "clients")
+    repair_status = repair_client_telegram_ids(conn)
     id_info = info.get("id", {})
     uuid_column = next((column for column in ("uuid", "client_uuid", "client_id", "password", "passwd") if column in columns), "")
     if not uuid_column and "id" in columns and not is_integer_primary_key(id_info):
@@ -373,7 +402,7 @@ def sync_clients_table(conn):
             values[column] = int(payload.get("expires_at_ms") or 0)
     for column in ("tg_id", "tgId", "telegram_id"):
         if column in columns:
-            values[column] = ""
+            values[column] = numeric_column_value(info.get(column, {}).get("type"))
     for column in ("sub_id", "subId"):
         if column in columns:
             values[column] = ""
@@ -395,7 +424,8 @@ def sync_clients_table(conn):
     if existing:
         update_row(conn, "clients", match_column, existing[match_column], values)
         client_pk = existing.get("id") if "id" in columns else existing.get(uuid_column)
-        return client_pk, f"clients updated by {match_column}"
+        suffix = f"; {repair_status}" if repair_status else ""
+        return client_pk, f"clients updated by {match_column}{suffix}"
 
     client_pk = insert_row(conn, "clients", values)
     if "id" in columns:
@@ -410,7 +440,8 @@ def sync_clients_table(conn):
         )[0]
         if inserted:
             client_pk = inserted.get("id")
-    return client_pk, "clients inserted"
+    suffix = f"; {repair_status}" if repair_status else ""
+    return client_pk, f"clients inserted{suffix}"
 
 
 def sync_client_inbounds_table(conn, client_pk):

@@ -81,6 +81,9 @@ def test_build_vpn_client_provision_command_contains_payload_and_markers() -> No
     assert "client_traffics" in command
     assert '"password", "passwd"' in command
     assert 'values["client_id"] = client_pk' in command
+    assert "def repair_client_telegram_ids(conn):" in command
+    assert "values[column] = numeric_column_value(info.get(column, {}).get(\"type\"))" in command
+    assert "update clients set {quote_identifier(column)} = 0" in command
 
 
 def test_build_vpn_client_revoke_command_removes_normalized_rows() -> None:
