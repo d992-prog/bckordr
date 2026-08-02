@@ -2419,6 +2419,20 @@ export default function App() {
     }
   }
 
+  async function deleteVpnAccessKey(accessKey: VpnAccessKey) {
+    const keyName = accessKey.public_name ?? `ключ #${accessKey.id}`;
+    if (!window.confirm(`Удалить VPN ключ ${keyName}?`)) {
+      return;
+    }
+    try {
+      const payload = await api.deleteVpnAccessKey(accessKey.id);
+      await loadAll();
+      setToast({ type: "success", text: payload.detail });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления VPN ключа" });
+    }
+  }
+
   async function deleteVpnPlan(plan: VpnPlan) {
     if (!window.confirm(`Удалить VPN тариф ${plan.name}?`)) {
       return;
@@ -4732,14 +4746,23 @@ export default function App() {
                     <td>{formatDateTime(accessKey.issued_at)} → {formatDateTime(accessKey.expires_at)}</td>
                     <td>{accessKey.config_uri ? <code>{accessKey.config_uri}</code> : "—"}</td>
                     <td>
-                      <button
-                        type="button"
-                        className="ghost"
-                        onClick={() => void provisionVpnAccessKey(accessKey)}
-                        disabled={!accessKey.worker_id}
-                      >
-                        {accessKey.config_uri ? "Переиздать" : "Выдать доступ"}
-                      </button>
+                      <div className="actions">
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => void provisionVpnAccessKey(accessKey)}
+                          disabled={!accessKey.worker_id}
+                        >
+                          {accessKey.config_uri ? "Переиздать" : "Выдать доступ"}
+                        </button>
+                        <button
+                          type="button"
+                          className="danger"
+                          onClick={() => void deleteVpnAccessKey(accessKey)}
+                        >
+                          Удалить
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

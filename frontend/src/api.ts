@@ -994,6 +994,8 @@ export const api = {
     }),
   provisionVpnAccessKey: (id: number) =>
     request<VpnAccessKey>(`/control/vpn/access-keys/${id}/provision`, { method: "POST" }),
+  deleteVpnAccessKey: (id: number) =>
+    request<{ detail: string }>(`/control/vpn/access-keys/${id}`, { method: "DELETE" }),
   getVpnNodeEvents: (workerId?: number) =>
     request<VpnNodeEvent[]>(
       `/control/vpn/node-events${workerId ? `?worker_id=${encodeURIComponent(String(workerId))}` : ""}`,

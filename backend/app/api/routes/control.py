@@ -3054,6 +3054,27 @@ async def provision_existing_vpn_access_key(
     return VpnAccessKeyResponse.model_validate(access_key)
 
 
+@router.delete("/vpn/access-keys/{access_key_id}", response_model=MessageResponse)
+async def delete_vpn_access_key(
+    access_key_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> MessageResponse:
+    access_key = await db.get(VpnAccessKey, access_key_id)
+    if access_key is None:
+        raise HTTPException(status_code=404, detail="VPN access key not found")
+    await db.delete(access_key)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_access_key_delete",
+        details=f"access_key_id={access_key_id} worker_id={access_key.worker_id or '-'}",
+    )
+    await db.commit()
+    return MessageResponse(detail="VPN access key deleted")
+
+
 @router.get("/vpn/node-events", response_model=list[VpnNodeEventResponse])
 async def list_vpn_node_events(
     worker_id: int | None = Query(default=None),

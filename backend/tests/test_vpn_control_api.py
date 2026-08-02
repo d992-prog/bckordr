@@ -97,6 +97,15 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key():
         assert key_payload["status"] == "pending_sync"
         assert key_payload["external_uuid"]
         assert key_payload["worker_id"] == 1
+        key_id = key_payload["id"]
+
+        delete_key_response = await client.delete(f"/control/vpn/access-keys/{key_id}")
+        assert delete_key_response.status_code == 200
+        assert delete_key_response.json()["detail"] == "VPN access key deleted"
+
+        keys_after_delete_response = await client.get("/control/vpn/access-keys")
+        assert keys_after_delete_response.status_code == 200
+        assert keys_after_delete_response.json() == []
 
         overview_response = await client.get("/control/vpn/overview")
 
