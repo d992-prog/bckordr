@@ -8,6 +8,7 @@ from app.services.vpn_provisioning import (
     VpnClientProvisionPayload,
     build_vpn_client_email,
     build_vpn_client_provision_command,
+    build_vpn_client_revoke_command,
     ensure_vpn_client_uuid,
     provision_vpn_access_key,
     parse_vpn_client_provision_output,
@@ -76,6 +77,30 @@ def test_build_vpn_client_provision_command_contains_payload_and_markers() -> No
     assert '"security": security' in command
     assert 'params["encryption"] = "none"' in command
     assert 'params["headerType"] = str(tcp_header.get("type") or "none").lower()' in command
+    assert "client_inbounds" in command
+    assert "client_traffics" in command
+    assert '"password", "passwd"' in command
+    assert 'values["client_id"] = client_pk' in command
+
+
+def test_build_vpn_client_revoke_command_removes_normalized_rows() -> None:
+    worker = WorkerNode(id=3, name="vpn-node", ip_address="31.77.157.65", vpn_inbound_id=1)
+    access_key = VpnAccessKey(
+        id=12,
+        subscription_id=1,
+        worker_id=3,
+        public_name="test-user",
+        external_uuid="11111111-1111-1111-1111-111111111111",
+    )
+
+    command = build_vpn_client_revoke_command(worker, access_key)
+
+    assert "DROPCATCH_VPN_CLIENT_REVOKE_STATUS=revoked" in command
+    assert "client_traffics" in command
+    assert "client_inbounds" in command
+    assert "clients" in command
+    assert "dropcatch-12-test-user" in command
+    assert "11111111-1111-1111-1111-111111111111" in command
 
 
 @pytest.mark.asyncio

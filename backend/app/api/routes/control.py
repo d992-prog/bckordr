@@ -149,7 +149,7 @@ from app.services.discovery import (
 )
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
-from app.services.vpn_provisioning import provision_vpn_access_key
+from app.services.vpn_provisioning import provision_vpn_access_key, revoke_vpn_access_key
 from app.services.app_settings import (
     DiscoveryRuntimeSettings,
     get_discovery_runtime_settings,
@@ -3063,6 +3063,15 @@ async def delete_vpn_access_key(
     access_key = await db.get(VpnAccessKey, access_key_id)
     if access_key is None:
         raise HTTPException(status_code=404, detail="VPN access key not found")
+    worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
+    try:
+        await revoke_vpn_access_key(db, access_key, worker=worker)
+    except Exception as exc:
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to remove VPN client from 3x-UI node: {str(exc)[:500]}",
+        ) from exc
     await db.delete(access_key)
     await add_audit_log(
         db,
