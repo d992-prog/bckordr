@@ -238,20 +238,57 @@ def build_config_uri(inbound):
     host = payload.get("public_host") or payload.get("ssh_host") or ""
     settings = parse_json(inbound.get("settings"), {})
     stream = parse_json(inbound.get("streamSettings") or inbound.get("stream_settings"), {})
-    network = stream.get("network") or "tcp"
-    security = stream.get("security") or "none"
-    params = {"type": network}
-    if security and security != "none":
-        params["security"] = security
-    if stream.get("realitySettings", {}).get("publicKey"):
-        params["pbk"] = stream["realitySettings"]["publicKey"]
-    if stream.get("tlsSettings", {}).get("serverName"):
-        params["sni"] = stream["tlsSettings"]["serverName"]
+    clients = settings.get("clients") if isinstance(settings.get("clients"), list) else []
+    client = next((item for item in clients if str(item.get("id")) == payload["client_uuid"]), {})
+    network = str(stream.get("network") or "tcp").lower()
+    security = str(stream.get("security") or "none").lower()
+    params = {"type": network, "security": security}
+    if protocol == "vless":
+        params["encryption"] = "none"
+    if client.get("flow"):
+        params["flow"] = str(client["flow"])
+    ws_settings = stream.get("wsSettings") or stream.get("ws_settings") or {}
+    if network == "ws":
+        if ws_settings.get("path"):
+            params["path"] = str(ws_settings["path"])
+        ws_headers = ws_settings.get("headers") or {}
+        if ws_headers.get("Host"):
+            params["host"] = str(ws_headers["Host"])
+    grpc_settings = stream.get("grpcSettings") or stream.get("grpc_settings") or {}
+    if network == "grpc" and grpc_settings.get("serviceName"):
+        params["serviceName"] = str(grpc_settings["serviceName"])
+    reality_settings = stream.get("realitySettings") or stream.get("reality_settings") or {}
+    if security == "reality":
+        if reality_settings.get("publicKey"):
+            params["pbk"] = str(reality_settings["publicKey"])
+        if reality_settings.get("shortIds"):
+            short_ids = reality_settings.get("shortIds") or []
+            if isinstance(short_ids, list) and short_ids:
+                params["sid"] = str(short_ids[0])
+        if reality_settings.get("serverNames"):
+            server_names = reality_settings.get("serverNames") or []
+            if isinstance(server_names, list) and server_names:
+                params["sni"] = str(server_names[0])
+        if reality_settings.get("spiderX"):
+            params["spx"] = str(reality_settings["spiderX"])
+        if reality_settings.get("fingerprint"):
+            params["fp"] = str(reality_settings["fingerprint"])
+    tls_settings = stream.get("tlsSettings") or stream.get("tls_settings") or {}
+    if security == "tls":
+        if tls_settings.get("serverName"):
+            params["sni"] = str(tls_settings["serverName"])
+        if tls_settings.get("alpn"):
+            alpn = tls_settings.get("alpn")
+            if isinstance(alpn, list):
+                params["alpn"] = ",".join(str(item) for item in alpn)
+            else:
+                params["alpn"] = str(alpn)
     if not port:
         return ""
     query = urllib.parse.urlencode(params)
     label = urllib.parse.quote(payload["client_email"])
     if protocol == "vmess":
+        vmess_ws_headers = ws_settings.get("headers") if isinstance(ws_settings.get("headers"), dict) else {}
         vmess = {
             "v": "2",
             "ps": payload["client_email"],
@@ -261,8 +298,8 @@ def build_config_uri(inbound):
             "aid": "0",
             "net": network,
             "type": "none",
-            "host": "",
-            "path": "",
+            "host": str(vmess_ws_headers.get("Host") or ""),
+            "path": str(ws_settings.get("path") or grpc_settings.get("serviceName") or ""),
             "tls": "" if security == "none" else security,
         }
         return "vmess://" + base64.urlsafe_b64encode(json.dumps(vmess, separators=(",", ":")).encode()).decode().rstrip("=")

@@ -4647,6 +4647,7 @@ export default function App() {
 
         <div className="card full-span">
           <h2>Ключи доступа</h2>
+          <p className="muted">В приложение на телефоне импортируется только клиентская ссылка из этой таблицы: она должна начинаться с vless:// или vmess://. Ссылка http://... в блоке VPN-нод — это админка 3x-UI, ее клиентам не отправляем.</p>
           <div className="simple-table">
             <table>
               <thead>

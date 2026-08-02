@@ -73,6 +73,8 @@ def test_build_vpn_client_provision_command_contains_payload_and_markers() -> No
     assert "DROPCATCH_VPN_CLIENT_URL" in command
     assert "11111111-1111-1111-1111-111111111111" in command
     assert "dropcatch-12-test-user" in command
+    assert '"security": security' in command
+    assert 'params["encryption"] = "none"' in command
 
 
 @pytest.mark.asyncio
