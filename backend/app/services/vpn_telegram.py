@@ -32,6 +32,7 @@ def sanitize_telegram_error(exc: Exception, settings: Settings) -> str:
 class TelegramMessage:
     update_id: str
     chat_id: str
+    chat_type: str | None
     user_id: str
     username: str | None
     first_name: str | None
@@ -48,6 +49,7 @@ def parse_telegram_message(payload: dict) -> TelegramMessage:
     return TelegramMessage(
         update_id=str(payload["update_id"]),
         chat_id=str(chat["id"]),
+        chat_type=chat.get("type"),
         user_id=str(sender["id"]),
         username=sender.get("username"),
         first_name=sender.get("first_name"),
@@ -184,6 +186,21 @@ async def process_telegram_update(
         update.error_message = sanitize_telegram_error(exc, settings)
         return {"processed": False, "duplicate": False}
 
+    active_sender = sender or send_telegram_message
+    if message.chat_type != "private":
+        try:
+            await active_sender(
+                settings,
+                message.chat_id,
+                "VPN-ключи и данные подписки доступны только в личном чате с ботом.",
+            )
+        except Exception as exc:
+            update.error_message = sanitize_telegram_error(exc, settings)
+            return {"processed": False, "duplicate": False}
+        update.processed_at = utcnow()
+        update.error_message = None
+        return {"processed": True, "duplicate": False}
+
     customer = await session.scalar(
         select(VpnCustomer).where(VpnCustomer.telegram_user_id == message.user_id)
     )
@@ -198,7 +215,6 @@ async def process_telegram_update(
 
     command = COMMANDS.get(message.text.casefold(), "start")
     response_text = await render_customer_response(session, customer, command, settings)
-    active_sender = sender or send_telegram_message
     try:
         await active_sender(settings, message.chat_id, response_text)
     except Exception as exc:  # Telegram retries are prevented by the HTTP 200 acknowledgement.

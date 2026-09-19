@@ -226,6 +226,28 @@ async def test_keys_returns_only_active_keys_for_valid_subscription(telegram_app
 
 
 @pytest.mark.asyncio
+async def test_keys_are_never_sent_to_a_group_chat(telegram_app):
+    async with telegram_app.session_factory() as session:
+        customer, _, _ = await seed_subscription(
+            session,
+            telegram_user_id="21008",
+            key_status="active",
+            config_uri="vless://private-only",
+        )
+
+    payload = telegram_message(19, customer.telegram_user_id, "/keys")
+    payload["message"]["chat"] = {"id": -10021008, "type": "supergroup"}
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=payload,
+    )
+    assert response.status_code == 200
+    assert "только в личном чате" in telegram_app.delivered[-1]["text"]
+    assert "vless://private-only" not in telegram_app.delivered[-1]["text"]
+
+
+@pytest.mark.asyncio
 async def test_disabled_customer_cannot_receive_keys(telegram_app):
     async with telegram_app.session_factory() as session:
         customer, _, _ = await seed_subscription(
