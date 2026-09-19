@@ -96,6 +96,7 @@ from app.schemas.control import (
     VpnCustomerResponse,
     VpnCustomerUpdateRequest,
     VpnNodeEventResponse,
+    VpnNodeEligibilityResponse,
     VpnOverviewResponse,
     VpnPlanCreateRequest,
     VpnPlanResponse,
@@ -151,6 +152,8 @@ from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_r
 from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
 from app.services.vpn_policy import (
+    VPN_MUTATION_ACTIONS,
+    active_attack_worker_ids,
     count_device_slots,
     evaluate_vpn_node,
     select_vpn_node,
@@ -2515,11 +2518,16 @@ async def start_all_vpn_node_updates(
             )
         ).scalars().all()
     )
+    busy_worker_ids = await active_attack_worker_ids(db)
 
     jobs: list[WorkerMaintenanceJob] = []
     skipped_worker_ids: list[int] = []
     for worker in workers:
-        if not worker.ssh_access_configured or worker.id in active_job_worker_ids:
+        if (
+            not worker.ssh_access_configured
+            or worker.id in active_job_worker_ids
+            or worker.id in busy_worker_ids
+        ):
             skipped_worker_ids.append(worker.id)
             continue
         job = WorkerMaintenanceJob(worker_id=worker.id, action="vpn_update", status="queued")
@@ -2577,11 +2585,16 @@ async def start_all_vpn_node_autoconfigs(
             )
         ).scalars().all()
     )
+    busy_worker_ids = await active_attack_worker_ids(db)
 
     jobs: list[WorkerMaintenanceJob] = []
     skipped_worker_ids: list[int] = []
     for worker in workers:
-        if not worker.ssh_access_configured or worker.id in active_job_worker_ids:
+        if (
+            not worker.ssh_access_configured
+            or worker.id in active_job_worker_ids
+            or worker.id in busy_worker_ids
+        ):
             skipped_worker_ids.append(worker.id)
             continue
         job = WorkerMaintenanceJob(worker_id=worker.id, action="vpn_autoconfig", status="queued")
@@ -2644,6 +2657,14 @@ async def _start_worker_maintenance_job(
         raise HTTPException(status_code=400, detail="Worker SSH access is not configured")
     if action.startswith("vpn_") and (not worker.vpn_enabled or worker.vpn_role == "none"):
         raise HTTPException(status_code=400, detail="Worker is not configured as a VPN node")
+    if action in VPN_MUTATION_ACTIONS:
+        eligibility = await evaluate_vpn_node(db, worker)
+        active_attack_reason = next(
+            (reason for reason in eligibility.reasons if "active domain attack" in reason),
+            None,
+        )
+        if active_attack_reason:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=active_attack_reason)
     if action == "install":
         installed_job_result = await db.execute(
             select(WorkerMaintenanceJob.id)
@@ -2781,6 +2802,26 @@ async def get_vpn_overview(
         active_subscriptions=active_subscriptions or 0,
         active_keys=active_keys or 0,
     )
+
+
+@router.get("/vpn/nodes/eligibility", response_model=list[VpnNodeEligibilityResponse])
+async def list_vpn_node_eligibility(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnNodeEligibilityResponse]:
+    del admin
+    workers = (await db.execute(select(WorkerNode).order_by(WorkerNode.id.asc()))).scalars().all()
+    response: list[VpnNodeEligibilityResponse] = []
+    for worker in workers:
+        eligibility = await evaluate_vpn_node(db, worker)
+        response.append(
+            VpnNodeEligibilityResponse(
+                worker_id=worker.id,
+                eligible=eligibility.eligible,
+                blocked_reasons=list(eligibility.reasons),
+            )
+        )
+    return response
 
 
 @router.get("/vpn/plans", response_model=list[VpnPlanResponse])
@@ -3041,6 +3082,27 @@ async def _resolve_vpn_key_worker(
     )
 
 
+async def _reject_vpn_revoke_during_attack(
+    db: AsyncSession,
+    access_key: VpnAccessKey,
+    worker: WorkerNode | None,
+) -> None:
+    if worker is None:
+        return
+    eligibility = await evaluate_vpn_node(db, worker)
+    active_attack_reason = next(
+        (reason for reason in eligibility.reasons if "active domain attack" in reason),
+        None,
+    )
+    if active_attack_reason is None:
+        return
+    access_key.status = "pending_revoke"
+    access_key.last_error = active_attack_reason
+    access_key.updated_at = utcnow()
+    await db.commit()
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=active_attack_reason)
+
+
 @router.post("/vpn/access-keys", response_model=VpnAccessKeyResponse, status_code=status.HTTP_201_CREATED)
 async def create_vpn_access_key(
     payload: VpnAccessKeyCreateRequest,
@@ -3124,6 +3186,7 @@ async def revoke_existing_vpn_access_key(
     if access_key is None:
         raise HTTPException(status_code=404, detail="VPN access key not found")
     worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
+    await _reject_vpn_revoke_during_attack(db, access_key, worker)
     await revoke_vpn_access_key(db, access_key, worker=worker)
     await add_audit_log(
         db,
@@ -3164,6 +3227,7 @@ async def delete_vpn_access_key(
     if access_key is None:
         raise HTTPException(status_code=404, detail="VPN access key not found")
     worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
+    await _reject_vpn_revoke_during_attack(db, access_key, worker)
     await revoke_vpn_access_key(db, access_key, worker=worker)
     await add_audit_log(
         db,

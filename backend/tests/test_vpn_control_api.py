@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.deps import require_admin
 from app.api.routes.control import router as control_router
 from app.db.base import Base
-from app.db.models import AttackRun, DropDomain, VpnSubscription, WorkerNode, WorkerTask
+from app.db.models import AttackRun, DropDomain, VpnAccessKey, VpnSubscription, WorkerNode, WorkerTask
 from app.db.session import get_db
 
 
@@ -238,9 +238,18 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
         access_key.config_uri = f"vless://test-{access_key.id}"
         return access_key
 
+    revoke_attempts: list[int] = []
+
+    async def fake_revoke(db, access_key, *, worker=None):
+        del db, worker
+        revoke_attempts.append(access_key.id)
+        access_key.status = "revoked"
+        return access_key
+
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[require_admin] = fake_admin
     monkeypatch.setattr("app.api.routes.control.provision_vpn_access_key", fake_provision)
+    monkeypatch.setattr("app.api.routes.control.revoke_vpn_access_key", fake_revoke)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
         plan = (
@@ -309,6 +318,28 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
         )
         assert unsafe_worker.status_code == 409
         assert "active domain attack" in unsafe_worker.json()["detail"]
+
+        async with session_factory() as session:
+            blocked_key = VpnAccessKey(
+                subscription_id=busy_subscription["id"],
+                worker_id=busy_worker_id,
+                status="active",
+                external_uuid="11111111-1111-1111-1111-111111111111",
+                config_uri="vless://busy-key",
+            )
+            session.add(blocked_key)
+            await session.commit()
+            blocked_key_id = blocked_key.id
+
+        blocked_revoke = await client.post(f"/control/vpn/access-keys/{blocked_key_id}/revoke")
+        blocked_delete = await client.delete(f"/control/vpn/access-keys/{blocked_key_id}")
+        assert blocked_revoke.status_code == 409
+        assert blocked_delete.status_code == 409
+        assert revoke_attempts == []
+        async with session_factory() as session:
+            retained_key = await session.get(VpnAccessKey, blocked_key_id)
+            assert retained_key is not None
+            assert retained_key.status == "pending_revoke"
 
         async with session_factory() as session:
             free_worker = await session.get(WorkerNode, free_worker_id)

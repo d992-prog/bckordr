@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
@@ -12,7 +13,7 @@ from app.api.deps import require_admin
 from app.api.routes.control import router as control_router
 from app.core.config import get_settings
 from app.db.base import Base
-from app.db.models import WorkerMaintenanceJob, WorkerNode
+from app.db.models import AttackRun, DropDomain, WorkerMaintenanceJob, WorkerNode, WorkerTask
 from app.db.session import get_db
 from app.services.worker_allowlist import render_worker_runtime_allowlist
 from app.services.worker_maintenance import build_worker_maintenance_commands
@@ -655,4 +656,132 @@ async def test_worker_bulk_vpn_update_starts_only_configured_vpn_nodes(monkeypat
     assert payload["jobs"][0]["worker_id"] == vpn_response.json()["id"]
     assert payload["jobs"][0]["action"] == "vpn_update"
     assert started_jobs == [payload["jobs"][0]["id"]]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_vpn_maintenance_blocks_attack_worker_but_allows_health_check(monkeypatch: pytest.MonkeyPatch):
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async def fake_sync(session, settings):
+        del session, settings
+        return False
+
+    started_jobs: list[int] = []
+
+    async def fake_run_job(job_id: int) -> None:
+        started_jobs.append(job_id)
+
+    monkeypatch.setattr("app.api.routes.control.sync_worker_runtime_allowlist", fake_sync)
+    monkeypatch.setattr("app.api.routes.control.run_worker_maintenance_job", fake_run_job)
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    worker_payload = {
+        "registrar_slug": "gandi",
+        "status": "ready",
+        "is_enabled": True,
+        "ssh_username": "root",
+        "ssh_password": "pw",
+        "max_rps": 16,
+        "target_rps": 16,
+        "vpn_role": "vpn_node",
+        "vpn_enabled": True,
+        "vpn_runtime_status": "ready",
+        "vpn_inbound_id": 1,
+    }
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        busy_response = await client.post(
+            "/control/workers",
+            json={
+                **worker_payload,
+                "name": "vpn-busy",
+                "ip_address": "10.0.0.1",
+                "ssh_host": "10.0.0.1",
+                "vpn_public_host": "busy.example.net",
+            },
+        )
+        free_response = await client.post(
+            "/control/workers",
+            json={
+                **worker_payload,
+                "name": "vpn-free",
+                "ip_address": "10.0.0.2",
+                "ssh_host": "10.0.0.2",
+                "vpn_public_host": "free.example.net",
+            },
+        )
+        busy_worker_id = busy_response.json()["id"]
+        free_worker_id = free_response.json()["id"]
+
+        async with session_factory() as session:
+            domain = DropDomain(fqdn="maintenance-target.fr", zone="fr", drop_date=datetime.now(UTC).date())
+            session.add(domain)
+            await session.flush()
+            run = AttackRun(
+                domain_id=domain.id,
+                status="running",
+                planned_start_at=datetime.now(UTC) - timedelta(minutes=1),
+                planned_end_at=datetime.now(UTC) + timedelta(minutes=1),
+            )
+            session.add(run)
+            await session.flush()
+            session.add(
+                WorkerTask(
+                    attack_run_id=run.id,
+                    domain_id=domain.id,
+                    worker_id=busy_worker_id,
+                    status="running",
+                )
+            )
+            await session.commit()
+
+        blocked = await client.post(f"/control/workers/{busy_worker_id}/maintenance/vpn-restart")
+        eligibility = await client.get("/control/vpn/nodes/eligibility")
+        bulk_update = await client.post("/control/workers/maintenance/vpn-update-all")
+
+        async with session_factory() as session:
+            jobs = (await session.execute(WorkerMaintenanceJob.__table__.select())).all()
+            for row in jobs:
+                job = await session.get(WorkerMaintenanceJob, row.id)
+                assert job is not None
+                job.status = "succeeded"
+            await session.commit()
+
+        bulk_autoconfig = await client.post("/control/workers/maintenance/vpn-autoconfig-all")
+        health_check = await client.post(f"/control/workers/{busy_worker_id}/maintenance/vpn-check")
+
+    assert blocked.status_code == 409
+    assert "active domain attack" in blocked.json()["detail"]
+    assert eligibility.status_code == 200
+    by_worker = {item["worker_id"]: item for item in eligibility.json()}
+    assert by_worker[busy_worker_id]["eligible"] is False
+    assert by_worker[busy_worker_id]["blocked_reasons"] == ["Worker is assigned to an active domain attack"]
+    assert by_worker[free_worker_id]["eligible"] is True
+    for response in (bulk_update, bulk_autoconfig):
+        assert response.status_code == 202
+        assert response.json()["started_count"] == 1
+        assert response.json()["jobs"][0]["worker_id"] == free_worker_id
+        assert response.json()["skipped_worker_ids"] == [busy_worker_id]
+    assert health_check.status_code == 202
+    assert len(started_jobs) == 3
     await engine.dispose()

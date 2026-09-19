@@ -534,6 +534,12 @@ class WorkerMaintenanceBulkResponse(BaseModel):
     skipped_worker_ids: list[int]
 
 
+class VpnNodeEligibilityResponse(BaseModel):
+    worker_id: int
+    eligible: bool
+    blocked_reasons: list[str]
+
+
 class VpnPlanBase(BaseModel):
     slug: str = Field(min_length=2, max_length=64)
     name: str = Field(min_length=2, max_length=128)
