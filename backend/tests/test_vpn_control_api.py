@@ -12,12 +12,12 @@ from sqlalchemy.pool import StaticPool
 from app.api.deps import require_admin
 from app.api.routes.control import router as control_router
 from app.db.base import Base
-from app.db.models import VpnSubscription, WorkerNode
+from app.db.models import AttackRun, DropDomain, VpnSubscription, WorkerNode, WorkerTask
 from app.db.session import get_db
 
 
 @pytest.mark.asyncio
-async def test_vpn_control_api_creates_plan_customer_subscription_and_key():
+async def test_vpn_control_api_creates_plan_customer_subscription_and_key(monkeypatch):
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         future=True,
@@ -42,6 +42,9 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key():
                 vpn_enabled=True,
                 vpn_runtime_status="ready",
                 vpn_public_host="de-1.example.net",
+                vpn_inbound_id=1,
+                ssh_host="2.27.20.255",
+                ssh_password="secret",
             ),
         )
         await session.commit()
@@ -58,6 +61,22 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key():
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[require_admin] = fake_admin
+
+    async def fake_provision(db, access_key, *, subscription=None, worker=None):
+        del db, subscription
+        access_key.worker_id = worker.id
+        access_key.status = "active"
+        access_key.config_uri = f"vless://test-{access_key.id}"
+        return access_key
+
+    async def fake_revoke(db, access_key, *, worker=None):
+        del db, worker
+        access_key.status = "revoked"
+        access_key.revoked_at = datetime.now(UTC)
+        return access_key
+
+    monkeypatch.setattr("app.api.routes.control.provision_vpn_access_key", fake_provision)
+    monkeypatch.setattr("app.api.routes.control.revoke_vpn_access_key", fake_revoke)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
         plan_response = await client.post(
@@ -84,10 +103,16 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key():
 
         subscription_response = await client.post(
             "/control/vpn/subscriptions",
-            json={"customer_id": customer_id, "plan_id": plan_id, "max_devices": 3},
+            json={"customer_id": customer_id, "plan_id": plan_id},
         )
         assert subscription_response.status_code == 201
-        subscription_id = subscription_response.json()["id"]
+        subscription_payload = subscription_response.json()
+        subscription_id = subscription_payload["id"]
+        starts_at = datetime.fromisoformat(subscription_payload["starts_at"])
+        expires_at = datetime.fromisoformat(subscription_payload["expires_at"])
+        assert timedelta(days=29, hours=23) < expires_at - starts_at < timedelta(days=30, minutes=1)
+        assert subscription_payload["traffic_limit_gb"] == 100
+        assert subscription_payload["max_devices"] == 3
 
         key_response = await client.post(
             "/control/vpn/access-keys",
@@ -95,18 +120,20 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key():
         )
         assert key_response.status_code == 201
         key_payload = key_response.json()
-        assert key_payload["status"] == "pending_sync"
+        assert key_payload["status"] == "active"
         assert key_payload["external_uuid"]
         assert key_payload["worker_id"] == 1
         key_id = key_payload["id"]
 
         delete_key_response = await client.delete(f"/control/vpn/access-keys/{key_id}")
         assert delete_key_response.status_code == 200
-        assert delete_key_response.json()["detail"] == "VPN access key deleted"
+        assert delete_key_response.json()["id"] == key_id
+        assert delete_key_response.json()["status"] == "revoked"
 
         keys_after_delete_response = await client.get("/control/vpn/access-keys")
         assert keys_after_delete_response.status_code == 200
-        assert keys_after_delete_response.json() == []
+        assert [item["id"] for item in keys_after_delete_response.json()] == [key_id]
+        assert keys_after_delete_response.json()[0]["status"] == "revoked"
 
         overview_response = await client.get("/control/vpn/overview")
 
@@ -121,7 +148,208 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key():
 
 
 @pytest.mark.asyncio
-async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending_revoke():
+async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(monkeypatch):
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
+        busy = WorkerNode(
+            name="busy-vpn-node",
+            status="ready",
+            is_enabled=True,
+            vpn_role="drop_worker+vpn_node",
+            vpn_enabled=True,
+            vpn_runtime_status="ready",
+            vpn_public_host="busy.example.net",
+            vpn_inbound_id=1,
+            ssh_host="10.0.0.1",
+            ssh_password="secret",
+        )
+        free = WorkerNode(
+            name="free-vpn-node",
+            status="ready",
+            is_enabled=True,
+            vpn_role="vpn_node",
+            vpn_enabled=True,
+            vpn_runtime_status="ready",
+            vpn_public_host="free.example.net",
+            vpn_inbound_id=1,
+            ssh_host="10.0.0.2",
+            ssh_password="secret",
+        )
+        unready = WorkerNode(
+            name="unready-vpn-node",
+            status="ready",
+            is_enabled=True,
+            vpn_role="vpn_node",
+            vpn_enabled=True,
+            vpn_runtime_status="not_installed",
+            vpn_public_host="unready.example.net",
+            vpn_inbound_id=1,
+            ssh_host="10.0.0.3",
+            ssh_password="secret",
+        )
+        session.add_all([busy, free, unready])
+        await session.flush()
+        busy_worker_id = busy.id
+        free_worker_id = free.id
+        domain = DropDomain(fqdn="busy-target.fr", zone="fr", drop_date=datetime.now(UTC).date())
+        session.add(domain)
+        await session.flush()
+        attack = AttackRun(
+            domain_id=domain.id,
+            status="running",
+            planned_start_at=datetime.now(UTC) - timedelta(minutes=1),
+            planned_end_at=datetime.now(UTC) + timedelta(minutes=1),
+        )
+        session.add(attack)
+        await session.flush()
+        session.add(
+            WorkerTask(
+                attack_run_id=attack.id,
+                domain_id=domain.id,
+                worker_id=busy.id,
+                status="running",
+            )
+        )
+        await session.commit()
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    async def fake_provision(db, access_key, *, subscription=None, worker=None):
+        del db, subscription
+        access_key.worker_id = worker.id
+        access_key.status = "active"
+        access_key.config_uri = f"vless://test-{access_key.id}"
+        return access_key
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+    monkeypatch.setattr("app.api.routes.control.provision_vpn_access_key", fake_provision)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        plan = (
+            await client.post(
+                "/control/vpn/plans",
+                json={"slug": "one", "name": "One device", "duration_days": 30, "max_devices": 1},
+            )
+        ).json()
+        customer = (
+            await client.post("/control/vpn/customers", json={"telegram_user_id": "safe-select"})
+        ).json()
+        subscription = (
+            await client.post(
+                "/control/vpn/subscriptions",
+                json={"customer_id": customer["id"], "plan_id": plan["id"]},
+            )
+        ).json()
+
+        automatic = await client.post(
+            "/control/vpn/access-keys",
+            json={"subscription_id": subscription["id"], "public_name": "phone"},
+        )
+        assert automatic.status_code == 201
+        assert automatic.json()["worker_id"] == free_worker_id
+        assert automatic.json()["status"] == "active"
+
+        second_device = await client.post(
+            "/control/vpn/access-keys",
+            json={"subscription_id": subscription["id"], "worker_id": free_worker_id, "public_name": "tablet"},
+        )
+        assert second_device.status_code == 409
+        assert second_device.json()["detail"] == "VPN device limit reached"
+
+        expired_customer = (
+            await client.post("/control/vpn/customers", json={"telegram_user_id": "expired"})
+        ).json()
+        expired_subscription = (
+            await client.post(
+                "/control/vpn/subscriptions",
+                json={
+                    "customer_id": expired_customer["id"],
+                    "starts_at": (datetime.now(UTC) - timedelta(days=2)).isoformat(),
+                    "expires_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                },
+            )
+        ).json()
+        expired_key = await client.post(
+            "/control/vpn/access-keys",
+            json={"subscription_id": expired_subscription["id"], "worker_id": free_worker_id},
+        )
+        assert expired_key.status_code == 409
+        assert expired_key.json()["detail"] == "VPN subscription has expired"
+
+        busy_customer = (
+            await client.post("/control/vpn/customers", json={"telegram_user_id": "busy"})
+        ).json()
+        busy_subscription = (
+            await client.post(
+                "/control/vpn/subscriptions",
+                json={"customer_id": busy_customer["id"], "plan_id": plan["id"]},
+            )
+        ).json()
+        unsafe_worker = await client.post(
+            "/control/vpn/access-keys",
+            json={"subscription_id": busy_subscription["id"], "worker_id": busy_worker_id},
+        )
+        assert unsafe_worker.status_code == 409
+        assert "active domain attack" in unsafe_worker.json()["detail"]
+
+        async with session_factory() as session:
+            free_worker = await session.get(WorkerNode, free_worker_id)
+            assert free_worker is not None
+            free_worker.status = "offline"
+            await session.commit()
+
+        pending_customer = (
+            await client.post("/control/vpn/customers", json={"telegram_user_id": "pending"})
+        ).json()
+        pending_subscription = (
+            await client.post(
+                "/control/vpn/subscriptions",
+                json={"customer_id": pending_customer["id"], "plan_id": plan["id"]},
+            )
+        ).json()
+        pending_key = await client.post(
+            "/control/vpn/access-keys",
+            json={"subscription_id": pending_subscription["id"], "public_name": "waiting"},
+        )
+        assert pending_key.status_code == 201
+        assert pending_key.json()["worker_id"] is None
+        assert pending_key.json()["status"] == "pending_sync"
+        assert pending_key.json()["last_error"] == "No safe VPN node is currently available"
+
+        async with session_factory() as session:
+            free_worker = await session.get(WorkerNode, free_worker_id)
+            assert free_worker is not None
+            free_worker.status = "ready"
+            await session.commit()
+
+        retry = await client.post(f"/control/vpn/access-keys/{pending_key.json()['id']}/provision")
+        assert retry.status_code == 200
+        assert retry.json()["worker_id"] == free_worker_id
+        assert retry.json()["status"] == "active"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending_revoke(monkeypatch):
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         future=True,
@@ -146,6 +374,9 @@ async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending
                 vpn_enabled=True,
                 vpn_runtime_status="ready",
                 vpn_public_host="de-1.example.net",
+                vpn_inbound_id=1,
+                ssh_host="2.27.20.255",
+                ssh_password="secret",
             ),
         )
         await session.commit()
@@ -162,6 +393,22 @@ async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[require_admin] = fake_admin
+
+    async def fake_provision(db, access_key, *, subscription=None, worker=None):
+        del db, subscription
+        access_key.worker_id = worker.id
+        access_key.status = "active"
+        access_key.config_uri = f"vless://test-{access_key.id}"
+        return access_key
+
+    async def fake_revoke(db, access_key, *, worker=None):
+        del db, worker
+        access_key.status = "pending_revoke"
+        access_key.last_error = "simulated unavailable node"
+        return access_key
+
+    monkeypatch.setattr("app.api.routes.control.provision_vpn_access_key", fake_provision)
+    monkeypatch.setattr("app.services.vpn_lifecycle.revoke_vpn_access_key", fake_revoke)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
         plan_response = await client.post(

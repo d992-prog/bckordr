@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from io import StringIO
 import json
 from pathlib import Path
@@ -150,6 +150,12 @@ from app.services.discovery import (
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
+from app.services.vpn_policy import (
+    count_device_slots,
+    evaluate_vpn_node,
+    select_vpn_node,
+    validate_subscription_access,
+)
 from app.services.vpn_provisioning import provision_vpn_access_key, revoke_vpn_access_key
 from app.services.app_settings import (
     DiscoveryRuntimeSettings,
@@ -2939,9 +2945,20 @@ async def create_vpn_subscription(
     customer = await db.get(VpnCustomer, payload.customer_id)
     if customer is None:
         raise HTTPException(status_code=404, detail="VPN customer not found")
-    if payload.plan_id is not None and await db.get(VpnPlan, payload.plan_id) is None:
+    plan = await db.get(VpnPlan, payload.plan_id) if payload.plan_id is not None else None
+    if payload.plan_id is not None and plan is None:
         raise HTTPException(status_code=404, detail="VPN plan not found")
-    subscription = VpnSubscription(**payload.model_dump())
+    values = payload.model_dump(exclude_unset=True)
+    starts_at = values.get("starts_at") or utcnow()
+    values["starts_at"] = starts_at
+    if plan is not None:
+        if "expires_at" not in payload.model_fields_set and plan.duration_days is not None:
+            values["expires_at"] = starts_at + timedelta(days=plan.duration_days)
+        if "traffic_limit_gb" not in payload.model_fields_set:
+            values["traffic_limit_gb"] = plan.traffic_limit_gb
+        if "max_devices" not in payload.model_fields_set:
+            values["max_devices"] = plan.max_devices
+    subscription = VpnSubscription(**values)
     db.add(subscription)
     await add_audit_log(
         db,
@@ -2993,6 +3010,37 @@ async def list_vpn_access_keys(
     return [VpnAccessKeyResponse.model_validate(access_key) for access_key in result.scalars().all()]
 
 
+async def _validate_vpn_key_issue(
+    db: AsyncSession,
+    subscription: VpnSubscription,
+    *,
+    exclude_key_id: int | None = None,
+) -> None:
+    customer = await db.get(VpnCustomer, subscription.customer_id)
+    slots = await count_device_slots(db, subscription.id, exclude_key_id=exclude_key_id)
+    error = validate_subscription_access(subscription, customer, device_slots=slots)
+    if error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=error)
+
+
+async def _resolve_vpn_key_worker(
+    db: AsyncSession,
+    worker_id: int | None,
+) -> WorkerNode | None:
+    worker = await select_vpn_node(db, worker_id=worker_id)
+    if worker_id is None or worker is not None:
+        return worker
+
+    requested_worker = await db.get(WorkerNode, worker_id)
+    if requested_worker is None:
+        raise HTTPException(status_code=404, detail="Worker not found")
+    eligibility = await evaluate_vpn_node(db, requested_worker)
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="; ".join(eligibility.reasons),
+    )
+
+
 @router.post("/vpn/access-keys", response_model=VpnAccessKeyResponse, status_code=status.HTTP_201_CREATED)
 async def create_vpn_access_key(
     payload: VpnAccessKeyCreateRequest,
@@ -3002,20 +3050,19 @@ async def create_vpn_access_key(
     subscription = await db.get(VpnSubscription, payload.subscription_id)
     if subscription is None:
         raise HTTPException(status_code=404, detail="VPN subscription not found")
-    worker = await db.get(WorkerNode, payload.worker_id) if payload.worker_id is not None else None
-    if payload.worker_id is not None and worker is None:
-        raise HTTPException(status_code=404, detail="Worker not found")
+    await _validate_vpn_key_issue(db, subscription)
+    worker = await _resolve_vpn_key_worker(db, payload.worker_id)
     now = utcnow()
     access_key = VpnAccessKey(
         subscription_id=payload.subscription_id,
-        worker_id=payload.worker_id,
+        worker_id=worker.id if worker is not None else None,
         protocol=payload.protocol,
         public_name=payload.public_name,
         external_uuid=str(uuid4()),
         status="pending_sync",
         issued_at=now,
         expires_at=subscription.expires_at,
-        last_error=None if worker is not None else "VPN node is not selected.",
+        last_error=None if worker is not None else "No safe VPN node is currently available",
     )
     db.add(access_key)
     await db.flush()
@@ -3042,7 +3089,19 @@ async def provision_existing_vpn_access_key(
     access_key = await db.get(VpnAccessKey, access_key_id)
     if access_key is None:
         raise HTTPException(status_code=404, detail="VPN access key not found")
-    await provision_vpn_access_key(db, access_key)
+    if access_key.status not in {"pending_sync", "failed"}:
+        raise HTTPException(status_code=409, detail=f"VPN access key is {access_key.status}")
+    subscription = await db.get(VpnSubscription, access_key.subscription_id)
+    if subscription is None:
+        raise HTTPException(status_code=404, detail="VPN subscription not found")
+    await _validate_vpn_key_issue(db, subscription, exclude_key_id=access_key.id)
+    worker = await _resolve_vpn_key_worker(db, access_key.worker_id)
+    if worker is None:
+        access_key.status = "pending_sync"
+        access_key.last_error = "No safe VPN node is currently available"
+    else:
+        access_key.worker_id = worker.id
+        await provision_vpn_access_key(db, access_key, subscription=subscription, worker=worker)
     await add_audit_log(
         db,
         actor_user_id=admin.id,
@@ -3095,27 +3154,27 @@ async def run_vpn_lifecycle_endpoint(
     return {"detail": "VPN lifecycle maintenance completed", **result}
 
 
-@router.delete("/vpn/access-keys/{access_key_id}", response_model=MessageResponse)
+@router.delete("/vpn/access-keys/{access_key_id}", response_model=VpnAccessKeyResponse)
 async def delete_vpn_access_key(
     access_key_id: int,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
-) -> MessageResponse:
+) -> VpnAccessKeyResponse:
     access_key = await db.get(VpnAccessKey, access_key_id)
     if access_key is None:
         raise HTTPException(status_code=404, detail="VPN access key not found")
     worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
     await revoke_vpn_access_key(db, access_key, worker=worker)
-    await db.delete(access_key)
     await add_audit_log(
         db,
         actor_user_id=admin.id,
         target_user_id=None,
-        action="vpn_access_key_delete",
+        action="vpn_access_key_revoke_compat",
         details=f"access_key_id={access_key_id} worker_id={access_key.worker_id or '-'}",
     )
     await db.commit()
-    return MessageResponse(detail="VPN access key deleted")
+    await db.refresh(access_key)
+    return VpnAccessKeyResponse.model_validate(access_key)
 
 
 @router.get("/vpn/node-events", response_model=list[VpnNodeEventResponse])
