@@ -102,7 +102,7 @@ Provisioning is idempotent by stable external UUID and stable client email. Retr
 
 Revocation is idempotent. A missing client in 3x-UI is treated as already revoked. Transport, SSH, and node-availability errors result in `pending_revoke`, retain the control record, and store a bounded diagnostic message.
 
-The normal delete endpoint never removes a key record unless revocation is confirmed. If revocation cannot be confirmed, it returns the retained `pending_revoke` key instead of reporting deletion. Historical revoked keys remain visible in the panel. No force-delete action is included in this release.
+The legacy delete endpoint becomes a revoke-and-retain compatibility action and never removes the key record. It returns the retained key as `revoked` when 3x-UI removal is confirmed or `pending_revoke` when removal must be retried. Historical revoked keys remain visible in the panel. No force-delete action is included in this release.
 
 ## Automatic Lifecycle
 
