@@ -194,8 +194,8 @@ Architecture goal:
 
 ## Most Recent Verified Checks
 
-At the latest verified point:
-- `python -m pytest tests -q -p no:cacheprovider` in `backend` -> `55 passed`
+At the VPN operational-hardening checkpoint on 2026-09-20:
+- `python -m pytest tests -q -p no:cacheprovider` in `backend` -> `212 passed`
 - `python -m ruff check app tests` in `backend` -> passed
 - `python -m ruff check app` in `worker` -> passed
 - `npm --prefix frontend run build` -> passed
