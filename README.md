@@ -26,6 +26,7 @@ The control server is now the main project runtime. It keeps:
 - attack runs
 - worker tasks
 - attack events
+- VPN plans, customers, subscriptions, access-key history, lifecycle state, and Telegram delivery audit
 
 The control API now exposes:
 
@@ -51,6 +52,19 @@ It also exposes worker runtime endpoints:
 - `/api/worker-runtime/tasks/{id}/status`
 - `/api/worker-runtime/tasks/{id}/progress`
 - `/api/worker-runtime/tasks/{id}/result`
+
+### VPN service
+
+The control server includes a payment-free VPN service layer:
+
+- plans, customers, and subscriptions are created manually in the admin UI;
+- access keys are provisioned to safe 3x-UI nodes;
+- lifecycle maintenance runs automatically and can also be started manually;
+- Telegram supports `/start`, `/status`, `/keys`, and `/support`;
+- active domain-attack workers reject VPN-changing maintenance and key mutations;
+- revoking a key retains its database row and operational history.
+
+Payments are intentionally out of scope until the operational flow is fully verified. See [docs/vpn-service.md](docs/vpn-service.md) for rollout, webhook setup, recovery, and the smoke test.
 
 ### Worker agent
 
@@ -105,6 +119,18 @@ Optional worker runtime allowlist knobs for nginx-managed origin protection:
 WORKER_RUNTIME_ALLOWLIST_PATH=/etc/nginx/includes/domain-drop-worker-allowlist.conf
 WORKER_RUNTIME_ALLOWLIST_RELOAD_COMMAND=systemctl reload nginx
 WORKER_RUNTIME_PUBLIC_BASE_URL=http://CONTROL_SERVER_IP:8080
+```
+
+VPN lifecycle and Telegram bot settings:
+
+```env
+VPN_LIFECYCLE_ENABLED=true
+VPN_LIFECYCLE_INTERVAL_SECONDS=60
+VPN_LIFECYCLE_BATCH_SIZE=50
+VPN_TELEGRAM_BOT_TOKEN=
+VPN_TELEGRAM_WEBHOOK_SECRET=
+VPN_TELEGRAM_SECRET_TOKEN=
+VPN_SUPPORT_TEXT=Напишите администратору для подключения или продления VPN.
 ```
 
 Run control API:

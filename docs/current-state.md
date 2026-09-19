@@ -41,6 +41,12 @@ Architecture goal:
   Control-side Gandi dry-run request builder and dry-run execution.
 - [backend/app/services/registrars.py](/D:/паразитное%20seo/backorder/project/backend/app/services/registrars.py)
   Registrar account remote auth validation.
+- [backend/app/services/vpn_policy.py](/D:/паразитное%20seo/backorder/project/backend/app/services/vpn_policy.py)
+  Shared subscription, device-limit, safe-node, and active-attack policy.
+- [backend/app/services/vpn_lifecycle.py](/D:/паразитное%20seo/backorder/project/backend/app/services/vpn_lifecycle.py)
+  Serialized automatic/manual provisioning, expiration, and revoke retries.
+- [backend/app/services/vpn_telegram.py](/D:/паразитное%20seo/backorder/project/backend/app/services/vpn_telegram.py)
+  Idempotent customer bot commands and audited Telegram delivery.
 - [backend/app/db/models.py](/D:/паразитное%20seo/backorder/project/backend/app/db/models.py)
   SQLAlchemy models for domains, strategies, overrides, workers, runs, tasks, events, contacts, accounts.
 - [backend/app/db/migrations.py](/D:/паразитное%20seo/backorder/project/backend/app/db/migrations.py)
@@ -74,6 +80,8 @@ Architecture goal:
   Simulate-load guidance and failure testing.
 - [docs/gandi-production.md](/D:/паразитное%20seo/backorder/project/docs/gandi-production.md)
   Current Gandi production behavior and caveats.
+- [docs/vpn-service.md](/D:/паразитное%20seo/backorder/project/docs/vpn-service.md)
+  VPN node rollout, Telegram webhook configuration, recovery, and smoke testing.
 
 ## What Is Implemented
 
@@ -161,6 +169,15 @@ Architecture goal:
   - per-domain `Dry run` action
   - batch `Dry run due today` action
   - account-level `Prefill contact`
+- VPN service now supports:
+  - manual plans, customers, and subscriptions while payments remain out of scope
+  - safe automatic 3x-UI node selection and per-subscription device limits
+  - scheduled and manual lifecycle runs for `pending_sync`, expiration, and `pending_revoke`
+  - blocking VPN mutations on workers with an active domain attack while health checks remain available
+  - revoke-and-retain access-key history instead of destructive deletion
+  - idempotent Telegram `/start`, `/status`, `/keys`, and `/support` commands
+  - delivery of active keys only for active customers with currently valid subscriptions
+  - admin visibility for node eligibility, lifecycle counters, key retry state, and Telegram updates
 
 ## Current Limits
 
@@ -172,6 +189,8 @@ Architecture goal:
 - TLD-specific `extra_parameters` are supported as raw JSON text, not as a rich typed UI model.
 - UI is operational and usable, but still not a final polished admin product.
 - Worker runtime IP allowlist enforcement is implemented on the control side, but nginx/origin deployment still must be configured on the server.
+- VPN payments are intentionally not implemented yet.
+- A real Telegram webhook smoke test requires a deployed HTTPS control URL and a BotFather token; automated webhook behavior is covered locally.
 
 ## Most Recent Verified Checks
 
