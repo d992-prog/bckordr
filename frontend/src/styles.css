@@ -159,6 +159,14 @@ button {
   font-size: 2rem;
 }
 
+.vpn-lifecycle-stats {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.vpn-lifecycle-stats article {
+  min-height: 112px;
+}
+
 .grid {
   display: grid;
   gap: 20px;

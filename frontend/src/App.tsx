@@ -23,10 +23,13 @@ import {
   StrategyPreview,
   VpnAccessKey,
   VpnCustomer,
+  VpnLifecycleStatus,
   VpnNodeEvent,
+  VpnNodeEligibility,
   VpnOverview,
   VpnPlan,
   VpnSubscription,
+  VpnTelegramUpdate,
   WorkerNode,
   WorkerMaintenanceJob,
   WorkerSetup,
@@ -1104,6 +1107,9 @@ export default function App() {
   const [vpnSubscriptions, setVpnSubscriptions] = useState<VpnSubscription[]>([]);
   const [vpnAccessKeys, setVpnAccessKeys] = useState<VpnAccessKey[]>([]);
   const [vpnNodeEvents, setVpnNodeEvents] = useState<VpnNodeEvent[]>([]);
+  const [vpnLifecycleStatus, setVpnLifecycleStatus] = useState<VpnLifecycleStatus | null>(null);
+  const [vpnNodeEligibility, setVpnNodeEligibility] = useState<Record<number, VpnNodeEligibility>>({});
+  const [vpnTelegramUpdates, setVpnTelegramUpdates] = useState<VpnTelegramUpdate[]>([]);
 
   const [loginForm, setLoginForm] = useState({ username: "", password: "", remember_me: true });
   const [domainForm, setDomainForm] = useState(DEFAULT_DOMAIN_FORM);
@@ -1449,6 +1455,9 @@ export default function App() {
         vpnSubscriptionsData,
         vpnAccessKeysData,
         vpnNodeEventsData,
+        vpnLifecycleStatusData,
+        vpnNodeEligibilityData,
+        vpnTelegramUpdatesData,
         diagnosticData,
       ] = await Promise.all([
         api.getOverview(),
@@ -1473,6 +1482,9 @@ export default function App() {
         api.getVpnSubscriptions(),
         api.getVpnAccessKeys(),
         api.getVpnNodeEvents(),
+        api.getVpnLifecycleStatus(),
+        api.getVpnNodeEligibility(),
+        api.getVpnTelegramUpdates(),
         api.getDiagnosticTelegram(),
       ]);
       setOverview(overviewData);
@@ -1498,6 +1510,11 @@ export default function App() {
       setVpnSubscriptions(vpnSubscriptionsData);
       setVpnAccessKeys(vpnAccessKeysData);
       setVpnNodeEvents(vpnNodeEventsData);
+      setVpnLifecycleStatus(vpnLifecycleStatusData);
+      setVpnNodeEligibility(Object.fromEntries(
+        vpnNodeEligibilityData.map((item) => [item.worker_id, item]),
+      ));
+      setVpnTelegramUpdates(vpnTelegramUpdatesData);
       setDiagnosticTelegram(diagnosticData);
     } catch (error) {
       if (!options?.silent) {
@@ -2459,15 +2476,20 @@ export default function App() {
 
   async function deleteVpnAccessKey(accessKey: VpnAccessKey) {
     const keyName = accessKey.public_name ?? `ключ #${accessKey.id}`;
-    if (!window.confirm(`Удалить VPN ключ ${keyName}?`)) {
+    if (!window.confirm(`Отозвать VPN ключ ${keyName} в 3x-UI и сохранить запись в истории?`)) {
       return;
     }
     try {
-      const payload = await api.deleteVpnAccessKey(accessKey.id);
+      const retained = await api.deleteVpnAccessKey(accessKey.id);
       await loadAll();
-      setToast({ type: "success", text: payload.detail });
+      setToast({
+        type: retained.status === "pending_revoke" ? "error" : "success",
+        text: retained.status === "pending_revoke"
+          ? retained.last_error || "Ключ сохранён и ожидает отзыва на VPN-ноде"
+          : "Ключ отозван, запись сохранена в истории",
+      });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления VPN ключа" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка отзыва VPN ключа" });
     }
   }
 
@@ -4464,7 +4486,7 @@ export default function App() {
           <div className="card-head">
             <div>
               <h2>VPN сервис</h2>
-              <p className="muted">Админский слой для серверов, тарифов, клиентов, подписок и ключей. Синхронизация с 3x-UI и Telegram-ботом будет следующим отдельным этапом.</p>
+              <p className="muted">Рабочий контур VPN: безопасная выдача через 3x-UI, автоматическое обслуживание подписок и доставка ключей через Telegram. Оплата пока намеренно отключена.</p>
             </div>
             <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
           </div>
@@ -4474,6 +4496,26 @@ export default function App() {
             <article><span>Клиенты</span><strong>{vpnOverview?.active_customers ?? 0}</strong></article>
             <article><span>Подписки</span><strong>{vpnOverview?.active_subscriptions ?? 0}</strong></article>
             <article><span>Ключи</span><strong>{vpnOverview?.active_keys ?? 0}</strong></article>
+          </div>
+        </div>
+
+        <div className="card full-span">
+          <div className="card-head">
+            <div>
+              <h2>Автоматическое обслуживание</h2>
+              <p className="muted">Последний запуск: {formatDateTime(vpnLifecycleStatus?.ran_at ?? null)}</p>
+            </div>
+            <button type="button" className="ghost" onClick={() => void runVpnLifecycleMaintenance()}>Запустить сейчас</button>
+          </div>
+          <div className="stats vpn-lifecycle-stats">
+            <article><span>Проверено ключей</span><strong>{vpnLifecycleStatus?.checked_keys ?? 0}</strong></article>
+            <article><span>Выдано</span><strong>{vpnLifecycleStatus?.provisioned_keys ?? 0}</strong></article>
+            <article><span>Отозвано</span><strong>{vpnLifecycleStatus?.revoked_keys ?? 0}</strong></article>
+            <article><span>Истекло подписок</span><strong>{vpnLifecycleStatus?.expired_subscriptions ?? 0}</strong></article>
+            <article><span>Ждут выдачи</span><strong>{vpnLifecycleStatus?.pending_sync_keys ?? 0}</strong></article>
+            <article><span>Ждут отзыва</span><strong>{vpnLifecycleStatus?.pending_revoke_keys ?? 0}</strong></article>
+            <article><span>Пропущено безопасностью</span><strong>{vpnLifecycleStatus?.skipped_unsafe_keys ?? 0}</strong></article>
+            <article><span>Ошибки</span><strong>{vpnLifecycleStatus?.failed_keys ?? 0}</strong></article>
           </div>
         </div>
 
@@ -4612,6 +4654,7 @@ export default function App() {
                   <th>Воркер</th>
                   <th>Роль</th>
                   <th>Статус</th>
+                  <th>Выдача ключей</th>
                   <th>Host</th>
                   <th>Endpoint</th>
                   <th>3x-UI админка</th>
@@ -4626,12 +4669,24 @@ export default function App() {
                   const vpnInstallJob = activeOrSucceededVpnInstallJobByWorker.get(worker.id);
                   const vpnInstalled = worker.vpn_runtime_status === "ready" || vpnInstallJob?.status === "succeeded";
                   const vpnInstallInProgress = vpnInstallJob?.status === "queued" || vpnInstallJob?.status === "running";
-                  const vpnInstallDisabled = !worker.ssh_access_configured || vpnInstalled || vpnInstallInProgress;
+                  const eligibility = vpnNodeEligibility[worker.id];
+                  const vpnMaintenanceBlocked = (eligibility?.blocked_reasons ?? []).some((reason) =>
+                    reason.includes("active domain attack"),
+                  );
+                  const vpnInstallDisabled = vpnMaintenanceBlocked || vpnInstalled || vpnInstallInProgress;
                   return (
                     <tr key={worker.id}>
                       <td><strong>{worker.name}</strong><div className="row-hint">{worker.ip_address ?? "нет IP"} | {worker.region ?? "нет региона"}</div></td>
                       <td>{formatVpnRole(worker.vpn_role)}</td>
                       <td><span className={statusClass(worker.vpn_enabled ? worker.vpn_runtime_status : "disabled")}>{worker.vpn_enabled ? formatStatusLabel(worker.vpn_runtime_status) : "выключен"}</span>{worker.vpn_last_error ? <div className="row-hint">{worker.vpn_last_error}</div> : null}</td>
+                      <td>
+                        <span className={eligibility?.eligible ? "status available" : "status error"}>
+                          {eligibility?.eligible ? "готова к выдаче" : "заблокирована"}
+                        </span>
+                        {(eligibility?.blocked_reasons ?? []).map((reason) => (
+                          <div className="row-hint" key={reason}>{reason}</div>
+                        ))}
+                      </td>
                       <td>{worker.vpn_public_host ?? "—"}</td>
                       <td><strong>{formatVpnEndpoint(worker)}</strong><div className="row-hint">адрес для клиента</div></td>
                       <td>
@@ -4652,12 +4707,12 @@ export default function App() {
                       <td>{formatDateTime(worker.vpn_last_checked_at)}</td>
                       <td>
                         <div className="actions">
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_autoconfig")} disabled={!worker.ssh_access_configured}>Автонастроить</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={!worker.ssh_access_configured || Boolean(worker.vpn_inbound_id)}>Создать inbound</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")}>Проверить</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_autoconfig")} disabled={vpnMaintenanceBlocked}>Автонастроить</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={vpnMaintenanceBlocked || Boolean(worker.vpn_inbound_id)}>Создать inbound</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "Установлен" : vpnInstallInProgress ? "Установка" : "Установить"}</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={!worker.ssh_access_configured}>Обновить</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={!worker.ssh_access_configured}>Рестарт</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={vpnMaintenanceBlocked}>Обновить</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={vpnMaintenanceBlocked}>Рестарт</button>
                         </div>
                       </td>
                     </tr>
@@ -4781,34 +4836,26 @@ export default function App() {
                     <td>#{accessKey.subscription_id}</td>
                     <td>{accessKey.worker_id ? workers.find((worker) => worker.id === accessKey.worker_id)?.name ?? `#${accessKey.worker_id}` : "авто / позже"}</td>
                     <td>{accessKey.protocol}</td>
-                    <td><span className={statusClass(accessKey.status)}>{formatStatusLabel(accessKey.status)}</span>{accessKey.last_error ? <div className="row-hint">{accessKey.last_error}</div> : null}</td>
+                    <td><span className={statusClass(accessKey.status)}>{formatStatusLabel(accessKey.status)}</span>{accessKey.last_error && accessKey.status !== "revoked" ? <div className="row-hint">{accessKey.last_error}</div> : null}</td>
                     <td>{formatDateTime(accessKey.issued_at)} → {formatDateTime(accessKey.expires_at)}</td>
-                    <td>{accessKey.config_uri ? <code>{accessKey.config_uri}</code> : "—"}</td>
+                    <td>{accessKey.config_uri ? <code className="code-inline" title={accessKey.config_uri}>{accessKey.config_uri}</code> : "—"}</td>
                     <td>
                       <div className="actions">
-                        <button
-                          type="button"
-                          className="ghost"
-                          onClick={() => void provisionVpnAccessKey(accessKey)}
-                          disabled={!accessKey.worker_id || accessKey.status === "revoked" || accessKey.status === "pending_revoke"}
-                        >
-                          {accessKey.config_uri ? "Переиздать" : "Выдать доступ"}
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost"
-                          onClick={() => void revokeVpnAccessKey(accessKey)}
-                          disabled={accessKey.status === "revoked" || accessKey.status === "pending_revoke"}
-                        >
-                          Отключить
-                        </button>
-                        <button
-                          type="button"
-                          className="danger"
-                          onClick={() => void deleteVpnAccessKey(accessKey)}
-                        >
-                          Удалить
-                        </button>
+                        {(["pending_sync", "failed"].includes(accessKey.status)) ? (
+                          <button type="button" className="ghost" onClick={() => void provisionVpnAccessKey(accessKey)}>
+                            Повторить выдачу
+                          </button>
+                        ) : null}
+                        {accessKey.status === "pending_revoke" ? (
+                          <button type="button" className="ghost" onClick={() => void revokeVpnAccessKey(accessKey)}>
+                            Повторить отзыв
+                          </button>
+                        ) : null}
+                        {accessKey.status === "active" ? (
+                          <button type="button" className="danger" onClick={() => void deleteVpnAccessKey(accessKey)}>
+                            Отозвать и сохранить
+                          </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -4817,6 +4864,40 @@ export default function App() {
             </table>
           </div>
           {vpnAccessKeys.length === 0 ? <p className="empty">Ключей пока нет.</p> : null}
+        </div>
+
+        <div className="card full-span">
+          <h2>Telegram</h2>
+          <p className="muted">Последние обращения клиентов к VPN-боту и результат доставки ответа.</p>
+          <div className="simple-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Время</th>
+                  <th>Update ID</th>
+                  <th>Клиент</th>
+                  <th>Статус</th>
+                  <th>Ошибка</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vpnTelegramUpdates.map((update) => (
+                  <tr key={update.id}>
+                    <td>{formatDateTime(update.created_at)}</td>
+                    <td>{update.update_id}</td>
+                    <td>{update.customer_id ? `#${update.customer_id}` : "—"}</td>
+                    <td>
+                      <span className={update.processed_at ? "status available" : "status error"}>
+                        {update.processed_at ? "обработано" : "не доставлено"}
+                      </span>
+                    </td>
+                    <td>{update.error_message ? <span className="error-text">{update.error_message}</span> : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {vpnTelegramUpdates.length === 0 ? <p className="empty">Telegram update пока нет.</p> : null}
         </div>
 
         <div className="card full-span">

@@ -517,12 +517,31 @@ export type VpnAccessKey = {
   updated_at: string;
 };
 
-export type VpnLifecycleMaintenanceResult = {
-  detail: string;
+export type VpnNodeEligibility = {
+  worker_id: number;
+  eligible: boolean;
+  blocked_reasons: string[];
+};
+
+export type VpnLifecycleStatus = {
+  ran_at: string | null;
   expired_subscriptions: number;
   checked_keys: number;
+  provisioned_keys: number;
   revoked_keys: number;
+  pending_sync_keys: number;
   pending_revoke_keys: number;
+  skipped_unsafe_keys: number;
+  failed_keys: number;
+};
+
+export type VpnTelegramUpdate = {
+  id: number;
+  update_id: string;
+  customer_id: number | null;
+  processed_at: string | null;
+  error_message: string | null;
+  created_at: string;
 };
 
 export type VpnNodeEvent = {
@@ -1004,14 +1023,19 @@ export const api = {
     request<VpnAccessKey>(`/control/vpn/access-keys/${id}/provision`, { method: "POST" }),
   revokeVpnAccessKey: (id: number) =>
     request<VpnAccessKey>(`/control/vpn/access-keys/${id}/revoke`, { method: "POST" }),
+  getVpnLifecycleStatus: () => request<VpnLifecycleStatus>("/control/vpn/lifecycle/status"),
   runVpnLifecycleMaintenance: () =>
-    request<VpnLifecycleMaintenanceResult>("/control/vpn/lifecycle/run", { method: "POST" }),
+    request<VpnLifecycleStatus>("/control/vpn/lifecycle/run", { method: "POST" }),
   deleteVpnAccessKey: (id: number) =>
-    request<{ detail: string }>(`/control/vpn/access-keys/${id}`, { method: "DELETE" }),
+    request<VpnAccessKey>(`/control/vpn/access-keys/${id}`, { method: "DELETE" }),
+  getVpnNodeEligibility: () =>
+    request<VpnNodeEligibility[]>("/control/vpn/nodes/eligibility"),
   getVpnNodeEvents: (workerId?: number) =>
     request<VpnNodeEvent[]>(
       `/control/vpn/node-events${workerId ? `?worker_id=${encodeURIComponent(String(workerId))}` : ""}`,
     ),
+  getVpnTelegramUpdates: () =>
+    request<VpnTelegramUpdate[]>("/control/vpn/telegram-updates"),
 
   getRegistrarAccounts: () => request<RegistrarAccount[]>("/control/registrar-accounts"),
   createRegistrarAccount: (payload: Record<string, unknown>) =>
