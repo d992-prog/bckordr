@@ -312,6 +312,16 @@ async def _run_vpn_lifecycle_maintenance(
                 )
         access_key.updated_at = current_time
 
+        # Every remote transition is its own durable checkpoint. A cycle-level
+        # timeout may cancel a later SSH call, but it must never roll back keys
+        # whose external 3x-UI operation has already completed.
+        await set_app_setting(
+            db,
+            VPN_LIFECYCLE_LAST_RESULT_KEY,
+            json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+        )
+        await db.commit()
+
     await set_app_setting(
         db,
         VPN_LIFECYCLE_LAST_RESULT_KEY,

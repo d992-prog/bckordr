@@ -858,3 +858,74 @@ async def test_queued_vpn_mutation_rechecks_attack_before_ssh(monkeypatch: pytes
     assert "active domain attack" in (stored_job.error_message or "")
     assert ssh_calls == []
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_vpn_mutation_relocks_after_running_commit_and_holds_lock_through_ssh(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
+        worker = WorkerNode(
+            name="mutation-lock",
+            status="ready",
+            is_enabled=True,
+            ip_address="192.0.2.81",
+            ssh_host="192.0.2.81",
+            ssh_username="root",
+            ssh_password="pw",
+            vpn_role="vpn_node",
+            vpn_enabled=True,
+            vpn_runtime_status="ready",
+            vpn_public_host="lock.example.net",
+            vpn_inbound_id=1,
+        )
+        session.add(worker)
+        await session.flush()
+        job = WorkerMaintenanceJob(worker_id=worker.id, action="vpn_restart", status="queued")
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+
+    from app.services import worker_maintenance
+
+    original_commit = AsyncSession.commit
+    original_lock = worker_maintenance.lock_vpn_worker
+    commit_count = 0
+    lock_commit_counts: list[int] = []
+    ssh_commit_counts: list[int] = []
+
+    async def tracked_commit(session):
+        nonlocal commit_count
+        commit_count += 1
+        await original_commit(session)
+
+    async def tracked_lock(session, worker_id):
+        lock_commit_counts.append(commit_count)
+        return await original_lock(session, worker_id)
+
+    async def fake_execute(worker, commands):
+        del worker, commands
+        ssh_commit_counts.append(commit_count)
+        return "ok"
+
+    monkeypatch.setattr("app.services.worker_maintenance.AsyncSessionLocal", session_factory)
+    monkeypatch.setattr(AsyncSession, "commit", tracked_commit)
+    monkeypatch.setattr("app.services.worker_maintenance.lock_vpn_worker", tracked_lock)
+    monkeypatch.setattr("app.services.worker_maintenance.execute_worker_ssh_commands", fake_execute)
+
+    await run_worker_maintenance_job(job_id)
+
+    assert lock_commit_counts == [1]
+    assert ssh_commit_counts == [1]
+    assert commit_count == 2
+    await engine.dispose()

@@ -1005,33 +1005,11 @@ async def run_worker_maintenance_job(job_id: int) -> None:
         job = await session.get(WorkerMaintenanceJob, job_id)
         if job is None:
             return
-        worker = (
-            await lock_vpn_worker(session, job.worker_id)
-            if job.action in VPN_MUTATION_ACTIONS
-            else await session.get(WorkerNode, job.worker_id)
-        )
+        worker = await session.get(WorkerNode, job.worker_id)
         if worker is None:
             job.status = "failed"
             job.error_message = "Worker not found"
             job.finished_at = utcnow()
-            await session.commit()
-            return
-
-        if job.action in VPN_MUTATION_ACTIONS and worker.id in await active_attack_worker_ids(session):
-            reason = "Worker is assigned to an active domain attack"
-            job.status = "failed"
-            job.error_message = reason
-            job.finished_at = utcnow()
-            job.updated_at = utcnow()
-            session.add(
-                VpnNodeEvent(
-                    worker_id=worker.id,
-                    level="warning",
-                    event_type="vpn_mutation_blocked",
-                    message=f"VPN maintenance blocked before SSH: {job.action}",
-                    details={"job_id": job.id, "reason": reason},
-                )
-            )
             await session.commit()
             return
 
@@ -1043,6 +1021,36 @@ async def run_worker_maintenance_job(job_id: int) -> None:
             worker.vpn_last_error = None
             worker.vpn_last_checked_at = utcnow()
         await session.commit()
+
+        if job.action in VPN_MUTATION_ACTIONS:
+            # Publish the running lease first, then acquire the worker row in a
+            # new transaction. Attack planners either observe the lease or are
+            # serialized by this lock. Keep it through SSH and the final commit.
+            worker = await lock_vpn_worker(session, job.worker_id)
+            if worker is None:
+                job.status = "failed"
+                job.error_message = "Worker not found"
+                job.finished_at = utcnow()
+                job.updated_at = utcnow()
+                await session.commit()
+                return
+            if worker.id in await active_attack_worker_ids(session):
+                reason = "Worker is assigned to an active domain attack"
+                job.status = "failed"
+                job.error_message = reason
+                job.finished_at = utcnow()
+                job.updated_at = utcnow()
+                session.add(
+                    VpnNodeEvent(
+                        worker_id=worker.id,
+                        level="warning",
+                        event_type="vpn_mutation_blocked",
+                        message=f"VPN maintenance blocked before SSH: {job.action}",
+                        details={"job_id": job.id, "reason": reason},
+                    )
+                )
+                await session.commit()
+                return
 
         try:
             discovery_settings = await get_discovery_runtime_settings(session, get_settings())

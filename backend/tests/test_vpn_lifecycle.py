@@ -511,6 +511,86 @@ async def test_control_runtime_cancels_lifecycle_at_cycle_timeout(session_factor
 
 
 @pytest.mark.asyncio
+async def test_cycle_timeout_preserves_completed_key_and_advances_queue(
+    session_factory,
+    monkeypatch,
+):
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    async with session_factory() as session:
+        worker = _vpn_worker("partial-cycle")
+        session.add(worker)
+        await session.flush()
+        subscription = await _subscription(
+            session,
+            expires_at=now + timedelta(days=1),
+            max_devices=2,
+        )
+        first = VpnAccessKey(
+            subscription_id=subscription.id,
+            status="pending_sync",
+            public_name="first",
+        )
+        second = VpnAccessKey(
+            subscription_id=subscription.id,
+            status="pending_sync",
+            public_name="second",
+        )
+        session.add_all([first, second])
+        await session.commit()
+        first_id = first.id
+        second_id = second.id
+
+    second_started = asyncio.Event()
+
+    async def provision_until_cycle_timeout(db, access_key, *, subscription=None, worker=None):
+        del db, subscription
+        if access_key.id == second_id:
+            second_started.set()
+            await asyncio.Event().wait()
+        access_key.worker_id = worker.id
+        access_key.status = "active"
+        return access_key
+
+    monkeypatch.setattr(
+        "app.services.vpn_lifecycle.provision_vpn_access_key",
+        provision_until_cycle_timeout,
+    )
+    settings = Settings(
+        DISCOVERY_ENABLED=False,
+        VPN_LIFECYCLE_ENABLED=True,
+        VPN_LIFECYCLE_INTERVAL_SECONDS=60,
+        VPN_LIFECYCLE_BATCH_SIZE=2,
+        VPN_LIFECYCLE_KEY_TIMEOUT_SECONDS=1,
+        VPN_LIFECYCLE_CYCLE_TIMEOUT_SECONDS=0.05,
+    )
+    orchestrator = ControlRuntimeOrchestrator(session_factory, settings=settings)
+
+    await orchestrator._run_vpn_lifecycle(now)
+    assert second_started.is_set()
+
+    async with session_factory() as session:
+        stored_first = await session.get(VpnAccessKey, first_id)
+        stored_second = await session.get(VpnAccessKey, second_id)
+    assert stored_first is not None and stored_first.status == "active"
+    assert stored_second is not None and stored_second.status == "pending_sync"
+
+    resumed: list[int] = []
+
+    async def provision_remaining(db, access_key, *, subscription=None, worker=None):
+        del db, subscription
+        resumed.append(access_key.id)
+        access_key.worker_id = worker.id
+        access_key.status = "active"
+        return access_key
+
+    monkeypatch.setattr("app.services.vpn_lifecycle.provision_vpn_access_key", provision_remaining)
+    async with session_factory() as session:
+        await run_vpn_lifecycle_maintenance(session, now=now + timedelta(minutes=1), batch_size=1)
+
+    assert resumed == [second_id]
+
+
+@pytest.mark.asyncio
 async def test_lifecycle_times_out_a_hung_key_without_blocking_batch(session_factory, monkeypatch):
     now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
     async with session_factory() as session:
