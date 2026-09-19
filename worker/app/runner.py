@@ -5,6 +5,7 @@ import logging
 import math
 import random
 from collections import deque
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from time import perf_counter
 from types import SimpleNamespace
@@ -92,6 +93,7 @@ class WorkerRunner:
     def __init__(self, settings: WorkerSettings) -> None:
         self.settings = settings
         self.control = ControlClient(settings)
+        self.registration_client = self._make_registration_client()
         self._stop = False
         self._clock_offset_ms = 0
         self._current_rps = 0.0
@@ -99,6 +101,7 @@ class WorkerRunner:
         self._simulate_random = random.Random(settings.simulate_random_seed)
 
     async def close(self) -> None:
+        await self.registration_client.aclose()
         await self.control.close()
 
     async def run(self) -> None:
@@ -240,7 +243,7 @@ class WorkerRunner:
         self._current_capacity_rps = task.planned_rps
         await self._heartbeat(status="running")
 
-        async with self._make_registration_client() as client:
+        async with nullcontext(self.registration_client) as client:
             dispatch_interval, concurrency_limit = self._runtime_limits(task.planned_rps)
             next_dispatch_at = perf_counter()
             next_status_poll_at = perf_counter()

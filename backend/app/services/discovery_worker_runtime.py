@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
-from app.db.models import DiscoveryDomain, DiscoveryObservation, DiscoveryWorkerTask, WorkerNode
+from app.db.models import DiscoveryDomain, DiscoveryWorkerTask, WorkerNode
 from app.schemas.runtime import DiscoveryWorkerTaskResultRequest
 from app.services.discovery import (
     DiscoveryObservationInput,

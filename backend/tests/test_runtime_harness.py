@@ -672,6 +672,7 @@ async def test_worker_runtime_preserves_long_http_error_body_samples():
         REGISTRATION_MAX_CONCURRENCY=160,
     )
     runner = WorkerRunner(settings)
+    assert runner.registration_client is not None
     await runner.control.client.aclose()
     stub_control = StubControlClient()
     runner.control = stub_control
@@ -704,6 +705,24 @@ async def test_worker_runtime_preserves_long_http_error_body_samples():
     sample = result["response_samples"]["by_status"]["400"][0]
     assert "frnic_legal_contact_type" in sample["body_preview"]
     assert len(sample["body_preview"]) > 500
+    await runner.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_reuses_precreated_registration_client():
+    settings = WorkerSettings(
+        CONTROL_BASE_URL="http://control.test",
+        WORKER_ID=1,
+        CONTROL_TOKEN="worker-token",
+    )
+    runner = WorkerRunner(settings)
+    first_client = runner.registration_client
+
+    second_client = runner._make_registration_client()
+    assert second_client is not first_client
+
+    await second_client.aclose()
+    await runner.close()
 
 
 @pytest.mark.asyncio
