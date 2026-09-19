@@ -710,6 +710,17 @@ class VpnLifecycleStatusResponse(BaseModel):
     failed_keys: int = 0
 
 
+class VpnTelegramUpdateResponse(BaseModel):
+    id: int
+    update_id: str
+    customer_id: int | None
+    processed_at: datetime | None
+    error_message: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class DiscoveryRuntimeSettingsResponse(BaseModel):
     discovery_enabled: bool
     discovery_worker_enabled: bool

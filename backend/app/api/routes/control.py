@@ -33,6 +33,7 @@ from app.db.models import (
     VpnNodeEvent,
     VpnPlan,
     VpnSubscription,
+    VpnTelegramUpdate,
     WorkerMaintenanceJob,
     WorkerNode,
     WorkerTask,
@@ -105,6 +106,7 @@ from app.schemas.control import (
     VpnSubscriptionCreateRequest,
     VpnSubscriptionResponse,
     VpnSubscriptionUpdateRequest,
+    VpnTelegramUpdateResponse,
     WorkerNodeCreateRequest,
     WorkerMaintenanceBulkResponse,
     WorkerMaintenanceJobResponse,
@@ -3272,6 +3274,20 @@ async def list_vpn_node_events(
         )
     result = await db.execute(query)
     return [VpnNodeEventResponse.model_validate(event) for event in result.scalars().all()]
+
+
+@router.get("/vpn/telegram-updates", response_model=list[VpnTelegramUpdateResponse])
+async def list_vpn_telegram_updates(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnTelegramUpdate]:
+    del admin
+    result = await db.execute(
+        select(VpnTelegramUpdate)
+        .order_by(VpnTelegramUpdate.created_at.desc(), VpnTelegramUpdate.id.desc())
+        .limit(100)
+    )
+    return list(result.scalars().all())
 
 
 @router.get("/registrar-accounts", response_model=list[RegistrarAccountResponse])

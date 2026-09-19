@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     vpn_lifecycle_enabled: bool = Field(default=True, alias="VPN_LIFECYCLE_ENABLED")
     vpn_lifecycle_interval_seconds: float = Field(default=60.0, alias="VPN_LIFECYCLE_INTERVAL_SECONDS")
     vpn_lifecycle_batch_size: int = Field(default=50, alias="VPN_LIFECYCLE_BATCH_SIZE")
+    vpn_telegram_bot_token: str = Field(default="", alias="VPN_TELEGRAM_BOT_TOKEN")
+    vpn_telegram_webhook_secret: str = Field(default="", alias="VPN_TELEGRAM_WEBHOOK_SECRET")
+    vpn_telegram_secret_token: str = Field(default="", alias="VPN_TELEGRAM_SECRET_TOKEN")
+    vpn_support_text: str = Field(
+        default="Обратитесь к администратору VPN.",
+        alias="VPN_SUPPORT_TEXT",
+    )
     discovery_rdap_bootstrap_url: str = Field(
         default="https://data.iana.org/rdap/dns.json",
         alias="DISCOVERY_RDAP_BOOTSTRAP_URL",
