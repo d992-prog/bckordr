@@ -268,7 +268,7 @@ const DEFAULT_VPN_SUBSCRIPTION_FORM = {
   startsAt: "",
   expiresAt: "",
   trafficLimitGb: "",
-  maxDevices: "1",
+  maxDevices: "",
   notes: "",
 };
 
@@ -2389,16 +2389,22 @@ export default function App() {
   async function submitVpnSubscription(event: FormEvent) {
     event.preventDefault();
     try {
-      await api.createVpnSubscription({
+      const payload: Record<string, unknown> = {
         customer_id: Number(vpnSubscriptionForm.customerId),
         plan_id: parseNumber(vpnSubscriptionForm.planId),
         status: vpnSubscriptionForm.status,
-        starts_at: parseDateTimeLocal(vpnSubscriptionForm.startsAt),
-        expires_at: parseDateTimeLocal(vpnSubscriptionForm.expiresAt),
-        traffic_limit_gb: parseNumber(vpnSubscriptionForm.trafficLimitGb),
-        max_devices: Number(vpnSubscriptionForm.maxDevices || 1),
         notes: vpnSubscriptionForm.notes.trim() || null,
-      });
+      };
+      const startsAt = parseDateTimeLocal(vpnSubscriptionForm.startsAt);
+      const expiresAt = parseDateTimeLocal(vpnSubscriptionForm.expiresAt);
+      const trafficLimitGb = parseNumber(vpnSubscriptionForm.trafficLimitGb);
+      if (startsAt) payload.starts_at = startsAt;
+      if (expiresAt) payload.expires_at = expiresAt;
+      if (trafficLimitGb !== null) payload.traffic_limit_gb = trafficLimitGb;
+      if (vpnSubscriptionForm.maxDevices.trim()) {
+        payload.max_devices = Number(vpnSubscriptionForm.maxDevices);
+      }
+      await api.createVpnSubscription(payload);
       setVpnSubscriptionForm(DEFAULT_VPN_SUBSCRIPTION_FORM);
       await loadAll();
       setToast({ type: "success", text: "VPN подписка добавлена" });
@@ -4590,7 +4596,7 @@ export default function App() {
                 <label><span>Старт</span><input type="datetime-local" value={vpnSubscriptionForm.startsAt} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, startsAt: event.target.value }))} /></label>
                 <label><span>Конец</span><input type="datetime-local" value={vpnSubscriptionForm.expiresAt} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, expiresAt: event.target.value }))} /></label>
                 <label><span>Трафик, GB</span><input value={vpnSubscriptionForm.trafficLimitGb} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, trafficLimitGb: event.target.value }))} /></label>
-                <label><span>Устройств</span><input value={vpnSubscriptionForm.maxDevices} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, maxDevices: event.target.value }))} /></label>
+                <label><span>Устройств</span><input value={vpnSubscriptionForm.maxDevices} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, maxDevices: event.target.value }))} placeholder="из тарифа / 1" /></label>
               </div>
               <label><span>Заметки</span><textarea rows={3} value={vpnSubscriptionForm.notes} onChange={(event) => setVpnSubscriptionForm((current) => ({ ...current, notes: event.target.value }))} /></label>
               <button type="submit">Добавить подписку</button>

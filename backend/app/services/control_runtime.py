@@ -65,10 +65,17 @@ class ControlRuntimeOrchestrator:
         self._vpn_lifecycle_enabled = settings.vpn_lifecycle_enabled if settings else True
         self._vpn_lifecycle_interval_seconds = max(settings.vpn_lifecycle_interval_seconds, 1.0) if settings else 60.0
         self._vpn_lifecycle_batch_size = max(settings.vpn_lifecycle_batch_size, 1) if settings else 50
+        self._vpn_lifecycle_key_timeout_seconds = (
+            max(settings.vpn_lifecycle_key_timeout_seconds, 0.01) if settings else 30.0
+        )
+        self._vpn_lifecycle_cycle_timeout_seconds = (
+            max(settings.vpn_lifecycle_cycle_timeout_seconds, 0.1) if settings else 300.0
+        )
         self._notifier = TelegramNotifier(settings) if settings else None
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._zone_scan_tasks: dict[int, asyncio.Task[None]] = {}
+        self._vpn_lifecycle_task: asyncio.Task[None] | None = None
         self._last_worker_supervision_at = None
         self._last_discovery_at = None
         self._last_vpn_lifecycle_at = None
@@ -82,14 +89,21 @@ class ControlRuntimeOrchestrator:
     async def shutdown(self) -> None:
         self._stop_event.set()
         task = self._task
-        if task is None:
-            return
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         self._task = None
+        lifecycle_task = self._vpn_lifecycle_task
+        if lifecycle_task is not None and not lifecycle_task.done():
+            lifecycle_task.cancel()
+            try:
+                await lifecycle_task
+            except asyncio.CancelledError:
+                pass
+        self._vpn_lifecycle_task = None
 
     async def ensure_domain(self, domain_id: int) -> None:
         del domain_id
@@ -103,6 +117,8 @@ class ControlRuntimeOrchestrator:
         return 1 if self._task is not None and not self._task.done() else 0
 
     async def run_cycle(self) -> None:
+        start_vpn_lifecycle = False
+        lifecycle_now = None
         async with self._session_factory() as session:
             now = utcnow()
             if (
@@ -204,19 +220,44 @@ class ControlRuntimeOrchestrator:
                 self._last_discovery_at = now
             if (
                 self._vpn_lifecycle_enabled
+                and (self._vpn_lifecycle_task is None or self._vpn_lifecycle_task.done())
                 and (
                     self._last_vpn_lifecycle_at is None
                     or (now - self._last_vpn_lifecycle_at).total_seconds() >= self._vpn_lifecycle_interval_seconds
                 )
             ):
-                await run_vpn_lifecycle_maintenance(
-                    session,
-                    now=now,
-                    batch_size=self._vpn_lifecycle_batch_size,
-                )
                 self._last_vpn_lifecycle_at = now
+                lifecycle_now = now
+                start_vpn_lifecycle = True
             await session.commit()
-            await self._start_zone_scan_jobs_if_needed()
+        if start_vpn_lifecycle:
+            self._vpn_lifecycle_task = asyncio.create_task(
+                self._run_vpn_lifecycle(lifecycle_now),
+                name="vpn-lifecycle-maintenance",
+            )
+        await self._start_zone_scan_jobs_if_needed()
+
+    async def _run_vpn_lifecycle(self, now) -> None:
+        async with self._session_factory() as session:
+            try:
+                await asyncio.wait_for(
+                    run_vpn_lifecycle_maintenance(
+                        session,
+                        now=now,
+                        batch_size=self._vpn_lifecycle_batch_size,
+                        key_timeout_seconds=self._vpn_lifecycle_key_timeout_seconds,
+                    ),
+                    timeout=self._vpn_lifecycle_cycle_timeout_seconds,
+                )
+            except TimeoutError:
+                await session.rollback()
+                logger.error(
+                    "VPN lifecycle exceeded %.1f seconds and was cancelled",
+                    self._vpn_lifecycle_cycle_timeout_seconds,
+                )
+            except Exception:
+                await session.rollback()
+                logger.exception("VPN lifecycle background task failed")
 
     async def _send_discovery_notification(self, session: AsyncSession, message: str) -> None:
         if self._notifier is None:

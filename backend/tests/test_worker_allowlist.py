@@ -16,7 +16,7 @@ from app.db.base import Base
 from app.db.models import AttackRun, DropDomain, WorkerMaintenanceJob, WorkerNode, WorkerTask
 from app.db.session import get_db
 from app.services.worker_allowlist import render_worker_runtime_allowlist
-from app.services.worker_maintenance import build_worker_maintenance_commands
+from app.services.worker_maintenance import build_worker_maintenance_commands, run_worker_maintenance_job
 
 
 def test_render_worker_runtime_allowlist_includes_worker_ips_and_deny_all():
@@ -784,4 +784,77 @@ async def test_vpn_maintenance_blocks_attack_worker_but_allows_health_check(monk
         assert response.json()["skipped_worker_ids"] == [busy_worker_id]
     assert health_check.status_code == 202
     assert len(started_jobs) == 3
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_queued_vpn_mutation_rechecks_attack_before_ssh(monkeypatch: pytest.MonkeyPatch):
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
+        worker = WorkerNode(
+            name="late-attack",
+            status="ready",
+            is_enabled=True,
+            ip_address="192.0.2.80",
+            ssh_host="192.0.2.80",
+            ssh_username="root",
+            ssh_password="pw",
+            vpn_role="vpn_node",
+            vpn_enabled=True,
+            vpn_runtime_status="ready",
+            vpn_public_host="late.example.net",
+            vpn_inbound_id=1,
+        )
+        session.add(worker)
+        await session.flush()
+        job = WorkerMaintenanceJob(worker_id=worker.id, action="vpn_restart", status="queued")
+        domain = DropDomain(fqdn="late-attack.fr", zone="fr", drop_date=datetime.now(UTC).date())
+        session.add_all([job, domain])
+        await session.flush()
+        run = AttackRun(
+            domain_id=domain.id,
+            status="running",
+            planned_start_at=datetime.now(UTC) - timedelta(minutes=1),
+            planned_end_at=datetime.now(UTC) + timedelta(minutes=1),
+        )
+        session.add(run)
+        await session.flush()
+        session.add(
+            WorkerTask(
+                attack_run_id=run.id,
+                domain_id=domain.id,
+                worker_id=worker.id,
+                status="running",
+            )
+        )
+        await session.commit()
+        job_id = job.id
+
+    ssh_calls: list[int] = []
+
+    async def fake_execute(worker, commands):
+        del commands
+        ssh_calls.append(worker.id)
+        return "ok"
+
+    monkeypatch.setattr("app.services.worker_maintenance.AsyncSessionLocal", session_factory)
+    monkeypatch.setattr("app.services.worker_maintenance.execute_worker_ssh_commands", fake_execute)
+
+    await run_worker_maintenance_job(job_id)
+
+    async with session_factory() as session:
+        stored_job = await session.get(WorkerMaintenanceJob, job_id)
+    assert stored_job is not None
+    assert stored_job.status == "failed"
+    assert "active domain attack" in (stored_job.error_message or "")
+    assert ssh_calls == []
     await engine.dispose()

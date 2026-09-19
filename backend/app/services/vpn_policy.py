@@ -7,7 +7,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
-from app.db.models import AttackRun, VpnAccessKey, VpnCustomer, VpnSubscription, WorkerNode, WorkerTask
+from app.db.models import (
+    AttackRun,
+    VpnAccessKey,
+    VpnCustomer,
+    VpnSubscription,
+    WorkerMaintenanceJob,
+    WorkerNode,
+    WorkerTask,
+)
 
 
 DEVICE_SLOT_STATUSES = ("pending_sync", "syncing", "active", "pending_revoke")
@@ -72,6 +80,40 @@ async def count_device_slots(
     if exclude_key_id is not None:
         query = query.where(VpnAccessKey.id != exclude_key_id)
     return int(await session.scalar(query) or 0)
+
+
+async def lock_vpn_subscription(
+    session: AsyncSession,
+    subscription_id: int,
+) -> VpnSubscription | None:
+    return await session.scalar(
+        select(VpnSubscription)
+        .where(VpnSubscription.id == subscription_id)
+        .with_for_update()
+    )
+
+
+async def lock_vpn_worker(
+    session: AsyncSession,
+    worker_id: int,
+) -> WorkerNode | None:
+    return await session.scalar(
+        select(WorkerNode)
+        .where(WorkerNode.id == worker_id)
+        .with_for_update()
+    )
+
+
+async def active_vpn_mutation_worker_ids(session: AsyncSession) -> set[int]:
+    result = await session.execute(
+        select(WorkerMaintenanceJob.worker_id)
+        .where(
+            WorkerMaintenanceJob.action.in_(VPN_MUTATION_ACTIONS),
+            WorkerMaintenanceJob.status.in_(("queued", "running")),
+        )
+        .distinct()
+    )
+    return {int(worker_id) for worker_id in result.scalars().all()}
 
 
 async def active_attack_worker_ids(session: AsyncSession) -> set[int]:

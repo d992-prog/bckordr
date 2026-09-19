@@ -17,6 +17,29 @@ VPN_CLIENT_MARKER_PREFIX = "DROPCATCH_VPN_CLIENT_"
 VPN_CLIENT_REVOKE_MARKER_PREFIX = "DROPCATCH_VPN_CLIENT_REVOKE_"
 
 
+def sanitize_vpn_error(
+    error: Exception | str,
+    *,
+    worker: WorkerNode | None = None,
+    access_key: VpnAccessKey | None = None,
+) -> str:
+    message = str(error)
+    message = re.sub(
+        r"(Command failed with exit=[^:]+): [^\n]*(\n|$)",
+        r"\1: remote command failed\2",
+        message,
+    )
+    secrets = [
+        worker.ssh_password if worker is not None else None,
+        worker.vpn_panel_password if worker is not None else None,
+        access_key.external_uuid if access_key is not None else None,
+        access_key.config_uri if access_key is not None else None,
+    ]
+    for secret in sorted((value for value in secrets if value), key=len, reverse=True):
+        message = message.replace(secret, "<redacted>")
+    return message[:2000]
+
+
 @dataclass(frozen=True)
 class VpnClientProvisionPayload:
     client_uuid: UUID
@@ -965,7 +988,7 @@ async def provision_vpn_access_key(
     except Exception as exc:
         access_key.status = "pending_sync"
         access_key.last_synced_at = utcnow()
-        access_key.last_error = str(exc)[:2000]
+        access_key.last_error = sanitize_vpn_error(exc, worker=worker, access_key=access_key)
         worker.vpn_last_checked_at = access_key.last_synced_at
         worker.vpn_last_error = access_key.last_error
         db.add(
@@ -1038,7 +1061,7 @@ async def revoke_vpn_access_key(
         now = utcnow()
         access_key.status = "pending_revoke"
         access_key.last_synced_at = now
-        access_key.last_error = str(exc)[:2000]
+        access_key.last_error = sanitize_vpn_error(exc, worker=worker, access_key=access_key)
         access_key.updated_at = now
         worker.vpn_last_checked_at = now
         worker.vpn_last_error = access_key.last_error

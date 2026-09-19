@@ -116,6 +116,80 @@ async def test_lifecycle_retries_pending_sync_key_and_persists_result(session_fa
 
 
 @pytest.mark.asyncio
+async def test_lifecycle_prioritizes_due_revocation_over_old_pending_sync(session_factory):
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    async with session_factory() as session:
+        active_subscription = await _subscription(
+            session,
+            expires_at=now + timedelta(days=1),
+            max_devices=10,
+        )
+        session.add_all(
+            [
+                VpnAccessKey(subscription_id=active_subscription.id, status="pending_sync")
+                for _ in range(3)
+            ]
+        )
+        expired_subscription = await _subscription(
+            session,
+            status="expired",
+            expires_at=now - timedelta(minutes=1),
+        )
+        due_key = VpnAccessKey(subscription_id=expired_subscription.id, status="active")
+        session.add(due_key)
+        await session.commit()
+        due_key_id = due_key.id
+
+    async with session_factory() as session:
+        result = await run_vpn_lifecycle_maintenance(session, now=now, batch_size=2)
+        stored_due_key = await session.get(VpnAccessKey, due_key_id)
+
+    assert result["checked_keys"] == 2
+    assert stored_due_key is not None
+    assert stored_due_key.status == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_rotates_pending_revoke_retries(session_factory):
+    first_run = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    second_run = first_run + timedelta(minutes=1)
+    old_time = first_run - timedelta(days=1)
+    async with session_factory() as session:
+        subscription = await _subscription(
+            session,
+            status="expired",
+            expires_at=first_run - timedelta(minutes=1),
+        )
+        first = VpnAccessKey(
+            subscription_id=subscription.id,
+            status="pending_revoke",
+            config_uri="vless://first",
+            updated_at=old_time,
+        )
+        second = VpnAccessKey(
+            subscription_id=subscription.id,
+            status="pending_revoke",
+            config_uri="vless://second",
+            updated_at=old_time,
+        )
+        session.add_all([first, second])
+        await session.commit()
+        first_id = first.id
+        second_id = second.id
+
+    async with session_factory() as session:
+        await run_vpn_lifecycle_maintenance(session, now=first_run, batch_size=1)
+    async with session_factory() as session:
+        await run_vpn_lifecycle_maintenance(session, now=second_run, batch_size=1)
+        first = await session.get(VpnAccessKey, first_id)
+        second = await session.get(VpnAccessKey, second_id)
+
+    assert first is not None and second is not None
+    assert first.last_error == "Assigned VPN node is missing; revoke is pending"
+    assert second.last_error == "Assigned VPN node is missing; revoke is pending"
+
+
+@pytest.mark.asyncio
 async def test_lifecycle_keeps_revoke_pending_on_busy_node(session_factory, monkeypatch):
     now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
     revoke_calls: list[int] = []
@@ -228,6 +302,51 @@ async def test_lifecycle_continues_after_failure_and_redacts_credentials(session
 
 
 @pytest.mark.asyncio
+async def test_lifecycle_redacts_handled_provisioning_failure(session_factory, monkeypatch):
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    async with session_factory() as session:
+        worker = _vpn_worker("handled-failure", password="ssh-password")
+        session.add(worker)
+        await session.flush()
+        subscription = await _subscription(session, expires_at=now + timedelta(days=1))
+        access_key = VpnAccessKey(
+            subscription_id=subscription.id,
+            worker_id=worker.id,
+            status="pending_sync",
+            external_uuid="vpn-client-uuid",
+            config_uri="vless://credential-uri",
+        )
+        session.add(access_key)
+        await session.commit()
+        key_id = access_key.id
+        worker_id = worker.id
+
+    async def handled_failure(db, access_key, *, subscription=None, worker=None):
+        del db, subscription
+        message = (
+            f"command failed password={worker.ssh_password} uuid={access_key.external_uuid} "
+            f"uri={access_key.config_uri}"
+        )
+        access_key.status = "pending_sync"
+        access_key.last_error = message
+        worker.vpn_last_error = message
+        return access_key
+
+    monkeypatch.setattr("app.services.vpn_lifecycle.provision_vpn_access_key", handled_failure)
+
+    async with session_factory() as session:
+        await run_vpn_lifecycle_maintenance(session, now=now, batch_size=1)
+        stored_key = await session.get(VpnAccessKey, key_id)
+        stored_worker = await session.get(WorkerNode, worker_id)
+
+    assert stored_key is not None and stored_worker is not None
+    for secret in ("ssh-password", "vpn-client-uuid", "vless://credential-uri"):
+        assert secret not in (stored_key.last_error or "")
+        assert secret not in (stored_worker.vpn_last_error or "")
+    assert "<redacted>" in (stored_key.last_error or "")
+
+
+@pytest.mark.asyncio
 async def test_lifecycle_revokes_never_provisioned_terminal_key_locally(session_factory):
     now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
     async with session_factory() as session:
@@ -324,8 +443,102 @@ async def test_control_runtime_schedules_vpn_lifecycle(session_factory, monkeypa
     orchestrator = ControlRuntimeOrchestrator(session_factory, settings=settings)
 
     await orchestrator.run_cycle()
+    assert orchestrator._vpn_lifecycle_task is not None
+    await orchestrator._vpn_lifecycle_task
 
     async with session_factory() as session:
         stored_key = await session.get(VpnAccessKey, key_id)
     assert stored_key is not None
     assert stored_key.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_control_runtime_does_not_await_vpn_lifecycle_inline(session_factory, monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_lifecycle(db, *, now=None, batch_size=50, key_timeout_seconds=30):
+        del db, now, batch_size, key_timeout_seconds
+        started.set()
+        await release.wait()
+        return {}
+
+    monkeypatch.setattr("app.services.control_runtime.run_vpn_lifecycle_maintenance", slow_lifecycle)
+    settings = Settings(
+        DISCOVERY_ENABLED=False,
+        VPN_LIFECYCLE_ENABLED=True,
+        VPN_LIFECYCLE_INTERVAL_SECONDS=60,
+        VPN_LIFECYCLE_BATCH_SIZE=50,
+    )
+    orchestrator = ControlRuntimeOrchestrator(session_factory, settings=settings)
+
+    cycle = asyncio.create_task(orchestrator.run_cycle())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await asyncio.wait_for(asyncio.shield(cycle), timeout=0.2)
+    assert orchestrator._vpn_lifecycle_task is not None
+    assert not orchestrator._vpn_lifecycle_task.done()
+
+    release.set()
+    await orchestrator._vpn_lifecycle_task
+
+
+@pytest.mark.asyncio
+async def test_control_runtime_cancels_lifecycle_at_cycle_timeout(session_factory, monkeypatch):
+    cancelled = asyncio.Event()
+
+    async def hung_lifecycle(db, *, now=None, batch_size=50, key_timeout_seconds=30):
+        del db, now, batch_size, key_timeout_seconds
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr("app.services.control_runtime.run_vpn_lifecycle_maintenance", hung_lifecycle)
+    settings = Settings(
+        DISCOVERY_ENABLED=False,
+        VPN_LIFECYCLE_ENABLED=True,
+        VPN_LIFECYCLE_INTERVAL_SECONDS=60,
+        VPN_LIFECYCLE_BATCH_SIZE=50,
+        VPN_LIFECYCLE_CYCLE_TIMEOUT_SECONDS=0.05,
+    )
+    orchestrator = ControlRuntimeOrchestrator(session_factory, settings=settings)
+
+    await orchestrator.run_cycle()
+    assert orchestrator._vpn_lifecycle_task is not None
+    await asyncio.wait_for(orchestrator._vpn_lifecycle_task, timeout=1)
+
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_times_out_a_hung_key_without_blocking_batch(session_factory, monkeypatch):
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    async with session_factory() as session:
+        worker = _vpn_worker("timeout")
+        session.add(worker)
+        await session.flush()
+        subscription = await _subscription(session, expires_at=now + timedelta(days=1))
+        key = VpnAccessKey(subscription_id=subscription.id, status="pending_sync")
+        session.add(key)
+        await session.commit()
+        key_id = key.id
+
+    async def hung_provision(db, access_key, *, subscription=None, worker=None):
+        del db, access_key, subscription, worker
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.services.vpn_lifecycle.provision_vpn_access_key", hung_provision)
+
+    async with session_factory() as session:
+        result = await run_vpn_lifecycle_maintenance(
+            session,
+            now=now,
+            batch_size=1,
+            key_timeout_seconds=0.05,
+        )
+        stored_key = await session.get(VpnAccessKey, key_id)
+
+    assert result["failed_keys"] == 1
+    assert stored_key is not None
+    assert stored_key.status == "pending_sync"
+    assert "timed out" in (stored_key.last_error or "")

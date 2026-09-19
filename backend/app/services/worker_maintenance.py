@@ -8,6 +8,7 @@ from app.db.base import utcnow
 from app.db.models import VpnNodeEvent, WorkerMaintenanceJob, WorkerNode
 from app.db.session import AsyncSessionLocal
 from app.services.app_settings import DiscoveryRuntimeSettings, get_discovery_runtime_settings
+from app.services.vpn_policy import VPN_MUTATION_ACTIONS, active_attack_worker_ids, lock_vpn_worker
 
 VPN_MAINTENANCE_ACTIONS = {
     "vpn_check",
@@ -1004,11 +1005,33 @@ async def run_worker_maintenance_job(job_id: int) -> None:
         job = await session.get(WorkerMaintenanceJob, job_id)
         if job is None:
             return
-        worker = await session.get(WorkerNode, job.worker_id)
+        worker = (
+            await lock_vpn_worker(session, job.worker_id)
+            if job.action in VPN_MUTATION_ACTIONS
+            else await session.get(WorkerNode, job.worker_id)
+        )
         if worker is None:
             job.status = "failed"
             job.error_message = "Worker not found"
             job.finished_at = utcnow()
+            await session.commit()
+            return
+
+        if job.action in VPN_MUTATION_ACTIONS and worker.id in await active_attack_worker_ids(session):
+            reason = "Worker is assigned to an active domain attack"
+            job.status = "failed"
+            job.error_message = reason
+            job.finished_at = utcnow()
+            job.updated_at = utcnow()
+            session.add(
+                VpnNodeEvent(
+                    worker_id=worker.id,
+                    level="warning",
+                    event_type="vpn_mutation_blocked",
+                    message=f"VPN maintenance blocked before SSH: {job.action}",
+                    details={"job_id": job.id, "reason": reason},
+                )
+            )
             await session.commit()
             return
 

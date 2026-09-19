@@ -60,20 +60,39 @@ def parse_telegram_message(payload: dict) -> TelegramMessage:
 
 async def send_telegram_message(settings: Settings, chat_id: str, text: str) -> None:
     url = f"https://api.telegram.org/bot{settings.vpn_telegram_bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "reply_markup": {
-            "keyboard": [
-                [{"text": "Статус"}, {"text": "Ключи"}],
-                [{"text": "Поддержка"}],
-            ],
-            "resize_keyboard": True,
-        },
-    }
     async with httpx.AsyncClient(timeout=settings.request_timeout) as client:
-        response = await client.post(url, json=payload)
-        response.raise_for_status()
+        for chunk in split_telegram_text(text):
+            payload = {
+                "chat_id": chat_id,
+                "text": chunk,
+                "reply_markup": {
+                    "keyboard": [
+                        [{"text": "Статус"}, {"text": "Ключи"}],
+                        [{"text": "Поддержка"}],
+                    ],
+                    "resize_keyboard": True,
+                },
+            }
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+
+
+def split_telegram_text(text: str, *, limit: int = 4000) -> list[str]:
+    if limit < 1:
+        raise ValueError("Telegram message limit must be positive")
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        split_at = remaining.rfind("\n", 0, limit + 1)
+        if split_at <= 0:
+            split_at = limit
+        else:
+            split_at += 1
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    if remaining or not chunks:
+        chunks.append(remaining)
+    return chunks
 
 
 COMMANDS = {
@@ -179,6 +198,10 @@ async def process_telegram_update(
     except IntegrityError:
         await session.rollback()
         return {"processed": False, "duplicate": True}
+    # Claim the update durably before any outbound side effect. If the process
+    # dies after Telegram accepts a message, a retry sees this row and does not
+    # deliver the same credential twice.
+    await session.commit()
 
     try:
         message = parse_telegram_message(payload)

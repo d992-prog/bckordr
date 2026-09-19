@@ -159,6 +159,8 @@ from app.services.vpn_policy import (
     active_attack_worker_ids,
     count_device_slots,
     evaluate_vpn_node,
+    lock_vpn_subscription,
+    lock_vpn_worker,
     select_vpn_node,
     validate_subscription_access,
 )
@@ -2654,7 +2656,11 @@ async def _start_worker_maintenance_job(
     db: AsyncSession,
     admin: User,
 ) -> WorkerMaintenanceJobResponse:
-    worker = await db.get(WorkerNode, worker_id)
+    worker = (
+        await lock_vpn_worker(db, worker_id)
+        if action in VPN_MUTATION_ACTIONS
+        else await db.get(WorkerNode, worker_id)
+    )
     if worker is None:
         raise HTTPException(status_code=404, detail="Worker not found")
     if not worker.ssh_access_configured:
@@ -3073,8 +3079,19 @@ async def _resolve_vpn_key_worker(
     worker_id: int | None,
 ) -> WorkerNode | None:
     worker = await select_vpn_node(db, worker_id=worker_id)
-    if worker_id is None or worker is not None:
-        return worker
+    if worker is not None:
+        locked_worker = await lock_vpn_worker(db, worker.id)
+        if locked_worker is None:
+            raise HTTPException(status_code=404, detail="Worker not found")
+        eligibility = await evaluate_vpn_node(db, locked_worker)
+        if not eligibility.eligible:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="; ".join(eligibility.reasons),
+            )
+        return locked_worker
+    if worker_id is None:
+        return None
 
     requested_worker = await db.get(WorkerNode, worker_id)
     if requested_worker is None:
@@ -3093,7 +3110,10 @@ async def _reject_vpn_revoke_during_attack(
 ) -> None:
     if worker is None:
         return
-    eligibility = await evaluate_vpn_node(db, worker)
+    locked_worker = await lock_vpn_worker(db, worker.id)
+    if locked_worker is None:
+        return
+    eligibility = await evaluate_vpn_node(db, locked_worker)
     active_attack_reason = next(
         (reason for reason in eligibility.reasons if "active domain attack" in reason),
         None,
@@ -3113,7 +3133,7 @@ async def create_vpn_access_key(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> VpnAccessKeyResponse:
-    subscription = await db.get(VpnSubscription, payload.subscription_id)
+    subscription = await lock_vpn_subscription(db, payload.subscription_id)
     if subscription is None:
         raise HTTPException(status_code=404, detail="VPN subscription not found")
     await _validate_vpn_key_issue(db, subscription)
@@ -3157,7 +3177,7 @@ async def provision_existing_vpn_access_key(
         raise HTTPException(status_code=404, detail="VPN access key not found")
     if access_key.status not in {"pending_sync", "failed"}:
         raise HTTPException(status_code=409, detail=f"VPN access key is {access_key.status}")
-    subscription = await db.get(VpnSubscription, access_key.subscription_id)
+    subscription = await lock_vpn_subscription(db, access_key.subscription_id)
     if subscription is None:
         raise HTTPException(status_code=404, detail="VPN subscription not found")
     await _validate_vpn_key_issue(db, subscription, exclude_key_id=access_key.id)
@@ -3221,6 +3241,7 @@ async def run_vpn_lifecycle_endpoint(
     result = await run_vpn_lifecycle_maintenance(
         db,
         batch_size=max(get_settings().vpn_lifecycle_batch_size, 1),
+        key_timeout_seconds=max(get_settings().vpn_lifecycle_key_timeout_seconds, 0.01),
     )
     await add_audit_log(
         db,

@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     vpn_lifecycle_enabled: bool = Field(default=True, alias="VPN_LIFECYCLE_ENABLED")
     vpn_lifecycle_interval_seconds: float = Field(default=60.0, alias="VPN_LIFECYCLE_INTERVAL_SECONDS")
     vpn_lifecycle_batch_size: int = Field(default=50, alias="VPN_LIFECYCLE_BATCH_SIZE")
+    vpn_lifecycle_key_timeout_seconds: float = Field(
+        default=30.0,
+        alias="VPN_LIFECYCLE_KEY_TIMEOUT_SECONDS",
+    )
+    vpn_lifecycle_cycle_timeout_seconds: float = Field(
+        default=300.0,
+        alias="VPN_LIFECYCLE_CYCLE_TIMEOUT_SECONDS",
+    )
     vpn_telegram_bot_token: str = Field(default="", alias="VPN_TELEGRAM_BOT_TOKEN")
     vpn_telegram_webhook_secret: str = Field(default="", alias="VPN_TELEGRAM_WEBHOOK_SECRET")
     vpn_telegram_secret_token: str = Field(default="", alias="VPN_TELEGRAM_SECRET_TOKEN")

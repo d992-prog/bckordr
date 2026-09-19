@@ -25,6 +25,8 @@ from app.db.models import (
     WorkerNode,
 )
 from app.db.session import get_db
+from app.services import vpn_telegram as vpn_telegram_service
+from app.services.vpn_telegram import process_telegram_update
 
 
 def telegram_message(update_id: int, user_id: int | str, text: str) -> dict:
@@ -401,3 +403,53 @@ async def test_admin_can_list_recent_telegram_updates(telegram_app):
     payload = response.json()
     assert [item["update_id"] for item in payload[:2]] == ["newer", "older"]
     assert payload[0]["error_message"] == "delivery failed"
+
+
+@pytest.mark.asyncio
+async def test_update_reservation_survives_crash_after_delivery(telegram_app):
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    calls = 0
+    payload = telegram_message(20, 21009, "/start")
+
+    async def crash_after_delivery(_settings, _chat_id: str, _text: str) -> None:
+        nonlocal calls
+        calls += 1
+        raise SimulatedProcessCrash
+
+    async with telegram_app.session_factory() as session:
+        with pytest.raises(SimulatedProcessCrash):
+            await process_telegram_update(
+                session,
+                payload,
+                telegram_app.settings,
+                sender=crash_after_delivery,
+            )
+
+    async def must_not_resend(_settings, _chat_id: str, _text: str) -> None:
+        nonlocal calls
+        calls += 1
+
+    async with telegram_app.session_factory() as session:
+        result = await process_telegram_update(
+            session,
+            payload,
+            telegram_app.settings,
+            sender=must_not_resend,
+        )
+
+    assert result == {"processed": False, "duplicate": True}
+    assert calls == 1
+    async with telegram_app.session_factory() as session:
+        assert await session.scalar(select(func.count(VpnTelegramUpdate.id))) == 1
+
+
+def test_telegram_message_chunks_stay_within_limit_without_losing_text():
+    text = "\n".join(f"Ключ {index}\nvless://{'x' * 900}" for index in range(8))
+
+    chunks = vpn_telegram_service.split_telegram_text(text, limit=4000)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 4000 for chunk in chunks)
+    assert "".join(chunks) == text

@@ -32,6 +32,7 @@ from app.services.discovery import (
     check_discovery_domain_rdap,
     check_discovery_domain_whois,
 )
+from app.services.vpn_policy import active_vpn_mutation_worker_ids
 from app.services.strategy_runtime import (
     is_domain_due_today,
     resolve_effective_strategy,
@@ -1204,6 +1205,27 @@ async def recompute_worker_domain_counts(session: AsyncSession) -> None:
         worker.current_domain_count = int(counts.get(worker.id, 0))
 
 
+async def load_attack_available_workers(
+    session: AsyncSession,
+    *,
+    worker_ids: list[int] | None = None,
+) -> list[WorkerNode]:
+    if worker_ids is not None and not worker_ids:
+        return []
+    mutation_worker_ids = await active_vpn_mutation_worker_ids(session)
+    query = select(WorkerNode).where(WorkerNode.is_enabled.is_(True))
+    if worker_ids is not None:
+        query = query.where(WorkerNode.id.in_(worker_ids))
+    if mutation_worker_ids:
+        query = query.where(WorkerNode.id.not_in(mutation_worker_ids))
+    result = await session.execute(
+        query
+        .order_by(WorkerNode.target_rps.desc(), WorkerNode.max_rps.desc(), WorkerNode.name.asc())
+        .with_for_update(skip_locked=True)
+    )
+    return list(result.scalars().all())
+
+
 async def plan_attack_runs(
     session: AsyncSession,
     *,
@@ -1213,6 +1235,12 @@ async def plan_attack_runs(
     force_rebuild: bool = False,
 ) -> list[AttackRun]:
     if not domains or not workers:
+        return []
+    workers = await load_attack_available_workers(
+        session,
+        worker_ids=[worker.id for worker in workers],
+    )
+    if not workers:
         return []
 
     domain_ids = [domain.id for domain in domains]
@@ -1360,6 +1388,12 @@ async def plan_immediate_registration_runs(
 ) -> list[AttackRun]:
     if not domains or not workers:
         return []
+    workers = await load_attack_available_workers(
+        session,
+        worker_ids=[worker.id for worker in workers],
+    )
+    if not workers:
+        return []
 
     duration_seconds = min(max(int(duration_seconds), 5), 600)
     domain_ids = [domain.id for domain in domains]
@@ -1502,13 +1536,7 @@ async def autoplan_due_attack_runs(
             )
         ).scalars().all()
     )
-    workers = (
-        await session.execute(
-            select(WorkerNode)
-            .where(WorkerNode.is_enabled.is_(True))
-            .order_by(WorkerNode.target_rps.desc(), WorkerNode.max_rps.desc(), WorkerNode.name.asc())
-        )
-    ).scalars().all()
+    workers = await load_attack_available_workers(session)
     if not workers:
         return []
     strategy_map = await load_effective_strategies(session, domains)
@@ -1616,13 +1644,7 @@ async def refresh_active_task_targets(session: AsyncSession, *, now: datetime | 
 
 async def rebalance_worker_pool(session: AsyncSession, *, now: datetime | None = None) -> int:
     now = now or utcnow()
-    workers = (
-        await session.execute(
-            select(WorkerNode)
-            .where(WorkerNode.is_enabled.is_(True))
-            .order_by(WorkerNode.target_rps.desc(), WorkerNode.max_rps.desc(), WorkerNode.name.asc())
-        )
-    ).scalars().all()
+    workers = await load_attack_available_workers(session)
     active_tasks = (await session.execute(select(WorkerTask).where(WorkerTask.status.in_(["queued", "running"])))).scalars().all()
     runs = (
         await session.execute(

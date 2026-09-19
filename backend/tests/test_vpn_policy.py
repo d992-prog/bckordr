@@ -12,15 +12,20 @@ from app.db.models import (
     VpnAccessKey,
     VpnCustomer,
     VpnSubscription,
+    WorkerMaintenanceJob,
     WorkerNode,
     WorkerTask,
 )
 from app.services.vpn_policy import (
+    active_vpn_mutation_worker_ids,
     count_device_slots,
     evaluate_vpn_node,
+    lock_vpn_subscription,
+    lock_vpn_worker,
     select_vpn_node,
     validate_subscription_access,
 )
+from app.services.attack_runtime import load_attack_available_workers
 
 
 @pytest_asyncio.fixture
@@ -78,6 +83,63 @@ def test_validate_subscription_access_enforces_device_limit():
     assert validate_subscription_access(subscription, customer, device_slots=1, now=now) == (
         "VPN device limit reached"
     )
+
+
+@pytest.mark.asyncio
+async def test_vpn_resource_locks_use_for_update():
+    captured = []
+    subscription = VpnSubscription(id=7, customer_id=1, status="active", max_devices=1)
+    worker = _vpn_worker("locked")
+    worker.id = 9
+
+    class FakeSession:
+        async def scalar(self, statement):
+            captured.append(statement)
+            return subscription if len(captured) == 1 else worker
+
+    fake_session = FakeSession()
+    assert await lock_vpn_subscription(fake_session, 7) is subscription
+    assert await lock_vpn_worker(fake_session, 9) is worker
+    assert all(statement._for_update_arg is not None for statement in captured)
+
+
+@pytest.mark.asyncio
+async def test_active_vpn_mutation_worker_ids_uses_queued_and_running_jobs(session_factory):
+    async with session_factory() as session:
+        queued = _vpn_worker("queued-mutation")
+        running = _vpn_worker("running-mutation")
+        health = _vpn_worker("health-check")
+        finished = _vpn_worker("finished-mutation")
+        session.add_all([queued, running, health, finished])
+        await session.flush()
+        session.add_all(
+            [
+                WorkerMaintenanceJob(worker_id=queued.id, action="vpn_update", status="queued"),
+                WorkerMaintenanceJob(worker_id=running.id, action="vpn_restart", status="running"),
+                WorkerMaintenanceJob(worker_id=health.id, action="vpn_check", status="running"),
+                WorkerMaintenanceJob(worker_id=finished.id, action="vpn_update", status="succeeded"),
+            ]
+        )
+        await session.commit()
+
+        assert await active_vpn_mutation_worker_ids(session) == {queued.id, running.id}
+
+
+@pytest.mark.asyncio
+async def test_attack_worker_loader_excludes_active_vpn_mutation_lease(session_factory):
+    async with session_factory() as session:
+        leased = _vpn_worker("leased")
+        free = _vpn_worker("available")
+        session.add_all([leased, free])
+        await session.flush()
+        session.add(
+            WorkerMaintenanceJob(worker_id=leased.id, action="vpn_update", status="queued")
+        )
+        await session.commit()
+
+        available = await load_attack_available_workers(session)
+
+    assert [worker.id for worker in available] == [free.id]
 
 
 @pytest.mark.asyncio

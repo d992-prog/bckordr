@@ -29,6 +29,8 @@ VPN_TELEGRAM_SECRET_TOKEN=<long random Telegram header secret>
 VPN_SUPPORT_TEXT=Напишите администратору для подключения или продления VPN.
 ```
 
+Lifecycle safety defaults are `VPN_LIFECYCLE_KEY_TIMEOUT_SECONDS=30` per key and `VPN_LIFECYCLE_CYCLE_TIMEOUT_SECONDS=300` for the complete background run. Increase them only when measured node latency requires it; lifecycle must never be allowed to block the timing-sensitive attack scheduler.
+
 Register this webhook URL with Telegram:
 
 `https://CONTROL_HOST/api/vpn-telegram/webhook/VPN_TELEGRAM_WEBHOOK_SECRET`
