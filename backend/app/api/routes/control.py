@@ -95,6 +95,7 @@ from app.schemas.control import (
     VpnCustomerCreateRequest,
     VpnCustomerResponse,
     VpnCustomerUpdateRequest,
+    VpnLifecycleStatusResponse,
     VpnNodeEventResponse,
     VpnNodeEligibilityResponse,
     VpnOverviewResponse,
@@ -163,6 +164,7 @@ from app.services.vpn_provisioning import provision_vpn_access_key, revoke_vpn_a
 from app.services.app_settings import (
     DiscoveryRuntimeSettings,
     get_discovery_runtime_settings,
+    get_vpn_lifecycle_last_result,
     set_discovery_runtime_settings,
 )
 from app.services.strategy_runtime import (
@@ -3200,12 +3202,24 @@ async def revoke_existing_vpn_access_key(
     return VpnAccessKeyResponse.model_validate(access_key)
 
 
+@router.get("/vpn/lifecycle/status", response_model=VpnLifecycleStatusResponse)
+async def get_vpn_lifecycle_status(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnLifecycleStatusResponse:
+    del admin
+    return VpnLifecycleStatusResponse.model_validate(await get_vpn_lifecycle_last_result(db))
+
+
 @router.post("/vpn/lifecycle/run")
 async def run_vpn_lifecycle_endpoint(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> dict[str, int | str]:
-    result = await run_vpn_lifecycle_maintenance(db)
+    result = await run_vpn_lifecycle_maintenance(
+        db,
+        batch_size=max(get_settings().vpn_lifecycle_batch_size, 1),
+    )
     await add_audit_log(
         db,
         actor_user_id=admin.id,

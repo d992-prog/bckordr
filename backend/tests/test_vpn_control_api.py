@@ -487,6 +487,12 @@ async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending
         assert lifecycle_payload["checked_keys"] == 1
         assert lifecycle_payload["pending_revoke_keys"] == 1
 
+        status_response = await client.get("/control/vpn/lifecycle/status")
+        assert status_response.status_code == 200
+        assert status_response.json()["ran_at"] is not None
+        assert status_response.json()["expired_subscriptions"] == 1
+        assert status_response.json()["pending_revoke_keys"] == 1
+
         keys_response = await client.get("/control/vpn/access-keys")
         assert keys_response.status_code == 200
         keys = keys_response.json()

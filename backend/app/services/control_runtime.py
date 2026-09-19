@@ -26,6 +26,7 @@ from app.services.discovery_worker_runtime import (
     load_eligible_discovery_workers,
 )
 from app.services.notifier import TelegramNotifier
+from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
 from app.services.zone_scanner import run_zone_scan_job
 
 logger = logging.getLogger(__name__)
@@ -61,12 +62,16 @@ class ControlRuntimeOrchestrator:
         self._discovery_rdap_bootstrap_url = (
             settings.discovery_rdap_bootstrap_url if settings else "https://data.iana.org/rdap/dns.json"
         )
+        self._vpn_lifecycle_enabled = settings.vpn_lifecycle_enabled if settings else True
+        self._vpn_lifecycle_interval_seconds = max(settings.vpn_lifecycle_interval_seconds, 1.0) if settings else 60.0
+        self._vpn_lifecycle_batch_size = max(settings.vpn_lifecycle_batch_size, 1) if settings else 50
         self._notifier = TelegramNotifier(settings) if settings else None
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._zone_scan_tasks: dict[int, asyncio.Task[None]] = {}
         self._last_worker_supervision_at = None
         self._last_discovery_at = None
+        self._last_vpn_lifecycle_at = None
 
     async def bootstrap(self) -> None:
         if self._task is not None and not self._task.done():
@@ -197,6 +202,19 @@ class ControlRuntimeOrchestrator:
                         notify=lambda message: self._send_discovery_notification(session, message),
                     )
                 self._last_discovery_at = now
+            if (
+                self._vpn_lifecycle_enabled
+                and (
+                    self._last_vpn_lifecycle_at is None
+                    or (now - self._last_vpn_lifecycle_at).total_seconds() >= self._vpn_lifecycle_interval_seconds
+                )
+            ):
+                await run_vpn_lifecycle_maintenance(
+                    session,
+                    now=now,
+                    batch_size=self._vpn_lifecycle_batch_size,
+                )
+                self._last_vpn_lifecycle_at = now
             await session.commit()
             await self._start_zone_scan_jobs_if_needed()
 

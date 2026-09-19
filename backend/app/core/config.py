@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     discovery_local_fallback_enabled: bool = Field(default=True, alias="DISCOVERY_LOCAL_FALLBACK_ENABLED")
     worker_discovery_concurrency: int = Field(default=4, alias="WORKER_DISCOVERY_CONCURRENCY")
     worker_discovery_poll_interval_seconds: float = Field(default=1.0, alias="WORKER_DISCOVERY_POLL_INTERVAL_SECONDS")
+    vpn_lifecycle_enabled: bool = Field(default=True, alias="VPN_LIFECYCLE_ENABLED")
+    vpn_lifecycle_interval_seconds: float = Field(default=60.0, alias="VPN_LIFECYCLE_INTERVAL_SECONDS")
+    vpn_lifecycle_batch_size: int = Field(default=50, alias="VPN_LIFECYCLE_BATCH_SIZE")
     discovery_rdap_bootstrap_url: str = Field(
         default="https://data.iana.org/rdap/dns.json",
         alias="DISCOVERY_RDAP_BOOTSTRAP_URL",

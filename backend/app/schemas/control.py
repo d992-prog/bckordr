@@ -698,6 +698,18 @@ class VpnOverviewResponse(BaseModel):
     active_keys: int
 
 
+class VpnLifecycleStatusResponse(BaseModel):
+    ran_at: datetime | None = None
+    expired_subscriptions: int = 0
+    checked_keys: int = 0
+    provisioned_keys: int = 0
+    revoked_keys: int = 0
+    pending_sync_keys: int = 0
+    pending_revoke_keys: int = 0
+    skipped_unsafe_keys: int = 0
+    failed_keys: int = 0
+
+
 class DiscoveryRuntimeSettingsResponse(BaseModel):
     discovery_enabled: bool
     discovery_worker_enabled: bool

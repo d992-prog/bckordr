@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,7 @@ from app.db.models import AppSetting
 DIAGNOSTIC_TELEGRAM_TOKEN_KEY = "diagnostic_telegram_token"
 DIAGNOSTIC_TELEGRAM_CHAT_ID_KEY = "diagnostic_telegram_chat_id"
 DISCOVERY_RUNTIME_SETTING_PREFIX = "discovery_runtime_"
+VPN_LIFECYCLE_LAST_RESULT_KEY = "vpn_lifecycle_last_result"
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,17 @@ async def set_app_setting(session: AsyncSession, key: str, value: str | None) ->
         setting.value = value
     await session.flush()
     return setting
+
+
+async def get_vpn_lifecycle_last_result(session: AsyncSession) -> dict[str, object]:
+    raw = await get_app_setting(session, VPN_LIFECYCLE_LAST_RESULT_KEY)
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 async def get_diagnostic_telegram_settings(session: AsyncSession) -> tuple[str | None, str | None]:
