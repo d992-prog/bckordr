@@ -838,6 +838,7 @@ async def test_queued_vpn_mutation_rechecks_attack_before_ssh(monkeypatch: pytes
         )
         await session.commit()
         job_id = job.id
+        worker_id = worker.id
 
     ssh_calls: list[int] = []
 
@@ -853,9 +854,12 @@ async def test_queued_vpn_mutation_rechecks_attack_before_ssh(monkeypatch: pytes
 
     async with session_factory() as session:
         stored_job = await session.get(WorkerMaintenanceJob, job_id)
+        stored_worker = await session.get(WorkerNode, worker_id)
     assert stored_job is not None
     assert stored_job.status == "failed"
     assert "active domain attack" in (stored_job.error_message or "")
+    assert stored_worker is not None
+    assert stored_worker.vpn_runtime_status == "ready"
     assert ssh_calls == []
     await engine.dispose()
 

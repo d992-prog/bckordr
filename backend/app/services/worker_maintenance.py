@@ -1016,7 +1016,7 @@ async def run_worker_maintenance_job(job_id: int) -> None:
         job.status = "running"
         job.started_at = utcnow()
         job.updated_at = utcnow()
-        if job.action in VPN_MAINTENANCE_ACTIONS:
+        if job.action in VPN_MAINTENANCE_ACTIONS and job.action not in VPN_MUTATION_ACTIONS:
             worker.vpn_runtime_status = VPN_RUNNING_STATUS_BY_ACTION[job.action]
             worker.vpn_last_error = None
             worker.vpn_last_checked_at = utcnow()
@@ -1051,6 +1051,11 @@ async def run_worker_maintenance_job(job_id: int) -> None:
                 )
                 await session.commit()
                 return
+
+        if job.action in VPN_MAINTENANCE_ACTIONS:
+            worker.vpn_runtime_status = VPN_RUNNING_STATUS_BY_ACTION[job.action]
+            worker.vpn_last_error = None
+            worker.vpn_last_checked_at = utcnow()
 
         try:
             discovery_settings = await get_discovery_runtime_settings(session, get_settings())
