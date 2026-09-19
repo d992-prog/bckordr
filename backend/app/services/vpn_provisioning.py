@@ -987,10 +987,29 @@ async def revoke_vpn_access_key(
     access_key: VpnAccessKey,
     *,
     worker: WorkerNode | None = None,
-) -> None:
+) -> VpnAccessKey:
+    if access_key.status == "revoked":
+        return access_key
+
     worker = worker or (await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None)
     if worker is None or not worker.ssh_access_configured or not worker.vpn_inbound_id:
-        return
+        now = utcnow()
+        access_key.status = "pending_revoke"
+        access_key.last_synced_at = now
+        access_key.last_error = "VPN node SSH access or inbound is not configured; revoke is pending"
+        access_key.updated_at = now
+        event_worker_id = worker.id if worker else access_key.worker_id
+        if event_worker_id is not None:
+            db.add(
+                VpnNodeEvent(
+                    worker_id=event_worker_id,
+                    event_type="client_revoke_pending",
+                    level="warning",
+                    message=f"VPN client revoke is pending for access key #{access_key.id}",
+                    details={"access_key_id": access_key.id},
+                )
+            )
+        return access_key
 
     command = build_vpn_client_revoke_command(worker, access_key)
     try:
@@ -998,7 +1017,10 @@ async def revoke_vpn_access_key(
         if "DROPCATCH_VPN_CLIENT_REVOKE_STATUS=revoked" not in log:
             raise RuntimeError(f"VPN client revoke did not confirm success; log={log[-1200:]}")
         now = utcnow()
+        access_key.status = "revoked"
         access_key.revoked_at = now
+        access_key.last_synced_at = now
+        access_key.last_error = None
         access_key.updated_at = now
         worker.vpn_last_checked_at = now
         worker.vpn_last_error = None
@@ -1013,8 +1035,14 @@ async def revoke_vpn_access_key(
             )
         )
     except Exception as exc:
-        worker.vpn_last_checked_at = utcnow()
-        worker.vpn_last_error = str(exc)[:2000]
+        now = utcnow()
+        access_key.status = "pending_revoke"
+        access_key.last_synced_at = now
+        access_key.last_error = str(exc)[:2000]
+        access_key.updated_at = now
+        worker.vpn_last_checked_at = now
+        worker.vpn_last_error = access_key.last_error
+        worker.updated_at = now
         db.add(
             VpnNodeEvent(
                 worker_id=worker.id,
@@ -1024,4 +1052,4 @@ async def revoke_vpn_access_key(
                 details={"access_key_id": access_key.id},
             )
         )
-        raise
+    return access_key

@@ -576,6 +576,8 @@ function formatStatusLabel(value: string | null | undefined) {
     offline: "офлайн",
     inactive: "выключено",
     active: "активно",
+    trial: "тест",
+    expired: "истекло",
     disabled: "выключено",
     tracking: "наблюдение",
     available: "доступен",
@@ -590,6 +592,10 @@ function formatStatusLabel(value: string | null | undefined) {
     autoconfiguring: "автонастройка",
     needs_config: "нужна настройка",
     not_installed: "не установлен",
+    pending_sync: "ждет выдачи",
+    syncing: "выдается",
+    pending_revoke: "ждет отключения",
+    revoked: "отключен",
     completed: "завершено",
     downloading: "скачивание",
     scanning: "сканирование",
@@ -727,13 +733,13 @@ function formatTabLabel(value: Tab) {
 }
 
 function statusClass(value: string) {
-  if (["ready", "success", "scheduled"].includes(value)) {
+  if (["ready", "success", "succeeded", "scheduled", "active"].includes(value)) {
     return "status available";
   }
-  if (["running", "attacking", "busy", "planned", "warning", "info"].includes(value)) {
+  if (["running", "attacking", "busy", "planned", "warning", "info", "trial", "pending_sync", "syncing", "pending_revoke"].includes(value)) {
     return "status checking";
   }
-  if (["invalid", "error", "failed", "stopped", "cancelled", "offline"].includes(value)) {
+  if (["invalid", "error", "failed", "stopped", "offline"].includes(value)) {
     return "status error";
   }
   return "status inactive";
@@ -2416,6 +2422,38 @@ export default function App() {
       }
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка выдачи VPN доступа" });
+    }
+  }
+
+  async function revokeVpnAccessKey(accessKey: VpnAccessKey) {
+    const keyName = accessKey.public_name ?? `ключ #${accessKey.id}`;
+    if (!window.confirm(`Отключить VPN ключ ${keyName} на 3x-UI? Запись останется в панели для истории.`)) {
+      return;
+    }
+    try {
+      const revoked = await api.revokeVpnAccessKey(accessKey.id);
+      await loadAll();
+      setToast({
+        type: revoked.status === "pending_revoke" ? "error" : "success",
+        text: revoked.status === "pending_revoke"
+          ? revoked.last_error || "Ключ помечен на отключение, но нода пока недоступна"
+          : "VPN ключ отключен",
+      });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка отключения VPN ключа" });
+    }
+  }
+
+  async function runVpnLifecycleMaintenance() {
+    try {
+      const result = await api.runVpnLifecycleMaintenance();
+      await loadAll();
+      setToast({
+        type: "success",
+        text: `VPN обслуживание: подписок истекло ${result.expired_subscriptions}, ключей отключено ${result.revoked_keys}, ожидают отключения ${result.pending_revoke_keys}`,
+      });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обслуживания VPN" });
     }
   }
 
@@ -4563,6 +4601,7 @@ export default function App() {
             <div className="actions">
               <button type="button" className="ghost" onClick={() => void startAllVpnAutoconfigs()}>Автонастроить VPN-ноды</button>
               <button type="button" className="ghost" onClick={() => void startAllVpnUpdates()}>Обновить VPN-ноды</button>
+              <button type="button" className="ghost" onClick={() => void runVpnLifecycleMaintenance()}>Обслужить VPN</button>
               <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
             </div>
           </div>
@@ -4751,9 +4790,17 @@ export default function App() {
                           type="button"
                           className="ghost"
                           onClick={() => void provisionVpnAccessKey(accessKey)}
-                          disabled={!accessKey.worker_id}
+                          disabled={!accessKey.worker_id || accessKey.status === "revoked" || accessKey.status === "pending_revoke"}
                         >
                           {accessKey.config_uri ? "Переиздать" : "Выдать доступ"}
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => void revokeVpnAccessKey(accessKey)}
+                          disabled={accessKey.status === "revoked" || accessKey.status === "pending_revoke"}
+                        >
+                          Отключить
                         </button>
                         <button
                           type="button"

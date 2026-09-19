@@ -517,6 +517,14 @@ export type VpnAccessKey = {
   updated_at: string;
 };
 
+export type VpnLifecycleMaintenanceResult = {
+  detail: string;
+  expired_subscriptions: number;
+  checked_keys: number;
+  revoked_keys: number;
+  pending_revoke_keys: number;
+};
+
 export type VpnNodeEvent = {
   id: number;
   worker_id: number;
@@ -994,6 +1002,10 @@ export const api = {
     }),
   provisionVpnAccessKey: (id: number) =>
     request<VpnAccessKey>(`/control/vpn/access-keys/${id}/provision`, { method: "POST" }),
+  revokeVpnAccessKey: (id: number) =>
+    request<VpnAccessKey>(`/control/vpn/access-keys/${id}/revoke`, { method: "POST" }),
+  runVpnLifecycleMaintenance: () =>
+    request<VpnLifecycleMaintenanceResult>("/control/vpn/lifecycle/run", { method: "POST" }),
   deleteVpnAccessKey: (id: number) =>
     request<{ detail: string }>(`/control/vpn/access-keys/${id}`, { method: "DELETE" }),
   getVpnNodeEvents: (workerId?: number) =>

@@ -12,6 +12,7 @@ from app.services.vpn_provisioning import (
     ensure_vpn_client_uuid,
     provision_vpn_access_key,
     parse_vpn_client_provision_output,
+    revoke_vpn_access_key,
 )
 
 
@@ -154,3 +155,79 @@ async def test_provision_vpn_access_key_records_failure_event_without_crashing(m
     event = next(item for item in session.added if isinstance(item, VpnNodeEvent))
     assert event.event_type == "client_provision_failed"
     assert event.details == {"access_key_id": 12}
+
+
+@pytest.mark.asyncio
+async def test_revoke_vpn_access_key_marks_revoked_on_success(monkeypatch) -> None:
+    class FakeSession:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+
+        async def get(self, *args, **kwargs):
+            return None
+
+        def add(self, item: object) -> None:
+            self.added.append(item)
+
+    async def fake_ssh(*args, **kwargs) -> str:
+        return "DROPCATCH_VPN_CLIENT_REVOKE_STATUS=revoked\n"
+
+    monkeypatch.setattr("app.services.vpn_provisioning.execute_worker_ssh_commands", fake_ssh)
+    worker = WorkerNode(
+        id=7,
+        name="vpn-node",
+        ip_address="31.77.157.65",
+        ssh_host="31.77.157.65",
+        ssh_password="secret",
+        vpn_inbound_id=1,
+    )
+    access_key = VpnAccessKey(
+        id=12,
+        subscription_id=1,
+        worker_id=7,
+        status="active",
+        public_name="phone",
+        external_uuid="11111111-1111-1111-1111-111111111111",
+    )
+
+    session = FakeSession()
+    result = await revoke_vpn_access_key(session, access_key, worker=worker)  # type: ignore[arg-type]
+
+    assert result is access_key
+    assert access_key.status == "revoked"
+    assert access_key.revoked_at is not None
+    assert access_key.last_error is None
+    event = next(item for item in session.added if isinstance(item, VpnNodeEvent))
+    assert event.event_type == "client_revoked"
+
+
+@pytest.mark.asyncio
+async def test_revoke_vpn_access_key_without_config_marks_pending_revoke() -> None:
+    class FakeSession:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+
+        async def get(self, *args, **kwargs):
+            return None
+
+        def add(self, item: object) -> None:
+            self.added.append(item)
+
+    worker = WorkerNode(id=7, name="vpn-node", ip_address="31.77.157.65")
+    access_key = VpnAccessKey(
+        id=12,
+        subscription_id=1,
+        worker_id=7,
+        status="active",
+        public_name="phone",
+        external_uuid="11111111-1111-1111-1111-111111111111",
+    )
+
+    session = FakeSession()
+    result = await revoke_vpn_access_key(session, access_key, worker=worker)  # type: ignore[arg-type]
+
+    assert result is access_key
+    assert access_key.status == "pending_revoke"
+    assert access_key.last_error
+    event = next(item for item in session.added if isinstance(item, VpnNodeEvent))
+    assert event.event_type == "client_revoke_pending"

@@ -149,6 +149,7 @@ from app.services.discovery import (
 )
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
+from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
 from app.services.vpn_provisioning import provision_vpn_access_key, revoke_vpn_access_key
 from app.services.app_settings import (
     DiscoveryRuntimeSettings,
@@ -3054,6 +3055,46 @@ async def provision_existing_vpn_access_key(
     return VpnAccessKeyResponse.model_validate(access_key)
 
 
+@router.post("/vpn/access-keys/{access_key_id}/revoke", response_model=VpnAccessKeyResponse)
+async def revoke_existing_vpn_access_key(
+    access_key_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnAccessKeyResponse:
+    access_key = await db.get(VpnAccessKey, access_key_id)
+    if access_key is None:
+        raise HTTPException(status_code=404, detail="VPN access key not found")
+    worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
+    await revoke_vpn_access_key(db, access_key, worker=worker)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_access_key_revoke",
+        details=f"access_key_id={access_key_id} worker_id={access_key.worker_id or '-'}",
+    )
+    await db.commit()
+    await db.refresh(access_key)
+    return VpnAccessKeyResponse.model_validate(access_key)
+
+
+@router.post("/vpn/lifecycle/run")
+async def run_vpn_lifecycle_endpoint(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> dict[str, int | str]:
+    result = await run_vpn_lifecycle_maintenance(db)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_lifecycle_run",
+        details=json.dumps(result, ensure_ascii=False),
+    )
+    await db.commit()
+    return {"detail": "VPN lifecycle maintenance completed", **result}
+
+
 @router.delete("/vpn/access-keys/{access_key_id}", response_model=MessageResponse)
 async def delete_vpn_access_key(
     access_key_id: int,
@@ -3064,14 +3105,7 @@ async def delete_vpn_access_key(
     if access_key is None:
         raise HTTPException(status_code=404, detail="VPN access key not found")
     worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
-    try:
-        await revoke_vpn_access_key(db, access_key, worker=worker)
-    except Exception as exc:
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to remove VPN client from 3x-UI node: {str(exc)[:500]}",
-        ) from exc
+    await revoke_vpn_access_key(db, access_key, worker=worker)
     await db.delete(access_key)
     await add_audit_log(
         db,
