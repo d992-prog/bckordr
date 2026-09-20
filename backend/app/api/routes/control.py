@@ -156,6 +156,10 @@ from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_r
 from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
 from app.services.vpn_mutations import serialize_vpn_mutation
+from app.services.vpn_profile_names import (
+    initial_display_name,
+    initialize_customer_names,
+)
 from app.services.vpn_subscription_sync import (
     SubscriptionPolicyConflict,
     SubscriptionPolicyError,
@@ -3226,9 +3230,28 @@ async def create_vpn_access_key(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> VpnAccessKeyResponse:
+    customer_id = await db.scalar(
+        select(VpnSubscription.customer_id).where(
+            VpnSubscription.id == payload.subscription_id
+        )
+    )
+    if customer_id is None:
+        raise HTTPException(status_code=404, detail="VPN subscription not found")
+    customer = await db.scalar(
+        select(VpnCustomer)
+        .where(VpnCustomer.id == customer_id)
+        .with_for_update()
+    )
+    if customer is None:
+        raise HTTPException(status_code=404, detail="VPN customer not found")
     subscription = await lock_vpn_subscription(db, payload.subscription_id)
     if subscription is None:
         raise HTTPException(status_code=404, detail="VPN subscription not found")
+    if subscription.customer_id != customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="VPN subscription customer changed",
+        )
     await _validate_vpn_key_issue(db, subscription)
     worker = await _resolve_vpn_key_worker(db, payload.worker_id)
     now = utcnow()
@@ -3242,6 +3265,12 @@ async def create_vpn_access_key(
         issued_at=now,
         expires_at=subscription.expires_at,
         last_error=None if worker is not None else "No safe VPN node is currently available",
+    )
+    next_ordinal = await initialize_customer_names(db, subscription.customer_id)
+    access_key.display_name = (
+        payload.display_name
+        if payload.display_name is not None
+        else initial_display_name(payload.public_name, next_ordinal)
     )
     db.add(access_key)
     await db.flush()

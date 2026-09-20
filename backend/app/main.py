@@ -15,6 +15,7 @@ from app.db.session import AsyncSessionLocal, engine
 from app.services.bootstrap import ensure_default_zone_strategies, ensure_owner_account
 from app.services.control_runtime import ControlRuntimeOrchestrator
 from app.services.notifier import TelegramNotifier
+from app.services.vpn_profile_names import backfill_profile_names
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +30,7 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await run_startup_migrations(engine)
+    await backfill_profile_names(AsyncSessionLocal)
     await ensure_owner_account(AsyncSessionLocal, settings)
     await ensure_default_zone_strategies(
         AsyncSessionLocal,

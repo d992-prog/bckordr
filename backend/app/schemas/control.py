@@ -4,6 +4,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.services.vpn_display import validate_display_name
+
 
 class CapacitySummaryResponse(BaseModel):
     current_rps: float
@@ -655,6 +657,7 @@ class VpnAccessKeyCreateRequest(BaseModel):
     worker_id: int | None = None
     protocol: str = Field(default="vless", min_length=2, max_length=32)
     public_name: str | None = Field(default=None, max_length=128)
+    display_name: str | None = None
 
     @field_validator("protocol")
     @classmethod
@@ -663,6 +666,13 @@ class VpnAccessKeyCreateRequest(BaseModel):
         if protocol not in {"vless", "vmess"}:
             raise ValueError("protocol must be vless or vmess")
         return protocol
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_optional_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_display_name(value)
 
 
 class VpnAccessKeyResponse(BaseModel):

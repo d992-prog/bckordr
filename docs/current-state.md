@@ -37,6 +37,16 @@
   tests passed and full Ruff is clean. No routes or login behavior enabled yet. The
   migration statement was checked, but an actual PostgreSQL upgrade rehearsal remains
   mandatory before rollout; SQLite tests are not proof of PostgreSQL upgrade behavior.
+- Read-only compatibility inspection found production Python `3.11.0rc1` and PostgreSQL
+  `14.24`. Six synthetic display-helper checks passed in a separate server Python
+  process (valid VLESS/VMess, overflow, real deep nesting, malformed scheme, name
+  trimming), with no file/DB/service changes. Runtime upgrade is a separate release
+  risk to address before public launch, not an automatic part of the cabinet change.
+- Task 3 assigns stable names to legacy and new profiles, with restart-safe batched
+  startup backfill and customer-first issuance locks. Only nullable display_name is
+  filled; existing public_name/UUID/URI and remote client identity remain unchanged.
+  Both reviews approved; parent ran 145 profile/control/remote/display/Telegram tests
+  successfully and full Ruff is clean. Real PostgreSQL concurrency is not yet verified.
 - Separate the visible profile name from the legacy `public_name`, which currently
   participates in 3x-UI client email generation. Never globally rename internal
   `dropcatch-*` identifiers or regenerate UUIDs merely to improve labels.

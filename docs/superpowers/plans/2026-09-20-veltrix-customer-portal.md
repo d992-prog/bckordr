@@ -25,6 +25,9 @@
 - Execution environment now prepared at worktree `backend/.venv` using Python
   3.14.4 with system test packages; PyJWT 2.14.0 installed only in this venv.
   Prefer `.\.venv\Scripts\python.exe` from worktree/backend for subsequent checks.
+- Production was inspected read-only: Python `3.11.0rc1`, PostgreSQL `14.24`.
+  Keep implementation compatible with Python 3.11; do not upgrade the server runtime
+  implicitly during this feature. Rehearse it separately before public launch.
 - Frontend dependencies installed with `npm ci --offline --ignore-scripts`; no new
   packages are needed for the portal UI.
 - All relative paths below are relative to the implementation checkout. Run backend
@@ -299,11 +302,11 @@ class VpnPortalMiniAppExchange(Base):
 `backend/app/api/routes/control.py` key issuance and
 `backend/app/schemas/control.py` creation request.
 
-- [ ] Seed two customers, several subscriptions each, keys with names `test1`, null,
+- [x] Seed two customers, several subscriptions each, keys with names `test1`, null,
   `Ноутбук` and `dropcatch-8-test1`. Assert numbering is across all keys of each
   customer ordered by ID, not global ID and not limited to active keys. Rerun assignment
   and assert names, public_name, URI and UUID remain unchanged.
-- [ ] Implement the initialization helpers:
+- [x] Implement the initialization helpers:
 
 ```python
 import re
@@ -316,7 +319,7 @@ from app.db.models import VpnAccessKey, VpnCustomer, VpnSubscription
 
 def initial_display_name(public_name: str | None, ordinal: int) -> str:
     original = (public_name or "").strip()
-    name = "".join(c for c in original if unicodedata.category(c) not in {"Cc", "Cf", "Cs"}).strip()[:64]
+    name = "".join(c for c in original if unicodedata.category(c) not in {"Cc", "Cf", "Cs"})[:64].strip()
     if not name or re.fullmatch(r"test\d*", name, flags=re.I) or name.lower().startswith("dropcatch-"):
         return f"Профиль {ordinal}"
     return name
@@ -347,17 +350,17 @@ async def backfill_profile_names(session_factory) -> None:
             last_id = customer_ids[-1]
 ```
 
-- [ ] After startup migrations, backfill customer IDs in batches of 100 using this
+- [x] After startup migrations, backfill customer IDs in batches of 100 using this
   helper and commit per batch. Use a keyset cursor (`id > last_id`) and never renumber
   non-null values. Include a zero-customer test and an interruption/restart test.
   In main.py import backfill_profile_names and call
   `await backfill_profile_names(AsyncSessionLocal)` immediately after
   `await run_startup_migrations(engine)` and before runtime bootstrap.
-- [ ] In key issuance, acquire customer lock **before** subscription/worker locks,
+- [x] In key issuance, acquire customer lock **before** subscription/worker locks,
   then assign `display_name` using the returned next ordinal before inserting the key.
   Follow the existing global mutation lock. Do not introduce subscription→customer
   locking opposite to archive's customer→subscription ordering.
-- [ ] Add the optional display_name creation field now, before the admin UI uses it.
+- [x] Add the optional display_name creation field now, before the admin UI uses it.
   Extend the existing VpnAccessKeyCreateRequest with the field/validator below; retain
   existing fields and protocol validator unchanged. Import validate_display_name.
 
@@ -372,7 +375,8 @@ def validate_new_display_name(cls, value: str | None) -> str | None:
 
   Before acquiring any subscription/worker row lock, resolve its customer ID, lock
   that customer, then reread/lock the subscription and verify its customer did not
-  change. A changed/deleted subscription returns 409 and retries only on a new request.
+  change. A changed association returns 409; a missing subscription/customer returns
+  404. Retry only on a new request.
   Once existing issuance policy passes, assign this expression before `db.add(access_key)`:
 
 ```python
@@ -385,9 +389,9 @@ access_key.display_name = (
 
   The existing route already names these objects `db`, `payload`, `subscription`
   and `access_key`; do not rename them as part of this task.
-- [ ] Keep the previous `public_name` in the provision/revoke/suspend payload. Add a
+- [x] Keep the previous `public_name` in the provision/revoke/suspend payload. Add a
   regression test capturing these payloads before and after display_name changes.
-- [ ] Run `python -m pytest tests/test_vpn_profile_names.py tests/test_vpn_control_api.py tests/test_vpn_remote_policy.py -q`;
+- [x] Run `python -m pytest tests/test_vpn_profile_names.py tests/test_vpn_control_api.py tests/test_vpn_remote_policy.py -q`;
   commit as `feat: assign stable customer-facing VPN profile names`.
 
 ## Task 4: Canonical verified identity and Mini App validation
@@ -1363,6 +1367,7 @@ verification. Implementation progress is recorded below; production remains unch
 
 | Task | State | Evidence |
 |---|---|---|
-| 1 | Complete | 48 focused tests pass, no skips; Ruff clean; spec and quality reviews approved |
+| 1 | Complete | 48 focused tests pass, no skips; Ruff clean; both reviews approved; 6 in-memory compatibility checks passed on production Python 3.11.0rc1 without deployment |
 | 2 | Complete | 10 schema tests; 77 related/schema/display tests pass, Ruff clean; both reviews approved. Real PostgreSQL upgrade rehearsal remains in Task 13 |
-| 3–13 | Pending | No application changes for these tasks yet |
+| 3 | Complete | 26 profile-name tests; parent ran 145 profile/control/remote/display/Telegram tests; full Ruff clean; both reviews approved. PG concurrency remains in Task 13 |
+| 4–13 | Pending | No application changes for these tasks yet |
