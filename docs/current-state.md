@@ -9,11 +9,21 @@
 - Visual concept compares Telegram-only and cabinet experiences. All mockup counts,
   traffic, durations and profile limits are demonstration data, not agreed tariffs
   or live measurements. No product code/server changes have been made for this phase.
-- Written design awaiting user review:
+- Written design approved by the user on 2026-09-20:
   `docs/superpowers/specs/2026-09-20-veltrix-customer-portal-design.md`.
   The first bounded delivery is real cabinet/authentication/profile presentation;
   statistics collection, published tariffs and public-launch hardening have separate
   follow-on specifications. The cabinet itself is not postponed behind a bot-only launch.
+- Implementation plan prepared in
+  `docs/superpowers/plans/2026-09-20-veltrix-customer-portal.md`.
+  Isolated branch `codex/veltrix-customer-portal`, worktree
+  `.worktrees/veltrix-customer-portal`, starts at `f111271`.
+  Application implementation, production configuration and deployment have not started.
+  User selected delegated implementation with controller review in this same task.
+- Fresh worktree baseline: backend `332 passed` in 58.48 seconds, frontend `12 passed`,
+  TypeScript/Vite production build passed. The old main backend virtualenv lacks pytest;
+  checks used the available Python 3.14.4 with worktree/backend on PYTHONPATH.
+  Frontend dependencies installed offline from the existing npm cache.
 - Separate the visible profile name from the legacy `public_name`, which currently
   participates in 3x-UI client email generation. Never globally rename internal
   `dropcatch-*` identifiers or regenerate UUIDs merely to improve labels.
