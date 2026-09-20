@@ -47,7 +47,7 @@ Subscriptions and customers are not deleted or expired. A valid subscription can
 
 The API obtains a row lock for the worker and rejects the operation with HTTP `409` when either condition is true:
 
-- the worker has a queued or running task belonging to a planned or running domain attack;
+- the worker has a queued, planned, or running task belonging to a planned or running domain attack;
 - the worker has any queued or running maintenance job.
 
 No partial changes are committed when a safety gate fails. A missing or already archived worker returns `404`.
