@@ -15,6 +15,7 @@ from app.services.worker_maintenance import _bash, _shell_quote, execute_worker_
 
 VPN_CLIENT_MARKER_PREFIX = "DROPCATCH_VPN_CLIENT_"
 VPN_CLIENT_REVOKE_MARKER_PREFIX = "DROPCATCH_VPN_CLIENT_REVOKE_"
+VPN_CLIENT_SUSPEND_MARKER = "DROPCATCH_VPN_CLIENT_SUSPEND_STATUS=suspended"
 
 
 def sanitize_vpn_error(
@@ -352,7 +353,7 @@ def first_matching_row(conn, table, matches):
             continue
         rows = rows_as_dicts(
             conn.execute(
-                f"select * from {quote_identifier(table)} where {quote_identifier(column)} = ? order by rowid limit 1",
+                f"select rowid as _rowid, * from {quote_identifier(table)} where {quote_identifier(column)} = ? order by rowid limit 1",
                 (value,),
             )
         )
@@ -361,34 +362,12 @@ def first_matching_row(conn, table, matches):
     return None, ""
 
 
-def repair_client_telegram_ids(conn):
-    if "clients" not in table_names(conn):
-        return ""
-    columns = table_columns(conn, "clients")
-    info = column_info_by_name(conn, "clients")
-    repaired = 0
-    for column in ("tg_id", "tgId", "telegram_id"):
-        if column not in columns:
-            continue
-        if numeric_column_value(info.get(column, {}).get("type")) != 0:
-            continue
-        cursor = conn.execute(
-            f"update clients set {quote_identifier(column)} = 0 "
-            f"where {quote_identifier(column)} is null "
-            f"or trim(cast({quote_identifier(column)} as text)) = ''"
-        )
-        if cursor.rowcount and cursor.rowcount > 0:
-            repaired += int(cursor.rowcount)
-    return f"repaired telegram ids={repaired}" if repaired else ""
-
-
 def sync_clients_table(conn):
     if "clients" not in table_names(conn):
         return None, "clients table missing"
 
     columns = table_columns(conn, "clients")
     info = column_info_by_name(conn, "clients")
-    repair_status = repair_client_telegram_ids(conn)
     id_info = info.get("id", {})
     uuid_column = next((column for column in ("uuid", "client_uuid", "client_id", "password", "passwd") if column in columns), "")
     if not uuid_column and "id" in columns and not is_integer_primary_key(id_info):
@@ -445,10 +424,15 @@ def sync_clients_table(conn):
         ],
     )
     if existing:
-        update_row(conn, "clients", match_column, existing[match_column], values)
+        policy_columns = {
+            "enable", "enabled", "active", "limit_ip", "limitIp", "limit_ips",
+            "total", "total_gb", "totalGB", "expiry_time", "expiryTime", "expires_at",
+        }
+        update_row(conn, "clients", match_column, existing[match_column], {
+            column: value for column, value in values.items() if column in policy_columns
+        })
         client_pk = existing.get("id") if "id" in columns else existing.get(uuid_column)
-        suffix = f"; {repair_status}" if repair_status else ""
-        return client_pk, f"clients updated by {match_column}{suffix}"
+        return client_pk, f"clients updated by {match_column}"
 
     client_pk = insert_row(conn, "clients", values)
     if "id" in columns:
@@ -463,8 +447,7 @@ def sync_clients_table(conn):
         )[0]
         if inserted:
             client_pk = inserted.get("id")
-    suffix = f"; {repair_status}" if repair_status else ""
-    return client_pk, f"clients inserted{suffix}"
+    return client_pk, "clients inserted"
 
 
 def sync_client_inbounds_table(conn, client_pk):
@@ -491,9 +474,7 @@ def sync_client_inbounds_table(conn, client_pk):
             )
         )
     if existing:
-        match_column = "id" if "id" in columns else "client_id"
-        update_row(conn, "client_inbounds", match_column, existing[0].get(match_column) or client_pk, values)
-        return "client_inbounds updated"
+        return "client_inbounds already linked"
     insert_row(conn, "client_inbounds", values)
     return "client_inbounds inserted"
 
@@ -512,24 +493,20 @@ def sync_client_traffics_table(conn, client_pk):
     for column in ("uuid", "client_uuid", "password", "passwd"):
         if column in columns:
             values[column] = payload["client_uuid"]
-    if "enable" in columns:
-        values["enable"] = 1
-    for column in ("up", "down", "last_online"):
+    for column in ("enable", "enabled", "active"):
         if column in columns:
-            values[column] = 0
+            values[column] = 1
     for column in ("total", "total_gb", "totalGB"):
         if column in columns:
             values[column] = total_limit_bytes()
     for column in ("expiry_time", "expiryTime"):
         if column in columns:
             values[column] = int(payload.get("expires_at_ms") or 0)
-    if "reset" in columns:
-        values["reset"] = 0
     existing = []
     if {"inbound_id", "email"}.issubset(set(columns)):
         existing = rows_as_dicts(
             conn.execute(
-                "select * from client_traffics where inbound_id = ? and email = ? order by rowid limit 1",
+                "select rowid as _rowid, * from client_traffics where inbound_id = ? and email = ? order by rowid limit 1",
                 (int(payload["inbound_id"]), payload["client_email"]),
             )
         )
@@ -547,15 +524,25 @@ def sync_client_traffics_table(conn, client_pk):
         )
         existing = [existing] if existing else []
     if existing:
-        update_row(conn, "client_traffics", "id" if "id" in columns else "email", existing[0].get("id") or payload["client_email"], values)
+        update_row(conn, "client_traffics", "rowid", existing[0]["_rowid"], values)
         return "client_traffics updated"
+    for column in ("up", "down", "last_online", "reset"):
+        if column in columns:
+            values[column] = 0
     insert_row(conn, "client_traffics", values)
     return "client_traffics inserted"
 
 
 def restart_xui():
-    subprocess.run("systemctl restart x-ui.service || systemctl restart x-ui || systemctl restart 3x-ui.service || true", shell=True, check=False)
-    time.sleep(1)
+    for service in ("x-ui.service", "x-ui", "3x-ui.service"):
+        restarted = subprocess.run(["systemctl", "restart", service], capture_output=True, check=False)
+        if restarted.returncode != 0:
+            continue
+        time.sleep(1)
+        active = subprocess.run(["systemctl", "is-active", "--quiet", service], capture_output=True, check=False)
+        if active.returncode == 0:
+            return
+    raise RuntimeError("3x-UI service restart failed or service is not active")
 
 
 def build_config_uri(inbound):
@@ -636,6 +623,20 @@ def build_config_uri(inbound):
     return f"{protocol}://{payload['client_uuid']}@{host}:{port}?{query}#{label}"
 
 
+def client_exists(conn):
+    matches = [(column, payload["client_uuid"]) for column in
+               ("uuid", "client_uuid", "password", "passwd")] + [("email", payload["client_email"])]
+    if first_matching_row(conn, "clients", matches + [("id", payload["client_uuid"]), ("client_id", payload["client_uuid"])])[0]:
+        return True
+    if first_matching_row(conn, "client_traffics", matches)[0]:
+        return True
+    inbound = rows_as_dicts(conn.execute("select * from inbounds where id = ?", (int(payload["inbound_id"]),)))
+    settings = parse_json(inbound[0].get("settings"), {}) if inbound else {}
+    return any(str(client.get("id")) == payload["client_uuid"] or
+               str(client.get("email")) == payload["client_email"]
+               for client in settings.get("clients") or [])
+
+
 def add_client_to_db(conn):
     inbound_rows = rows_as_dicts(conn.execute("select * from inbounds where id = ?", (int(payload["inbound_id"]),)))
     if not inbound_rows:
@@ -647,15 +648,19 @@ def add_client_to_db(conn):
         clients = settings.get("clients")
         if not isinstance(clients, list):
             clients = []
-        client = client_settings()
-        clients = [
-            current
-            for current in clients
-            if str(current.get("id")) != payload["client_uuid"] and str(current.get("email")) != payload["client_email"]
-        ]
-        clients.append(client)
+        policy = client_settings()
+        matching = [current for current in clients if
+                    str(current.get("id")) == payload["client_uuid"] or
+                    str(current.get("email")) == payload["client_email"]]
+        if matching:
+            for client in matching:
+                for field in ("limitIp", "totalGB", "expiryTime", "enable"):
+                    client[field] = policy[field]
+        else:
+            clients.append(policy)
         settings["clients"] = clients
-        conn.execute("update inbounds set settings = ? where id = ?", (json.dumps(settings, separators=(",", ":")), int(payload["inbound_id"])))
+        inbound["settings"] = json.dumps(settings, separators=(",", ":"))
+        conn.execute("update inbounds set settings = ? where id = ?", (inbound["settings"], int(payload["inbound_id"])))
         emit("DB_INBOUNDS", "settings updated")
     else:
         emit("DB_INBOUNDS", "settings column missing; using normalized client tables")
@@ -674,13 +679,14 @@ db_path = find_db_path()
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
 try:
-    settings = read_settings(conn)
-    username, password = read_user(conn)
-    _, local_url = build_panel_urls(settings)
     emit("DB", db_path)
-    api_ok, api_result = try_api_add_client(local_url, username, password)
-    if not api_ok:
-        emit("API_ERROR", api_result)
+    if not client_exists(conn):
+        settings = read_settings(conn)
+        username, password = read_user(conn)
+        _, local_url = build_panel_urls(settings)
+        api_ok, api_result = try_api_add_client(local_url, username, password)
+        if not api_ok:
+            emit("API_ERROR", api_result)
     uri = add_client_to_db(conn)
     restart_xui()
     if not uri:
@@ -867,6 +873,119 @@ finally:
 """
 
 
+def _remote_client_suspend_script() -> str:
+    return r"""
+import json
+import os
+import sqlite3
+import subprocess
+import time
+
+payload = json.loads(os.environ["DROPCATCH_VPN_CLIENT_SUSPEND_PAYLOAD"])
+
+
+def table_columns(conn, table):
+    return [row[1] for row in conn.execute(f'pragma table_info("{table}")').fetchall()]
+
+
+def rows_as_dicts(cursor):
+    columns = [item[0] for item in cursor.description or []]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def find_db_path():
+    for path in ("/etc/x-ui/x-ui.db", "/usr/local/x-ui/bin/x-ui.db", "/usr/local/x-ui/x-ui.db"):
+        if os.path.exists(path):
+            return path
+    raise RuntimeError("3x-UI database was not found")
+
+
+def identity_pairs():
+    return [(column, payload.get("client_uuid")) for column in
+            ("uuid", "client_uuid", "password", "passwd")] + [("email", payload.get("client_email"))]
+
+
+def matching_rows(conn, table, pairs):
+    columns = table_columns(conn, table)
+    conditions, params = [], []
+    for column, value in pairs:
+        if column in columns and value not in (None, ""):
+            conditions.append(f'"{column}" = ?')
+            params.append(value)
+    if not conditions:
+        return []
+    return rows_as_dicts(conn.execute(
+        f'select rowid as _rowid, * from "{table}" where ' + " or ".join(conditions), params,
+    ))
+
+
+def disable_rows(conn, table, rows):
+    if not rows:
+        return
+    columns = table_columns(conn, table)
+    flags = [column for column in ("enable", "enabled", "active") if column in columns]
+    if not flags:
+        raise RuntimeError(f"Cannot disable matching {table}: enable column is missing")
+    assignments = ", ".join(f'"{column}" = 0' for column in flags)
+    conn.executemany(f'update "{table}" set {assignments} where rowid = ?', [(row["_rowid"],) for row in rows])
+
+
+def suspend_inbound_settings(conn):
+    if "settings" not in table_columns(conn, "inbounds"):
+        return
+    rows = rows_as_dicts(conn.execute("select * from inbounds where id = ?", (int(payload["inbound_id"]),)))
+    if not rows:
+        return
+    settings = json.loads(rows[0].get("settings") or "{}")
+    changed = False
+    for client in settings.get("clients") or []:
+        matches_uuid = bool(payload.get("client_uuid")) and str(client.get("id")) == payload["client_uuid"]
+        matches_email = bool(payload.get("client_email")) and str(client.get("email")) == payload["client_email"]
+        if matches_uuid or matches_email:
+            client["enable"] = False
+            changed = True
+    if changed:
+        conn.execute("update inbounds set settings = ? where id = ?", (
+            json.dumps(settings, separators=(",", ":")), int(payload["inbound_id"]),
+        ))
+
+
+def suspend_client_in_db(conn):
+    suspend_inbound_settings(conn)
+    clients = matching_rows(conn, "clients", identity_pairs() + [
+        ("id", payload.get("client_uuid")), ("client_id", payload.get("client_uuid")),
+    ])
+    client_ids = [row.get("id") or row.get("client_id") or row.get("uuid") for row in clients]
+    traffic = matching_rows(conn, "client_traffics", identity_pairs() + [("client_id", pk) for pk in client_ids])
+    disable_rows(conn, "clients", clients)
+    disable_rows(conn, "client_traffics", traffic)
+    conn.commit()
+
+
+def restart_xui():
+    for service in ("x-ui.service", "x-ui", "3x-ui.service"):
+        restarted = subprocess.run(["systemctl", "restart", service], capture_output=True, check=False)
+        if restarted.returncode != 0:
+            continue
+        time.sleep(1)
+        active = subprocess.run(["systemctl", "is-active", "--quiet", service], capture_output=True, check=False)
+        if active.returncode == 0:
+            return
+    raise RuntimeError("3x-UI service restart failed or service is not active")
+
+
+db_path = find_db_path()
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+try:
+    suspend_client_in_db(conn)
+    restart_xui()
+    print("DROPCATCH_VPN_CLIENT_SUSPEND_STATUS=suspended")
+finally:
+    conn.close()
+"""
+
+
 def build_vpn_client_provision_command(worker: WorkerNode, payload: VpnClientProvisionPayload) -> str:
     expires_at_ms = int(payload.expires_at.timestamp() * 1000) if payload.expires_at else 0
     remote_payload = {
@@ -914,6 +1033,82 @@ def build_vpn_client_revoke_command(worker: WorkerNode, access_key: VpnAccessKey
             ]
         )
     )
+
+
+def build_vpn_client_suspend_command(worker: WorkerNode, access_key: VpnAccessKey) -> str:
+    remote_payload = {
+        "client_uuid": access_key.external_uuid or "",
+        "client_email": build_vpn_client_email(access_key.id, access_key.public_name),
+        "inbound_id": worker.vpn_inbound_id or 0,
+    }
+    return _bash(
+        "\n".join(
+            [
+                "set -e",
+                f"export DROPCATCH_VPN_CLIENT_SUSPEND_PAYLOAD={_shell_quote(json.dumps(remote_payload, separators=(',', ':')))}",
+                "python3 - <<'PY'",
+                _remote_client_suspend_script(),
+                "PY",
+            ]
+        )
+    )
+
+
+async def suspend_vpn_access_key(
+    db: AsyncSession,
+    access_key: VpnAccessKey,
+    *,
+    worker: WorkerNode | None = None,
+) -> VpnAccessKey:
+    worker = worker or (await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None)
+    now = utcnow()
+    access_key.status = "pending_suspend"
+    access_key.last_synced_at = now
+    access_key.updated_at = now
+    if worker is None or not worker.ssh_access_configured or not worker.vpn_inbound_id:
+        access_key.last_error = "VPN node SSH access or inbound is not configured; suspension is pending"
+        event_worker_id = worker.id if worker else access_key.worker_id
+        if event_worker_id is not None:
+            db.add(
+                VpnNodeEvent(
+                    worker_id=event_worker_id,
+                    event_type="client_suspend_pending",
+                    level="warning",
+                    message=f"VPN client suspension is pending for access key #{access_key.id}",
+                    details={"access_key_id": access_key.id},
+                )
+            )
+        return access_key
+
+    try:
+        command = build_vpn_client_suspend_command(worker, access_key)
+        log = await execute_worker_ssh_commands(worker, [command])
+        if VPN_CLIENT_SUSPEND_MARKER not in {line.strip() for line in log.splitlines()}:
+            raise RuntimeError(f"VPN client suspension did not confirm success; log={log[-1200:]}")
+        access_key.status = "suspended"
+        access_key.last_error = None
+        event_type, level = "client_suspended", "info"
+        message = f"VPN client for access key #{access_key.id} suspended on node"
+    except Exception as exc:
+        access_key.last_error = sanitize_vpn_error(exc, worker=worker, access_key=access_key)
+        event_type, level = "client_suspend_failed", "error"
+        message = f"VPN client suspension failed for access key #{access_key.id}: {access_key.last_error[:500]}"
+    now = utcnow()
+    access_key.last_synced_at = now
+    access_key.updated_at = now
+    worker.vpn_last_checked_at = now
+    worker.vpn_last_error = access_key.last_error
+    worker.updated_at = now
+    db.add(
+        VpnNodeEvent(
+            worker_id=worker.id,
+            event_type=event_type,
+            level=level,
+            message=message,
+            details={"access_key_id": access_key.id},
+        )
+    )
+    return access_key
 
 
 async def provision_vpn_access_key(
@@ -966,10 +1161,12 @@ async def provision_vpn_access_key(
     try:
         log = await execute_worker_ssh_commands(worker, [command])
         metadata = parse_vpn_client_provision_output(log)
+        if metadata.get("status") != "provisioned":
+            raise RuntimeError("VPN client provisioning did not confirm service restart")
         config_uri = metadata.get("url")
         if not config_uri:
             raise RuntimeError(f"VPN client was created without config URL; log={log[-1200:]}")
-        access_key.config_uri = config_uri
+        access_key.config_uri = access_key.config_uri or config_uri
         access_key.status = "active"
         access_key.last_synced_at = utcnow()
         access_key.last_error = None

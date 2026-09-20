@@ -4,6 +4,7 @@ from uuid import UUID
 import pytest
 
 from app.db.models import VpnAccessKey, VpnNodeEvent, VpnSubscription, WorkerNode
+from app.services import vpn_provisioning
 from app.services.vpn_provisioning import (
     VpnClientProvisionPayload,
     build_vpn_client_email,
@@ -82,9 +83,7 @@ def test_build_vpn_client_provision_command_contains_payload_and_markers() -> No
     assert "client_traffics" in command
     assert '"password", "passwd"' in command
     assert 'values["client_id"] = client_pk' in command
-    assert "def repair_client_telegram_ids(conn):" in command
     assert "values[column] = numeric_column_value(info.get(column, {}).get(\"type\"))" in command
-    assert "update clients set {quote_identifier(column)} = 0" in command
 
 
 def test_build_vpn_client_revoke_command_removes_normalized_rows() -> None:
@@ -231,3 +230,116 @@ async def test_revoke_vpn_access_key_without_config_marks_pending_revoke() -> No
     assert access_key.last_error
     event = next(item for item in session.added if isinstance(item, VpnNodeEvent))
     assert event.event_type == "client_revoke_pending"
+
+
+class ProvisionSession:
+    def __init__(self) -> None:
+        self.added: list[object] = []
+
+    async def get(self, *args, **kwargs):
+        return None
+
+    async def flush(self) -> None:
+        pass
+
+    def add(self, item: object) -> None:
+        self.added.append(item)
+
+
+def existing_access_key():
+    return VpnAccessKey(
+        id=12, subscription_id=1, worker_id=7, status="active", public_name="phone",
+        protocol="vless", external_uuid="11111111-1111-1111-1111-111111111111",
+        config_uri="vless://existing-private-config", revoked_at=None,
+    )
+
+
+def configured_worker():
+    return WorkerNode(
+        id=7, name="vpn-node", ip_address="vpn.example.test", ssh_password="ssh-secret",
+        vpn_panel_password="panel-secret", vpn_inbound_id=1,
+    )
+
+
+def suspend_function():
+    suspend = getattr(vpn_provisioning, "suspend_vpn_access_key", None)
+    assert callable(suspend), "reversible suspension service is missing"
+    return suspend
+
+
+@pytest.mark.asyncio
+async def test_suspend_preserves_identity_and_revocation_metadata(monkeypatch):
+    async def ssh(*args, **kwargs):
+        return "DROPCATCH_VPN_CLIENT_SUSPEND_STATUS=suspended\n"
+
+    monkeypatch.setattr(vpn_provisioning, "execute_worker_ssh_commands", ssh)
+    access_key = existing_access_key()
+    identity = (access_key.external_uuid, access_key.config_uri, access_key.revoked_at)
+    session = ProvisionSession()
+    result = await suspend_function()(session, access_key, worker=configured_worker())
+    assert result is access_key
+    assert access_key.status == "suspended"
+    assert (access_key.external_uuid, access_key.config_uri, access_key.revoked_at) == identity
+    assert access_key.last_error is None
+    assert access_key.last_synced_at is not None
+    assert session.added[-1].event_type == "client_suspended"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["ssh", "missing-marker", "misleading-marker"])
+async def test_suspend_failure_is_pending_and_sanitizes_secrets(monkeypatch, failure):
+    access_key = existing_access_key()
+    worker = configured_worker()
+
+    async def ssh(*args, **kwargs):
+        log = f"{worker.ssh_password} {worker.vpn_panel_password} {access_key.external_uuid} {access_key.config_uri}"
+        if failure == "ssh":
+            raise RuntimeError(log)
+        if failure == "misleading-marker":
+            return "not-DROPCATCH_VPN_CLIENT_SUSPEND_STATUS=suspended\n" + log
+        return log
+
+    monkeypatch.setattr(vpn_provisioning, "execute_worker_ssh_commands", ssh)
+    session = ProvisionSession()
+    await suspend_function()(session, access_key, worker=worker)
+    assert access_key.status == "pending_suspend"
+    assert access_key.revoked_at is None
+    assert access_key.config_uri == "vless://existing-private-config"
+    assert access_key.last_error
+    for secret in (worker.ssh_password, worker.vpn_panel_password, access_key.external_uuid, access_key.config_uri):
+        assert secret not in access_key.last_error
+        assert secret not in session.added[-1].message
+    assert session.added[-1].event_type == "client_suspend_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["worker", "ssh", "inbound"])
+async def test_suspend_unavailable_worker_remains_pending(missing):
+    worker = configured_worker()
+    if missing == "worker":
+        worker = None
+    elif missing == "ssh":
+        worker.ssh_password = None
+    else:
+        worker.vpn_inbound_id = None
+    access_key = existing_access_key()
+    await suspend_function()(ProvisionSession(), access_key, worker=worker)
+    assert access_key.status == "pending_suspend"
+    assert access_key.last_error
+    assert access_key.revoked_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_provision_requires_success_marker_and_preserves_existing_uri(monkeypatch, confirmed):
+    async def ssh(*args, **kwargs):
+        prefix = "DROPCATCH_VPN_CLIENT_STATUS=provisioned\n" if confirmed else ""
+        return prefix + "DROPCATCH_VPN_CLIENT_URL=vless://newly-generated-config\n"
+
+    monkeypatch.setattr(vpn_provisioning, "execute_worker_ssh_commands", ssh)
+    access_key = existing_access_key()
+    subscription = VpnSubscription(status="active", max_devices=3, traffic_limit_gb=25)
+    await provision_vpn_access_key(ProvisionSession(), access_key, worker=configured_worker(), subscription=subscription)
+    assert access_key.status == ("active" if confirmed else "pending_sync")
+    assert access_key.config_uri == "vless://existing-private-config"
+    assert access_key.revoked_at is None
