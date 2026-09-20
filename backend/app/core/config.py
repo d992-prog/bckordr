@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     vpn_telegram_bot_token: str = Field(default="", alias="VPN_TELEGRAM_BOT_TOKEN")
     vpn_telegram_webhook_secret: str = Field(default="", alias="VPN_TELEGRAM_WEBHOOK_SECRET")
     vpn_telegram_secret_token: str = Field(default="", alias="VPN_TELEGRAM_SECRET_TOKEN")
+    vpn_portal_enabled: bool = Field(default=False, alias="VPN_PORTAL_ENABLED")
+    vpn_portal_public_origin: str = Field(default="", alias="VPN_PORTAL_PUBLIC_ORIGIN")
+    vpn_portal_allow_local_http: bool = Field(default=False, alias="VPN_PORTAL_ALLOW_LOCAL_HTTP")
+    vpn_portal_public_access: bool = Field(default=False, alias="VPN_PORTAL_PUBLIC_ACCESS")
+    vpn_portal_allowed_telegram_ids: str = Field(default="", alias="VPN_PORTAL_ALLOWED_TELEGRAM_IDS")
+    vpn_portal_oidc_client_id: str = Field(default="", alias="VPN_PORTAL_OIDC_CLIENT_ID")
+    vpn_portal_oidc_client_secret: str = Field(
+        default="",
+        alias="VPN_PORTAL_OIDC_CLIENT_SECRET",
+        repr=False,
+    )
     vpn_support_text: str = Field(
         default="Обратитесь к администратору VPN.",
         alias="VPN_SUPPORT_TEXT",

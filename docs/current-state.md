@@ -32,6 +32,11 @@
   preserved; malformed inputs fail with safe errors.
 - Separate worktree `backend/.venv` now uses Python 3.14.4 and inherited test packages;
   PyJWT 2.14.0 was installed only there. Main checkout dependencies remain unchanged.
+- Task 2 adds nullable display_name, three separate portal auth tables, disabled-by-default
+  portal settings and the PyJWT dependency. Both reviews approved; 77 focused/related
+  tests passed and full Ruff is clean. No routes or login behavior enabled yet. The
+  migration statement was checked, but an actual PostgreSQL upgrade rehearsal remains
+  mandatory before rollout; SQLite tests are not proof of PostgreSQL upgrade behavior.
 - Separate the visible profile name from the legacy `public_name`, which currently
   participates in 3x-UI client email generation. Never globally rename internal
   `dropcatch-*` identifiers or regenerate UUIDs merely to improve labels.

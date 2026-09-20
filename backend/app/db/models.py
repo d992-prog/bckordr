@@ -687,6 +687,37 @@ class VpnCustomer(Base):
     telegram_updates: Mapped[list["VpnTelegramUpdate"]] = relationship(back_populates="customer")
 
 
+class VpnCustomerSession(Base):
+    __tablename__ = "vpn_customer_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("vpn_customers.id", ondelete="CASCADE"), index=True)
+    telegram_user_id: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VpnPortalLoginAttempt(Base):
+    __tablename__ = "vpn_portal_login_attempts"
+
+    state_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    binding_hash: Mapped[str] = mapped_column(String(64))
+    code_verifier: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VpnPortalMiniAppExchange(Base):
+    __tablename__ = "vpn_portal_mini_app_exchanges"
+
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("vpn_customers.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class VpnSubscription(Base):
     __tablename__ = "vpn_subscriptions"
 
@@ -732,6 +763,7 @@ class VpnAccessKey(Base):
     )
     protocol: Mapped[str] = mapped_column(String(32), default="vless", server_default="vless")
     public_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     external_uuid: Mapped[str | None] = mapped_column(String(128), unique=True, index=True, nullable=True)
     config_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active", server_default="active", index=True)

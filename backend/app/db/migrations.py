@@ -168,6 +168,7 @@ MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_external_uuid ON vpn_access_keys(external_uuid)",
     "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_status ON vpn_access_keys(status)",
     "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_expires_at ON vpn_access_keys(expires_at)",
+    "ALTER TABLE vpn_access_keys ADD COLUMN IF NOT EXISTS display_name VARCHAR(64) NULL",
     """
     CREATE TABLE IF NOT EXISTS vpn_node_events (
         id SERIAL PRIMARY KEY,

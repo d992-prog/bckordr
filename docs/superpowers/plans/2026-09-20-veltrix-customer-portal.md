@@ -240,13 +240,13 @@ def display_uri(uri: str, name: str) -> str:
 `backend/app/core/config.py`, `backend/pyproject.toml`;
 create `backend/tests/test_vpn_portal_schema.py`.
 
-- [ ] Add a schema test that creates all tables in SQLite, inserts a customer/session,
+- [x] Add a schema test that creates all tables in SQLite, inserts a customer/session,
   and rejects duplicate token_hash, attempt state_hash and exchange digest. Assert
   existing VpnAccessKey construction still works with `display_name=None`.
-- [ ] Run the test red against absent models.
-- [ ] Add `display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)`
+- [x] Run the test red against absent models.
+- [x] Add `display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)`
   to VpnAccessKey, without changing public_name, external_uuid or config_uri.
-- [ ] Add the following models using existing Base/import conventions:
+- [x] Add the following models using existing Base/import conventions:
 
 ```python
 class VpnCustomerSession(Base):
@@ -277,7 +277,7 @@ class VpnPortalMiniAppExchange(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 ```
 
-- [ ] Add the idempotent PostgreSQL migration:
+- [x] Add the idempotent PostgreSQL migration:
 
 ```python
 "ALTER TABLE vpn_access_keys ADD COLUMN IF NOT EXISTS display_name VARCHAR(64) NULL",
@@ -286,10 +286,10 @@ class VpnPortalMiniAppExchange(Base):
   New tables are created by the existing `Base.metadata.create_all` startup before
   MIGRATIONS. Do not add a second schema migration framework. Test upgrading an
   old PostgreSQL schema, not only fresh SQLite metadata, in the release rehearsal.
-- [ ] Insert the settings block from Fixed contracts. Add
+- [x] Insert the settings block from Fixed contracts. Add
   `"PyJWT[crypto]>=2.10,<3"` to backend dependencies; install into the selected local
   interpreter/environment, not production, with `python -m pip install 'PyJWT[crypto]>=2.10,<3'`.
-- [ ] Run schema test, existing VPN tests and Ruff. Commit named files as
+- [x] Run schema test, existing VPN tests and Ruff. Commit named files as
   `feat: add isolated VPN portal persistence and configuration`.
 
 ## Task 3: Assign names without changing node identity
@@ -1364,4 +1364,5 @@ verification. Implementation progress is recorded below; production remains unch
 | Task | State | Evidence |
 |---|---|---|
 | 1 | Complete | 48 focused tests pass, no skips; Ruff clean; spec and quality reviews approved |
-| 2–13 | Pending | No application changes for these tasks yet |
+| 2 | Complete | 10 schema tests; 77 related/schema/display tests pass, Ruff clean; both reviews approved. Real PostgreSQL upgrade rehearsal remains in Task 13 |
+| 3–13 | Pending | No application changes for these tasks yet |
