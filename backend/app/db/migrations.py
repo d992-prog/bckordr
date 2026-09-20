@@ -49,6 +49,8 @@ MIGRATIONS = (
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_listener_status VARCHAR(32) NULL",
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_last_checked_at TIMESTAMPTZ NULL",
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS vpn_last_error TEXT NULL",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ NULL",
+    "CREATE INDEX IF NOT EXISTS ix_worker_nodes_archived_at ON worker_nodes(archived_at)",
     "ALTER TABLE worker_tasks ADD COLUMN IF NOT EXISTS response_status_counts JSONB NULL",
     "ALTER TABLE worker_tasks ADD COLUMN IF NOT EXISTS response_error_counts JSONB NULL",
     "ALTER TABLE worker_tasks ADD COLUMN IF NOT EXISTS response_samples JSONB NULL",
