@@ -1,5 +1,47 @@
 # Current State
 
+## Veltrix customer product direction (2026-09-20)
+
+- User chose to include a customer cabinet immediately, alongside the Telegram bot,
+  using Telegram sign-in without separate email/password registration. Both surfaces
+  must share the existing VPN customers, subscriptions and keys; admin authentication
+  remains separate. Payments remain explicitly deferred until the end.
+- Visual concept compares Telegram-only and cabinet experiences. All mockup counts,
+  traffic, durations and profile limits are demonstration data, not agreed tariffs
+  or live measurements. No product code/server changes have been made for this phase.
+- Written design awaiting user review:
+  `docs/superpowers/specs/2026-09-20-veltrix-customer-portal-design.md`.
+  The first bounded delivery is real cabinet/authentication/profile presentation;
+  statistics collection, published tariffs and public-launch hardening have separate
+  follow-on specifications. The cabinet itself is not postponed behind a bot-only launch.
+- Separate the visible profile name from the legacy `public_name`, which currently
+  participates in 3x-UI client email generation. Never globally rename internal
+  `dropcatch-*` identifiers or regenerate UUIDs merely to improve labels.
+
+## Telegram connection checkpoint (2026-09-20)
+
+- User created `@veltrix_vpn_official_bot` and entered its token directly in an
+  interactive server terminal. Token identity was verified with Telegram `getMe`;
+  no token was displayed in the task. Production `.env` is root-owned, mode 0600;
+  the control systemd unit currently runs as root (empty `User=`), not www-data.
+- Both webhook protection secrets are configured. Telegram accepted the HTTPS
+  webhook with `allowed_updates=[message]`, four connections and no pending-update
+  deletion. `/start`, `/status`, `/keys`, `/support` command menu was registered
+  and read back. Webhook status reported zero pending updates and no delivery error.
+- Local authenticated empty-payload probe succeeded without creating a customer;
+  missing-header and public wrong-secret probes returned 403. Local/public health
+  passed. Existing `test1` passed HTTP, certificate-validated HTTPS and UDP DNS
+  from both server and operator computer after the control-only restart.
+- Private configuration backup:
+  `/opt/backups/telegram-webhook-25h0r4qc/env.before-webhook`.
+- Subsequent read-only inspection found a real `/start` received at
+  `2026-09-20T18:12:05Z` and processed without a recorded delivery error, followed
+  by another successfully processed private update. This verifies the processing
+  path, not the visitor's ownership of the existing test subscription.
+- **Next identity step:** confirm the user's Telegram identity before associating
+  any existing subscription; do not assign `test1` to an arbitrary recent bot visitor.
+- No VPN-node configuration, access keys or payment settings changed in this step.
+
 ## VPN subscription synchronization (2026-09-20)
 
 - Subscription policy edits atomically queue existing keys, preserving their valid
