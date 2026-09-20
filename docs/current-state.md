@@ -2,6 +2,30 @@
 
 ## Veltrix customer product direction (2026-09-20)
 
+- Task 10 is implemented and independently reviewed: separate `/cabinet/` entry,
+  five real hash tabs, subscription/profile presentation, full selectable links,
+  rename/copy flows and Telegram-aware authentication states. Parent verification:
+  37 frontend tests, TypeScript/Vite multi-page build, full HTTP-mocked browser QA
+  at 320/390/768/1280 pixels in light/dark, and the actual FastAPI static route passed.
+  The official downloaded Telegram SDK also passed synthetic launch/cache cleanup;
+  this is not a live Telegram client or real login proof. No cabinet deployment yet.
+  Reviews caught and fixed Mini App 401 guidance, dynamic system/content safe areas,
+  preservation of unrelated URL fragments, parallel-request 401 handling and stale
+  links after rename across tab remounts. Both specification and quality re-reviews
+  approved; parent repeated the expanded browser suite after the final changes.
+- Latest unchanged-backend rerun: 611 passed in 157.40 seconds with real PostgreSQL
+  and no skips; full Ruff clean. Production public health returned 200/ok while the
+  separately approved server-local snapshot rehearsal was restoring. Snapshot
+  migration/cleanup results are not yet claimed; no app restart or node changes.
+- The user separately approved a temporary copy of the real production database on
+  the same managing server for migration verification. The dump stays on that host;
+  the disposable cluster has a private Unix socket, peer authentication and no TCP
+  listener. Its exact directory must be stopped/removed after the probe, in addition
+  to cleaning up the separate synthetic PostgreSQL test cluster when work finishes.
+- Browser OIDC credentials are still absent from the private server environment.
+  The user has not yet configured BotFather Login Widget / Allowed URLs. Client
+  Secret must be entered privately, not sent in chat. This blocks live browser-login
+  verification, not the implementation or synthetic tests.
 - Closed-pilot ownership confirmed on 2026-09-21 Moscow: the user identified their
   Telegram account as Elo with no username, then sent a fresh one-time challenge to
   the existing bot's private chat. A read-only production query matched the processed

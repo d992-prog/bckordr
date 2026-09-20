@@ -1167,15 +1167,16 @@ export function portalDate(value: string | null): string {
 
 **Files:** Create `frontend/cabinet/index.html`,
 `frontend/src/vpn-portal/{main.tsx,Portal.tsx,bootstrap.ts,ProfileCard.tsx,portal.css}`;
-modify `frontend/vite.config.ts`. Keep launch/auth bootstrap in its small module and
+modify `frontend/vite.config.ts` and its tracked generated `frontend/vite.config.js`
+(installed Vite resolves the JS file first). Keep launch/auth bootstrap in its small module and
 profile reveal/rename/copy UI in ProfileCard rather than growing one monolithic view.
 Add focused Node tests for bootstrap helpers and a repeatable headless browser QA
 script; use the available external test runtime, not new application dependencies.
 
-- [ ] Add independent HTML entry with title Veltrix VPN, Russian lang, viewport and
+- [x] Add independent HTML entry with title Veltrix VPN, Russian lang, viewport and
   no-referrer meta. Load official Telegram WebApp SDK and own main.tsx; no admin
   script or shared admin CSS. Render React StrictMode into its own root.
-- [ ] Configure Vite multi-page build preserving the main entry:
+- [x] Configure Vite multi-page build preserving the main entry:
 
 ```typescript
 import { fileURLToPath } from "node:url";
@@ -1199,10 +1200,10 @@ export default defineConfig({
 });
 ```
 
-- [ ] Keep five local tab states: subscription, profiles, connect, plans, help. Use
+- [x] Keep five local tab states: subscription, profiles, connect, plans, help. Use
   `/cabinet/#profiles` hash navigation; no backend catch-all that swallows unknown APIs.
   Each tab has real loading/error/empty states and one clear primary action.
-- [ ] Bootstrap config, then verify nonempty original Mini App initData on the server
+- [x] Bootstrap config, then verify nonempty original Mini App initData on the server
   before displaying any cookie-authenticated customer data. A previous customer's
   valid cookie must not bypass this identity check after switching Telegram accounts.
   Same-customer session is reusable; different customer returns 409 and requires an
@@ -1227,41 +1228,45 @@ export default defineConfig({
   unrelated SDK theme/platform values and unrelated application storage. Test both
   reload with a valid cookie and fresh launch without one; never synthesize initData.
   Browser QA must check this actual SDK cache, not only search our source for storage.
-  After a successful exchange, confirm a cookie-authenticated request succeeds. A
-  third-party iframe may block SameSite=Lax cookies: do not weaken cookie policy or
+  After a successful exchange, confirm a cookie-authenticated request succeeds. The
+  confirmation must have the same session CSRF as the exchange result; a cookie
+  switched in another tab between these requests must not render another account.
+  Strip credentials in the SDK-supported `#path?tgWebAppData=...` hash form too,
+  preserving the safe route and unrelated parameters as well as plain `#profiles`.
+  A third-party iframe may block SameSite=Lax cookies: do not weaken cookie policy or
   loop through repeated exchanges. Offer the same cabinet in an external browser
   and record which Telegram clients actually passed the live pilot.
-- [ ] Use a session generation counter or AbortController for authenticated requests.
+- [x] Use a session generation counter or AbortController for authenticated requests.
   Logout and 401 clear CSRF, profile URIs and customer state, increment generation,
   and prevent late responses restoring old data. Do not auto-login again immediately
   after explicit logout. An account mismatch requires a fresh session, not data mixing.
-- [ ] Subscription tab renders own cards with name Veltrix VPN, dates, status and
+- [x] Subscription tab renders own cards with name Veltrix VPN, dates, status and
   reserved profile slots. Display `Статистика пока недоступна`, not 0 GB. Explain
   per-profile traffic cap only if the actual subscription has one.
-- [ ] Profiles tab fetches URI on explicit action only. Full URI uses a wrapping,
+- [x] Profiles tab fetches URI on explicit action only. Full URI uses a wrapping,
   read-only textarea; copy calls Clipboard API from a user click after the URI is
   loaded. Failed clipboard permission retains selectable text and truthful feedback.
   Editable name form has save/cancel/busy/error states and maxLength=64; success
   replaces returned metadata, clears cached URI and requires a fresh reveal.
   A raw active key with `can_connect=false` is not usable: show an unavailable hint
   and disable reveal. Do not infer an established VPN connection from any API state.
-- [ ] Connect tab has explicit platform choice (iPhone, Android, Windows, macOS)
+- [x] Connect tab has explicit platform choice (iPhone, Android, Windows, macOS)
   and manual Happ instructions: install official application, open profile, copy
   and import link, connect. Do not invent app-store URLs or unverified deep links.
-- [ ] Plans tab says `Тарифы ещё не опубликованы`; Help shows configured text as
+- [x] Plans tab says `Тарифы ещё не опубликованы`; Help shows configured text as
   text. Do not publish raw test plans, zero prices, fake speed/security guarantees
   or enable payment buttons. No self-issue/revoke/change-plan UI in this delivery.
-- [ ] Root-scope CSS to `.veltrix-portal`, use CSS light-dark colors, visible focus,
+- [x] Root-scope CSS to `.veltrix-portal`, use CSS light-dark colors, visible focus,
   44px touch controls, max-width content, wrapping links and safe-area padding.
   Use system font, restrained green accent and 1-column layout below 640px. Avoid
   horizontal scroll and fixed-height card content; Telegram safe-area changes must
   not hide controls. Match the approved concept, not its demo numbers.
-- [ ] Browser tests mock API responses, not UI internals: independent users, sign-in
+- [x] Browser tests mock API responses, not UI internals: independent users, sign-in
   states, all five sections, rename success/error, copy fallback, expired subscription,
   logout during in-flight URI request. Check 320/390/768/1280px and light/dark themes.
   Include a new signed Mini App launch for Bob while Alice's valid cookie is present;
   no Alice subscription/profile data may render before explicit account switching.
-- [ ] `npm test` and `npm run build`; verify both dist/index.html and
+- [x] `npm test` and `npm run build`; verify both dist/index.html and
   dist/cabinet/index.html exist and direct GET `/cabinet/` works through FastAPI.
   Commit as `feat: add responsive Veltrix customer cabinet`.
 
@@ -1453,7 +1458,8 @@ the test runtime is available, not that the not-yet-built cabinet has passed QA.
 | 7 | Complete | 19 view tests; parent related 58 passed and final full backend 594 passed in 135.27s with real PG/no skips; full Ruff clean; both reviews approved. SQLite behavior + compiled PG locking SQL, not a PG runtime rename-lock proof |
 | 8 | Complete | Both reviews approved. Parent full backend 611 passed in 140.61s with real PG/no skips; final API 17 passed in 7.70s after test-only review amendments; full Ruff clean. Scoped CORS/no-store/pre-parse guards, real admin/customer isolation and shared OIDC lifespan; late-response exception sanitization remains Task 12 |
 | 9 | Complete | Both reviews approved; parent 22 frontend tests and TypeScript/Vite build passed; reviewer 10 focused tests. Independent DTOs/client, static HTTP/network/parser errors and total Russian state/date helpers |
-| 10–13 | Pending | No application changes for these tasks yet |
+| 10 | Complete | Both reviews approved after auth, safe-area and request-race amendments. Parent 37 frontend tests, TypeScript/Vite build, full HTTP-mocked browser QA at 320/390/768/1280 in light/dark, official SDK synthetic cache spot-check and real FastAPI static probe passed. Live Telegram pilot remains pending |
+| 11–13 | Pending | No application changes for these tasks yet |
 
 Verification repair: the old partial-cycle durability test raced a 0.1-second
 effective timeout against initial SQLite work (configured 0.05 is clamped). A
