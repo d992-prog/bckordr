@@ -2855,16 +2855,13 @@ export default function App() {
     }
   }
 
-  async function deleteItem(kind: "domain" | "discovery" | "worker" | "account" | "contact", id: number) {
+  async function deleteItem(kind: "domain" | "discovery" | "account" | "contact", id: number) {
     try {
       if (kind === "domain") {
         await api.deleteDomain(id);
       }
       if (kind === "discovery") {
         await api.deleteDiscoveryDomain(id);
-      }
-      if (kind === "worker") {
-        await api.deleteWorker(id);
       }
       if (kind === "account") {
         await api.deleteRegistrarAccount(id);
@@ -2876,6 +2873,27 @@ export default function App() {
       setToast({ type: "success", text: "Удалено" });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка удаления" });
+    }
+  }
+
+  async function decommissionWorker(worker: WorkerNode) {
+    const confirmed = window.confirm(
+      `Удалить ноду ${worker.name} из активной системы?\n\n` +
+        "Она перестанет использоваться для drop-задач и VPN. Активные ключи будут отозваны локально, " +
+        "история сохранится. Удаленный VPS и 3x-UI не изменяются — сервер нужно отдельно удалить или защитить у хостера.",
+    );
+    if (!confirmed) {
+      return;
+    }
+    try {
+      await api.deleteWorker(worker.id);
+      await loadAll();
+      setToast({ type: "success", text: "Нода удалена из активной системы" });
+    } catch (error) {
+      setToast({
+        type: "error",
+        text: error instanceof Error ? error.message : "Ошибка удаления ноды",
+      });
     }
   }
 
@@ -4368,7 +4386,7 @@ export default function App() {
                     <div className="actions">
                       <button type="button" className="ghost" onClick={() => startEditWorker(worker)}>Редактировать</button>
                       <button type="button" className="ghost" onClick={() => void toggleWorker(worker)}>{worker.is_enabled ? "Выключить" : "Включить"}</button>
-                      <button type="button" className="danger" onClick={() => void deleteItem("worker", worker.id)}>Удалить</button>
+                      <button type="button" className="danger" onClick={() => void decommissionWorker(worker)}>Удалить</button>
                     </div>
                   </div>
                 </div>
@@ -4719,6 +4737,7 @@ export default function App() {
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "Установлен" : vpnInstallInProgress ? "Установка" : "Установить"}</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={vpnMaintenanceBlocked}>Обновить</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={vpnMaintenanceBlocked}>Рестарт</button>
+                          <button type="button" className="danger" onClick={() => void decommissionWorker(worker)}>Удалить ноду</button>
                         </div>
                       </td>
                     </tr>
