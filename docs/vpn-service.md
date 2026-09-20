@@ -18,6 +18,14 @@ The Telegram bot supports `/start`, `/status`, `/keys`, and `/support`. A VPN UR
 
 VPN-changing maintenance and key mutations are blocked while the same worker is running an active domain attack. Health checks remain available, and existing VPN clients continue working. Wait for the attack to finish before retrying a mutation.
 
+## Safe Node Decommission
+
+Use `Удалить ноду` in the VPN screen or `Удалить` in the worker list when a server must no longer participate in the system. Confirm the warning only after checking that the node has no active domain attack or maintenance job. The API rejects the operation with a conflict while either one is active.
+
+Decommissioning archives the worker instead of deleting its history. It disables the worker, removes its control and stored SSH/3x-UI credentials, excludes it from task and VPN selection, and marks its unfinished or active VPN keys as locally `revoked`. The key rows and worker assignment remain available for audit, but their configuration URIs are cleared. Because the control server cannot prove a remote revoke after access is lost, the key history explicitly records that remote removal was not confirmed.
+
+This operation does not contact, erase, or secure the remote VPS and does not remove its 3x-UI inbound. After decommissioning, separately delete the server at the hosting provider or rotate/block its credentials and network access.
+
 ## Telegram Webhook
 
 Configure these environment values and restart control:

@@ -172,6 +172,7 @@ Architecture goal:
 - VPN service now supports:
   - manual plans, customers, and subscriptions while payments remain out of scope
   - safe automatic 3x-UI node selection and per-subscription device limits
+  - safe VPN-node decommissioning with archived worker history, local key revocation, credential clearing, and active-work conflict checks
   - scheduled and manual lifecycle runs for `pending_sync`, expiration, and `pending_revoke`
   - blocking VPN mutations on workers with an active domain attack while health checks remain available
   - revoke-and-retain access-key history instead of destructive deletion
@@ -194,8 +195,8 @@ Architecture goal:
 
 ## Most Recent Verified Checks
 
-At the VPN operational-hardening checkpoint on 2026-09-20:
-- `python -m pytest tests -q -p no:cacheprovider` in `backend` -> `226 passed`
+At the safe VPN-node decommission checkpoint on 2026-09-20:
+- `python -m pytest tests -q -p no:cacheprovider` in `backend` -> `233 passed`
 - `python -m ruff check app tests` in `backend` -> passed
 - `python -m ruff check app` in `worker` -> passed
 - `npm --prefix frontend run build` -> passed
