@@ -4402,6 +4402,24 @@ export default function App() {
         <div className="card full-span">
           <div className="card-head">
             <div>
+              <h2>Клиенты и доступ</h2>
+              <p className="muted">Клиент, его подписки и VPN-ключи собраны в одном рабочем экране.</p>
+            </div>
+          </div>
+          <VpnCustomerWorkspace
+            customers={vpnCustomers}
+            subscriptions={vpnSubscriptions}
+            accessKeys={vpnAccessKeys}
+            plans={vpnPlans}
+            workers={vpnNodes}
+            reload={() => loadAll()}
+            notify={(type: "success" | "error", text: string) => setToast({ type, text })}
+          />
+        </div>
+
+        <div className="card full-span">
+          <div className="card-head">
+            <div>
               <h2>VPN ноды</h2>
               <p className="muted">Установка, проверка, обновление и рестарт 3x-UI выполняются через SSH данные воркера.</p>
             </div>
@@ -4523,24 +4541,6 @@ export default function App() {
             </table>
           </div>
           {vpnPlans.length === 0 ? <p className="empty">Тарифов пока нет.</p> : null}
-        </div>
-
-        <div className="card full-span">
-          <div className="card-head">
-            <div>
-              <h2>Клиенты и доступ</h2>
-              <p className="muted">Клиент, его подписки и VPN-ключи собраны в одном рабочем экране.</p>
-            </div>
-          </div>
-          <VpnCustomerWorkspace
-            customers={vpnCustomers}
-            subscriptions={vpnSubscriptions}
-            accessKeys={vpnAccessKeys}
-            plans={vpnPlans}
-            workers={vpnNodes}
-            reload={() => loadAll()}
-            notify={(type: "success" | "error", text: string) => setToast({ type, text })}
-          />
         </div>
 
         <div className="card full-span">
