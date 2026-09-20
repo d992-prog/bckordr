@@ -77,6 +77,16 @@
   All 63 current app modules also parse with Python 3.11 grammar; this is syntax
   evidence, not a full production-runtime test. An optional IPv6-origin normalization
   edge is documented in the plan and does not affect the intended DNS origin.
+- Task 6 adds the official Telegram OIDC code/PKCE client, strict RS256 identity
+  verification and bounded shared JWKS cache. Both reviews approved. Parent ran
+  111 OIDC/Telegram tests in 11.68 seconds with PostgreSQL enabled and no skips;
+  final focused OIDC rerun: 56 passed in 1.06 seconds, full Ruff clean. Tests use
+  synthetic RSA-signed tokens and mocked provider HTTP, not live user credentials.
+  Distinct valid OIDC sub and Telegram id are supported; identity uses id. Network
+  responses are capped during streaming, redirects are disabled, and key-cache
+  rotation/outage/throttling behavior is covered. HTTP integration and live browser
+  login remain pending. The service parses with Python 3.11 grammar; local execution
+  is still Python 3.14.4, not a production-runtime verification.
 - Separate the visible profile name from the legacy `public_name`, which currently
   participates in 3x-UI client email generation. Never globally rename internal
   `dropcatch-*` identifiers or regenerate UUIDs merely to improve labels.

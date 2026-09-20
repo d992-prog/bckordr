@@ -724,10 +724,12 @@ async def consume_login_attempt(db, state: str, binding: str, now):
 **Files:** Extend `backend/app/services/vpn_portal_telegram.py`;
 create `backend/tests/test_vpn_portal_oidc.py`.
 
-- [ ] Generate a test-only RSA key in the test process. Sign short-lived JWT fixtures
+- [x] Generate a test-only RSA key in the test process. Sign short-lived JWT fixtures
   using PyJWT; test invalid signature, HS256/none algorithm, wrong issuer/audience,
-  absent id/exp/iat/sub, expired/future token and `id != sub`. Never use production tokens.
-- [ ] Pin endpoints in the module, not from request data:
+  absent id/exp/iat/sub and expired/future token. Add a positive `id != sub` case:
+  these claims represent different identifiers, so a valid token must succeed and
+  return identity from `id`, without requiring equality with `sub`. Never use production tokens.
+- [x] Pin endpoints in the module, not from request data:
 
 ```python
 TELEGRAM_ISSUER = "https://oauth.telegram.org"
@@ -736,7 +738,7 @@ TELEGRAM_TOKEN_URL = TELEGRAM_ISSUER + "/token"
 TELEGRAM_JWKS_URL = TELEGRAM_ISSUER + "/.well-known/jwks.json"
 ```
 
-- [ ] Add code challenge and authorization URL builder:
+- [x] Add code challenge and authorization URL builder:
 
 ```python
 import base64
@@ -752,13 +754,13 @@ def authorization_url(client_id: str, callback: str, state: str, verifier: str) 
     })
 ```
 
-- [ ] Exchange code with httpx AsyncClient(timeout=10, follow_redirects=False),
+- [x] Exchange code with httpx AsyncClient(timeout=10, follow_redirects=False),
   BasicAuth(client_id, client_secret), form fields grant_type=authorization_code,
   code, fixed redirect_uri, client_id and code_verifier. Cap received JSON at 1 MiB;
   require a string id_token <= 16 KiB. Enforce the response cap while streaming,
   including decompressed bytes, rather than only after buffering the whole response.
   Apply the same bounded reader to JWKS. Discard access_token immediately; no userinfo call.
-- [ ] Use an async lock and monotonic clock to cache official JWKS for 300 seconds.
+- [x] Use an async lock and monotonic clock to cache official JWKS for 300 seconds.
   On missing kid, allow one forced refresh no more often than once per 30 seconds.
   Bound the document to at most 20 keys; select only eligible RSA/RS256 signing keys.
   Reject duplicate kid values and never select unapproved alg/use, but ignore keys
@@ -769,7 +771,7 @@ def authorization_url(client_id: str, callback: str, state: str, verifier: str) 
   fixtures must pass for an RS256 token; this does not enable other token algorithms.
   No redirects, token-provided jku/x5u downloads, stale-key fallback after expiry or
   unverified JWT claims. Test cache hits, rotation, throttled unknown kid and outages.
-- [ ] Verify token using the selected key with explicit algorithms/claims:
+- [x] Verify token using the selected key with explicit algorithms/claims:
 
 ```python
 import jwt
@@ -792,9 +794,16 @@ def verify_id_token(token: str, jwk: dict, client_id: str):
         raise TelegramAuthenticationError("telegram_authentication_failed") from None
 ```
 
-- [ ] Inject MockTransport/key provider in tests. Assert no request leaves the three
+- [x] Inject MockTransport/key provider in tests. Assert no request leaves the three
   fixed official URLs and all network/parser errors become a generic safe failure.
-- [ ] Run focused tests and commit as `feat: support Telegram OIDC browser sign-in`.
+- Integration contract: `TelegramJWKSProvider(http_client, monotonic=...)` exposes
+  async `get_key(kid)`. `exchange_authorization_code(client_id, client_secret,
+  callback, code, verifier, *, http_client, jwks_provider)` returns verified
+  TelegramIdentity. Task 8 owns one app-lifespan client/provider pair and closes the
+  client at shutdown; a per-request provider would discard the bounded shared cache.
+  Requests explicitly enforce timeout=10 and follow_redirects=False even for an
+  injected client. Failed unknown-kid refresh attempts also consume the cooldown.
+- [x] Run focused tests and commit as `feat: support Telegram OIDC browser sign-in`.
 
 ## Task 7: Shared own-customer read model and entitlement
 
@@ -1398,6 +1407,11 @@ tests. The plan's 26 Python snippets were parsed; 14 pure display examples and t
 trimmed-name DTO example were exercised in memory. These are plan checks, not feature
 verification. Implementation progress is recorded below; production remains unchanged.
 
+Browser QA environment probe succeeded on 2026-09-21: bundled Playwright 1.62.1
+launched the already-installed Chromium headless 148.0.7778.96 with an explicit
+executable path and rendered a synthetic 320px page, then closed cleanly. This proves
+the test runtime is available, not that the not-yet-built cabinet has passed QA.
+
 ## Execution ledger
 
 | Task | State | Evidence |
@@ -1407,7 +1421,8 @@ verification. Implementation progress is recorded below; production remains unch
 | 3 | Complete | 26 profile-name tests; parent ran 145 related tests; full Ruff clean; both reviews approved. Real PG blocking PID observed for two customer-name transactions, yielding ordinals 2 then 3 |
 | 4 | Complete | 70 new/existing Telegram tests and full backend 471 tests pass, including synchronized real PG uniqueness race preserving outer writes; full Ruff clean; both reviews approved |
 | 5 | Complete | Both reviews approved; parent full backend 519 passed in 150.71s, full Ruff clean; reviewer 116 focused tests with real PG contention/rebind. Reuse locks/refetches customer then session; error-side commit leaves no orphan changes; cleanup transaction timeout cannot stall VPN maintenance |
-| 6–13 | Pending | No application changes for these tasks yet |
+| 6 | Complete | 56 OIDC tests; parent combined 111 OIDC/Telegram tests including PG passed without skips, Ruff clean, both reviews approved; streamed caps, fixed endpoints, real signed synthetic JWTs, mixed JWKS/cache/rotation tests |
+| 7–13 | Pending | No application changes for these tasks yet |
 
 Nonblocking Task 5 review note: unusual configured IPv6 origins are not normalized
 to browser-compressed form, and scoped IPv6 addresses are accepted by the parser.
