@@ -45,6 +45,8 @@ Architecture goal:
   Shared subscription, device-limit, safe-node, and active-attack policy.
 - [backend/app/services/vpn_lifecycle.py](/D:/паразитное%20seo/backorder/project/backend/app/services/vpn_lifecycle.py)
   Serialized automatic/manual provisioning, expiration, and revoke retries.
+- [backend/app/services/vpn_customer_lifecycle.py](/D:/паразитное%20seo/backorder/project/backend/app/services/vpn_customer_lifecycle.py)
+  Atomic customer archive staging: disables usable subscriptions and marks usable keys for revocation while preserving history.
 - [backend/app/services/vpn_telegram.py](/D:/паразитное%20seo/backorder/project/backend/app/services/vpn_telegram.py)
   Idempotent customer bot commands and audited Telegram delivery.
 - [backend/app/db/models.py](/D:/паразитное%20seo/backorder/project/backend/app/db/models.py)
@@ -71,6 +73,10 @@ Architecture goal:
   Main control panel UI.
 - [frontend/src/api.ts](/D:/паразитное%20seo/backorder/project/frontend/src/api.ts)
   Frontend API types and HTTP helpers.
+- [frontend/src/VpnCustomerWorkspacePanel.tsx](/D:/паразитное%20seo/backorder/project/frontend/src/VpnCustomerWorkspacePanel.tsx)
+  Customer-centered VPN workspace for profile, subscription, and access-key operations.
+- [frontend/src/vpnCustomerWorkspace.ts](/D:/паразитное%20seo/backorder/project/frontend/src/vpnCustomerWorkspace.ts)
+  Tested customer filtering, operational status, extension, and safe status-transition rules.
 
 ### Docs
 
@@ -171,6 +177,12 @@ Architecture goal:
   - account-level `Prefill contact`
 - VPN service now supports:
   - manual plans, customers, and subscriptions while payments remain out of scope
+  - a customer-centered admin workspace with search and operational filters
+  - customer profile creation/editing and safe archive/restore actions
+  - atomic customer archive that disables active/trial subscriptions, revokes usable keys, preserves all history, and reports pending revokes
+  - subscription creation/editing, quick `+7/+30/+90` extension, and immediate suspension workflow
+  - access-key issue/retry/revoke controls grouped under the owning subscription
+  - exact full `vless://` / `vmess://` link copying plus an expandable read-only fallback for manual copying
   - safe automatic 3x-UI node selection and per-subscription device limits
   - safe VPN-node decommissioning with archived worker history, local key revocation, credential clearing, and active-work conflict checks
   - scheduled and manual lifecycle runs for `pending_sync`, expiration, and `pending_revoke`
@@ -188,20 +200,19 @@ Architecture goal:
   - one default contact profile
 - `owner/admin/bill/tech` are currently cloned from one contact profile, not managed separately.
 - TLD-specific `extra_parameters` are supported as raw JSON text, not as a rich typed UI model.
-- UI is operational and usable, but still not a final polished admin product.
+- The VPN customer workspace is operational; visual browser smoke testing still needs to be repeated in an environment where the desktop browser runner is available.
 - Worker runtime IP allowlist enforcement is implemented on the control side, but nginx/origin deployment still must be configured on the server.
 - VPN payments are intentionally not implemented yet.
 - A real Telegram webhook smoke test requires a deployed HTTPS control URL and a BotFather token; automated webhook behavior is covered locally.
 
 ## Most Recent Verified Checks
 
-At the safe VPN-node decommission checkpoint on 2026-09-20:
-- `python -m pytest tests -q -p no:cacheprovider` in `backend` -> `233 passed`
+At the VPN customer workspace checkpoint on 2026-09-20:
+- `python -m pytest` in `backend` -> `238 passed`
 - `python -m ruff check app tests` in `backend` -> passed
 - `python -m ruff check app` in `worker` -> passed
-- `npm --prefix frontend run build` -> passed
-- `python -c "from app.main import app; print(app.title)"` in `backend` -> passed
-- `python -c "from app.runner import WorkerRunner; from app.gandi import build_registration_request, register_domain; print('worker-import-ok')"` in `worker` -> passed
+- `npm test` in `frontend` -> `9 passed`
+- `npm run build` in `frontend` -> passed
 
 ## Fast Re-Entry
 
