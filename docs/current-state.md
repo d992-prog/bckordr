@@ -13,7 +13,24 @@
 - New coverage includes API staging, suspension/resumption, stale expiry, manual
   revoke serialization, inactive customers, retained device slots, legacy and
   normalized 3x-UI SQL preservation and confirmed remote restart behavior.
-- Deployment/live-smoke results are recorded below after verification.
+- Deployed release `f6a087c` to the control server; the service is active and
+  local health plus public health from the operator computer both return `ok`.
+- Full verification: backend `332 passed`, Ruff clean, frontend `12 passed`,
+  production builds completed locally and on the server.
+- Live temporary-key verification passed: renewal applied expiry/device/traffic
+  limits without changing UUID/link/node; recorded usage remained `675` upload /
+  `5413` download bytes. Pause blocked actual tunnel traffic, resume and renewal
+  after automatic expiry restored certificate-validated HTTPS 200. Manual revoke
+  remained final after renewal. Test traffic was repeated after node startup so
+  the usage assertion used nonzero persisted counters, not a zero/zero comparison.
+- `test1` identity and node policy were unchanged; HTTP 200, certificate-validated
+  HTTPS 200 and UDP DNS succeeded through its saved link from both the control
+  server and operator computer. Temporary keys 9/10/11 are revoked; temporary
+  customers are archived and verification admin sessions revoked.
+- Full PostgreSQL backup (879677908 bytes):
+  `/opt/backups/vpn-subscription-sync-20260920-170125/control.dump`; archive listing
+  validated. A private SQLite node backup was also created before each live test.
+  The earlier 90-second backup attempt was incomplete and was not used for deploy.
 
 ## Project Summary
 
