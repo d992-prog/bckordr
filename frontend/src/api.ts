@@ -485,6 +485,13 @@ export type VpnCustomer = {
   updated_at: string;
 };
 
+export type VpnCustomerArchiveResult = {
+  customer: VpnCustomer;
+  disabled_subscriptions: number;
+  revoked_keys: number;
+  pending_revoke_keys: number;
+};
+
 export type VpnSubscription = {
   id: number;
   customer_id: number;
@@ -701,7 +708,7 @@ export type DomainDryRunBatchResult = {
   results: DomainDryRunResult[];
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "/api";
+const API_BASE = import.meta.env?.VITE_API_BASE ?? "/api";
 
 export function discoveryAvailableExportUrl(zone?: string): string {
   const query = zone ? `?zone=${encodeURIComponent(zone)}` : "";
@@ -1001,6 +1008,10 @@ export const api = {
     request<VpnCustomer>(`/control/vpn/customers/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
+    }),
+  archiveVpnCustomer: (id: number) =>
+    request<VpnCustomerArchiveResult>(`/control/vpn/customers/${id}/archive`, {
+      method: "POST",
     }),
   getVpnSubscriptions: () => request<VpnSubscription[]>("/control/vpn/subscriptions"),
   createVpnSubscription: (payload: Record<string, unknown>) =>
