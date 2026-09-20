@@ -1038,7 +1038,7 @@ async def assert_customer_isolation(client, own_key_id, other_key_id, csrf):
 **Files:** Create `frontend/src/vpn-portal/{types.ts,api.ts,view.ts}`,
 `frontend/test/vpnPortalApi.test.mjs`, `frontend/test/vpnPortalView.test.mjs`.
 
-- [ ] Mirror Task 7 DTOs in types.ts, keeping nullable dates explicit and numeric
+- [x] Mirror Task 7 DTOs in types.ts, keeping nullable dates explicit and numeric
   IDs as number. Config interface matches Task 8. Do not import `../api.ts` admin types.
 
 ```typescript
@@ -1069,7 +1069,7 @@ export interface PortalProfile {
 }
 export interface PortalConnection { uri: string }
 ```
-- [ ] Use a private generic request helper; no persistent token storage:
+- [x] Use a private generic request helper; no persistent token storage:
 
 ```typescript
 export class PortalError extends Error {
@@ -1098,7 +1098,7 @@ export async function portalRequest<T>(path: string, options: RequestInit = {}):
 }
 ```
 
-- [ ] Add typed methods for config/me/loginMiniApp/logout/subscriptions/profiles/
+- [x] Add typed methods for config/me/loginMiniApp/logout/subscriptions/profiles/
   connection/rename using contract paths; mutations attach X-CSRF-Token, not a
   manually set Origin header. Do not include real URLs, credentials or demo statistics.
 
@@ -1128,10 +1128,14 @@ export const portalApi = {
 
   Logout returns JSON `{logged_out: true}` with HTTP 200, not an empty 204, so the
   common response parser remains valid. Subscription/profile endpoints return arrays.
-- [ ] Test calls using a fake global fetch. Assert credentials/cache, exact URI,
+- [x] Test calls using a fake global fetch. Assert credentials/cache, exact URI,
   no CSRF on read, correct CSRF on writes, safe error text ignoring server secrets,
   and no calls to `/control/` or `/auth/`.
-- [ ] Add a total Russian status mapping with an unknown fallback, and date formatter:
+  This means legacy admin `/api/control` and `/api/auth`, not the intentional portal
+  `/api/vpn-portal/auth/mini-app` path. Keep the general request helper private. Wrap
+  fetch failures and invalid successful JSON in safe errors too; raw parser/network
+  exception messages can contain upstream response content. Do not log these values.
+- [x] Add a total Russian status mapping with an unknown fallback, and date formatter:
 
 ```typescript
 const labels: Record<string, string> = {
@@ -1157,13 +1161,16 @@ export function portalDate(value: string | null): string {
 }
 ```
 
-- [ ] Run `npm test`; commit as `feat: add typed customer portal client and presentation helpers`.
+- [x] Run `npm test`; commit as `feat: add typed customer portal client and presentation helpers`.
 
 ## Task 10: Customer cabinet and Mini App lifecycle
 
 **Files:** Create `frontend/cabinet/index.html`,
-`frontend/src/vpn-portal/{main.tsx,Portal.tsx,portal.css}`;
-modify `frontend/vite.config.ts`.
+`frontend/src/vpn-portal/{main.tsx,Portal.tsx,bootstrap.ts,ProfileCard.tsx,portal.css}`;
+modify `frontend/vite.config.ts`. Keep launch/auth bootstrap in its small module and
+profile reveal/rename/copy UI in ProfileCard rather than growing one monolithic view.
+Add focused Node tests for bootstrap helpers and a repeatable headless browser QA
+script; use the available external test runtime, not new application dependencies.
 
 - [ ] Add independent HTML entry with title Veltrix VPN, Russian lang, viewport and
   no-referrer meta. Load official Telegram WebApp SDK and own main.tsx; no admin
@@ -1236,6 +1243,8 @@ export default defineConfig({
   loaded. Failed clipboard permission retains selectable text and truthful feedback.
   Editable name form has save/cancel/busy/error states and maxLength=64; success
   replaces returned metadata, clears cached URI and requires a fresh reveal.
+  A raw active key with `can_connect=false` is not usable: show an unavailable hint
+  and disable reveal. Do not infer an established VPN connection from any API state.
 - [ ] Connect tab has explicit platform choice (iPhone, Android, Windows, macOS)
   and manual Happ instructions: install official application, open profile, copy
   and import link, connect. Do not invent app-store URLs or unverified deep links.
@@ -1443,7 +1452,8 @@ the test runtime is available, not that the not-yet-built cabinet has passed QA.
 | 6 | Complete | 56 OIDC tests; parent combined 111 OIDC/Telegram tests including PG passed without skips, Ruff clean, both reviews approved; streamed caps, fixed endpoints, real signed synthetic JWTs, mixed JWKS/cache/rotation tests |
 | 7 | Complete | 19 view tests; parent related 58 passed and final full backend 594 passed in 135.27s with real PG/no skips; full Ruff clean; both reviews approved. SQLite behavior + compiled PG locking SQL, not a PG runtime rename-lock proof |
 | 8 | Complete | Both reviews approved. Parent full backend 611 passed in 140.61s with real PG/no skips; final API 17 passed in 7.70s after test-only review amendments; full Ruff clean. Scoped CORS/no-store/pre-parse guards, real admin/customer isolation and shared OIDC lifespan; late-response exception sanitization remains Task 12 |
-| 9–13 | Pending | No application changes for these tasks yet |
+| 9 | Complete | Both reviews approved; parent 22 frontend tests and TypeScript/Vite build passed; reviewer 10 focused tests. Independent DTOs/client, static HTTP/network/parser errors and total Russian state/date helpers |
+| 10–13 | Pending | No application changes for these tasks yet |
 
 Verification repair: the old partial-cycle durability test raced a 0.1-second
 effective timeout against initial SQLite work (configured 0.05 is clamped). A

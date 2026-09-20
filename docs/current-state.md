@@ -17,6 +17,11 @@
   streamed input limits, CORS isolation and generic no-store errors are tested.
   Late-response exception log sanitization remains required in Task 12 before rollout.
   Current unchanged admin frontend also passes all 12 tests and TypeScript/Vite build.
+- Task 9 adds independent typed portal requests, static Russian errors and status/date
+  helpers, without admin imports or persistent client token storage. Both reviews
+  approved. Parent independently ran all 22 frontend tests and TypeScript/Vite build;
+  reviewer ran all 10 new focused tests. This is client infrastructure, not a completed
+  cabinet screen or browser/Mini App production verification.
 - User chose to include a customer cabinet immediately, alongside the Telegram bot,
   using Telegram sign-in without separate email/password registration. Both surfaces
   must share the existing VPN customers, subscriptions and keys; admin authentication
