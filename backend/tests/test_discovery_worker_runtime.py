@@ -136,7 +136,7 @@ async def test_apply_discovery_worker_task_result_updates_domain_and_keeps_last_
                 lifecycle_stage="not_found",
                 availability_status="available",
                 status_codes=[],
-                raw_response='{"title":"Not found"}',
+                raw_response='{"title":"Not found"}\x00',
                 error=None,
             ),
             now=now,
@@ -158,5 +158,7 @@ async def test_apply_discovery_worker_task_result_updates_domain_and_keeps_last_
     assert task is not None
     assert task.status == "completed"
     assert len(observations) == 5
+    latest_observation = max(observations, key=lambda observation: observation.observed_at)
+    assert latest_observation.raw_response == '{"title":"Not found"}'
 
     await engine.dispose()

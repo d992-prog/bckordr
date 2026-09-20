@@ -187,6 +187,27 @@ class DiscoveryObservationInput:
     error: str | None = None
 
 
+def _strip_postgres_null_bytes(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return value.replace("\x00", "")
+
+
+def _sanitize_observation_text(observation: DiscoveryObservationInput) -> DiscoveryObservationInput:
+    return replace(
+        observation,
+        source=_strip_postgres_null_bytes(observation.source) or "",
+        lifecycle_stage=_strip_postgres_null_bytes(observation.lifecycle_stage),
+        availability_status=_strip_postgres_null_bytes(observation.availability_status),
+        status_codes=[_strip_postgres_null_bytes(value) or "" for value in observation.status_codes],
+        registrar_name=_strip_postgres_null_bytes(observation.registrar_name),
+        owner_handle=_strip_postgres_null_bytes(observation.owner_handle),
+        name_servers=[_strip_postgres_null_bytes(value) or "" for value in observation.name_servers],
+        raw_response=_strip_postgres_null_bytes(observation.raw_response),
+        error=_strip_postgres_null_bytes(observation.error),
+    )
+
+
 def normalize_discovery_domain(value: str) -> str:
     domain = value.strip().lower().rstrip(".")
     if not domain or "." not in domain:
@@ -902,6 +923,7 @@ def apply_discovery_observation(
     next_check_offset: timedelta = timedelta(0),
     include_active_jitter: bool = True,
 ) -> DiscoveryObservationInput:
+    observation = _sanitize_observation_text(observation)
     observed_at = _ensure_aware(observation.observed_at)
     lifecycle_stage = observation.lifecycle_stage or normalize_lifecycle_stage(
         observation.status_codes,

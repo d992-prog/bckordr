@@ -159,7 +159,7 @@ async def apply_discovery_worker_task_result(
 
     task.status = "completed"
     task.finished_at = completed_at
-    task.error_message = payload.error
+    task.error_message = observation.error
     task.updated_at = completed_at
 
     return _build_transition_notification(
