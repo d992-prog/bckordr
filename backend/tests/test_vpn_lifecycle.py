@@ -511,6 +511,97 @@ async def test_control_runtime_cancels_lifecycle_at_cycle_timeout(session_factor
 
 
 @pytest.mark.asyncio
+async def test_portal_cleanup_failure_does_not_prevent_key_maintenance(
+    session_factory,
+    monkeypatch,
+):
+    lifecycle_completed = asyncio.Event()
+
+    async def successful_lifecycle(db, *, now=None, batch_size=50, key_timeout_seconds=30):
+        del db, now, batch_size, key_timeout_seconds
+        lifecycle_completed.set()
+        return {}
+
+    async def failed_cleanup(db, *, now=None):
+        del db, now
+        raise RuntimeError("sensitive cleanup failure")
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.run_vpn_lifecycle_maintenance",
+        successful_lifecycle,
+    )
+    monkeypatch.setattr(
+        "app.services.control_runtime.cleanup_expired_portal_auth",
+        failed_cleanup,
+    )
+    orchestrator = ControlRuntimeOrchestrator(
+        session_factory,
+        settings=Settings(DISCOVERY_ENABLED=False, VPN_LIFECYCLE_ENABLED=True),
+    )
+
+    await orchestrator._run_vpn_lifecycle(datetime(2026, 9, 20, 12, 0, tzinfo=UTC))
+
+    assert lifecycle_completed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stalled_portal_cleanup_commit_is_bounded_and_allows_next_lifecycle(
+    session_factory,
+    monkeypatch,
+):
+    lifecycle_runs = 0
+    session_calls = 0
+    stalled_commit_cancelled = asyncio.Event()
+
+    async def successful_lifecycle(db, *, now=None, batch_size=50, key_timeout_seconds=30):
+        nonlocal lifecycle_runs
+        del db, now, batch_size, key_timeout_seconds
+        lifecycle_runs += 1
+        return {}
+
+    async def successful_cleanup(db, *, now=None):
+        del db, now
+        return {}
+
+    def controlled_session_factory():
+        nonlocal session_calls
+        session_calls += 1
+        session = session_factory()
+        if session_calls == 2:
+            async def stalled_commit():
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    stalled_commit_cancelled.set()
+
+            session.commit = stalled_commit
+        return session
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.run_vpn_lifecycle_maintenance",
+        successful_lifecycle,
+    )
+    monkeypatch.setattr(
+        "app.services.control_runtime.cleanup_expired_portal_auth",
+        successful_cleanup,
+    )
+    monkeypatch.setattr(
+        "app.services.control_runtime.PORTAL_AUTH_CLEANUP_TIMEOUT_SECONDS",
+        0.05,
+    )
+    orchestrator = ControlRuntimeOrchestrator(
+        controlled_session_factory,
+        settings=Settings(DISCOVERY_ENABLED=False, VPN_LIFECYCLE_ENABLED=True),
+    )
+
+    await asyncio.wait_for(orchestrator._run_vpn_lifecycle(utcnow()), timeout=1)
+    await asyncio.wait_for(orchestrator._run_vpn_lifecycle(utcnow()), timeout=1)
+
+    assert stalled_commit_cancelled.is_set()
+    assert lifecycle_runs == 2
+
+
+@pytest.mark.asyncio
 async def test_cycle_timeout_preserves_completed_key_and_advances_queue(
     session_factory,
     monkeypatch,

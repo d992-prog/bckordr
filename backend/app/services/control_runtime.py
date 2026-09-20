@@ -27,9 +27,11 @@ from app.services.discovery_worker_runtime import (
 )
 from app.services.notifier import TelegramNotifier
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
+from app.services.vpn_portal_auth import cleanup_expired_portal_auth
 from app.services.zone_scanner import run_zone_scan_job
 
 logger = logging.getLogger(__name__)
+PORTAL_AUTH_CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 class ControlRuntimeOrchestrator:
@@ -258,6 +260,20 @@ class ControlRuntimeOrchestrator:
             except Exception:
                 await session.rollback()
                 logger.exception("VPN lifecycle background task failed")
+        try:
+            await asyncio.wait_for(
+                self._cleanup_expired_portal_auth(now),
+                timeout=PORTAL_AUTH_CLEANUP_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning("VPN portal expired-auth cleanup timed out")
+        except Exception:
+            logger.warning("VPN portal expired-auth cleanup failed")
+
+    async def _cleanup_expired_portal_auth(self, now) -> None:
+        async with self._session_factory() as session:
+            await cleanup_expired_portal_auth(session, now=now)
+            await session.commit()
 
     async def _send_discovery_notification(self, session: AsyncSession, message: str) -> None:
         if self._notifier is None:

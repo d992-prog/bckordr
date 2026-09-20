@@ -544,10 +544,10 @@ async def resolve_telegram_customer(db, identity: TelegramIdentity):
 **Files:** Create `backend/app/services/vpn_portal_auth.py`,
 `backend/tests/test_vpn_portal_auth.py`.
 
-- [ ] Write tests for expired/revoked sessions, archived customer, changed Telegram
+- [x] Write tests for expired/revoked sessions, archived customer, changed Telegram
   binding, wrong cookie namespace, wrong CSRF, wrong/missing Origin, closed pilot,
   duplicate Mini App digest, and OIDC attempts claimed once across two DB connections.
-- [ ] Define the session and policy helpers:
+- [x] Define the session and policy helpers:
 
   Validate configuration before using it in redirects or Origin comparisons:
   reject whitespace/control characters, backslashes, credentials, query/fragment
@@ -648,7 +648,7 @@ def valid_mutation(origin: str | None, token: str | None, principal, settings) -
         and token.isascii() and hmac.compare_digest(token, principal.csrf))
 ```
 
-- [ ] OIDC attempt creation generates three independent random values (state,
+- [x] OIDC attempt creation generates three independent random values (state,
   browser binding, verifier). Save only state/binding digests; verifier is temporary
   server-side data. Return raw values to the HTTP layer, never log them.
 
@@ -665,7 +665,7 @@ async def create_login_attempt(db, now=None):
     await db.flush()
     return state, binding, verifier
 ```
-- [ ] Implement atomic claim with this transaction order:
+- [x] Implement atomic claim with this transaction order:
 
 ```python
 from sqlalchemy import select
@@ -692,7 +692,7 @@ async def consume_login_attempt(db, state: str, binding: str, now):
 
   Commit the claim **before** calling Telegram. Failed exchanges require a fresh
   login. Never retry consumed attempts by resetting consumed_at.
-- [ ] Mini App exchange: verify first, enforce pilot/status, then insert canonical
+- [x] Mini App exchange: verify first, enforce pilot/status, then insert canonical
   digest and issue session in one transaction. Unique-conflict means replay. A
   previously valid session for the same customer may return its current session
   DTO without inserting a new session; a replay with a different/no session gets 401.
@@ -701,18 +701,23 @@ async def consume_login_attempt(db, state: str, binding: str, now):
   Call `issue_session(db, customer.id, identity.user_id)` only after verified identity,
   allowlist and customer resolution, in that same transaction. Recheck archive/rebind
   races with two PostgreSQL connections: stale ORM objects must not issue a new session.
+  Session reuse must also lock/refetch the existing customer and verify the session's
+  current binding/status, including when a fresh payload resolves to a different
+  customer after concurrent rebinding. Reject the stale session and roll back all
+  exchange-side mutations; committing the caller's error path must not leave an
+  orphan customer, replay claim or profile update.
   Existing sessions still fail their next lookup immediately after archive/rebinding.
   Retain a successful Mini App digest for 10 minutes from exchange time. This exceeds
   its entire remaining acceptance window, including future skew and integer-second
   rounding; cleanup must not make a still-acceptable signed payload reusable.
-- [ ] Cleanup helper deletes up to 100 expired attempts, exchanges and sessions per
+- [x] Cleanup helper deletes up to 100 expired attempts, exchanges and sessions per
   call, ordered by expires_at/primary key. Only expires_at <= now qualifies. Hook it
   into existing scheduled VPN maintenance with a separate short transaction; a
   cleanup error must not cancel key suspension/revocation maintenance.
   The limit is 100 per table; cleanup must never remove an unexpired replay claim.
-- [ ] Test cookie issuance (HttpOnly, Secure, no Domain, Max-Age 604800), deletion
+- [x] Test cookie issuance (HttpOnly, Secure, no Domain, Max-Age 604800), deletion
   with the same Path and namespace, and single-use claims on real PostgreSQL.
-- [ ] Run tests and Ruff; commit as `feat: isolate customer sessions and authentication replay protection`.
+- [x] Run tests and Ruff; commit as `feat: isolate customer sessions and authentication replay protection`.
 
 ## Task 6: Official browser login client with bounded JWKS cache
 
@@ -750,10 +755,18 @@ def authorization_url(client_id: str, callback: str, state: str, verifier: str) 
 - [ ] Exchange code with httpx AsyncClient(timeout=10, follow_redirects=False),
   BasicAuth(client_id, client_secret), form fields grant_type=authorization_code,
   code, fixed redirect_uri, client_id and code_verifier. Cap received JSON at 1 MiB;
-  require a string id_token <= 16 KiB. Discard access_token immediately; no userinfo call.
+  require a string id_token <= 16 KiB. Enforce the response cap while streaming,
+  including decompressed bytes, rather than only after buffering the whole response.
+  Apply the same bounded reader to JWKS. Discard access_token immediately; no userinfo call.
 - [ ] Use an async lock and monotonic clock to cache official JWKS for 300 seconds.
   On missing kid, allow one forced refresh no more often than once per 30 seconds.
-  Accept at most 20 RSA signing keys; reject duplicate kid and unapproved alg/use.
+  Bound the document to at most 20 keys; select only eligible RSA/RS256 signing keys.
+  Reject duplicate kid values and never select unapproved alg/use, but ignore keys
+  for other supported Telegram algorithms rather than rejecting the whole document.
+  Live public JWKS inspection on 2026-09-20 returned RSA/RS256 (`oidc-1`, no `use`
+  field), EC/ES256, OKP/EdDSA and EC/ES256K. Missing `use` is valid for the RSA key;
+  accept use absent or `sig`, alg absent or `RS256`. Mixed-key and missing-use
+  fixtures must pass for an RS256 token; this does not enable other token algorithms.
   No redirects, token-provided jku/x5u downloads, stale-key fallback after expiry or
   unverified JWT claims. Test cache hits, rotation, throttled unknown kid and outages.
 - [ ] Verify token using the selected key with explicit algorithms/claims:
@@ -1170,6 +1183,11 @@ export default defineConfig({
   configured browser login or «Закройте и снова откройте кабинет» for Mini App.
   A module-level in-flight promise deduplicates bootstrap under StrictMode. Handle
   invalid/expired launch data without falling back to displaying a previous account.
+  In the 409 state, an explicit logout action may fetch `/me` solely to obtain the
+  existing session's CSRF token; discard its display name and never fetch/render its
+  subscriptions or profiles. After logout require a fresh launch, not a silent retry
+  with the captured payload. This keeps logout usable on a fresh page with no cached
+  CSRF while avoiding a previous-account data flash.
   The official SDK source was inspected: it persists launch parameters in
   `sessionStorage["__telegram__initParams"]`, including tgWebAppData. Capture the
   original signed string in memory, remove that property from this specific cache
@@ -1263,6 +1281,12 @@ proves the application filter cannot cover its launcher; do not change its User.
 
 - [ ] Capture logs in tests with synthetic bot token, OAuth code/state, initData,
   URI and Authorization header. Verify none appear after failed auth/provider calls.
+  Include a database/flush failure with a synthetic PKCE verifier in SQLAlchemy
+  exception parameters. A portal-scoped unexpected-error boundary must emit a
+  generic no-store failure and a static diagnostic (optionally exception class),
+  without bubbling raw exception text/traceback into Uvicorn logs. Keep errors
+  observable; preserve normal non-portal error handling. Do not log request bodies,
+  cookies or database parameter values when diagnosing authentication failures.
 - [ ] Suppress HTTPX/HTTPCORE INFO request URLs in the application (bot URLs embed
   the existing bot secret). Add a Uvicorn access-log filter stripping query strings
   on portal auth routes and replacing webhook secret path segments with `<redacted>`.
@@ -1382,7 +1406,13 @@ verification. Implementation progress is recorded below; production remains unch
 | 2 | Complete | 10 schema tests; 77 related/schema/display tests pass, Ruff clean; both reviews approved. Synthetic pre-feature PostgreSQL schema passed two real migrations/backfills and old-ORM compatibility; production-snapshot rehearsal remains in Task 13 |
 | 3 | Complete | 26 profile-name tests; parent ran 145 related tests; full Ruff clean; both reviews approved. Real PG blocking PID observed for two customer-name transactions, yielding ordinals 2 then 3 |
 | 4 | Complete | 70 new/existing Telegram tests and full backend 471 tests pass, including synchronized real PG uniqueness race preserving outer writes; full Ruff clean; both reviews approved |
-| 5–13 | Pending | No application changes for these tasks yet |
+| 5 | Complete | Both reviews approved; parent full backend 519 passed in 150.71s, full Ruff clean; reviewer 116 focused tests with real PG contention/rebind. Reuse locks/refetches customer then session; error-side commit leaves no orphan changes; cleanup transaction timeout cannot stall VPN maintenance |
+| 6–13 | Pending | No application changes for these tasks yet |
+
+Nonblocking Task 5 review note: unusual configured IPv6 origins are not normalized
+to browser-compressed form, and scoped IPv6 addresses are accepted by the parser.
+The intended `https://veltrix.qzz.io` DNS-origin deployment is unaffected; do not
+claim arbitrary IPv6-origin support without fixing and testing that edge.
 
 PostgreSQL rehearsal used only a separately initialized disposable test cluster,
 with explicit user approval and synthetic data. No production DB/app/VPN settings

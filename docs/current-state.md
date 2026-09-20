@@ -66,6 +66,17 @@
   and both outer writes preserved. Full Ruff is clean. No login routes enabled yet.
   Full backend suite after Tasks 1–4: 471 passed in 99.20 seconds, including the
   configured PostgreSQL integration test, with no skips.
+- Task 5 (verified 2026-09-21 Moscow) adds separate customer sessions, origin/CSRF
+  checks, closed-pilot policy, durable one-use login records, atomic Mini App exchange
+  and isolated bounded cleanup. Both reviews approved. Parent full backend run:
+  519 passed in 150.71 seconds, no skips; full Ruff clean. Reviewer independently
+  ran 116 focused tests. Real PostgreSQL tests observed concurrent claim contention,
+  a recovered duplicate digest, and a committed Telegram rebind between lookup and
+  reuse. A stale session is rejected without persisting exchange-side changes even
+  if the caller commits after the error. No login routes or UI are enabled yet.
+  All 63 current app modules also parse with Python 3.11 grammar; this is syntax
+  evidence, not a full production-runtime test. An optional IPv6-origin normalization
+  edge is documented in the plan and does not affect the intended DNS origin.
 - Separate the visible profile name from the legacy `public_name`, which currently
   participates in 3x-UI client email generation. Never globally rename internal
   `dropcatch-*` identifiers or regenerate UUIDs merely to improve labels.
