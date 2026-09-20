@@ -5,6 +5,7 @@ __pycache__/
 node_modules/
 dist/
 build/
+.worktrees/
 .env
 *.pyc
 candidates-*.csv
