@@ -3,8 +3,11 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import api_router
@@ -15,6 +18,12 @@ from app.db.session import AsyncSessionLocal, engine
 from app.services.bootstrap import ensure_default_zone_strategies, ensure_owner_account
 from app.services.control_runtime import ControlRuntimeOrchestrator
 from app.services.notifier import TelegramNotifier
+from app.services.vpn_portal_http import (
+    PortalHttpMiddleware,
+    ScopedControlCorsMiddleware,
+    is_portal_path,
+)
+from app.services.vpn_portal_telegram import TelegramJWKSProvider
 from app.services.vpn_profile_names import backfill_profile_names
 
 logging.basicConfig(
@@ -49,22 +58,45 @@ async def lifespan(app: FastAPI):
     app.state.monitoring = monitoring
     await monitoring.bootstrap()
 
+    portal_http_client = httpx.AsyncClient(timeout=10.0, follow_redirects=False)
+    app.state.vpn_portal_http_client = portal_http_client
+    app.state.vpn_portal_jwks_provider = TelegramJWKSProvider(portal_http_client)
+
     try:
         yield
     finally:
+        await portal_http_client.aclose()
         await monitoring.shutdown()
         await engine.dispose()
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
+    app.state.settings = settings
     app.add_middleware(
-        CORSMiddleware,
+        ScopedControlCorsMiddleware,
+        portal_prefix=settings.api_prefix.rstrip("/") + "/vpn-portal",
         allow_origins=settings.cors_origin_list,
         allow_credentials=settings.cors_origin_list != ["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(
+        PortalHttpMiddleware,
+        portal_prefix=settings.api_prefix.rstrip("/") + "/vpn-portal",
+    )
+
+    @app.exception_handler(RequestValidationError)
+    async def scoped_request_validation_handler(request, exc):
+        portal_prefix = settings.api_prefix.rstrip("/") + "/vpn-portal"
+        if is_portal_path(request.url.path, portal_prefix):
+            return JSONResponse(
+                {"detail": "invalid_customer_request"},
+                status_code=422,
+                headers={"Cache-Control": "no-store"},
+            )
+        return await request_validation_exception_handler(request, exc)
+
     app.include_router(api_router, prefix=settings.api_prefix)
 
     if settings.frontend_dist_dir.exists():

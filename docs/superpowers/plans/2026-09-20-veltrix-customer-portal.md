@@ -922,16 +922,16 @@ select(VpnAccessKey, VpnSubscription).join(
 `backend/app/services/vpn_portal_http.py`, `backend/tests/test_vpn_portal_api.py`;
 modify `backend/app/api/__init__.py`, `backend/app/main.py`.
 
-- [ ] Build a fixture following test_vpn_telegram.py: fresh SQLite metadata,
+- [x] Build a fixture following test_vpn_telegram.py: fresh SQLite metadata,
   AsyncSession factory, test Settings with HTTPS origin, fake OIDC transport,
   both portal and existing control routers. Do not override require_admin for
   authorization-boundary tests. Make separate clients with independent cookie jars.
-- [ ] Add read-only config DTO `{enabled, browser_login_enabled, mini_app_enabled,
+- [x] Add read-only config DTO `{enabled, browser_login_enabled, mini_app_enabled,
   login_path, support_text}`. Flags reflect valid configuration, never secret values.
-- [ ] Router prefix `/vpn-portal`; register once under existing `/api` prefix.
+- [x] Router prefix `/vpn-portal`; register once under existing `/api` prefix.
   Use a customer dependency based on lookup_session, not get_current_user.
   Apply no-store to all portal responses, including errors, without affecting workers.
-- [ ] Exclude portal requests from the legacy configurable CORS middleware, rather
+- [x] Exclude portal requests from the legacy configurable CORS middleware, rather
   than inheriting wildcard or externally configured admin origins. Put this scoped
   class in vpn_portal_http.py; replace only the middleware class in main.py and pass
   `portal_prefix=settings.api_prefix + "/vpn-portal"`. Preserve all existing CORS
@@ -960,7 +960,7 @@ class ControlCorsMiddleware(CORSMiddleware):
   configurations. A foreign-origin portal request must never receive
   Access-Control-Allow-Origin/Access-Control-Allow-Credentials. Do not override the
   customer/admin dependencies in these integration tests.
-- [ ] FastAPI's default validation error can echo the submitted initData or an
+- [x] FastAPI's default validation error can echo the submitted initData or an
   unexpected credential-bearing field. Register this handler in main.py, retaining
   default behavior outside the portal. Never include validation `input` or `ctx`.
 
@@ -984,7 +984,7 @@ app.add_exception_handler(RequestValidationError, portal_validation_error)
   Here registration goes inside create_app, after constructing its local `app`;
   the handler uses main.py's existing settings. Assert oversized/malformed initData
   and forbidden request fields never appear in the response body or captured logs.
-- [ ] Implement the mutation guard as a dependency of rename/logout only:
+- [x] Implement the mutation guard as a dependency of rename/logout only:
 
 ```python
 from fastapi import HTTPException, Request
@@ -996,20 +996,20 @@ def require_customer_mutation(request: Request, principal, settings):
         raise HTTPException(403, "customer_request_rejected")
 ```
 
-- [ ] For Mini App require exact origin, application/json (charset allowed), bounded
+- [x] For Mini App require exact origin, application/json (charset allowed), bounded
   body and settings capability before parsing. For browser start, generate attempt
   and cookie and redirect; for callback reject duplicate code/state, missing/wrong
   binding and provider errors, consume attempt before exchange, enforce allowlist,
   resolve customer and commit session before setting cookie. Clear binding cookie
   on terminal success/failure. Do not return provider diagnostics to the browser.
-- [ ] Cookie helper uses constants from Task 5 and `public_origin(settings)` to choose
+- [x] Cookie helper uses constants from Task 5 and `public_origin(settings)` to choose
   Secure; callback's only target is `/cabinet/` with optional fixed safe error code
   in the fragment. No user-supplied next/return URL.
-- [ ] Implement each data endpoint from the contract table using Task 7 helpers.
+- [x] Implement each data endpoint from the contract table using Task 7 helpers.
   GET connection never changes key status. PATCH accepts RenamePortalProfile only.
   Logout updates only current session.revoked_at and deletes its cookie, even if
   another administrative cookie is present.
-- [ ] Add this exact API assertion pattern with fixture-provided alice/bob keys:
+- [x] Add this exact API assertion pattern with fixture-provided alice/bob keys:
 
 ```python
 async def assert_customer_isolation(client, own_key_id, other_key_id, csrf):
@@ -1026,10 +1026,10 @@ async def assert_customer_isolation(client, own_key_id, other_key_id, csrf):
     assert (await client.get("/api/control/vpn/customers")).status_code in {401, 403}
 ```
 
-- [ ] Test all guards without CSRF, with another session's CSRF, foreign Origin,
+- [x] Test all guards without CSRF, with another session's CSRF, foreign Origin,
   invalid content type, oversized body and extra writable fields. Revoke/archive
   and expire data after initial page load, then assert the next fetch cannot reveal URI.
-- [ ] Verify valid sessions cannot bypass disabled feature/pilot setting. Raw admin
+- [x] Verify valid sessions cannot bypass disabled feature/pilot setting. Raw admin
   cookie alone returns 401 on portal/me. Run API/auth/view tests; commit as
   `feat: add secure VPN customer portal API`.
 
@@ -1143,7 +1143,8 @@ const labels: Record<string, string> = {
 };
 
 export function stateLabel(state: string): string {
-  return labels[state] ?? "Статус уточняется";
+  return Object.prototype.hasOwnProperty.call(labels, state)
+    ? labels[state] : "Статус уточняется";
 }
 
 export function portalDate(value: string | null): string {
@@ -1203,6 +1204,9 @@ export default defineConfig({
   configured browser login or «Закройте и снова откройте кабинет» for Mini App.
   A module-level in-flight promise deduplicates bootstrap under StrictMode. Handle
   invalid/expired launch data without falling back to displaying a previous account.
+  The SDK also defines Telegram.WebApp in an ordinary browser: its mere existence
+  does not prove Mini App context. With no signed payload and the default unknown
+  platform, show normal browser login; test this case with the SDK object present.
   In the 409 state, an explicit logout action may fetch `/me` solely to obtain the
   existing session's CSRF token; discard its display name and never fetch/render its
   subscriptions or profiles. After logout require a fresh launch, not a silent retry
@@ -1307,6 +1311,10 @@ proves the application filter cannot cover its launcher; do not change its User.
   without bubbling raw exception text/traceback into Uvicorn logs. Keep errors
   observable; preserve normal non-portal error handling. Do not log request bodies,
   cookies or database parameter values when diagnosing authentication failures.
+  Cover failures after response headers have already been sent as well (for example
+  dependency teardown): do not send a second response, but do not re-raise the raw
+  exception/chain into Uvicorn either. Task 8's basic boundary currently re-raises
+  this late case; it must be made secret-safe here before deployment.
 - [ ] Suppress HTTPX/HTTPCORE INFO request URLs in the application (bot URLs embed
   the existing bot secret). Add a Uvicorn access-log filter stripping query strings
   on portal auth routes and replacing webhook secret path segments with `<redacted>`.
@@ -1434,7 +1442,8 @@ the test runtime is available, not that the not-yet-built cabinet has passed QA.
 | 5 | Complete | Both reviews approved; parent full backend 519 passed in 150.71s, full Ruff clean; reviewer 116 focused tests with real PG contention/rebind. Reuse locks/refetches customer then session; error-side commit leaves no orphan changes; cleanup transaction timeout cannot stall VPN maintenance |
 | 6 | Complete | 56 OIDC tests; parent combined 111 OIDC/Telegram tests including PG passed without skips, Ruff clean, both reviews approved; streamed caps, fixed endpoints, real signed synthetic JWTs, mixed JWKS/cache/rotation tests |
 | 7 | Complete | 19 view tests; parent related 58 passed and final full backend 594 passed in 135.27s with real PG/no skips; full Ruff clean; both reviews approved. SQLite behavior + compiled PG locking SQL, not a PG runtime rename-lock proof |
-| 8–13 | Pending | No application changes for these tasks yet |
+| 8 | Complete | Both reviews approved. Parent full backend 611 passed in 140.61s with real PG/no skips; final API 17 passed in 7.70s after test-only review amendments; full Ruff clean. Scoped CORS/no-store/pre-parse guards, real admin/customer isolation and shared OIDC lifespan; late-response exception sanitization remains Task 12 |
+| 9–13 | Pending | No application changes for these tasks yet |
 
 Verification repair: the old partial-cycle durability test raced a 0.1-second
 effective timeout against initial SQLite work (configured 0.05 is clamped). A

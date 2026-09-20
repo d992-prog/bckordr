@@ -2,13 +2,29 @@
 
 ## Veltrix customer product direction (2026-09-20)
 
+- Closed-pilot ownership confirmed on 2026-09-21 Moscow: the user identified their
+  Telegram account as Elo with no username, then sent a fresh one-time challenge to
+  the existing bot's private chat. A read-only production query matched the processed
+  webhook sender/chat ID to the existing active customer owning test1 (key 8,
+  subscription 2). No ownership or account fields were changed. Use this confirmed
+  numeric identity for the closed pilot, never infer ownership from a display name.
+  The numeric ID remains in the private operational evidence, not this repository.
+- Task 8 adds the separate customer HTTP surface and lifespan OIDC integration.
+  Specification and quality reviews approved after negative-test improvements.
+  Parent full backend: 611 passed in 140.61 seconds with real PostgreSQL and no skips;
+  final API rerun after test-only changes: 17 passed in 7.70 seconds; full Ruff clean.
+  Real admin/customer session coexistence, entitlement changes, HMAC/RSA auth paths,
+  streamed input limits, CORS isolation and generic no-store errors are tested.
+  Late-response exception log sanitization remains required in Task 12 before rollout.
+  Current unchanged admin frontend also passes all 12 tests and TypeScript/Vite build.
 - User chose to include a customer cabinet immediately, alongside the Telegram bot,
   using Telegram sign-in without separate email/password registration. Both surfaces
   must share the existing VPN customers, subscriptions and keys; admin authentication
   remains separate. Payments remain explicitly deferred until the end.
 - Visual concept compares Telegram-only and cabinet experiences. All mockup counts,
   traffic, durations and profile limits are demonstration data, not agreed tariffs
-  or live measurements. No product code/server changes have been made for this phase.
+  or live measurements. Implementation progress below refers to the isolated branch;
+  the cabinet has not yet been deployed to production.
 - Written design approved by the user on 2026-09-20:
   `docs/superpowers/specs/2026-09-20-veltrix-customer-portal-design.md`.
   The first bounded delivery is real cabinet/authentication/profile presentation;
