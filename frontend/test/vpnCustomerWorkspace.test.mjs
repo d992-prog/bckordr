@@ -93,6 +93,14 @@ test("selects a usable subscription before historical rows", () => {
 
 test("classifies expiring, suspended, and archived customers", () => {
   assert.equal(classifyVpnCustomer(customers[0], subscriptions, now), "expiring");
+  assert.equal(
+    classifyVpnCustomer(
+      customers[0],
+      [{ ...subscriptions[0], expires_at: "2026-09-19T12:00:00.000Z" }],
+      now,
+    ),
+    "suspended",
+  );
   assert.equal(classifyVpnCustomer(customers[1], subscriptions, now), "suspended");
   assert.equal(classifyVpnCustomer(customers[2], subscriptions, now), "archived");
 });

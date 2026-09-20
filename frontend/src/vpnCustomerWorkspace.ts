@@ -52,7 +52,10 @@ export function classifyVpnCustomer(
   }
   if (USABLE_SUBSCRIPTION_STATUSES.has(primary.status) && primary.expires_at) {
     const remaining = timestamp(primary.expires_at) - now.getTime();
-    if (remaining >= 0 && remaining <= EXPIRING_WINDOW_MS) {
+    if (remaining < 0) {
+      return "suspended";
+    }
+    if (remaining <= EXPIRING_WINDOW_MS) {
       return "expiring";
     }
   }
