@@ -22,6 +22,9 @@
 - The old main `backend/.venv` has no pytest. Use the already available `python`
   executable (`C:\Users\user\.codex\python\Python314\python.exe`) with the worktree
   backend on `PYTHONPATH`, or a new correctly installed worktree environment.
+- Execution environment now prepared at worktree `backend/.venv` using Python
+  3.14.4 with system test packages; PyJWT 2.14.0 installed only in this venv.
+  Prefer `.\.venv\Scripts\python.exe` from worktree/backend for subsequent checks.
 - Frontend dependencies installed with `npm ci --offline --ignore-scripts`; no new
   packages are needed for the portal UI.
 - All relative paths below are relative to the implementation checkout. Run backend
@@ -117,7 +120,7 @@ VPN subscriptions or alter the existing bot's ability to receive `/start`.
 **Files:** Create `backend/app/services/vpn_display.py`,
 `backend/tests/test_vpn_display.py`.
 
-- [ ] Write the following tests before the helper exists:
+- [x] Write the following tests before the helper exists:
 
 ```python
 import base64
@@ -170,9 +173,9 @@ def test_ipv6_and_encoded_query_survive():
     assert display_uri(original, "Работа").partition("#")[0] == original.partition("#")[0]
 ```
 
-- [ ] Run `python -m pytest tests/test_vpn_display.py -q`; confirm missing helper is
+- [x] Run `python -m pytest tests/test_vpn_display.py -q`; confirm missing helper is
   the initial failure, then implement and rerun the behavioral assertions.
-- [ ] Add the complete pure helper below. No ORM, SSH or runtime imports:
+- [x] Add the complete pure helper below. No ORM, SSH or runtime imports:
 
 ```python
 from __future__ import annotations
@@ -226,9 +229,9 @@ def display_uri(uri: str, name: str) -> str:
         raise InvalidVpnDisplay("invalid_configuration") from None
 ```
 
-- [ ] Add IPv6, existing encoded query/fragment, padded/unpadded VMess and missing URI
+- [x] Add IPv6, existing encoded query/fragment, padded/unpadded VMess and missing URI
   tests with real-shaped synthetic credentials; verify equality of every non-label field.
-- [ ] Run focused tests and Ruff; commit named files as
+- [x] Run focused tests and Ruff; commit named files as
   `feat: separate VPN display labels from connection identity`.
 
 ## Task 2: Add display_name and persistent auth records
@@ -685,6 +688,9 @@ async def consume_login_attempt(db, state: str, binding: str, now):
   allowlist and customer resolution, in that same transaction. Recheck archive/rebind
   races with two PostgreSQL connections: stale ORM objects must not issue a new session.
   Existing sessions still fail their next lookup immediately after archive/rebinding.
+  Retain a successful Mini App digest for 10 minutes from exchange time. This exceeds
+  its entire remaining acceptance window, including future skew and integer-second
+  rounding; cleanup must not make a still-acceptable signed payload reusable.
 - [ ] Cleanup helper deletes up to 100 expired attempts, exchanges and sessions per
   call, ordered by expires_at/primary key. Only expires_at <= now qualifies. Hook it
   into existing scheduled VPN maintenance with a separate short transaction; a
@@ -1140,10 +1146,27 @@ export default defineConfig({
 - [ ] Keep five local tab states: subscription, profiles, connect, plans, help. Use
   `/cabinet/#profiles` hash navigation; no backend catch-all that swallows unknown APIs.
   Each tab has real loading/error/empty states and one clear primary action.
-- [ ] Bootstrap config and current session. On 401, exchange nonempty Mini App
-  initData once if enabled; otherwise show browser Telegram login link. A module-level
-  in-flight promise deduplicates bootstrap under StrictMode. Never trust initDataUnsafe.
-  Handle unavailable/expired Mini App data with «Закройте и снова откройте кабинет».
+- [ ] Bootstrap config, then verify nonempty original Mini App initData on the server
+  before displaying any cookie-authenticated customer data. A previous customer's
+  valid cookie must not bypass this identity check after switching Telegram accounts.
+  Same-customer session is reusable; different customer returns 409 and requires an
+  explicit logout/account switch before a fresh launch. Never compare trusted identity
+  with initDataUnsafe in the browser. With no launch payload, use `/me`; on 401 show
+  configured browser login or «Закройте и снова откройте кабинет» for Mini App.
+  A module-level in-flight promise deduplicates bootstrap under StrictMode. Handle
+  invalid/expired launch data without falling back to displaying a previous account.
+  The official SDK source was inspected: it persists launch parameters in
+  `sessionStorage["__telegram__initParams"]`, including tgWebAppData. Capture the
+  original signed string in memory, remove that property from this specific cache
+  immediately at bootstrap (before the first network await), and remove launch
+  authentication parameters from the address bar with history.replaceState. Retain
+  unrelated SDK theme/platform values and unrelated application storage. Test both
+  reload with a valid cookie and fresh launch without one; never synthesize initData.
+  Browser QA must check this actual SDK cache, not only search our source for storage.
+  After a successful exchange, confirm a cookie-authenticated request succeeds. A
+  third-party iframe may block SameSite=Lax cookies: do not weaken cookie policy or
+  loop through repeated exchanges. Offer the same cabinet in an external browser
+  and record which Telegram clients actually passed the live pilot.
 - [ ] Use a session generation counter or AbortController for authenticated requests.
   Logout and 401 clear CSRF, profile URIs and customer state, increment generation,
   and prevent late responses restoring old data. Do not auto-login again immediately
@@ -1170,6 +1193,8 @@ export default defineConfig({
 - [ ] Browser tests mock API responses, not UI internals: independent users, sign-in
   states, all five sections, rename success/error, copy fallback, expired subscription,
   logout during in-flight URI request. Check 320/390/768/1280px and light/dark themes.
+  Include a new signed Mini App launch for Bob while Alice's valid cookie is present;
+  no Alice subscription/profile data may render before explicit account switching.
 - [ ] `npm test` and `npm run build`; verify both dist/index.html and
   dist/cabinet/index.html exist and direct GET `/cabinet/` works through FastAPI.
   Commit as `feat: add responsive Veltrix customer cabinet`.
@@ -1338,4 +1363,5 @@ verification. Implementation progress is recorded below; production remains unch
 
 | Task | State | Evidence |
 |---|---|---|
-| 1–13 | Pending | Baseline and plan verification only; no application changes yet |
+| 1 | Complete | 48 focused tests pass, no skips; Ruff clean; spec and quality reviews approved |
+| 2–13 | Pending | No application changes for these tasks yet |

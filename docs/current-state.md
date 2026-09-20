@@ -18,12 +18,20 @@
   `docs/superpowers/plans/2026-09-20-veltrix-customer-portal.md`.
   Isolated branch `codex/veltrix-customer-portal`, worktree
   `.worktrees/veltrix-customer-portal`, starts at `f111271`.
-  Application implementation, production configuration and deployment have not started.
+  Application implementation has started in that worktree; production configuration
+  and deployment have not changed.
   User selected delegated implementation with controller review in this same task.
 - Fresh worktree baseline: backend `332 passed` in 58.48 seconds, frontend `12 passed`,
   TypeScript/Vite production build passed. The old main backend virtualenv lacks pytest;
   checks used the available Python 3.14.4 with worktree/backend on PYTHONPATH.
   Frontend dependencies installed offline from the existing npm cache.
+- Task 1 display helper passed specification and quality reviews. Focused suite:
+  48 passed, no skips; full Ruff clean. A full backend run before the final additional
+  parser-hardening tests had 363 passed. This helper is not yet connected to
+  customer/admin/bot responses. Valid VLESS prefixes and VMess non-label fields are
+  preserved; malformed inputs fail with safe errors.
+- Separate worktree `backend/.venv` now uses Python 3.14.4 and inherited test packages;
+  PyJWT 2.14.0 was installed only there. Main checkout dependencies remain unchanged.
 - Separate the visible profile name from the legacy `public_name`, which currently
   participates in 3x-UI client email generation. Never globally rename internal
   `dropcatch-*` identifiers or regenerate UUIDs merely to improve labels.
