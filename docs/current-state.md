@@ -46,7 +46,26 @@
   startup backfill and customer-first issuance locks. Only nullable display_name is
   filled; existing public_name/UUID/URI and remote client identity remain unchanged.
   Both reviews approved; parent ran 145 profile/control/remote/display/Telegram tests
-  successfully and full Ruff is clean. Real PostgreSQL concurrency is not yet verified.
+  successfully and full Ruff is clean. A subsequent two-connection PostgreSQL test
+  observed the actual blocking PID on the customer row, then confirmed ordinals 2
+  and 3 after the first transaction committed. This verifies the numbering helper's
+  lock behavior, not the entire issuance/archive/lifecycle concurrency matrix.
+- With explicit user approval, a disposable PostgreSQL 14 cluster was started for
+  synthetic-data tests on the managing host, reachable only through a localhost SSH
+  tunnel. It is separate from the production cluster, database and application.
+  A pre-feature schema generated from revision f111271 passed two real PostgreSQL
+  migration/backfill runs: legacy customer/subscription/key values (apart from normal
+  updated_at changes) remained stable, names were stable, auth tables appeared,
+  VARCHAR(64) was enforced, and the old ORM still read/wrote the extended schema.
+  The rehearsal schema was removed. This is synthetic schema compatibility evidence,
+  not a production-snapshot rehearsal, VPN traffic test or live authentication proof.
+- Task 4 adds canonical Telegram identity, bounded/safe Mini App HMAC validation,
+  canonical replay digests and savepoint-based customer resolution. Both reviews
+  approved; parent independently ran 70 new/existing Telegram tests, including the
+  actual PostgreSQL insert race: one customer, one recovered uniqueness conflict,
+  and both outer writes preserved. Full Ruff is clean. No login routes enabled yet.
+  Full backend suite after Tasks 1–4: 471 passed in 99.20 seconds, including the
+  configured PostgreSQL integration test, with no skips.
 - Separate the visible profile name from the legacy `public_name`, which currently
   participates in 3x-UI client email generation. Never globally rename internal
   `dropcatch-*` identifiers or regenerate UUIDs merely to improve labels.

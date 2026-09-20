@@ -400,10 +400,10 @@ access_key.display_name = (
 `backend/app/services/vpn_portal_telegram.py`,
 `backend/tests/test_vpn_portal_telegram.py`.
 
-- [ ] Test valid signed data, wrong token/hash, timestamp older than 300 seconds,
+- [x] Test valid signed data, wrong token/hash, timestamp older than 300 seconds,
   timestamp over 30 seconds ahead, duplicate query keys, malformed user JSON,
   boolean/negative/too-large ID and a reordered but equivalent query string.
-- [ ] Use this signing fixture with a fake token only:
+- [x] Use this signing fixture with a fake token only:
 
 ```python
 import hashlib
@@ -421,7 +421,7 @@ def signed_init_data(user_id: int, timestamp: int, token: str = "12345:test-only
     return urlencode(fields)
 ```
 
-- [ ] Define the identity object and normalization in `vpn_telegram_identity.py`:
+- [x] Define the identity object and normalization in `vpn_telegram_identity.py`:
 
 ```python
 from dataclasses import dataclass
@@ -454,7 +454,7 @@ def identity_from_user(user: dict) -> TelegramIdentity:
         optional_text(user.get("last_name"), 128))
 ```
 
-- [ ] Implement Mini App verification, returning identity plus **canonical** replay
+- [x] Implement Mini App verification, returning identity plus **canonical** replay
   digest; hashing the original query string alone would allow parameter-order replay:
 
 ```python
@@ -503,7 +503,7 @@ def verify_mini_app(raw: str, bot_token: str, now_seconds: int):
         raise TelegramAuthenticationError("telegram_authentication_failed") from None
 ```
 
-- [ ] Add `resolve_telegram_customer(db, identity)` to the identity module: SELECT
+- [x] Add `resolve_telegram_customer(db, identity)` to the identity module: SELECT
   by canonical ID; if absent INSERT inside `db.begin_nested()`, catch IntegrityError
   outside that savepoint and SELECT the winning row. Preserve status/subscriptions;
   update only username/first_name/last_name. Do not roll back the bot's durable update.
@@ -536,7 +536,7 @@ async def resolve_telegram_customer(db, identity: TelegramIdentity):
     await db.flush()
     return customer
 ```
-- [ ] Run focused test and existing Telegram tests; commit as
+- [x] Run focused test and existing Telegram tests; commit as
   `feat: verify Telegram identities for customer portal access`.
 
 ## Task 5: Sessions, allowlist, CSRF and durable one-use records
@@ -548,6 +548,16 @@ async def resolve_telegram_customer(db, identity: TelegramIdentity):
   binding, wrong cookie namespace, wrong CSRF, wrong/missing Origin, closed pilot,
   duplicate Mini App digest, and OIDC attempts claimed once across two DB connections.
 - [ ] Define the session and policy helpers:
+
+  Validate configuration before using it in redirects or Origin comparisons:
+  reject whitespace/control characters, backslashes, credentials, query/fragment
+  delimiters (including empty ones), non-root paths, and invalid/zero/out-of-range
+  ports. Canonicalize hostname case and default ports. Plain HTTP is allowed only
+  for localhost/127.0.0.1 with the explicit development setting. Fail with the safe
+  `portal_configuration_invalid` message, not a parser exception containing input.
+  The sketch below is illustrative; these stricter checks are required.
+  Database-backed session/attempt lookups must refresh identity-map values with
+  populate_existing=True. Normalize supplied timestamps to UTC consistently.
 
 ```python
 import hashlib
@@ -699,6 +709,7 @@ async def consume_login_attempt(db, state: str, binding: str, now):
   call, ordered by expires_at/primary key. Only expires_at <= now qualifies. Hook it
   into existing scheduled VPN maintenance with a separate short transaction; a
   cleanup error must not cancel key suspension/revocation maintenance.
+  The limit is 100 per table; cleanup must never remove an unexpired replay claim.
 - [ ] Test cookie issuance (HttpOnly, Secure, no Domain, Max-Age 604800), deletion
   with the same Path and namespace, and single-use claims on real PostgreSQL.
 - [ ] Run tests and Ruff; commit as `feat: isolate customer sessions and authentication replay protection`.
@@ -1368,6 +1379,12 @@ verification. Implementation progress is recorded below; production remains unch
 | Task | State | Evidence |
 |---|---|---|
 | 1 | Complete | 48 focused tests pass, no skips; Ruff clean; both reviews approved; 6 in-memory compatibility checks passed on production Python 3.11.0rc1 without deployment |
-| 2 | Complete | 10 schema tests; 77 related/schema/display tests pass, Ruff clean; both reviews approved. Real PostgreSQL upgrade rehearsal remains in Task 13 |
-| 3 | Complete | 26 profile-name tests; parent ran 145 profile/control/remote/display/Telegram tests; full Ruff clean; both reviews approved. PG concurrency remains in Task 13 |
-| 4–13 | Pending | No application changes for these tasks yet |
+| 2 | Complete | 10 schema tests; 77 related/schema/display tests pass, Ruff clean; both reviews approved. Synthetic pre-feature PostgreSQL schema passed two real migrations/backfills and old-ORM compatibility; production-snapshot rehearsal remains in Task 13 |
+| 3 | Complete | 26 profile-name tests; parent ran 145 related tests; full Ruff clean; both reviews approved. Real PG blocking PID observed for two customer-name transactions, yielding ordinals 2 then 3 |
+| 4 | Complete | 70 new/existing Telegram tests and full backend 471 tests pass, including synchronized real PG uniqueness race preserving outer writes; full Ruff clean; both reviews approved |
+| 5–13 | Pending | No application changes for these tasks yet |
+
+PostgreSQL rehearsal used only a separately initialized disposable test cluster,
+with explicit user approval and synthetic data. No production DB/app/VPN settings
+were changed. The current tunnel must be stopped and its exact test-cluster directory
+removed when verification finishes; parent owns cleanup.
