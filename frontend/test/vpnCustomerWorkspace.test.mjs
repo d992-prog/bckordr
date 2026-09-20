@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  accessKeyStatusLabel,
   calculateExtendedExpiration,
   classifyVpnCustomer,
   customerStatusOptions,
@@ -140,4 +141,11 @@ test("reserves archive transitions for the safe archive action", () => {
   assert.deepEqual(customerStatusOptions("active"), ["active", "blocked"]);
   assert.deepEqual(customerStatusOptions("blocked"), ["active", "blocked"]);
   assert.deepEqual(customerStatusOptions("archived"), ["archived"]);
+});
+
+test("shows access-key states in operator-friendly language", () => {
+  assert.equal(accessKeyStatusLabel("pending_sync"), "ожидает выдачи");
+  assert.equal(accessKeyStatusLabel("pending_revoke"), "ожидает отзыва");
+  assert.equal(accessKeyStatusLabel("active"), "активен");
+  assert.equal(accessKeyStatusLabel("custom"), "custom");
 });

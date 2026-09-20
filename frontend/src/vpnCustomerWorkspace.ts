@@ -6,6 +6,18 @@ export type VpnCustomerOperationalStatus = Exclude<VpnCustomerFilter, "all">;
 const USABLE_SUBSCRIPTION_STATUSES = new Set(["active", "trial"]);
 const SUSPENDED_SUBSCRIPTION_STATUSES = new Set(["disabled", "cancelled", "expired"]);
 const EXPIRING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const ACCESS_KEY_STATUS_LABELS: Record<string, string> = {
+  pending_sync: "ожидает выдачи",
+  syncing: "выдаётся",
+  active: "активен",
+  pending_revoke: "ожидает отзыва",
+  revoked: "отозван",
+  failed: "ошибка",
+};
+
+export function accessKeyStatusLabel(status: string) {
+  return ACCESS_KEY_STATUS_LABELS[status] ?? status;
+}
 
 export function customerStatusOptions(currentStatus: string | null | undefined) {
   return currentStatus === "archived" ? ["archived"] : ["active", "blocked"];

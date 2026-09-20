@@ -9,6 +9,7 @@ import {
   type WorkerNode,
 } from "./api";
 import {
+  accessKeyStatusLabel,
   calculateExtendedExpiration,
   classifyVpnCustomer,
   customerStatusOptions,
@@ -937,7 +938,9 @@ export function VpnCustomerWorkspace({
               {accessKey.protocol.toUpperCase()} · {workerName}
             </div>
           </div>
-          <span className={subscriptionStatusClass(accessKey.status)}>{accessKey.status}</span>
+          <span className={subscriptionStatusClass(accessKey.status)}>
+            {accessKeyStatusLabel(accessKey.status)}
+          </span>
         </div>
         <div className="vpn-key-meta">
           <div>
