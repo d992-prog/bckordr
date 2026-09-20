@@ -87,6 +87,22 @@
   rotation/outage/throttling behavior is covered. HTTP integration and live browser
   login remain pending. The service parses with Python 3.11 grammar; local execution
   is still Python 3.14.4, not a production-runtime verification.
+  A subsequent read-only probe ran the actual new JWKS provider against Telegram's
+  public endpoint and selected its current RSA/RS256 `oidc-1` key with no `use` field.
+  This confirms compatibility with the live public key document, not a successful
+  user login or verification of a real user's ID token. No client secrets were used.
+- Task 7 adds explicit customer DTOs, SQL ownership filters, effective subscription
+  state and entitlement checks, safe link export and display-name-only profile edits.
+  Both reviews approved. Parent ran 19 view tests and 58 related tests; after repairing
+  a pre-existing timing-sensitive lifecycle test, the full backend passed: 594 tests
+  in 135.27 seconds, PostgreSQL tests enabled, no skips. Full Ruff is clean; all 65
+  app modules parse as Python 3.11. View tests use SQLite and inspect PostgreSQL lock
+  SQL, not real PostgreSQL rename concurrency. HTTP integration remains pending.
+- The lifecycle test failure was reproduced with a 0.15-second first-checkpoint
+  delay against the effective 0.1-second cycle budget. Only the test changed: it now
+  places cancellation deterministically after a real first commit and checks second-key
+  rollback/resumption from separate sessions. Production timeouts and VPN behavior
+  were not changed. Independent review approved the test repair.
 - Separate the visible profile name from the legacy `public_name`, which currently
   participates in 3x-UI client email generation. Never globally rename internal
   `dropcatch-*` identifiers or regenerate UUIDs merely to improve labels.

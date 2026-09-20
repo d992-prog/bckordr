@@ -810,10 +810,10 @@ def verify_id_token(token: str, jwk: dict, client_id: str):
 **Files:** Create `backend/app/services/vpn_customer_view.py`,
 `backend/app/schemas/vpn_portal.py`, `backend/tests/test_vpn_customer_view.py`.
 
-- [ ] Test two customers, several subscriptions, expired/future/paused/cancelled
+- [x] Test two customers, several subscriptions, expired/future/paused/cancelled
   states and every key status. Assert lists contain no URI, UUID, notes, worker
   credentials or Telegram administration fields. Foreign and missing IDs are both absent.
-- [ ] Define explicit Pydantic response/request models:
+- [x] Define explicit Pydantic response/request models:
 
 ```python
 from datetime import datetime
@@ -864,7 +864,7 @@ class MiniAppLogin(BaseModel):
     init_data: str = Field(min_length=1, max_length=16384)
 ```
 
-- [ ] Add pure effective state and entitlement functions. Status precedence is
+- [x] Add pure effective state and entitlement functions. Status precedence is
   explicit; no device-slot check when reading an already issued key:
 
 ```python
@@ -887,10 +887,10 @@ def may_read_connection(customer, subscription, key, now):
         and (key.expires_at is None or as_utc(key.expires_at) > now))
 ```
 
-- [ ] List subscriptions only by customer_id, count reserved key slots using existing
+- [x] List subscriptions only by customer_id, count reserved key slots using existing
   DEVICE_SLOT_STATUSES, order usable first and then by expiry/ID. List profiles via
   join to subscriptions with that same filter; key metadata never includes URI.
-- [ ] Use the following ownership query for both connection and rename, adding
+- [x] Use the following ownership query for both connection and rename, adding
   `with_for_update(of=VpnAccessKey)` only for rename:
 
 ```python
@@ -899,10 +899,21 @@ select(VpnAccessKey, VpnSubscription).join(
 ).where(VpnAccessKey.id == profile_id, VpnSubscription.customer_id == customer_id)
 ```
 
-- [ ] Connection request rechecks current entitlement, calls display_uri, and returns
+- [x] Connection request rechecks current entitlement, calls display_uri, and returns
   409 with a generic code for unavailable/malformed own credentials. Unknown internal
   statuses display an unavailable state, never a claim that VPN is connected.
-- [ ] Run view tests plus existing subscription/lifecycle tests; commit as
+  The metadata can_connect flag must not promise a usable link when parsing the
+  stored configuration fails. Refresh queried ORM state; do not trust a previously
+  loaded key/subscription after expiry, revocation or an ownership change. Rename
+  only flushes its display-name change; the HTTP caller commits. The read model
+  does not replace Task 5/8's session/Telegram-binding authentication checks.
+- Integration contract: `list_customer_subscriptions(db, customer_id, now=None)`,
+  `list_customer_profiles(db, customer, now=None)`,
+  `customer_connection(db, customer, profile_id, now=None)` and
+  `rename_customer_profile(db, customer, profile_id, display_name, now=None)` return
+  explicit portal DTOs. Use distinct safe missing-profile/unavailable-connection
+  errors that Task 8 maps to identical foreign/missing 404 and own-unavailable 409.
+- [x] Run view tests plus existing subscription/lifecycle tests; commit as
   `feat: expose ownership-scoped VPN customer data`.
 
 ## Task 8: Portal HTTP routes and request guards
@@ -1422,7 +1433,17 @@ the test runtime is available, not that the not-yet-built cabinet has passed QA.
 | 4 | Complete | 70 new/existing Telegram tests and full backend 471 tests pass, including synchronized real PG uniqueness race preserving outer writes; full Ruff clean; both reviews approved |
 | 5 | Complete | Both reviews approved; parent full backend 519 passed in 150.71s, full Ruff clean; reviewer 116 focused tests with real PG contention/rebind. Reuse locks/refetches customer then session; error-side commit leaves no orphan changes; cleanup transaction timeout cannot stall VPN maintenance |
 | 6 | Complete | 56 OIDC tests; parent combined 111 OIDC/Telegram tests including PG passed without skips, Ruff clean, both reviews approved; streamed caps, fixed endpoints, real signed synthetic JWTs, mixed JWKS/cache/rotation tests |
-| 7–13 | Pending | No application changes for these tasks yet |
+| 7 | Complete | 19 view tests; parent related 58 passed and final full backend 594 passed in 135.27s with real PG/no skips; full Ruff clean; both reviews approved. SQLite behavior + compiled PG locking SQL, not a PG runtime rename-lock proof |
+| 8–13 | Pending | No application changes for these tasks yet |
+
+Verification repair: the old partial-cycle durability test raced a 0.1-second
+effective timeout against initial SQLite work (configured 0.05 is clamped). A
+controlled 0.15-second checkpoint delay reproduced the failure. The test now gates
+cycle cancellation on a real committed first key and the second operation, verifies
+durability from another session, rollback, cancellation and exact queue resumption.
+Production code/timeouts were unchanged; real wall-clock timeout enforcement remains
+in its companion test. Five repeated target runs, all 15 lifecycle tests, an independent
+test review and the parent's full 594-test run passed.
 
 Nonblocking Task 5 review note: unusual configured IPv6 origins are not normalized
 to browser-compressed form, and scoped IPv6 addresses are accepted by the parser.
