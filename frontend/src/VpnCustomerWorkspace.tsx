@@ -9,6 +9,7 @@ import {
   type WorkerNode,
 } from "./api";
 import {
+  calculateExtendedExpiration,
   classifyVpnCustomer,
   filterVpnCustomers,
   selectPrimarySubscription,
@@ -37,6 +38,22 @@ type CustomerForm = {
   notes: string;
 };
 
+type SubscriptionForm = {
+  planId: string;
+  status: string;
+  startsAt: string;
+  expiresAt: string;
+  trafficLimitGb: string;
+  maxDevices: string;
+  notes: string;
+};
+
+type AccessKeyForm = {
+  workerId: string;
+  protocol: string;
+  publicName: string;
+};
+
 const EMPTY_CUSTOMER_FORM: CustomerForm = {
   telegramUserId: "",
   telegramUsername: "",
@@ -45,6 +62,34 @@ const EMPTY_CUSTOMER_FORM: CustomerForm = {
   status: "active",
   notes: "",
 };
+
+const EMPTY_SUBSCRIPTION_FORM: SubscriptionForm = {
+  planId: "",
+  status: "active",
+  startsAt: "",
+  expiresAt: "",
+  trafficLimitGb: "",
+  maxDevices: "",
+  notes: "",
+};
+
+const EMPTY_ACCESS_KEY_FORM: AccessKeyForm = {
+  workerId: "",
+  protocol: "vless",
+  publicName: "",
+};
+
+const SUBSCRIPTION_STATUS_OPTIONS = [
+  { value: "active", label: "Активна" },
+  { value: "trial", label: "Тестовая" },
+  { value: "disabled", label: "Приостановлена" },
+  { value: "expired", label: "Истекла" },
+  { value: "cancelled", label: "Отменена" },
+];
+
+const SUBSCRIPTION_STATUS_LABELS: Record<string, string> = Object.fromEntries(
+  SUBSCRIPTION_STATUS_OPTIONS.map((item) => [item.value, item.label.toLocaleLowerCase("ru")]),
+);
 
 const CUSTOMER_FILTERS: Array<{ value: VpnCustomerFilter; label: string }> = [
   { value: "all", label: "Все" },
@@ -96,9 +141,70 @@ function customerFormFromRecord(customer: VpnCustomer): CustomerForm {
   };
 }
 
+function toDateTimeLocal(value: string | null) {
+  if (!value) {
+    return "";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function toIsoDateTime(value: string) {
+  if (!value.trim()) {
+    return null;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function optionalNumber(value: string) {
+  return value.trim() ? Number(value) : null;
+}
+
+function subscriptionFormFromRecord(subscription: VpnSubscription): SubscriptionForm {
+  return {
+    planId: subscription.plan_id ? String(subscription.plan_id) : "",
+    status: subscription.status,
+    startsAt: toDateTimeLocal(subscription.starts_at),
+    expiresAt: toDateTimeLocal(subscription.expires_at),
+    trafficLimitGb:
+      subscription.traffic_limit_gb === null ? "" : String(subscription.traffic_limit_gb),
+    maxDevices: String(subscription.max_devices),
+    notes: subscription.notes ?? "",
+  };
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) {
+    return "не ограничено";
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("ru-RU");
+}
+
+function subscriptionStatusClass(status: string) {
+  if (status === "active") {
+    return "status available";
+  }
+  if (["trial", "pending_sync", "syncing", "pending_revoke"].includes(status)) {
+    return "status checking";
+  }
+  if (status === "failed") {
+    return "status error";
+  }
+  return "status inactive";
+}
+
 export function VpnCustomerWorkspace({
   customers,
   subscriptions,
+  accessKeys,
+  plans,
+  workers,
   reload,
   notify,
 }: Props) {
@@ -109,6 +215,16 @@ export function VpnCustomerWorkspace({
   const [editingCustomer, setEditingCustomer] = useState(false);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [subscriptionForm, setSubscriptionForm] = useState<SubscriptionForm>(
+    EMPTY_SUBSCRIPTION_FORM,
+  );
+  const [editingSubscriptionId, setEditingSubscriptionId] = useState<number | null>(null);
+  const [creatingSubscription, setCreatingSubscription] = useState(false);
+  const [accessKeyForm, setAccessKeyForm] = useState<AccessKeyForm>(EMPTY_ACCESS_KEY_FORM);
+  const [creatingKeyForSubscriptionId, setCreatingKeyForSubscriptionId] = useState<
+    number | null
+  >(null);
+  const [expandedKeyIds, setExpandedKeyIds] = useState<Set<number>>(() => new Set());
 
   const filteredCustomers = useMemo(
     () => filterVpnCustomers(customers, subscriptions, filter, query),
@@ -116,6 +232,26 @@ export function VpnCustomerWorkspace({
   );
   const selectedCustomer =
     customers.find((customer) => customer.id === selectedCustomerId) ?? null;
+  const selectedSubscriptions = useMemo(
+    () =>
+      subscriptions
+        .filter((subscription) => subscription.customer_id === selectedCustomerId)
+        .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at)),
+    [selectedCustomerId, subscriptions],
+  );
+  const selectedSubscriptionIds = useMemo(
+    () => new Set(selectedSubscriptions.map((subscription) => subscription.id)),
+    [selectedSubscriptions],
+  );
+  const selectedAccessKeys = useMemo(
+    () => accessKeys.filter((accessKey) => selectedSubscriptionIds.has(accessKey.subscription_id)),
+    [accessKeys, selectedSubscriptionIds],
+  );
+  const planMap = useMemo(() => new Map(plans.map((plan) => [plan.id, plan])), [plans]);
+  const workerMap = useMemo(
+    () => new Map(workers.map((worker) => [worker.id, worker])),
+    [workers],
+  );
 
   useEffect(() => {
     if (
@@ -126,6 +262,9 @@ export function VpnCustomerWorkspace({
     }
     setSelectedCustomerId(filteredCustomers[0]?.id ?? null);
     setEditingCustomer(false);
+    setCreatingSubscription(false);
+    setEditingSubscriptionId(null);
+    setCreatingKeyForSubscriptionId(null);
   }, [filteredCustomers, selectedCustomerId]);
 
   function beginCustomerCreate() {
@@ -221,6 +360,264 @@ export function VpnCustomerWorkspace({
     }
   }
 
+  function beginSubscriptionCreate() {
+    setSubscriptionForm(EMPTY_SUBSCRIPTION_FORM);
+    setEditingSubscriptionId(null);
+    setCreatingSubscription(true);
+  }
+
+  function beginSubscriptionEdit(subscription: VpnSubscription) {
+    setSubscriptionForm(subscriptionFormFromRecord(subscription));
+    setCreatingSubscription(false);
+    setEditingSubscriptionId(subscription.id);
+  }
+
+  async function saveSubscription(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedCustomer) {
+      return;
+    }
+    const editedSubscription = editingSubscriptionId
+      ? selectedSubscriptions.find((subscription) => subscription.id === editingSubscriptionId) ??
+        null
+      : null;
+    const actionId = editedSubscription
+      ? `subscription-${editedSubscription.id}`
+      : "subscription-create";
+    setBusyAction(actionId);
+    try {
+      const planId = optionalNumber(subscriptionForm.planId);
+      const startsAt = toIsoDateTime(subscriptionForm.startsAt);
+      const expiresAt = toIsoDateTime(subscriptionForm.expiresAt);
+      const trafficLimitGb = optionalNumber(subscriptionForm.trafficLimitGb);
+      const maxDevices = optionalNumber(subscriptionForm.maxDevices);
+      const payload: Record<string, unknown> = {
+        plan_id: planId,
+        status: subscriptionForm.status,
+        notes: subscriptionForm.notes.trim() || null,
+      };
+      if (editedSubscription) {
+        payload.starts_at = startsAt;
+        payload.expires_at = expiresAt;
+        payload.traffic_limit_gb = trafficLimitGb;
+        payload.max_devices = maxDevices ?? editedSubscription.max_devices;
+        await api.updateVpnSubscription(editedSubscription.id, payload);
+        if (
+          ["active", "trial"].includes(editedSubscription.status) &&
+          ["disabled", "expired", "cancelled"].includes(subscriptionForm.status)
+        ) {
+          await api.runVpnLifecycleMaintenance();
+        }
+      } else {
+        payload.customer_id = selectedCustomer.id;
+        if (startsAt) {
+          payload.starts_at = startsAt;
+        }
+        if (expiresAt) {
+          payload.expires_at = expiresAt;
+        }
+        if (trafficLimitGb !== null) {
+          payload.traffic_limit_gb = trafficLimitGb;
+        }
+        if (maxDevices !== null) {
+          payload.max_devices = maxDevices;
+        }
+        await api.createVpnSubscription(payload);
+      }
+      await reload();
+      setCreatingSubscription(false);
+      setEditingSubscriptionId(null);
+      setSubscriptionForm(EMPTY_SUBSCRIPTION_FORM);
+      notify(
+        "success",
+        editedSubscription ? "Подписка сохранена" : "VPN подписка добавлена",
+      );
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось сохранить подписку",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function extendSubscription(subscription: VpnSubscription, days: 7 | 30 | 90) {
+    const expiresAt = calculateExtendedExpiration(subscription.expires_at, days);
+    const formatted = new Date(expiresAt).toLocaleString("ru-RU");
+    if (
+      !window.confirm(
+        `Продлить подписку #${subscription.id} на ${days} дней, до ${formatted}, и активировать её?`,
+      )
+    ) {
+      return;
+    }
+    setBusyAction(`subscription-${subscription.id}`);
+    try {
+      await api.updateVpnSubscription(subscription.id, {
+        expires_at: expiresAt,
+        status: "active",
+      });
+      await reload();
+      notify("success", `Подписка продлена до ${formatted}`);
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось продлить подписку",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function suspendSubscription(subscription: VpnSubscription) {
+    if (
+      !window.confirm(
+        `Приостановить подписку #${subscription.id}? Активные ключи будут отозваны обслуживанием VPN.`,
+      )
+    ) {
+      return;
+    }
+    setBusyAction(`subscription-${subscription.id}`);
+    try {
+      await api.updateVpnSubscription(subscription.id, { status: "disabled" });
+      await api.runVpnLifecycleMaintenance();
+      await reload();
+      notify("success", "Подписка приостановлена, ключи отправлены на отзыв");
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось приостановить подписку",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function beginAccessKeyCreate(subscription: VpnSubscription) {
+    setAccessKeyForm(EMPTY_ACCESS_KEY_FORM);
+    setCreatingKeyForSubscriptionId(subscription.id);
+  }
+
+  async function saveAccessKey(event: FormEvent) {
+    event.preventDefault();
+    if (!creatingKeyForSubscriptionId) {
+      return;
+    }
+    setBusyAction(`key-create-${creatingKeyForSubscriptionId}`);
+    try {
+      const accessKey = await api.createVpnAccessKey({
+        subscription_id: creatingKeyForSubscriptionId,
+        worker_id: optionalNumber(accessKeyForm.workerId),
+        protocol: accessKeyForm.protocol,
+        public_name: accessKeyForm.publicName.trim() || null,
+      });
+      await reload();
+      setCreatingKeyForSubscriptionId(null);
+      setAccessKeyForm(EMPTY_ACCESS_KEY_FORM);
+      const accessReady = accessKey.status === "active" && Boolean(accessKey.config_uri);
+      notify(
+        accessReady ? "success" : "error",
+        accessReady
+          ? "VPN доступ выдан"
+          : accessKey.last_error || "VPN ключ сохранён и ожидает выдачи",
+      );
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось создать VPN ключ",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function retryAccessKeyProvision(accessKey: VpnAccessKey) {
+    setBusyAction(`key-provision-${accessKey.id}`);
+    try {
+      const provisioned = await api.provisionVpnAccessKey(accessKey.id);
+      await reload();
+      notify(
+        provisioned.status === "active" ? "success" : "error",
+        provisioned.status === "active"
+          ? "VPN доступ выдан"
+          : provisioned.last_error || "Ключ пока не выдан на ноду",
+      );
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось повторить выдачу VPN ключа",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function revokeAccessKey(accessKey: VpnAccessKey, requireConfirmation = true) {
+    const keyName = accessKey.public_name ?? `ключ #${accessKey.id}`;
+    if (
+      requireConfirmation &&
+      !window.confirm(
+        `Отключить VPN ключ ${keyName} на 3x-UI? Запись останется в панели для истории.`,
+      )
+    ) {
+      return;
+    }
+    setBusyAction(`key-revoke-${accessKey.id}`);
+    try {
+      const revoked = await api.revokeVpnAccessKey(accessKey.id);
+      await reload();
+      notify(
+        revoked.status === "pending_revoke" ? "error" : "success",
+        revoked.status === "pending_revoke"
+          ? revoked.last_error || "Ключ ожидает повторного отзыва"
+          : "VPN ключ отключён",
+      );
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось отключить VPN ключ",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function toggleAccessKeyUri(accessKeyId: number) {
+    setExpandedKeyIds((current) => {
+      const next = new Set(current);
+      if (next.has(accessKeyId)) {
+        next.delete(accessKeyId);
+      } else {
+        next.add(accessKeyId);
+      }
+      return next;
+    });
+  }
+
+  async function copyAccessKey(accessKey: VpnAccessKey) {
+    if (!accessKey.config_uri) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(accessKey.config_uri);
+      notify("success", "Полная VPN-ссылка скопирована");
+    } catch {
+      setExpandedKeyIds((current) => new Set(current).add(accessKey.id));
+      window.requestAnimationFrame(() => {
+        const field = document.getElementById(
+          `vpn-key-uri-${accessKey.id}`,
+        ) as HTMLTextAreaElement | null;
+        field?.focus();
+        field?.select();
+      });
+      notify(
+        "error",
+        "Буфер обмена недоступен. Полная ссылка выделена — скопируйте её вручную.",
+      );
+    }
+  }
+
   function renderCustomerFields() {
     return (
       <>
@@ -302,6 +699,312 @@ export function VpnCustomerWorkspace({
           />
         </label>
       </>
+    );
+  }
+
+  function renderSubscriptionForm(title: string) {
+    const busyId = editingSubscriptionId
+      ? `subscription-${editingSubscriptionId}`
+      : "subscription-create";
+    return (
+      <form className="form vpn-inline-form" onSubmit={saveSubscription}>
+        <h4>{title}</h4>
+        <div className="form two-columns">
+          <label>
+            <span>Тариф</span>
+            <select
+              value={subscriptionForm.planId}
+              onChange={(event) =>
+                setSubscriptionForm((current) => ({
+                  ...current,
+                  planId: event.target.value,
+                }))
+              }
+            >
+              <option value="">Без тарифа</option>
+              {plans.map((plan) => (
+                <option key={plan.id} value={plan.id}>
+                  {plan.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Статус</span>
+            <select
+              value={subscriptionForm.status}
+              onChange={(event) =>
+                setSubscriptionForm((current) => ({
+                  ...current,
+                  status: event.target.value,
+                }))
+              }
+            >
+              {SUBSCRIPTION_STATUS_OPTIONS.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Начало</span>
+            <input
+              type="datetime-local"
+              value={subscriptionForm.startsAt}
+              onChange={(event) =>
+                setSubscriptionForm((current) => ({
+                  ...current,
+                  startsAt: event.target.value,
+                }))
+              }
+            />
+          </label>
+          <label>
+            <span>Окончание</span>
+            <input
+              type="datetime-local"
+              value={subscriptionForm.expiresAt}
+              onChange={(event) =>
+                setSubscriptionForm((current) => ({
+                  ...current,
+                  expiresAt: event.target.value,
+                }))
+              }
+            />
+          </label>
+          <label>
+            <span>Трафик, GB</span>
+            <input
+              type="number"
+              min="1"
+              value={subscriptionForm.trafficLimitGb}
+              onChange={(event) =>
+                setSubscriptionForm((current) => ({
+                  ...current,
+                  trafficLimitGb: event.target.value,
+                }))
+              }
+              placeholder="Без лимита"
+            />
+          </label>
+          <label>
+            <span>Устройств</span>
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={subscriptionForm.maxDevices}
+              onChange={(event) =>
+                setSubscriptionForm((current) => ({
+                  ...current,
+                  maxDevices: event.target.value,
+                }))
+              }
+              placeholder="Из тарифа / 1"
+            />
+          </label>
+        </div>
+        <label>
+          <span>Заметки</span>
+          <textarea
+            rows={2}
+            value={subscriptionForm.notes}
+            onChange={(event) =>
+              setSubscriptionForm((current) => ({
+                ...current,
+                notes: event.target.value,
+              }))
+            }
+          />
+        </label>
+        <div className="actions">
+          <button type="submit" disabled={busyAction === busyId}>
+            Сохранить подписку
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => {
+              setCreatingSubscription(false);
+              setEditingSubscriptionId(null);
+              setSubscriptionForm(EMPTY_SUBSCRIPTION_FORM);
+            }}
+          >
+            Отмена
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  function renderAccessKeyForm(subscription: VpnSubscription) {
+    return (
+      <form className="form vpn-inline-form" onSubmit={saveAccessKey}>
+        <h4>Новый ключ для подписки #{subscription.id}</h4>
+        <div className="form two-columns">
+          <label>
+            <span>VPN-нода</span>
+            <select
+              value={accessKeyForm.workerId}
+              onChange={(event) =>
+                setAccessKeyForm((current) => ({
+                  ...current,
+                  workerId: event.target.value,
+                }))
+              }
+            >
+              <option value="">Автоматически</option>
+              {workers.map((worker) => (
+                <option key={worker.id} value={worker.id}>
+                  {worker.name} · {worker.ip_address ?? "без IP"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Протокол</span>
+            <select
+              value={accessKeyForm.protocol}
+              onChange={(event) =>
+                setAccessKeyForm((current) => ({
+                  ...current,
+                  protocol: event.target.value,
+                }))
+              }
+            >
+              <option value="vless">VLESS</option>
+              <option value="vmess">VMess</option>
+            </select>
+          </label>
+          <label>
+            <span>Название</span>
+            <input
+              value={accessKeyForm.publicName}
+              onChange={(event) =>
+                setAccessKeyForm((current) => ({
+                  ...current,
+                  publicName: event.target.value,
+                }))
+              }
+              placeholder="Например: телефон"
+            />
+          </label>
+        </div>
+        <div className="actions">
+          <button
+            type="submit"
+            disabled={busyAction === `key-create-${subscription.id}`}
+          >
+            Выдать ключ
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => setCreatingKeyForSubscriptionId(null)}
+          >
+            Отмена
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  function renderAccessKey(accessKey: VpnAccessKey) {
+    const expanded = expandedKeyIds.has(accessKey.id);
+    const workerName = accessKey.worker_id
+      ? workerMap.get(accessKey.worker_id)?.name ?? `нода #${accessKey.worker_id}`
+      : "автовыбор / не назначена";
+    return (
+      <article key={accessKey.id} className="vpn-key-card">
+        <div className="vpn-workspace-section-head">
+          <div>
+            <strong>{accessKey.public_name ?? `ключ #${accessKey.id}`}</strong>
+            <div className="row-hint">
+              {accessKey.protocol.toUpperCase()} · {workerName}
+            </div>
+          </div>
+          <span className={subscriptionStatusClass(accessKey.status)}>{accessKey.status}</span>
+        </div>
+        <div className="vpn-key-meta">
+          <div>
+            <span className="muted">Выдан</span>
+            <strong>{formatDateTime(accessKey.issued_at)}</strong>
+          </div>
+          <div>
+            <span className="muted">Действует до</span>
+            <strong>{formatDateTime(accessKey.expires_at)}</strong>
+          </div>
+          <div>
+            <span className="muted">UUID</span>
+            <strong>{accessKey.external_uuid ?? "будет создан"}</strong>
+          </div>
+        </div>
+        {accessKey.config_uri ? (
+          <div className="vpn-key-link-block">
+            <code className="vpn-key-preview">{accessKey.config_uri}</code>
+            <div className="actions">
+              <button type="button" className="ghost" onClick={() => void copyAccessKey(accessKey)}>
+                Копировать ссылку
+              </button>
+              <button type="button" className="ghost" onClick={() => toggleAccessKeyUri(accessKey.id)}>
+                {expanded ? "Скрыть" : "Показать полностью"}
+              </button>
+            </div>
+            {expanded ? (
+              <textarea
+                id={`vpn-key-uri-${accessKey.id}`}
+                className="vpn-key-uri"
+                value={accessKey.config_uri}
+                readOnly
+                spellCheck={false}
+                aria-label={`Полная ссылка ключа ${accessKey.public_name ?? accessKey.id}`}
+              />
+            ) : null}
+          </div>
+        ) : (
+          <p className="muted">
+            {accessKey.status === "revoked"
+              ? "Ключ отозван, ссылка больше недоступна."
+              : "Ссылка появится после успешной выдачи ключа на VPN-ноду."}
+          </p>
+        )}
+        {accessKey.last_error && accessKey.status !== "revoked" ? (
+          <p className="error-text">{accessKey.last_error}</p>
+        ) : null}
+        <div className="actions">
+          {["pending_sync", "failed"].includes(accessKey.status) ? (
+            <button
+              type="button"
+              className="ghost"
+              disabled={busyAction === `key-provision-${accessKey.id}`}
+              onClick={() => void retryAccessKeyProvision(accessKey)}
+            >
+              Повторить выдачу
+            </button>
+          ) : null}
+          {accessKey.status === "pending_revoke" ? (
+            <button
+              type="button"
+              className="ghost"
+              disabled={busyAction === `key-revoke-${accessKey.id}`}
+              onClick={() => void revokeAccessKey(accessKey, false)}
+            >
+              Повторить отзыв
+            </button>
+          ) : null}
+          {accessKey.status === "active" ? (
+            <button
+              type="button"
+              className="danger"
+              disabled={busyAction === `key-revoke-${accessKey.id}`}
+              onClick={() => void revokeAccessKey(accessKey)}
+            >
+              Отозвать и сохранить
+            </button>
+          ) : null}
+        </div>
+      </article>
     );
   }
 
@@ -452,6 +1155,142 @@ export function VpnCustomerWorkspace({
               ) : (
                 <p>{selectedCustomer.notes || "Заметок нет"}</p>
               )}
+            </section>
+
+            <section className="vpn-workspace-section">
+              <div className="vpn-workspace-section-head">
+                <div>
+                  <h3>Подписки и ключи</h3>
+                  <p className="muted">
+                    Изменяйте срок и лимиты, затем управляйте ключами конкретной подписки.
+                  </p>
+                </div>
+                {selectedCustomer.status !== "archived" && !creatingSubscription ? (
+                  <button type="button" onClick={beginSubscriptionCreate}>
+                    Новая подписка
+                  </button>
+                ) : null}
+              </div>
+
+              {creatingSubscription
+                ? renderSubscriptionForm(`Новая подписка для ${customerName(selectedCustomer)}`)
+                : null}
+
+              <div className="vpn-subscription-list">
+                {selectedSubscriptions.map((subscription) => {
+                  const plan = subscription.plan_id
+                    ? planMap.get(subscription.plan_id) ?? null
+                    : null;
+                  const subscriptionKeys = selectedAccessKeys.filter(
+                    (accessKey) => accessKey.subscription_id === subscription.id,
+                  );
+                  const subscriptionBusy = busyAction === `subscription-${subscription.id}`;
+                  const isUsable = ["active", "trial"].includes(subscription.status);
+                  return (
+                    <article key={subscription.id} className="vpn-subscription-card">
+                      <div className="vpn-workspace-section-head">
+                        <div>
+                          <strong>
+                            Подписка #{subscription.id} · {plan?.name ?? "без тарифа"}
+                          </strong>
+                          <div className="row-hint">
+                            {formatDateTime(subscription.starts_at)} → {formatDateTime(subscription.expires_at)}
+                          </div>
+                        </div>
+                        <span className={subscriptionStatusClass(subscription.status)}>
+                          {SUBSCRIPTION_STATUS_LABELS[subscription.status] ?? subscription.status}
+                        </span>
+                      </div>
+
+                      <div className="vpn-subscription-meta">
+                        <div>
+                          <span className="muted">Трафик</span>
+                          <strong>
+                            {subscription.traffic_limit_gb === null
+                              ? "без лимита"
+                              : `${subscription.traffic_limit_gb} GB`}
+                          </strong>
+                        </div>
+                        <div>
+                          <span className="muted">Устройств</span>
+                          <strong>{subscription.max_devices}</strong>
+                        </div>
+                        <div>
+                          <span className="muted">Заметки</span>
+                          <strong>{subscription.notes || "—"}</strong>
+                        </div>
+                      </div>
+
+                      {selectedCustomer.status !== "archived" ? (
+                        <div className="actions">
+                          <button
+                            type="button"
+                            className="ghost"
+                            disabled={subscriptionBusy}
+                            onClick={() => beginSubscriptionEdit(subscription)}
+                          >
+                            Изменить
+                          </button>
+                          {([7, 30, 90] as const).map((days) => (
+                            <button
+                              key={days}
+                              type="button"
+                              className="ghost"
+                              disabled={subscriptionBusy}
+                              onClick={() => void extendSubscription(subscription, days)}
+                            >
+                              +{days} дней
+                            </button>
+                          ))}
+                          {isUsable ? (
+                            <button
+                              type="button"
+                              className="danger"
+                              disabled={subscriptionBusy}
+                              onClick={() => void suspendSubscription(subscription)}
+                            >
+                              Приостановить
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {editingSubscriptionId === subscription.id
+                        ? renderSubscriptionForm(`Изменить подписку #${subscription.id}`)
+                        : null}
+
+                      <div className="vpn-key-section">
+                        <div className="vpn-workspace-section-head">
+                          <strong>Ключи доступа</strong>
+                          {selectedCustomer.status !== "archived" &&
+                          isUsable &&
+                          creatingKeyForSubscriptionId !== subscription.id ? (
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => beginAccessKeyCreate(subscription)}
+                            >
+                              Выдать новый ключ
+                            </button>
+                          ) : null}
+                        </div>
+                        {creatingKeyForSubscriptionId === subscription.id
+                          ? renderAccessKeyForm(subscription)
+                          : null}
+                        <div className="vpn-key-list">
+                          {subscriptionKeys.map(renderAccessKey)}
+                          {subscriptionKeys.length === 0 ? (
+                            <p className="empty">У этой подписки пока нет ключей.</p>
+                          ) : null}
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+                {selectedSubscriptions.length === 0 && !creatingSubscription ? (
+                  <p className="empty">У клиента пока нет подписок.</p>
+                ) : null}
+              </div>
             </section>
           </div>
         ) : (

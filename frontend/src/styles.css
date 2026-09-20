@@ -1175,6 +1175,93 @@ button:disabled {
   margin-top: 0;
 }
 
+.vpn-subscription-list,
+.vpn-key-list,
+.vpn-key-section {
+  display: grid;
+  gap: 12px;
+}
+
+.vpn-subscription-list {
+  margin-top: 14px;
+}
+
+.vpn-subscription-card,
+.vpn-key-card,
+.vpn-inline-form {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 250, 242, 0.58);
+}
+
+.vpn-inline-form {
+  margin-top: 12px;
+}
+
+.vpn-inline-form h4 {
+  margin: 0;
+}
+
+.vpn-subscription-meta,
+.vpn-key-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.vpn-subscription-meta > div,
+.vpn-key-meta > div {
+  min-width: 0;
+}
+
+.vpn-subscription-meta span,
+.vpn-subscription-meta strong,
+.vpn-key-meta span,
+.vpn-key-meta strong {
+  display: block;
+}
+
+.vpn-subscription-meta strong,
+.vpn-key-meta strong {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.vpn-key-section {
+  padding-top: 4px;
+}
+
+.vpn-key-link-block {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+}
+
+.vpn-key-preview {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  padding: 10px 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 12px;
+  background: rgba(48, 83, 66, 0.08);
+  font-family: "Courier New", monospace;
+}
+
+.vpn-key-uri {
+  min-height: 108px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-family: "Courier New", monospace;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
 .empty,
 .empty-block {
   color: var(--muted);
