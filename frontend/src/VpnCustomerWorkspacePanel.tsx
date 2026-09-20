@@ -11,6 +11,7 @@ import {
 import {
   calculateExtendedExpiration,
   classifyVpnCustomer,
+  customerStatusOptions,
   filterVpnCustomers,
   selectPrimarySubscription,
   type VpnCustomerFilter,
@@ -104,6 +105,12 @@ const CUSTOMER_STATUS_LABELS: Record<VpnCustomerOperationalStatus, string> = {
   expiring: "скоро истекает",
   suspended: "приостановлен",
   archived: "в архиве",
+};
+
+const CUSTOMER_RECORD_STATUS_LABELS: Record<string, string> = {
+  active: "Активен",
+  blocked: "Заблокирован",
+  archived: "Архив",
 };
 
 function customerName(customer: VpnCustomer) {
@@ -619,6 +626,9 @@ export function VpnCustomerWorkspace({
   }
 
   function renderCustomerFields() {
+    const statusOptions = customerStatusOptions(
+      editingCustomer ? selectedCustomer?.status : null,
+    );
     return (
       <>
         <div className="form two-columns">
@@ -675,6 +685,7 @@ export function VpnCustomerWorkspace({
             <span>Статус</span>
             <select
               value={customerForm.status}
+              disabled={statusOptions.length === 1}
               onChange={(event) =>
                 setCustomerForm((current) => ({
                   ...current,
@@ -682,9 +693,11 @@ export function VpnCustomerWorkspace({
                 }))
               }
             >
-              <option value="active">Активен</option>
-              <option value="blocked">Заблокирован</option>
-              <option value="archived">Архив</option>
+              {statusOptions.map((status) => (
+                <option key={status} value={status}>
+                  {CUSTOMER_RECORD_STATUS_LABELS[status]}
+                </option>
+              ))}
             </select>
           </label>
         </div>

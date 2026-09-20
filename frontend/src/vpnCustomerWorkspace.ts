@@ -7,6 +7,10 @@ const USABLE_SUBSCRIPTION_STATUSES = new Set(["active", "trial"]);
 const SUSPENDED_SUBSCRIPTION_STATUSES = new Set(["disabled", "cancelled", "expired"]);
 const EXPIRING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
+export function customerStatusOptions(currentStatus: string | null | undefined) {
+  return currentStatus === "archived" ? ["archived"] : ["active", "blocked"];
+}
+
 function timestamp(value: string | null | undefined) {
   if (!value) {
     return Number.NEGATIVE_INFINITY;

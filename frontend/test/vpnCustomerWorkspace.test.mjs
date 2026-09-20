@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   calculateExtendedExpiration,
   classifyVpnCustomer,
+  customerStatusOptions,
   filterVpnCustomers,
   selectPrimarySubscription,
 } from "../src/vpnCustomerWorkspace.ts";
@@ -125,4 +126,10 @@ test("extends from the later of current expiry and now", () => {
     "2026-09-27T12:00:00.000Z",
   );
   assert.equal(calculateExtendedExpiration(null, 30, now), "2026-10-20T12:00:00.000Z");
+});
+
+test("reserves archive transitions for the safe archive action", () => {
+  assert.deepEqual(customerStatusOptions("active"), ["active", "blocked"]);
+  assert.deepEqual(customerStatusOptions("blocked"), ["active", "blocked"]);
+  assert.deepEqual(customerStatusOptions("archived"), ["archived"]);
 });
