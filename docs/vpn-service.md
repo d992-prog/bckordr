@@ -56,13 +56,42 @@ curl --request POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
 ## Recovery
 
 - If a client says connected but sites do not load, verify an actual HTTP/HTTPS request through the VPN. An open TCP port alone does not verify the tunnel. On the affected node, plain VLESS payload on port 443 was filtered before reaching Xray although TLS traffic reached it; moving the existing inbound to 8443 restored traffic. New auto-created plain VLESS inbounds therefore avoid 443. After changing an inbound port, update the node metadata and saved client links, then reimport the link in the client app.
-- `pending_sync`: restore or configure a safe ready node, then run lifecycle or press `Повторить выдачу`.
+- `pending_sync`: restore or configure the assigned safe ready node, then run lifecycle or press `Повторить синхронизацию`. Previously issued keys without their assigned node are not silently moved to another node.
+- `pending_suspend`: subscription-driven shutdown is not yet confirmed; restore node safety and run lifecycle again. Until confirmation, the client may still have access.
+- `suspended`: the subscription expired, was paused, or has not started. The client is disabled without deleting its UUID or traffic counters. Renew/reactivate the subscription to restore the same link after synchronization.
 - `pending_revoke`: restore the assigned node, then run lifecycle or press `Повторить отзыв`.
 - Active domain attack: wait for the run to finish; existing VPN clients continue working.
 - Telegram error: inspect the Telegram table and control logs, correct the token or network issue, then send a new command. The bot token is redacted from persisted errors.
 - Duplicate Telegram update: no action is required; the update ID is stored once and the response is not resent.
 
 Revocation never deletes an access-key row. A successful remote revoke produces `revoked`; an unsafe or unavailable assigned node produces `pending_revoke` for a later retry.
+
+## Subscription policy synchronization
+
+Changing subscription status, dates, traffic allowance or device limit atomically
+queues affected existing keys. Notes-only edits do not rewrite node clients.
+`pending_sync` means the latest policy has not yet been confirmed on the node;
+saving the subscription alone does not imply remote success. The scheduled worker
+retries pending operations even when the browser's immediate maintenance request
+fails. Automatic and manual VPN mutations share the single control process's lock.
+Run one control process for this scheduler; the lock is not a distributed lock.
+
+Ordinary renewal keeps the UUID, assigned node and existing valid client link.
+It does not reset consumed traffic. Reducing the device limit below retained keys
+is rejected: permanently revoke excess keys first. A key's device setting remains
+the existing 3x-UI IP/client limit, not a precise count of physical devices.
+
+Expiry and `disabled` use reversible suspension. Manual revoke, subscription
+cancellation and customer archive remain permanent. Neither renewal nor customer
+restore reactivates historical `revoked`/`pending_revoke` rows; old rows do not
+reliably distinguish a lost-device revoke from expiration. Only keys using the
+new suspension states restore automatically. Node decommission also permanently
+retires suspended keys and clears their saved links.
+
+3x-UI updates preserve usage and non-policy client fields in both legacy inbound
+JSON and normalized schemas. Provision/suspend success requires a confirmed
+service restart. These operations can briefly reconnect other clients on the
+same node because the current integration restarts the 3x-UI service.
 
 ## Smoke Test
 
@@ -76,6 +105,8 @@ Revocation never deletes an access-key row. A successful remote revoke produces 
 8. Send `/keys`. Expected: only active keys belonging to currently valid subscriptions are returned.
 9. Send `/support`. Expected: the configured `VPN_SUPPORT_TEXT` is returned exactly.
 10. In admin, set the subscription expiration into the past and run `Обслужить VPN` (or wait for the scheduled lifecycle interval).
-11. Expected: the subscription becomes `expired`; its key becomes `revoked`, or `pending_revoke` if the assigned node cannot be changed safely.
-12. If it is `pending_revoke`, restore node safety and press `Повторить отзыв`. Expected: the key becomes `revoked` and remains visible in history.
-13. Send `/keys` again. Expected: the revoked URI is no longer returned.
+11. Expected: the subscription becomes `expired`; its key becomes `suspended`, or `pending_suspend` if the assigned node cannot be changed safely.
+12. If it is `pending_suspend`, restore node safety and run lifecycle again. Expected: the key becomes `suspended` and remains visible in history.
+13. Send `/keys` again. Expected: the suspended URI is no longer returned.
+14. Renew the subscription and run lifecycle. Expected: the same key returns to `active`, UUID/link stay unchanged and the tunnel passes actual HTTPS traffic.
+15. Manually revoke the test key and renew again. Expected: the key stays `revoked` and does not return on the node.

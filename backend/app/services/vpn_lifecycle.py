@@ -14,6 +14,7 @@ from app.services.vpn_policy import (
     count_device_slots,
     evaluate_vpn_node,
     lock_vpn_worker,
+    lock_vpn_subscription,
     select_vpn_node,
     validate_subscription_access,
 )
@@ -21,14 +22,13 @@ from app.services.vpn_provisioning import (
     provision_vpn_access_key,
     revoke_vpn_access_key,
     sanitize_vpn_error,
+    suspend_vpn_access_key,
 )
+from app.services.vpn_mutations import vpn_mutation_lock
+from app.services.vpn_subscription_sync import RESTORABLE_KEY_STATUSES, subscription_key_action
 
 
 EXPIRING_SUBSCRIPTION_STATUSES = ("active", "trial")
-REVOKABLE_KEY_STATUSES = ("active", "pending_sync", "syncing", "pending_revoke")
-TERMINAL_SUBSCRIPTION_STATUSES = ("expired", "cancelled", "disabled")
-
-_vpn_lifecycle_lock = asyncio.Lock()
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -54,20 +54,13 @@ def _new_result(current_time: datetime) -> dict[str, int | str]:
         "checked_keys": 0,
         "provisioned_keys": 0,
         "revoked_keys": 0,
+        "suspended_keys": 0,
+        "pending_suspend_keys": 0,
         "pending_sync_keys": 0,
         "pending_revoke_keys": 0,
         "skipped_unsafe_keys": 0,
         "failed_keys": 0,
     }
-
-
-def _needs_revoke(access_key: VpnAccessKey, subscription: VpnSubscription, current_time: datetime) -> bool:
-    expires_at = _as_utc(access_key.expires_at)
-    return (
-        access_key.status == "pending_revoke"
-        or subscription.status in TERMINAL_SUBSCRIPTION_STATUSES
-        or (expires_at is not None and expires_at <= current_time)
-    )
 
 
 async def _record_unsafe_skip(
@@ -92,42 +85,49 @@ async def _process_revoke(
     access_key: VpnAccessKey,
     result: dict[str, int | str],
     current_time: datetime,
+    *,
+    suspend: bool = False,
 ) -> None:
+    completed = "suspended" if suspend else "revoked"
+    pending = "pending_suspend" if suspend else "pending_revoke"
+    operation = "suspension" if suspend else "revoke"
     if access_key.worker_id is None:
         if not access_key.config_uri:
-            access_key.status = "revoked"
-            access_key.revoked_at = current_time
+            access_key.status = completed
+            if not suspend:
+                access_key.revoked_at = current_time
             access_key.last_error = None
-            result["revoked_keys"] += 1
+            result[f"{completed}_keys"] += 1
         else:
-            access_key.status = "pending_revoke"
-            access_key.last_error = "Assigned VPN node is missing; revoke is pending"
-            result["pending_revoke_keys"] += 1
+            access_key.status = pending
+            access_key.last_error = f"Assigned VPN node is missing; {operation} is pending"
+            result[f"{pending}_keys"] += 1
         return
 
     worker = await lock_vpn_worker(db, access_key.worker_id)
     if worker is None:
-        access_key.status = "pending_revoke"
-        access_key.last_error = "Assigned VPN node was not found; revoke is pending"
-        result["pending_revoke_keys"] += 1
+        access_key.status = pending
+        access_key.last_error = f"Assigned VPN node was not found; {operation} is pending"
+        result[f"{pending}_keys"] += 1
         return
 
     eligibility = await evaluate_vpn_node(db, worker)
     if not eligibility.eligible:
         reason = "; ".join(eligibility.reasons)
-        access_key.status = "pending_revoke"
+        access_key.status = pending
         access_key.last_error = reason[:2000]
-        result["pending_revoke_keys"] += 1
+        result[f"{pending}_keys"] += 1
         result["skipped_unsafe_keys"] += 1
         await _record_unsafe_skip(db, access_key, worker, reason)
         return
 
-    await revoke_vpn_access_key(db, access_key, worker=worker)
-    if access_key.status == "revoked":
-        result["revoked_keys"] += 1
+    transition = suspend_vpn_access_key if suspend else revoke_vpn_access_key
+    await transition(db, access_key, worker=worker)
+    if access_key.status == completed:
+        result[f"{completed}_keys"] += 1
     else:
-        access_key.status = "pending_revoke"
-        result["pending_revoke_keys"] += 1
+        access_key.status = pending
+        result[f"{pending}_keys"] += 1
 
 
 async def _process_provision(
@@ -137,6 +137,11 @@ async def _process_provision(
     result: dict[str, int | str],
     current_time: datetime,
 ) -> None:
+    if access_key.worker_id is None and access_key.config_uri:
+        access_key.status = "pending_sync"
+        access_key.last_error = "Assigned VPN node is missing; automatic migration is not allowed"
+        result["pending_sync_keys"] += 1
+        return
     customer = await db.get(VpnCustomer, subscription.customer_id)
     slots = await count_device_slots(db, subscription.id, exclude_key_id=access_key.id)
     validation_error = validate_subscription_access(
@@ -228,26 +233,42 @@ async def _run_vpn_lifecycle_maintenance(
     result["expired_subscriptions"] = len(expired_subscriptions)
     await db.flush()
 
-    revoke_condition = or_(
+    permanent_policy = or_(VpnSubscription.status == "cancelled", VpnCustomer.status == "archived")
+    suspend_policy = or_(
+        VpnSubscription.status.not_in(EXPIRING_SUBSCRIPTION_STATUSES),
+        VpnSubscription.starts_at > current_time,
+        VpnSubscription.expires_at <= current_time,
+        VpnCustomer.status != "active",
+        VpnCustomer.id.is_(None),
+    )
+    # SQL NULL timestamps mean unrestricted, not an unknown eligibility result.
+    usable_policy = and_(
+        VpnSubscription.status.in_(EXPIRING_SUBSCRIPTION_STATUSES),
+        or_(VpnSubscription.starts_at.is_(None), VpnSubscription.starts_at <= current_time),
+        or_(VpnSubscription.expires_at.is_(None), VpnSubscription.expires_at > current_time),
+        VpnCustomer.status == "active",
+    )
+    disable_condition = or_(
         VpnAccessKey.status == "pending_revoke",
         and_(
-            VpnAccessKey.status.in_(REVOKABLE_KEY_STATUSES),
-            or_(
-                and_(
-                    VpnAccessKey.expires_at.is_not(None),
-                    VpnAccessKey.expires_at <= current_time,
-                ),
-                VpnSubscription.status.in_(TERMINAL_SUBSCRIPTION_STATUSES),
-            ),
+            VpnAccessKey.status.in_(RESTORABLE_KEY_STATUSES),
+            permanent_policy,
         ),
+        and_(
+            VpnAccessKey.status.in_(tuple(s for s in RESTORABLE_KEY_STATUSES if s != "suspended")),
+            suspend_policy,
+        ),
+    )
+    query = (
+        select(VpnAccessKey, VpnSubscription)
+        .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
+        .outerjoin(VpnCustomer, VpnCustomer.id == VpnSubscription.customer_id)
     )
     revoke_rows = (
         await db.execute(
-            select(VpnAccessKey, VpnSubscription)
-            .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
-            .where(revoke_condition)
+            query.where(disable_condition)
             .order_by(
-                case((VpnAccessKey.status == "pending_revoke", 1), else_=0).asc(),
+                case((VpnAccessKey.status.in_(("pending_revoke", "pending_suspend")), 1), else_=0).asc(),
                 VpnAccessKey.updated_at.asc(),
                 VpnAccessKey.id.asc(),
             )
@@ -259,11 +280,9 @@ async def _run_vpn_lifecycle_maintenance(
     if remaining > 0:
         provision_rows = (
             await db.execute(
-                select(VpnAccessKey, VpnSubscription)
-                .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
-                .where(
-                    VpnAccessKey.status == "pending_sync",
-                    ~revoke_condition,
+                query.where(
+                    usable_policy,
+                    VpnAccessKey.status.in_(("pending_sync", "pending_suspend", "suspended")),
                 )
                 .order_by(VpnAccessKey.updated_at.asc(), VpnAccessKey.id.asc())
                 .limit(remaining)
@@ -272,14 +291,22 @@ async def _run_vpn_lifecycle_maintenance(
     rows = [*revoke_rows, *provision_rows]
 
     for access_key, subscription in rows:
+        subscription = await lock_vpn_subscription(db, subscription.id)
+        await db.refresh(access_key)
+        if subscription is None or access_key.status == "revoked":
+            continue
+        customer = await db.get(VpnCustomer, subscription.customer_id)
+        action = (
+            "revoke" if access_key.status == "pending_revoke"
+            else subscription_key_action(subscription, customer, current_time)
+        )
         result["checked_keys"] += 1
         worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
-        revoke = _needs_revoke(access_key, subscription, current_time)
         try:
             try:
-                if revoke:
+                if action in {"revoke", "suspend"}:
                     await asyncio.wait_for(
-                        _process_revoke(db, access_key, result, current_time),
+                        _process_revoke(db, access_key, result, current_time, suspend=action == "suspend"),
                         timeout=key_timeout_seconds,
                     )
                 else:
@@ -294,12 +321,8 @@ async def _run_vpn_lifecycle_maintenance(
         except Exception as exc:
             access_key.last_error = _bounded_key_error(exc, worker, access_key)
             result["failed_keys"] += 1
-            if revoke:
-                access_key.status = "pending_revoke"
-                result["pending_revoke_keys"] += 1
-            else:
-                access_key.status = "pending_sync"
-                result["pending_sync_keys"] += 1
+            access_key.status = f"pending_{action}"
+            result[f"pending_{action}_keys"] += 1
             if worker is not None:
                 db.add(
                     VpnNodeEvent(
@@ -338,9 +361,9 @@ async def run_vpn_lifecycle_maintenance(
     batch_size: int = 50,
     key_timeout_seconds: float = 30.0,
 ) -> dict[str, int | str]:
-    current_time = _as_utc(now or utcnow())
-    assert current_time is not None
-    async with _vpn_lifecycle_lock:
+    async with vpn_mutation_lock():
+        current_time = _as_utc(now or utcnow())
+        assert current_time is not None
         return await _run_vpn_lifecycle_maintenance(
             db,
             current_time=current_time,

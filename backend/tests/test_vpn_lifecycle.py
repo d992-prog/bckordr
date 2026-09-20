@@ -116,7 +116,7 @@ async def test_lifecycle_retries_pending_sync_key_and_persists_result(session_fa
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_prioritizes_due_revocation_over_old_pending_sync(session_factory):
+async def test_lifecycle_prioritizes_due_suspension_over_old_pending_sync(session_factory):
     now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
     async with session_factory() as session:
         active_subscription = await _subscription(
@@ -146,7 +146,7 @@ async def test_lifecycle_prioritizes_due_revocation_over_old_pending_sync(sessio
 
     assert result["checked_keys"] == 2
     assert stored_due_key is not None
-    assert stored_due_key.status == "revoked"
+    assert stored_due_key.status == "suspended"
 
 
 @pytest.mark.asyncio
@@ -257,7 +257,7 @@ async def test_lifecycle_continues_after_failure_and_redacts_credentials(session
         second_worker = _vpn_worker("success")
         session.add_all([first_worker, second_worker])
         await session.flush()
-        subscription = await _subscription(session, status="expired", expires_at=now - timedelta(minutes=1))
+        subscription = await _subscription(session, status="cancelled", expires_at=now - timedelta(minutes=1))
         failure_key = VpnAccessKey(
             subscription_id=subscription.id,
             worker_id=first_worker.id,

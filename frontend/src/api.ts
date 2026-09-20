@@ -536,6 +536,8 @@ export type VpnLifecycleStatus = {
   checked_keys: number;
   provisioned_keys: number;
   revoked_keys: number;
+  suspended_keys: number;
+  pending_suspend_keys: number;
   pending_sync_keys: number;
   pending_revoke_keys: number;
   skipped_unsafe_keys: number;

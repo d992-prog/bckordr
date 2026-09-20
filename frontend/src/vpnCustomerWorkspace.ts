@@ -7,8 +7,10 @@ const USABLE_SUBSCRIPTION_STATUSES = new Set(["active", "trial"]);
 const SUSPENDED_SUBSCRIPTION_STATUSES = new Set(["disabled", "cancelled", "expired"]);
 const EXPIRING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const ACCESS_KEY_STATUS_LABELS: Record<string, string> = {
-  pending_sync: "ожидает выдачи",
-  syncing: "выдаётся",
+  pending_sync: "ожидает синхронизации",
+  syncing: "синхронизируется",
+  pending_suspend: "ожидает приостановки",
+  suspended: "приостановлен",
   active: "активен",
   pending_revoke: "ожидает отзыва",
   revoked: "отозван",
@@ -17,6 +19,28 @@ const ACCESS_KEY_STATUS_LABELS: Record<string, string> = {
 
 export function accessKeyStatusLabel(status: string) {
   return ACCESS_KEY_STATUS_LABELS[status] ?? status;
+}
+
+export async function saveSubscriptionAndRequestSync(
+  save: () => Promise<unknown>,
+  requestSync: () => Promise<unknown>,
+  reload: () => Promise<void>,
+) {
+  await save();
+  let syncRequested = true;
+  let refreshed = true;
+  try {
+    await requestSync();
+  } catch {
+    // The durable backend queue still owns the saved update.
+    syncRequested = false;
+  }
+  try {
+    await reload();
+  } catch {
+    refreshed = false;
+  }
+  return { syncRequested, refreshed };
 }
 
 export function customerStatusOptions(currentStatus: string | null | undefined) {

@@ -15,6 +15,7 @@ import {
   customerStatusOptions,
   filterVpnCustomers,
   selectPrimarySubscription,
+  saveSubscriptionAndRequestSync,
   type VpnCustomerFilter,
   type VpnCustomerOperationalStatus,
 } from "./vpnCustomerWorkspace";
@@ -409,13 +410,7 @@ export function VpnCustomerWorkspace({
         payload.expires_at = expiresAt;
         payload.traffic_limit_gb = trafficLimitGb;
         payload.max_devices = maxDevices ?? editedSubscription.max_devices;
-        await api.updateVpnSubscription(editedSubscription.id, payload);
-        if (
-          ["active", "trial"].includes(editedSubscription.status) &&
-          ["disabled", "expired", "cancelled"].includes(subscriptionForm.status)
-        ) {
-          await api.runVpnLifecycleMaintenance();
-        }
+        await updateSubscriptionPolicy(editedSubscription.id, payload, "Подписка сохранена");
       } else {
         payload.customer_id = selectedCustomer.id;
         if (startsAt) {
@@ -431,15 +426,12 @@ export function VpnCustomerWorkspace({
           payload.max_devices = maxDevices;
         }
         await api.createVpnSubscription(payload);
+        await reload();
+        notify("success", "VPN подписка добавлена");
       }
-      await reload();
       setCreatingSubscription(false);
       setEditingSubscriptionId(null);
       setSubscriptionForm(EMPTY_SUBSCRIPTION_FORM);
-      notify(
-        "success",
-        editedSubscription ? "Подписка сохранена" : "VPN подписка добавлена",
-      );
     } catch (error) {
       notify(
         "error",
@@ -448,6 +440,24 @@ export function VpnCustomerWorkspace({
     } finally {
       setBusyAction(null);
     }
+  }
+
+  async function updateSubscriptionPolicy(
+    subscriptionId: number,
+    payload: Record<string, unknown>,
+    savedMessage: string,
+  ) {
+    const result = await saveSubscriptionAndRequestSync(
+      () => api.updateVpnSubscription(subscriptionId, payload),
+      () => api.runVpnLifecycleMaintenance(),
+      reload,
+    );
+    const feedback = !result.refreshed
+      ? "Обновите страницу, чтобы увидеть актуальный статус ключей."
+      : !result.syncRequested
+        ? "Синхронизация будет повторена автоматически. Проверьте статус ключей."
+        : "Результат применения на ноде — в статусе ключей ниже.";
+    notify(result.refreshed && result.syncRequested ? "success" : "error", `${savedMessage}. ${feedback}`);
   }
 
   async function extendSubscription(subscription: VpnSubscription, days: 7 | 30 | 90) {
@@ -462,12 +472,10 @@ export function VpnCustomerWorkspace({
     }
     setBusyAction(`subscription-${subscription.id}`);
     try {
-      await api.updateVpnSubscription(subscription.id, {
+      await updateSubscriptionPolicy(subscription.id, {
         expires_at: expiresAt,
         status: "active",
-      });
-      await reload();
-      notify("success", `Подписка продлена до ${formatted}`);
+      }, `Подписка продлена до ${formatted}`);
     } catch (error) {
       notify(
         "error",
@@ -481,17 +489,14 @@ export function VpnCustomerWorkspace({
   async function suspendSubscription(subscription: VpnSubscription) {
     if (
       !window.confirm(
-        `Приостановить подписку #${subscription.id}? Активные ключи будут отозваны обслуживанием VPN.`,
+        `Приостановить подписку #${subscription.id}? Доступ отключится после синхронизации. При продлении прежние ссылки заработают снова.`,
       )
     ) {
       return;
     }
     setBusyAction(`subscription-${subscription.id}`);
     try {
-      await api.updateVpnSubscription(subscription.id, { status: "disabled" });
-      await api.runVpnLifecycleMaintenance();
-      await reload();
-      notify("success", "Подписка приостановлена, ключи отправлены на отзыв");
+      await updateSubscriptionPolicy(subscription.id, { status: "disabled" }, "Приостановка подписки сохранена");
     } catch (error) {
       notify(
         "error",
@@ -985,6 +990,13 @@ export function VpnCustomerWorkspace({
               : "Ссылка появится после успешной выдачи ключа на VPN-ноду."}
           </p>
         )}
+        {["suspended", "pending_suspend"].includes(accessKey.status) ? (
+          <p className="muted">
+            {accessKey.status === "suspended"
+              ? "Доступ приостановлен. После продления подписки эта же ссылка восстановится; повторный импорт не нужен."
+              : "Отключение ещё не подтверждено нодой. Система повторит попытку автоматически."}
+          </p>
+        ) : null}
         {accessKey.last_error && accessKey.status !== "revoked" ? (
           <p className="error-text">{accessKey.last_error}</p>
         ) : null}
@@ -996,7 +1008,7 @@ export function VpnCustomerWorkspace({
               disabled={busyAction === `key-provision-${accessKey.id}`}
               onClick={() => void retryAccessKeyProvision(accessKey)}
             >
-              Повторить выдачу
+              Повторить синхронизацию
             </button>
           ) : null}
           {accessKey.status === "pending_revoke" ? (
@@ -1009,7 +1021,7 @@ export function VpnCustomerWorkspace({
               Повторить отзыв
             </button>
           ) : null}
-          {accessKey.status === "active" ? (
+          {["active", "pending_sync", "failed", "suspended", "pending_suspend"].includes(accessKey.status) ? (
             <button
               type="button"
               className="danger"

@@ -380,7 +380,7 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
 
 
 @pytest.mark.asyncio
-async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending_revoke(monkeypatch):
+async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending_suspend(monkeypatch):
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         future=True,
@@ -432,14 +432,14 @@ async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending
         access_key.config_uri = f"vless://test-{access_key.id}"
         return access_key
 
-    async def fake_revoke(db, access_key, *, worker=None):
+    async def fake_suspend(db, access_key, *, worker=None):
         del db, worker
-        access_key.status = "pending_revoke"
+        access_key.status = "pending_suspend"
         access_key.last_error = "simulated unavailable node"
         return access_key
 
     monkeypatch.setattr("app.api.routes.control.provision_vpn_access_key", fake_provision)
-    monkeypatch.setattr("app.services.vpn_lifecycle.revoke_vpn_access_key", fake_revoke)
+    monkeypatch.setattr("app.services.vpn_lifecycle.suspend_vpn_access_key", fake_suspend)
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
         plan_response = await client.post(
@@ -485,18 +485,18 @@ async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending
         lifecycle_payload = lifecycle_response.json()
         assert lifecycle_payload["expired_subscriptions"] == 1
         assert lifecycle_payload["checked_keys"] == 1
-        assert lifecycle_payload["pending_revoke_keys"] == 1
+        assert lifecycle_payload["pending_suspend_keys"] == 1
 
         status_response = await client.get("/control/vpn/lifecycle/status")
         assert status_response.status_code == 200
         assert status_response.json()["ran_at"] is not None
         assert status_response.json()["expired_subscriptions"] == 1
-        assert status_response.json()["pending_revoke_keys"] == 1
+        assert status_response.json()["pending_suspend_keys"] == 1
 
         keys_response = await client.get("/control/vpn/access-keys")
         assert keys_response.status_code == 200
         keys = keys_response.json()
-        assert keys[0]["status"] == "pending_revoke"
+        assert keys[0]["status"] == "pending_suspend"
 
         subscriptions_response = await client.get("/control/vpn/subscriptions")
         assert subscriptions_response.status_code == 200

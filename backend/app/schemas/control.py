@@ -711,6 +711,8 @@ class VpnLifecycleStatusResponse(BaseModel):
     checked_keys: int = 0
     provisioned_keys: int = 0
     revoked_keys: int = 0
+    suspended_keys: int = 0
+    pending_suspend_keys: int = 0
     pending_sync_keys: int = 0
     pending_revoke_keys: int = 0
     skipped_unsafe_keys: int = 0

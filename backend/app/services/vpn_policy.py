@@ -18,7 +18,9 @@ from app.db.models import (
 )
 
 
-DEVICE_SLOT_STATUSES = ("pending_sync", "syncing", "active", "pending_revoke")
+DEVICE_SLOT_STATUSES = (
+    "pending_sync", "syncing", "active", "pending_revoke", "pending_suspend", "suspended", "failed",
+)
 VPN_MUTATION_ACTIONS = {
     "vpn_install",
     "vpn_update",

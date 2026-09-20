@@ -121,10 +121,13 @@ async def seed_vpn_node(
 
 
 @pytest.mark.asyncio
-async def test_decommission_worker_archives_node_and_retires_attached_keys(session_factory):
+@pytest.mark.parametrize("key_status", ["active", "suspended", "pending_suspend"])
+async def test_decommission_worker_archives_node_and_retires_attached_keys(session_factory, key_status):
     now = datetime(2026, 9, 20, 13, 30, tzinfo=UTC)
     async with session_factory() as session:
         worker, customer, subscription, access_key = await seed_vpn_node(session)
+        access_key.status = key_status
+        await session.flush()
 
         result = await decommission_worker(session, worker.id, now=now)
         await session.commit()

@@ -155,6 +155,12 @@ from app.services.discovery import (
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
+from app.services.vpn_mutations import serialize_vpn_mutation
+from app.services.vpn_subscription_sync import (
+    SubscriptionPolicyConflict,
+    SubscriptionPolicyError,
+    stage_subscription_update,
+)
 from app.services.vpn_customer_lifecycle import (
     VpnCustomerArchiveConflictError,
     VpnCustomerArchiveNotFoundError,
@@ -2750,7 +2756,7 @@ async def create_worker(
     return WorkerNodeResponse.model_validate(worker)
 
 
-@router.patch("/workers/{worker_id}", response_model=WorkerNodeResponse)
+@router.patch("/workers/{worker_id}", response_model=WorkerNodeResponse, dependencies=[Depends(serialize_vpn_mutation)])
 async def update_worker(
     worker_id: int,
     payload: WorkerNodeUpdateRequest,
@@ -2776,7 +2782,7 @@ async def update_worker(
     return WorkerNodeResponse.model_validate(worker)
 
 
-@router.delete("/workers/{worker_id}", response_model=MessageResponse)
+@router.delete("/workers/{worker_id}", response_model=MessageResponse, dependencies=[Depends(serialize_vpn_mutation)])
 async def delete_worker(
     worker_id: int,
     db: AsyncSession = Depends(get_db),
@@ -2977,7 +2983,7 @@ async def create_vpn_customer(
     return VpnCustomerResponse.model_validate(customer)
 
 
-@router.patch("/vpn/customers/{customer_id}", response_model=VpnCustomerResponse)
+@router.patch("/vpn/customers/{customer_id}", response_model=VpnCustomerResponse, dependencies=[Depends(serialize_vpn_mutation)])
 async def update_vpn_customer(
     customer_id: int,
     payload: VpnCustomerUpdateRequest,
@@ -3002,7 +3008,7 @@ async def update_vpn_customer(
     return VpnCustomerResponse.model_validate(customer)
 
 
-@router.post("/vpn/customers/{customer_id}/archive", response_model=VpnCustomerArchiveResponse)
+@router.post("/vpn/customers/{customer_id}/archive", response_model=VpnCustomerArchiveResponse, dependencies=[Depends(serialize_vpn_mutation)])
 async def archive_vpn_customer(
     customer_id: int,
     db: AsyncSession = Depends(get_db),
@@ -3107,22 +3113,25 @@ async def create_vpn_subscription(
     return VpnSubscriptionResponse.model_validate(subscription)
 
 
-@router.patch("/vpn/subscriptions/{subscription_id}", response_model=VpnSubscriptionResponse)
+@router.patch("/vpn/subscriptions/{subscription_id}", response_model=VpnSubscriptionResponse, dependencies=[Depends(serialize_vpn_mutation)])
 async def update_vpn_subscription(
     subscription_id: int,
     payload: VpnSubscriptionUpdateRequest,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> VpnSubscriptionResponse:
-    subscription = await db.get(VpnSubscription, subscription_id)
+    subscription = await lock_vpn_subscription(db, subscription_id)
     if subscription is None:
         raise HTTPException(status_code=404, detail="VPN subscription not found")
     updates = payload.model_dump(exclude_unset=True)
     if updates.get("plan_id") is not None and await db.get(VpnPlan, updates["plan_id"]) is None:
         raise HTTPException(status_code=404, detail="VPN plan not found")
-    for field, value in updates.items():
-        setattr(subscription, field, value)
-    subscription.updated_at = utcnow()
+    try:
+        await stage_subscription_update(db, subscription, updates)
+    except SubscriptionPolicyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SubscriptionPolicyConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await add_audit_log(
         db,
         actor_user_id=admin.id,
@@ -3211,7 +3220,7 @@ async def _reject_vpn_revoke_during_attack(
     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=active_attack_reason)
 
 
-@router.post("/vpn/access-keys", response_model=VpnAccessKeyResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/vpn/access-keys", response_model=VpnAccessKeyResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(serialize_vpn_mutation)])
 async def create_vpn_access_key(
     payload: VpnAccessKeyCreateRequest,
     db: AsyncSession = Depends(get_db),
@@ -3250,7 +3259,7 @@ async def create_vpn_access_key(
     return VpnAccessKeyResponse.model_validate(access_key)
 
 
-@router.post("/vpn/access-keys/{access_key_id}/provision", response_model=VpnAccessKeyResponse)
+@router.post("/vpn/access-keys/{access_key_id}/provision", response_model=VpnAccessKeyResponse, dependencies=[Depends(serialize_vpn_mutation)])
 async def provision_existing_vpn_access_key(
     access_key_id: int,
     db: AsyncSession = Depends(get_db),
@@ -3261,6 +3270,8 @@ async def provision_existing_vpn_access_key(
         raise HTTPException(status_code=404, detail="VPN access key not found")
     if access_key.status not in {"pending_sync", "failed"}:
         raise HTTPException(status_code=409, detail=f"VPN access key is {access_key.status}")
+    if access_key.worker_id is None and access_key.config_uri:
+        raise HTTPException(status_code=409, detail="Assigned VPN node is missing; automatic migration is not allowed")
     subscription = await lock_vpn_subscription(db, access_key.subscription_id)
     if subscription is None:
         raise HTTPException(status_code=404, detail="VPN subscription not found")
@@ -3284,7 +3295,7 @@ async def provision_existing_vpn_access_key(
     return VpnAccessKeyResponse.model_validate(access_key)
 
 
-@router.post("/vpn/access-keys/{access_key_id}/revoke", response_model=VpnAccessKeyResponse)
+@router.post("/vpn/access-keys/{access_key_id}/revoke", response_model=VpnAccessKeyResponse, dependencies=[Depends(serialize_vpn_mutation)])
 async def revoke_existing_vpn_access_key(
     access_key_id: int,
     db: AsyncSession = Depends(get_db),
@@ -3338,7 +3349,7 @@ async def run_vpn_lifecycle_endpoint(
     return {"detail": "VPN lifecycle maintenance completed", **result}
 
 
-@router.delete("/vpn/access-keys/{access_key_id}", response_model=VpnAccessKeyResponse)
+@router.delete("/vpn/access-keys/{access_key_id}", response_model=VpnAccessKeyResponse, dependencies=[Depends(serialize_vpn_mutation)])
 async def delete_vpn_access_key(
     access_key_id: int,
     db: AsyncSession = Depends(get_db),

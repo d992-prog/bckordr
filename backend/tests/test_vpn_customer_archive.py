@@ -98,10 +98,13 @@ async def seed_customer(
 
 
 @pytest.mark.asyncio
-async def test_stage_archive_blocks_customer_subscriptions_and_usable_keys(session_factory):
+@pytest.mark.parametrize("key_status", ["active", "suspended", "pending_suspend"])
+async def test_stage_archive_blocks_customer_subscriptions_and_usable_keys(session_factory, key_status):
     now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
     async with session_factory() as session:
         customer, active, trial, expired, active_key, revoked_key = await seed_customer(session)
+        active_key.status = key_status
+        await session.flush()
 
         result = await stage_vpn_customer_archive(session, customer.id, now=now)
         await session.commit()

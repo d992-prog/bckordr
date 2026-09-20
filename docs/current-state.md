@@ -1,5 +1,20 @@
 # Current State
 
+## VPN subscription synchronization (2026-09-20)
+
+- Subscription policy edits atomically queue existing keys, preserving their valid
+  UUID/link and assigned node. Used traffic is not reset by renewal or limit edits.
+- Expiry and pause use `pending_suspend` / `suspended`; renewal restores these keys.
+  Manual revoke, cancellation, customer archive and node removal remain permanent.
+  Historical revoked keys are deliberately not auto-restored.
+- UI separates saved policy from confirmed node application and shows suspension
+  and synchronization states. Unavailable nodes remain pending with sanitized
+  errors and scheduled retries. No billing integration was added.
+- New coverage includes API staging, suspension/resumption, stale expiry, manual
+  revoke serialization, inactive customers, retained device slots, legacy and
+  normalized 3x-UI SQL preservation and confirmed remote restart behavior.
+- Deployment/live-smoke results are recorded below after verification.
+
 ## Project Summary
 
 This repository is a `multizone domain drop catcher` rebuilt from an older checker-oriented project.

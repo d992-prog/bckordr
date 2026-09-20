@@ -8,6 +8,7 @@ import {
   customerStatusOptions,
   filterVpnCustomers,
   selectPrimarySubscription,
+  saveSubscriptionAndRequestSync,
 } from "../src/vpnCustomerWorkspace.ts";
 
 const now = new Date("2026-09-20T12:00:00.000Z");
@@ -144,8 +145,39 @@ test("reserves archive transitions for the safe archive action", () => {
 });
 
 test("shows access-key states in operator-friendly language", () => {
-  assert.equal(accessKeyStatusLabel("pending_sync"), "ожидает выдачи");
+  assert.equal(accessKeyStatusLabel("pending_sync"), "ожидает синхронизации");
+  assert.equal(accessKeyStatusLabel("syncing"), "синхронизируется");
+  assert.equal(accessKeyStatusLabel("pending_suspend"), "ожидает приостановки");
+  assert.equal(accessKeyStatusLabel("suspended"), "приостановлен");
   assert.equal(accessKeyStatusLabel("pending_revoke"), "ожидает отзыва");
   assert.equal(accessKeyStatusLabel("active"), "активен");
   assert.equal(accessKeyStatusLabel("custom"), "custom");
+});
+
+test("a saved subscription survives a failed immediate sync request", async () => {
+  const calls = [];
+  const result = await saveSubscriptionAndRequestSync(
+    async () => { calls.push("save"); },
+    async () => { calls.push("sync"); throw new Error("offline"); },
+    async () => { calls.push("reload"); },
+  );
+  assert.deepEqual(calls, ["save", "sync", "reload"]);
+  assert.deepEqual(result, { syncRequested: false, refreshed: true });
+});
+
+test("failed save never requests synchronization", async () => {
+  const calls = [];
+  await assert.rejects(saveSubscriptionAndRequestSync(
+    async () => { throw new Error("invalid policy"); },
+    async () => { calls.push("sync"); },
+    async () => { calls.push("reload"); },
+  ), /invalid policy/);
+  assert.deepEqual(calls, []);
+});
+
+test("a reload error does not misreport a completed subscription save", async () => {
+  const result = await saveSubscriptionAndRequestSync(
+    async () => {}, async () => {}, async () => { throw new Error("offline"); },
+  );
+  assert.deepEqual(result, { syncRequested: true, refreshed: false });
 });

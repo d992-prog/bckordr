@@ -2319,7 +2319,7 @@ export default function App() {
       await loadAll();
       setToast({
         type: "success",
-        text: `VPN обслуживание: подписок истекло ${result.expired_subscriptions}, ключей отключено ${result.revoked_keys}, ожидают отключения ${result.pending_revoke_keys}`,
+        text: `VPN обслуживание: синхронизировано ${result.provisioned_keys}, приостановлено ${result.suspended_keys}, отозвано ${result.revoked_keys}, ожидают отключения ${result.pending_suspend_keys + result.pending_revoke_keys}`,
       });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обслуживания VPN" });
@@ -4368,10 +4368,12 @@ export default function App() {
           </div>
           <div className="stats vpn-lifecycle-stats">
             <article><span>Проверено ключей</span><strong>{vpnLifecycleStatus?.checked_keys ?? 0}</strong></article>
-            <article><span>Выдано</span><strong>{vpnLifecycleStatus?.provisioned_keys ?? 0}</strong></article>
+            <article><span>Синхронизировано</span><strong>{vpnLifecycleStatus?.provisioned_keys ?? 0}</strong></article>
+            <article><span>Приостановлено</span><strong>{vpnLifecycleStatus?.suspended_keys ?? 0}</strong></article>
             <article><span>Отозвано</span><strong>{vpnLifecycleStatus?.revoked_keys ?? 0}</strong></article>
             <article><span>Истекло подписок</span><strong>{vpnLifecycleStatus?.expired_subscriptions ?? 0}</strong></article>
-            <article><span>Ждут выдачи</span><strong>{vpnLifecycleStatus?.pending_sync_keys ?? 0}</strong></article>
+            <article><span>Ждут синхронизации</span><strong>{vpnLifecycleStatus?.pending_sync_keys ?? 0}</strong></article>
+            <article><span>Ждут приостановки</span><strong>{vpnLifecycleStatus?.pending_suspend_keys ?? 0}</strong></article>
             <article><span>Ждут отзыва</span><strong>{vpnLifecycleStatus?.pending_revoke_keys ?? 0}</strong></article>
             <article><span>Пропущено безопасностью</span><strong>{vpnLifecycleStatus?.skipped_unsafe_keys ?? 0}</strong></article>
             <article><span>Ошибки</span><strong>{vpnLifecycleStatus?.failed_keys ?? 0}</strong></article>

@@ -11,7 +11,9 @@ from app.db.models import VpnAccessKey, VpnCustomer, VpnSubscription
 
 
 ARCHIVABLE_SUBSCRIPTION_STATUSES = ("active", "trial")
-REVOKABLE_KEY_STATUSES = ("active", "pending_sync", "syncing", "pending_revoke")
+REVOKABLE_KEY_STATUSES = (
+    "active", "pending_sync", "syncing", "pending_revoke", "pending_suspend", "suspended", "failed",
+)
 
 
 class VpnCustomerArchiveNotFoundError(LookupError):
