@@ -606,6 +606,13 @@ class VpnCustomerResponse(VpnCustomerBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class VpnCustomerArchiveResponse(BaseModel):
+    customer: VpnCustomerResponse
+    disabled_subscriptions: int
+    revoked_keys: int
+    pending_revoke_keys: int
+
+
 class VpnSubscriptionCreateRequest(BaseModel):
     customer_id: int
     plan_id: int | None = None

@@ -94,6 +94,7 @@ from app.schemas.control import (
     VpnAccessKeyCreateRequest,
     VpnAccessKeyResponse,
     VpnCustomerCreateRequest,
+    VpnCustomerArchiveResponse,
     VpnCustomerResponse,
     VpnCustomerUpdateRequest,
     VpnLifecycleStatusResponse,
@@ -154,6 +155,11 @@ from app.services.discovery import (
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
+from app.services.vpn_customer_lifecycle import (
+    VpnCustomerArchiveConflictError,
+    VpnCustomerArchiveNotFoundError,
+    stage_vpn_customer_archive,
+)
 from app.services.vpn_policy import (
     VPN_MUTATION_ACTIONS,
     active_attack_worker_ids,
@@ -2994,6 +3000,65 @@ async def update_vpn_customer(
     await db.commit()
     await db.refresh(customer)
     return VpnCustomerResponse.model_validate(customer)
+
+
+@router.post("/vpn/customers/{customer_id}/archive", response_model=VpnCustomerArchiveResponse)
+async def archive_vpn_customer(
+    customer_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnCustomerArchiveResponse:
+    try:
+        staged = await stage_vpn_customer_archive(db, customer_id)
+    except VpnCustomerArchiveNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except VpnCustomerArchiveConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    for access_key in staged.access_keys:
+        worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
+        if worker is None and not access_key.config_uri:
+            access_key.status = "revoked"
+            access_key.revoked_at = utcnow()
+            access_key.last_error = None
+            continue
+        if worker is not None:
+            locked_worker = await lock_vpn_worker(db, worker.id)
+            eligibility = (
+                await evaluate_vpn_node(db, locked_worker) if locked_worker is not None else None
+            )
+            if eligibility is None or not eligibility.eligible:
+                access_key.status = "pending_revoke"
+                access_key.last_error = (
+                    "; ".join(eligibility.reasons)
+                    if eligibility is not None
+                    else "VPN node was not found"
+                )
+                continue
+            worker = locked_worker
+        await revoke_vpn_access_key(db, access_key, worker=worker)
+
+    revoked_keys = sum(key.status == "revoked" for key in staged.access_keys)
+    pending_revoke_keys = sum(key.status != "revoked" for key in staged.access_keys)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_customer_archive",
+        details=(
+            f"customer_id={customer_id} "
+            f"disabled_subscriptions={staged.disabled_subscription_count} "
+            f"revoked_keys={revoked_keys} pending_revoke_keys={pending_revoke_keys}"
+        ),
+    )
+    await db.commit()
+    await db.refresh(staged.customer)
+    return VpnCustomerArchiveResponse(
+        customer=VpnCustomerResponse.model_validate(staged.customer),
+        disabled_subscriptions=staged.disabled_subscription_count,
+        revoked_keys=revoked_keys,
+        pending_revoke_keys=pending_revoke_keys,
+    )
 
 
 @router.get("/vpn/subscriptions", response_model=list[VpnSubscriptionResponse])
