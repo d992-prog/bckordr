@@ -631,15 +631,46 @@ async def test_cycle_timeout_preserves_completed_key_and_advances_queue(
         first_id = first.id
         second_id = second.id
 
+    first_checkpoint_completed = asyncio.Event()
     second_started = asyncio.Event()
+    second_cancelled = asyncio.Event()
+    release_cycle_timeout = asyncio.Event()
+    test_watchdog_seconds = 5
+
+    session_calls = 0
+
+    def delayed_checkpoint_session_factory():
+        nonlocal session_calls
+        session_calls += 1
+        session = session_factory()
+        if session_calls == 1:
+            original_commit = session.commit
+            commit_calls = 0
+
+            async def delayed_first_commit():
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 1:
+                    # Exceed the effective 0.1-second cycle deadline. The separate
+                    # cycle-timeout test covers enforcement of the real clock budget.
+                    await asyncio.sleep(0.15)
+                await original_commit()
+                if commit_calls == 1:
+                    first_checkpoint_completed.set()
+
+            session.commit = delayed_first_commit
+        return session
 
     async def provision_until_cycle_timeout(db, access_key, *, subscription=None, worker=None):
         del db, subscription
-        if access_key.id == second_id:
-            second_started.set()
-            await asyncio.Event().wait()
         access_key.worker_id = worker.id
         access_key.status = "active"
+        if access_key.id == second_id:
+            second_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                second_cancelled.set()
         return access_key
 
     monkeypatch.setattr(
@@ -651,13 +682,54 @@ async def test_cycle_timeout_preserves_completed_key_and_advances_queue(
         VPN_LIFECYCLE_ENABLED=True,
         VPN_LIFECYCLE_INTERVAL_SECONDS=60,
         VPN_LIFECYCLE_BATCH_SIZE=2,
-        VPN_LIFECYCLE_KEY_TIMEOUT_SECONDS=1,
+        VPN_LIFECYCLE_KEY_TIMEOUT_SECONDS=30,
         VPN_LIFECYCLE_CYCLE_TIMEOUT_SECONDS=0.05,
     )
-    orchestrator = ControlRuntimeOrchestrator(session_factory, settings=settings)
+    orchestrator = ControlRuntimeOrchestrator(delayed_checkpoint_session_factory, settings=settings)
 
-    await orchestrator._run_vpn_lifecycle(now)
-    assert second_started.is_set()
+    class ControlledCycleTimeout:
+        def __init__(self):
+            self.cycle_started = False
+
+        async def wait_for(self, awaitable, timeout):
+            if self.cycle_started:
+                return await asyncio.wait_for(awaitable, timeout=timeout)
+            self.cycle_started = True
+            lifecycle_task = asyncio.create_task(awaitable)
+            try:
+                assert timeout == pytest.approx(0.1)
+                await asyncio.wait_for(second_started.wait(), timeout=test_watchdog_seconds)
+                await asyncio.wait_for(
+                    release_cycle_timeout.wait(),
+                    timeout=test_watchdog_seconds,
+                )
+            finally:
+                lifecycle_task.cancel()
+                await asyncio.gather(lifecycle_task, return_exceptions=True)
+            raise TimeoutError
+
+    monkeypatch.setattr("app.services.control_runtime.asyncio", ControlledCycleTimeout())
+
+    cycle_task = asyncio.create_task(orchestrator._run_vpn_lifecycle(now))
+    try:
+        await asyncio.wait_for(second_started.wait(), timeout=test_watchdog_seconds)
+        assert first_checkpoint_completed.is_set()
+
+        async with session_factory() as session:
+            stored_first = await session.get(VpnAccessKey, first_id)
+            stored_second = await session.get(VpnAccessKey, second_id)
+        assert stored_first is not None and stored_first.status == "active"
+        assert stored_second is not None and stored_second.status == "pending_sync"
+
+        release_cycle_timeout.set()
+        await asyncio.wait_for(cycle_task, timeout=test_watchdog_seconds)
+    finally:
+        release_cycle_timeout.set()
+        if not cycle_task.done():
+            cycle_task.cancel()
+        await asyncio.gather(cycle_task, return_exceptions=True)
+
+    assert second_cancelled.is_set()
 
     async with session_factory() as session:
         stored_first = await session.get(VpnAccessKey, first_id)
