@@ -343,3 +343,35 @@ async def test_provision_requires_success_marker_and_preserves_existing_uri(monk
     assert access_key.status == ("active" if confirmed else "pending_sync")
     assert access_key.config_uri == "vless://existing-private-config"
     assert access_key.revoked_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_first_attempt", [False, True])
+async def test_legacy_uuid_migration_replaces_uri_after_success_even_on_retry(monkeypatch, fail_first_attempt):
+    access_key = existing_access_key()
+    access_key.external_uuid = "legacy-invalid-uuid"
+    access_key.config_uri = "vless://legacy-invalid-uuid@vpn.example.test:443"
+    calls = 0
+
+    async def ssh(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1 and fail_first_attempt:
+            raise RuntimeError("temporary SSH failure")
+        return ("DROPCATCH_VPN_CLIENT_STATUS=provisioned\n"
+                f"DROPCATCH_VPN_CLIENT_URL=vless://{access_key.external_uuid}@vpn.example.test:443\n")
+
+    monkeypatch.setattr(vpn_provisioning, "execute_worker_ssh_commands", ssh)
+    session = ProvisionSession()
+    subscription = VpnSubscription(status="active", max_devices=3, traffic_limit_gb=25)
+    worker = configured_worker()
+    await provision_vpn_access_key(session, access_key, worker=worker, subscription=subscription)
+    migrated_uuid = access_key.external_uuid
+    assert str(UUID(migrated_uuid)) == migrated_uuid
+    if fail_first_attempt:
+        assert access_key.status == "pending_sync"
+        assert access_key.config_uri is None, "failed migration must not retain a URI for the old credential"
+        await provision_vpn_access_key(session, access_key, worker=worker, subscription=subscription)
+    assert access_key.status == "active"
+    assert access_key.external_uuid == migrated_uuid
+    assert access_key.config_uri == f"vless://{migrated_uuid}@vpn.example.test:443"

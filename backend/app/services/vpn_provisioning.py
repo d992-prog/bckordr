@@ -93,6 +93,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from uuid import UUID
 
 payload = json.loads(os.environ["DROPCATCH_VPN_CLIENT_PAYLOAD"])
 
@@ -344,8 +345,9 @@ def update_row(conn, table, match_column, match_value, values):
     )
 
 
-def first_matching_row(conn, table, matches):
+def first_matching_row(conn, table, matches, inbound_id=None):
     columns = table_columns(conn, table)
+    scope_sql = ' and "inbound_id" = ?' if inbound_id is not None and "inbound_id" in columns else ""
     for column, value in matches:
         if column not in columns and column.lower() != "rowid":
             continue
@@ -353,13 +355,23 @@ def first_matching_row(conn, table, matches):
             continue
         rows = rows_as_dicts(
             conn.execute(
-                f"select rowid as _rowid, * from {quote_identifier(table)} where {quote_identifier(column)} = ? order by rowid limit 1",
-                (value,),
+                f"select rowid as _rowid, * from {quote_identifier(table)} where {quote_identifier(column)} = ?{scope_sql} order by rowid limit 1",
+                (value, inbound_id) if scope_sql else (value,),
             )
         )
         if rows:
             return rows[0], column
     return None, ""
+
+
+def needs_uuid_migration(existing_uuid):
+    try:
+        current = UUID(str(existing_uuid))
+    except ValueError:
+        return True
+    if current != UUID(payload["client_uuid"]):
+        raise RuntimeError("VPN client email belongs to a different valid UUID")
+    return False
 
 
 def sync_clients_table(conn):
@@ -428,10 +440,20 @@ def sync_clients_table(conn):
             "enable", "enabled", "active", "limit_ip", "limitIp", "limit_ips",
             "total", "total_gb", "totalGB", "expiry_time", "expiryTime", "expires_at",
         }
-        update_row(conn, "clients", match_column, existing[match_column], {
+        identity_columns = {uuid_column, "uuid", "client_uuid", "password", "passwd"}
+        for column in identity_columns:
+            if column in values and needs_uuid_migration(existing.get(column)):
+                policy_columns.add(column)
+        primary_column = "id" if "id" in columns else uuid_column
+        client_pk = existing.get(primary_column)
+        if primary_column in policy_columns and values[primary_column] != client_pk:
+            for table in ("client_inbounds", "client_traffics"):
+                if first_matching_row(conn, table, [("client_id", client_pk)])[0]:
+                    raise RuntimeError("Legacy UUID primary-key migration has linked rows; operator migration is required")
+            client_pk = values[primary_column]
+        update_row(conn, "clients", "rowid", existing["_rowid"], {
             column: value for column, value in values.items() if column in policy_columns
         })
-        client_pk = existing.get("id") if "id" in columns else existing.get(uuid_column)
         return client_pk, f"clients updated by {match_column}"
 
     client_pk = insert_row(conn, "clients", values)
@@ -521,6 +543,7 @@ def sync_client_traffics_table(conn, client_pk):
                 ("password", payload["client_uuid"]),
                 ("passwd", payload["client_uuid"]),
             ],
+            inbound_id=int(payload["inbound_id"]),
         )
         existing = [existing] if existing else []
     if existing:
@@ -654,6 +677,8 @@ def add_client_to_db(conn):
                     str(current.get("email")) == payload["client_email"]]
         if matching:
             for client in matching:
+                if needs_uuid_migration(client.get("id")):
+                    client["id"] = payload["client_uuid"]
                 for field in ("limitIp", "totalGB", "expiryTime", "enable"):
                     client[field] = policy[field]
         else:
@@ -880,6 +905,7 @@ import os
 import sqlite3
 import subprocess
 import time
+from uuid import UUID
 
 payload = json.loads(os.environ["DROPCATCH_VPN_CLIENT_SUSPEND_PAYLOAD"])
 
@@ -902,10 +928,10 @@ def find_db_path():
 
 def identity_pairs():
     return [(column, payload.get("client_uuid")) for column in
-            ("uuid", "client_uuid", "password", "passwd")] + [("email", payload.get("client_email"))]
+            ("uuid", "client_uuid", "password", "passwd")]
 
 
-def matching_rows(conn, table, pairs):
+def matching_rows(conn, table, pairs, inbound_id=None):
     columns = table_columns(conn, table)
     conditions, params = [], []
     for column, value in pairs:
@@ -914,9 +940,28 @@ def matching_rows(conn, table, pairs):
             params.append(value)
     if not conditions:
         return []
+    scope_sql = ""
+    if inbound_id is not None and "inbound_id" in columns:
+        scope_sql = ' and "inbound_id" = ?'
+        params.append(inbound_id)
     return rows_as_dicts(conn.execute(
-        f'select rowid as _rowid, * from "{table}" where ' + " or ".join(conditions), params,
+        f'select rowid as _rowid, * from "{table}" where (' + " or ".join(conditions) + ")" + scope_sql, params,
     ))
+
+
+def validate_email_match(existing_uuid):
+    if not payload.get("client_uuid") or str(existing_uuid) == payload["client_uuid"]:
+        return
+    try:
+        current = UUID(str(existing_uuid))
+    except ValueError:
+        return
+    try:
+        expected = UUID(payload["client_uuid"])
+    except ValueError:
+        expected = None
+    if current != expected:
+        raise RuntimeError("VPN client email belongs to a different valid UUID")
 
 
 def disable_rows(conn, table, rows):
@@ -937,14 +982,15 @@ def suspend_inbound_settings(conn):
     if not rows:
         return
     settings = json.loads(rows[0].get("settings") or "{}")
-    changed = False
-    for client in settings.get("clients") or []:
-        matches_uuid = bool(payload.get("client_uuid")) and str(client.get("id")) == payload["client_uuid"]
-        matches_email = bool(payload.get("client_email")) and str(client.get("email")) == payload["client_email"]
-        if matches_uuid or matches_email:
-            client["enable"] = False
-            changed = True
-    if changed:
+    all_clients = settings.get("clients") or []
+    clients = [client for client in all_clients if payload.get("client_uuid") and str(client.get("id")) == payload["client_uuid"]]
+    if not clients:
+        clients = [client for client in all_clients if payload.get("client_email") and str(client.get("email")) == payload["client_email"]]
+        for client in clients:
+            validate_email_match(client.get("id"))
+    for client in clients:
+        client["enable"] = False
+    if clients:
         conn.execute("update inbounds set settings = ? where id = ?", (
             json.dumps(settings, separators=(",", ":")), int(payload["inbound_id"]),
         ))
@@ -955,8 +1001,18 @@ def suspend_client_in_db(conn):
     clients = matching_rows(conn, "clients", identity_pairs() + [
         ("id", payload.get("client_uuid")), ("client_id", payload.get("client_uuid")),
     ])
+    if not clients:
+        clients = matching_rows(conn, "clients", [("email", payload.get("client_email"))])
+        for client in clients:
+            for column in ("uuid", "client_uuid", "password", "passwd", "id", "client_id"):
+                if column in client:
+                    validate_email_match(client[column])
     client_ids = [row.get("id") or row.get("client_id") or row.get("uuid") for row in clients]
-    traffic = matching_rows(conn, "client_traffics", identity_pairs() + [("client_id", pk) for pk in client_ids])
+    traffic_pairs = identity_pairs() + [("client_id", pk) for pk in client_ids]
+    traffic_columns = table_columns(conn, "client_traffics")
+    if not any(column in traffic_columns and value not in (None, "") for column, value in traffic_pairs):
+        traffic_pairs = [("email", payload.get("client_email"))]
+    traffic = matching_rows(conn, "client_traffics", traffic_pairs, inbound_id=int(payload["inbound_id"]))
     disable_rows(conn, "clients", clients)
     disable_rows(conn, "client_traffics", traffic)
     conn.commit()
@@ -1140,7 +1196,11 @@ async def provision_vpn_access_key(
         access_key.last_error = "VPN inbound ID is not configured for this worker"
         return access_key
 
+    previous_uuid = access_key.external_uuid
     client_uuid = ensure_vpn_client_uuid(access_key)
+    if access_key.external_uuid != previous_uuid:
+        # A retry must not preserve a URI that belongs to the pre-migration UUID.
+        access_key.config_uri = None
     if not access_key.issued_at:
         access_key.issued_at = now
     access_key.expires_at = subscription.expires_at

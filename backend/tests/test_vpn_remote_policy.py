@@ -297,3 +297,152 @@ def test_traffic_update_without_id_preserves_other_inbound(panel_db):
     after = panel_db.execute("select * from client_traffics where inbound_id = 2").fetchone()
     assert after is not None, "policy update moved a different inbound's traffic row"
     assert dict(after) == before
+
+
+@pytest.mark.parametrize("identity_column", ["client_id", "uuid"])
+def test_missing_target_traffic_does_not_move_another_inbounds_row(panel_db, identity_column):
+    panel_db.execute("update client_traffics set inbound_id = 2 where id = 10")
+    if identity_column == "uuid":
+        panel_db.execute("alter table client_traffics add column uuid text")
+        panel_db.execute("update client_traffics set uuid = ? where id = 10", (CLIENT_UUID,))
+    before = row(panel_db, "client_traffics", 10)
+    namespace, _ = remote_program()
+    namespace["add_client_to_db"](panel_db)
+    assert row(panel_db, "client_traffics", 10) == before
+    new_traffic = panel_db.execute("select * from client_traffics where inbound_id = 1 and email = ?", (EMAIL,)).fetchone()
+    assert new_traffic is not None
+    assert (new_traffic["up"], new_traffic["down"], new_traffic["last_online"]) == (0, 0, 0)
+
+
+@pytest.mark.parametrize("shared_client", [False, True])
+def test_suspend_preserves_other_inbound_traffic_even_when_email_matches(panel_db, shared_client):
+    other_client_id = 5 if shared_client else 999
+    panel_db.execute("insert into client_traffics values (12, 2, ?, ?, 1, 111, 222, 333, 444, 555, 8)", (EMAIL, other_client_id))
+    if "clients" in table_snapshot(panel_db) and shared_client:
+        panel_db.execute("insert into client_inbounds values (22, 5, 2, 'shared-flow', '2026-01-01')")
+    before = table_snapshot(panel_db)
+    namespace, main = remote_program("suspend")
+    execute_main(namespace, main, panel_db)
+    assert row(panel_db, "client_traffics", 10)["enable"] == 0
+    assert row(panel_db, "client_traffics", 12) == before["client_traffics"][2]
+    if "clients" in before:
+        assert row(panel_db, "clients", 5)["enabled"] == 0
+        assert table_snapshot(panel_db)["client_inbounds"] == before["client_inbounds"]
+    provision, _ = remote_program()
+    provision["add_client_to_db"](panel_db)
+    assert row(panel_db, "client_traffics", 10)["enable"] == 1
+    assert row(panel_db, "client_traffics", 12) == before["client_traffics"][2]
+    if "clients" in before:
+        assert row(panel_db, "clients", 5)["enabled"] == 1
+
+
+def test_remote_migration_updates_invalid_legacy_uuid_and_preserves_policy_data(panel_db):
+    settings = json.loads(row(panel_db, "inbounds", 1)["settings"])
+    settings["clients"][0]["id"] = "legacy-invalid-uuid"
+    panel_db.execute("update inbounds set settings = ? where id = 1", (json.dumps(settings),))
+    if "clients" in table_snapshot(panel_db):
+        panel_db.execute("update clients set uuid = 'legacy-invalid-uuid' where id = 5")
+    namespace, _ = remote_program()
+    uri = namespace["add_client_to_db"](panel_db)
+    client = json.loads(row(panel_db, "inbounds", 1)["settings"])["clients"][0]
+    assert client["id"] == CLIENT_UUID
+    assert client["flow"] == "xtls-rprx-vision"
+    assert uri.startswith(f"vless://{CLIENT_UUID}@")
+    assert row(panel_db, "client_traffics", 10)["up"] == 123
+    if "clients" in table_snapshot(panel_db):
+        assert row(panel_db, "clients", 5)["uuid"] == CLIENT_UUID
+
+
+@pytest.mark.parametrize("panel_db", ["normalized"], indirect=True)
+@pytest.mark.parametrize("credential_column", ["uuid", "password"])
+def test_remote_normalized_only_migration_updates_invalid_credential(panel_db, credential_column):
+    panel_db.execute("alter table inbounds drop column settings")
+    panel_db.execute("update clients set uuid = 'legacy-invalid-uuid' where id = 5")
+    if credential_column != "uuid":
+        panel_db.execute(f'alter table clients rename column uuid to "{credential_column}"')
+    namespace, _ = remote_program()
+    namespace["add_client_to_db"](panel_db)
+    assert row(panel_db, "clients", 5)[credential_column] == CLIENT_UUID
+    assert row(panel_db, "client_traffics", 10)["up"] == 123
+
+
+@pytest.mark.parametrize(
+    "panel_db,conflict_table",
+    [("legacy", "inbounds"), ("normalized", "inbounds"), ("normalized", "clients")],
+    indirect=["panel_db"],
+)
+@pytest.mark.parametrize("operation", ["provision", "suspend"])
+def test_remote_rejects_email_collision_with_different_valid_uuid(panel_db, conflict_table, operation, capsys):
+    other_uuid = "22222222-2222-2222-2222-222222222222"
+    if conflict_table == "inbounds":
+        settings = json.loads(row(panel_db, "inbounds", 1)["settings"])
+        settings["clients"][0]["id"] = other_uuid
+        panel_db.execute("update inbounds set settings = ? where id = 1", (json.dumps(settings),))
+    else:
+        panel_db.execute("alter table inbounds drop column settings")
+        panel_db.execute("update clients set uuid = ? where id = 5", (other_uuid,))
+    panel_db.commit()
+    before = table_snapshot(panel_db)
+    namespace, main = remote_program(operation)
+    with pytest.raises(RuntimeError, match="different.*UUID|identity.*conflict"):
+        with panel_db:
+            execute_main(namespace, main, panel_db)
+    output = capsys.readouterr().out
+    assert "STATUS=provisioned" not in output
+    assert "STATUS=suspended" not in output
+    assert table_snapshot(panel_db) == before
+
+
+@pytest.mark.parametrize("panel_db", ["normalized"], indirect=True)
+def test_suspend_prefers_uuid_and_client_pk_over_colliding_email(panel_db):
+    other_uuid = "22222222-2222-2222-2222-222222222222"
+    settings = json.loads(row(panel_db, "inbounds", 1)["settings"])
+    settings["clients"].append({"id": other_uuid, "email": EMAIL, "enable": True})
+    panel_db.execute("update inbounds set settings = ? where id = 1", (json.dumps(settings),))
+    panel_db.execute("insert into clients values (7, ?, ?, 1, 'flow-7', 'sub-7', 123, 1, 77, 100, 9)", (other_uuid, EMAIL))
+    panel_db.execute("insert into client_traffics values (12, 1, ?, 7, 1, 111, 222, 333, 444, 555, 8)", (EMAIL,))
+    before_client = row(panel_db, "clients", 7)
+    before_traffic = row(panel_db, "client_traffics", 12)
+    namespace, main = remote_program("suspend")
+    execute_main(namespace, main, panel_db)
+    assert row(panel_db, "clients", 5)["enabled"] == 0
+    assert row(panel_db, "clients", 7) == before_client
+    assert row(panel_db, "client_traffics", 12) == before_traffic
+    legacy_clients = json.loads(row(panel_db, "inbounds", 1)["settings"])["clients"]
+    assert legacy_clients[2]["enable"] is True
+
+
+@pytest.mark.parametrize("panel_db", ["normalized"], indirect=True)
+def test_migration_preserves_text_primary_key_when_uuid_is_separate(panel_db):
+    panel_db.execute("alter table inbounds drop column settings")
+    panel_db.execute("drop table clients")
+    panel_db.execute("create table clients (id text primary key, uuid text, email text, enabled integer)")
+    panel_db.execute("insert into clients values ('client-five', 'legacy-invalid-uuid', ?, 1)", (EMAIL,))
+    panel_db.execute("update client_inbounds set client_id = 'client-five' where client_id = 5")
+    panel_db.execute("update client_traffics set client_id = 'client-five' where client_id = 5")
+    relations = table_snapshot(panel_db)["client_inbounds"]
+    namespace, _ = remote_program()
+    namespace["add_client_to_db"](panel_db)
+    client = row(panel_db, "clients", "client-five")
+    assert client is not None, "a separate text primary key must not rotate with the credential"
+    assert client["uuid"] == CLIENT_UUID
+    assert table_snapshot(panel_db)["client_inbounds"] == relations
+    assert row(panel_db, "client_traffics", 10)["client_id"] == "client-five"
+
+
+@pytest.mark.parametrize("panel_db", ["normalized"], indirect=True)
+def test_migration_fails_closed_when_uuid_is_linked_text_primary_key(panel_db, capsys):
+    panel_db.execute("alter table inbounds drop column settings")
+    panel_db.execute("drop table clients")
+    panel_db.execute("create table clients (id text primary key, email text, enabled integer)")
+    panel_db.execute("insert into clients values ('legacy-invalid-uuid', ?, 1)", (EMAIL,))
+    panel_db.execute("update client_inbounds set client_id = 'legacy-invalid-uuid' where client_id = 5")
+    panel_db.execute("update client_traffics set client_id = 'legacy-invalid-uuid' where client_id = 5")
+    panel_db.commit()
+    before = table_snapshot(panel_db)
+    namespace, main = remote_program()
+    with pytest.raises(RuntimeError, match="operator.*migration|migration.*operator"):
+        with panel_db:
+            execute_main(namespace, main, panel_db)
+    assert table_snapshot(panel_db) == before
+    assert "STATUS=provisioned" not in capsys.readouterr().out
