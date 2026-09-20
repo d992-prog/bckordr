@@ -1,9 +1,49 @@
+import ast
+import shlex
+from types import SimpleNamespace
+
+import pytest
+
 from app.db.models import WorkerNode
 from app.services.worker_maintenance import (
+    _build_vpn_create_inbound_command,
     apply_vpn_autoconfig_metadata,
     build_worker_maintenance_commands,
     parse_vpn_autoconfig_output,
 )
+
+
+@pytest.mark.parametrize('busy_ports', [set(), {8443}])
+def test_plain_vless_port_selection_avoids_https_port_even_when_it_is_free(busy_ports):
+    command = _build_vpn_create_inbound_command(None)
+    shell_script = shlex.split(command)[2]
+    python_script = shell_script.split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    tree = ast.parse(python_script)
+    choose_port = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'choose_port')
+    checked_ports = []
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def settimeout(self, timeout):
+            pass
+
+        def connect_ex(self, address):
+            checked_ports.append(address[1])
+            return 0 if address[1] in busy_ports else 111
+
+    namespace = {'socket': SimpleNamespace(AF_INET=2, SOCK_STREAM=1, socket=lambda *_: FakeSocket())}
+    exec(compile(ast.Module(body=[choose_port], type_ignores=[]), '<remote-port-selection>', 'exec'), namespace)
+
+    selected = namespace['choose_port']()
+
+    assert selected != 443, 'Plain VLESS payload can be filtered on the HTTPS port despite a successful TCP handshake'
+    assert selected not in busy_ports
+    assert 443 not in checked_ports
 
 
 def test_build_vpn_autoconfig_commands_include_detection_markers():

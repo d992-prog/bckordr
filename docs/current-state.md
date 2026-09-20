@@ -207,6 +207,13 @@ Architecture goal:
 
 ## Most Recent Verified Checks
 
+VPN connectivity repair on 2026-09-20:
+- Reproduced a plain VLESS connection that worked over node loopback but stalled on public port 443. Packet-header capture confirmed TLS payload reached the node while plain VLESS payload did not.
+- Moved the affected existing inbound to 8443 after a successful temporary-port probe, retained its client credential, and updated the control-side port and access URI. A private node database backup was created before the change.
+- Verified HTTP 200, certificate-validated HTTPS 200, and a UDP DNS answer through the saved VPN URI from both the control server and local computer. The iPhone needs the refreshed URI reimported.
+- Auto-created plain VLESS inbounds now avoid port 443; existing TLS/REALITY inbounds are unaffected.
+- `python -m pytest tests/test_worker_maintenance.py tests/test_vpn_provisioning.py tests/test_vpn_policy.py -q` -> `26 passed`; backend Ruff -> passed.
+
 At the VPN customer workspace checkpoint on 2026-09-20:
 - `python -m pytest` in `backend` -> `238 passed`
 - `python -m ruff check app tests` in `backend` -> passed

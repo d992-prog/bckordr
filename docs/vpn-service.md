@@ -55,6 +55,7 @@ curl --request POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
 
 ## Recovery
 
+- If a client says connected but sites do not load, verify an actual HTTP/HTTPS request through the VPN. An open TCP port alone does not verify the tunnel. On the affected node, plain VLESS payload on port 443 was filtered before reaching Xray although TLS traffic reached it; moving the existing inbound to 8443 restored traffic. New auto-created plain VLESS inbounds therefore avoid 443. After changing an inbound port, update the node metadata and saved client links, then reimport the link in the client app.
 - `pending_sync`: restore or configure a safe ready node, then run lifecycle or press `Повторить выдачу`.
 - `pending_revoke`: restore the assigned node, then run lifecycle or press `Повторить отзыв`.
 - Active domain attack: wait for the run to finish; existing VPN clients continue working.
