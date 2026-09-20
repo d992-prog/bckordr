@@ -51,7 +51,13 @@ async def test_worker_crud_triggers_allowlist_sync(monkeypatch: pytest.MonkeyPat
 
     async def fake_sync(session, settings):
         del settings
-        worker_count = len((await session.execute(WorkerNode.__table__.select())).all())
+        worker_count = len(
+            (
+                await session.execute(
+                    WorkerNode.__table__.select().where(WorkerNode.is_enabled.is_(True))
+                )
+            ).all()
+        )
         calls.append(worker_count)
         return False
 
@@ -101,7 +107,7 @@ async def test_worker_crud_triggers_allowlist_sync(monkeypatch: pytest.MonkeyPat
         delete_response = await client.delete(f"/control/workers/{worker_id}")
         assert delete_response.status_code == 200
 
-    assert len(calls) == 3
+    assert calls == [1, 1, 0]
     await engine.dispose()
 
 

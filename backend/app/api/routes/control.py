@@ -179,6 +179,11 @@ from app.services.strategy_runtime import (
     resolve_effective_strategy,
 )
 from app.services.worker_allowlist import sync_worker_runtime_allowlist
+from app.services.worker_decommission import (
+    WorkerDecommissionConflictError,
+    WorkerDecommissionNotFoundError,
+    decommission_worker,
+)
 from app.services.worker_maintenance import run_worker_maintenance_job
 from app.services.security import generate_session_token
 from app.services.registrars import validate_registrar_account_remote
@@ -2232,7 +2237,11 @@ async def list_workers(
     admin: User = Depends(require_admin),
 ) -> list[WorkerNodeResponse]:
     del admin
-    result = await db.execute(select(WorkerNode).order_by(WorkerNode.name.asc()))
+    result = await db.execute(
+        select(WorkerNode)
+        .where(WorkerNode.archived_at.is_(None))
+        .order_by(WorkerNode.name.asc())
+    )
     return [WorkerNodeResponse.model_validate(worker) for worker in result.scalars().all()]
 
 
@@ -2246,7 +2255,7 @@ async def get_worker_setup(
 ) -> WorkerSetupResponse:
     del admin
     worker = await db.get(WorkerNode, worker_id)
-    if worker is None:
+    if worker is None or worker.archived_at is not None:
         raise HTTPException(status_code=404, detail="Worker not found")
     effective_runtime_base_url = (
         runtime_base_url
@@ -2656,12 +2665,8 @@ async def _start_worker_maintenance_job(
     db: AsyncSession,
     admin: User,
 ) -> WorkerMaintenanceJobResponse:
-    worker = (
-        await lock_vpn_worker(db, worker_id)
-        if action in VPN_MUTATION_ACTIONS
-        else await db.get(WorkerNode, worker_id)
-    )
-    if worker is None:
+    worker = await lock_vpn_worker(db, worker_id)
+    if worker is None or worker.archived_at is not None:
         raise HTTPException(status_code=404, detail="Worker not found")
     if not worker.ssh_access_configured:
         raise HTTPException(status_code=400, detail="Worker SSH access is not configured")
@@ -2746,8 +2751,8 @@ async def update_worker(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> WorkerNodeResponse:
-    worker = await db.get(WorkerNode, worker_id)
-    if worker is None:
+    worker = await lock_vpn_worker(db, worker_id)
+    if worker is None or worker.archived_at is not None:
         raise HTTPException(status_code=404, detail="Worker not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(worker, field, value)
@@ -2771,14 +2776,22 @@ async def delete_worker(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> MessageResponse:
-    del admin
-    worker = await db.get(WorkerNode, worker_id)
-    if worker is None:
-        raise HTTPException(status_code=404, detail="Worker not found")
-    await db.delete(worker)
+    try:
+        result = await decommission_worker(db, worker_id)
+    except WorkerDecommissionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except WorkerDecommissionConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="worker_decommission",
+        details=f"worker_id={worker_id} retired_keys={result.retired_key_count}",
+    )
     await db.commit()
     await sync_worker_runtime_allowlist(db, get_settings())
-    return MessageResponse(detail="Worker deleted")
+    return MessageResponse(detail="Worker decommissioned")
 
 
 @router.get("/vpn/overview", response_model=VpnOverviewResponse)
@@ -2820,7 +2833,13 @@ async def list_vpn_node_eligibility(
     admin: User = Depends(require_admin),
 ) -> list[VpnNodeEligibilityResponse]:
     del admin
-    workers = (await db.execute(select(WorkerNode).order_by(WorkerNode.id.asc()))).scalars().all()
+    workers = (
+        await db.execute(
+            select(WorkerNode)
+            .where(WorkerNode.archived_at.is_(None))
+            .order_by(WorkerNode.id.asc())
+        )
+    ).scalars().all()
     response: list[VpnNodeEligibilityResponse] = []
     for worker in workers:
         eligibility = await evaluate_vpn_node(db, worker)

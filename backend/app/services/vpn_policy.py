@@ -153,7 +153,7 @@ async def select_vpn_node(
     *,
     worker_id: int | None = None,
 ) -> WorkerNode | None:
-    query = select(WorkerNode)
+    query = select(WorkerNode).where(WorkerNode.archived_at.is_(None))
     if worker_id is not None:
         query = query.where(WorkerNode.id == worker_id)
     workers = (await session.execute(query.order_by(WorkerNode.id.asc()))).scalars().all()
