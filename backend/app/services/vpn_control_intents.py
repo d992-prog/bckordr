@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Literal
 from urllib.parse import quote, urlencode
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
@@ -23,6 +25,7 @@ from app.services.vpn_node_request import (
     VpnNodeRequest,
     VpnNodeRequestError,
     node_request_digest,
+    parse_node_request,
     serialize_node_request,
 )
 from app.services.vpn_subscription_sync import subscription_key_action
@@ -30,6 +33,24 @@ from app.services.vpn_subscription_sync import subscription_key_action
 
 _MAX_INTEGER = 2**63 - 1
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_PENDING_STATUS = {
+    "provision": "pending_sync",
+    "suspend": "pending_suspend",
+    "revoke": "pending_revoke",
+}
+_RECEIPTS = {
+    ("observed", None),
+    ("failed", "vpn_node_preflight_failed"),
+    ("failed", "vpn_node_interrupted_before_mutation"),
+    ("uncertain", "vpn_node_mutation_uncertain"),
+    ("stale", "vpn_node_operation_stale"),
+    ("blocked", "vpn_node_reconciliation_required"),
+    ("blocked", "vpn_node_key_revoked"),
+}
+
+
+class _CandidateBusy(Exception):
+    pass
 
 
 class VpnControlIntentError(ValueError):
@@ -191,8 +212,10 @@ def build_control_config_uri(request: VpnNodeRequest) -> str:
     return f"vless://{quote(str(request.client_uuid), safe='')}@{host}:{target.port}?{query}"
 
 
-def _locked(statement):
-    return statement.with_for_update().execution_options(populate_existing=True)
+def _locked(statement, *, skip_locked: bool = False):
+    return statement.with_for_update(skip_locked=skip_locked).execution_options(
+        populate_existing=True
+    )
 
 
 def _current_time(value: datetime | None) -> datetime:
@@ -401,3 +424,445 @@ async def stage_vpn_control_operation(
     db.add(operation)
     await db.flush()
     return operation
+
+
+def _uuid(value: object, code: str) -> UUID:
+    if not isinstance(value, UUID) or value.int == 0:
+        _fail(code)
+    return value
+
+
+def _desired_action(
+    access_key: VpnAccessKey,
+    subscription: VpnSubscription,
+    customer: VpnCustomer,
+    now: datetime,
+) -> EndpointOperation:
+    if (
+        access_key.revoke_requested_at is not None
+        or access_key.revoked_at is not None
+        or access_key.status in {"pending_revoke", "revoked"}
+    ):
+        return "revoke"
+    return {
+        "sync": "provision",
+        "suspend": "suspend",
+        "revoke": "revoke",
+    }[subscription_key_action(subscription, customer, now)]
+
+
+def _operation_request(operation: VpnControlOperation) -> VpnNodeRequest:
+    try:
+        operation_id = UUID(operation.id)
+        request = parse_node_request(operation.request_snapshot)
+    except (TypeError, ValueError, VpnNodeRequestError):
+        _fail("vpn_control_request_invalid")
+    if (
+        str(operation_id) != operation.id
+        or request.operation_id != operation_id
+        or request.access_key_id != operation.access_key_id
+        or request.generation != operation.generation
+        or request.action != operation.action
+        or request.target.worker_id != operation.worker_id
+        or request.target.endpoint_id != operation.endpoint_id
+        or node_request_digest(request) != operation.request_digest
+    ):
+        _fail("vpn_control_request_invalid")
+    return request
+
+
+def _endpoint_matches_request(
+    endpoint: VpnEndpoint,
+    request: VpnNodeRequest,
+) -> bool:
+    target = request.target
+    return (
+        endpoint.id == target.endpoint_id
+        and endpoint.worker_id == target.worker_id
+        and endpoint.inbound_id == target.inbound_id
+        and endpoint.public_host == target.public_host
+        and endpoint.port == target.port
+        and endpoint.protocol == target.protocol
+        and endpoint.transport == target.transport
+        and endpoint.security == target.security
+        and endpoint.server_name == target.server_name
+        and endpoint.public_key == target.public_key
+        and endpoint.short_id == target.short_id
+        and endpoint.fingerprint == target.fingerprint
+        and endpoint.flow == target.flow
+        and endpoint.verified_at is not None
+    )
+
+
+def _endpoint_allows_request(endpoint: VpnEndpoint, request: VpnNodeRequest) -> bool:
+    if not _endpoint_matches_request(endpoint, request):
+        return False
+    if request.action == "provision":
+        return endpoint.status == "ready" if request.allow_create else endpoint.status in {
+            "ready",
+            "draining",
+        }
+    return endpoint.status in {"ready", "draining", "disabled"}
+
+
+def _intent_matches(
+    operation: VpnControlOperation,
+    request: VpnNodeRequest,
+    access_key: VpnAccessKey,
+    subscription: VpnSubscription,
+    customer: VpnCustomer,
+    endpoint: VpnEndpoint,
+    now: datetime,
+) -> bool:
+    return (
+        operation.generation == access_key.operation_generation
+        and operation.action == _desired_action(access_key, subscription, customer, now)
+        and access_key.status == _PENDING_STATUS[operation.action]
+        and access_key.subscription_id == subscription.id
+        and access_key.worker_id == operation.worker_id == endpoint.worker_id
+        and access_key.endpoint_id == operation.endpoint_id == endpoint.id
+        and _endpoint_allows_request(endpoint, request)
+    )
+
+
+async def _lock_context(
+    db: AsyncSession,
+    *,
+    access_key_id: int,
+    worker_id: int,
+    endpoint_id: int,
+    skip_locked: bool = False,
+) -> tuple[VpnCustomer, VpnSubscription, VpnAccessKey, WorkerNode, VpnEndpoint] | None:
+    customer_id = await db.scalar(
+        select(VpnSubscription.customer_id)
+        .join(VpnAccessKey, VpnAccessKey.subscription_id == VpnSubscription.id)
+        .where(VpnAccessKey.id == access_key_id)
+    )
+    if customer_id is None:
+        _fail("vpn_control_binding_changed")
+    customer = await db.scalar(
+        _locked(
+            select(VpnCustomer).where(VpnCustomer.id == customer_id),
+            skip_locked=skip_locked,
+        )
+    )
+    if customer is None:
+        if skip_locked:
+            return None
+        _fail("vpn_control_binding_changed")
+    subscriptions = (
+        await db.scalars(
+            _locked(
+                select(VpnSubscription)
+                .where(VpnSubscription.customer_id == customer.id)
+                .order_by(VpnSubscription.id),
+                skip_locked=skip_locked,
+            )
+        )
+    ).all()
+    subscription_by_id = {subscription.id: subscription for subscription in subscriptions}
+    if not subscription_by_id:
+        if skip_locked:
+            return None
+        _fail("vpn_control_binding_changed")
+    access_keys = (
+        await db.scalars(
+            _locked(
+                select(VpnAccessKey)
+                .where(VpnAccessKey.subscription_id.in_(tuple(subscription_by_id)))
+                .order_by(VpnAccessKey.id),
+                skip_locked=skip_locked,
+            )
+        )
+    ).all()
+    access_key = next((key for key in access_keys if key.id == access_key_id), None)
+    if access_key is None:
+        if skip_locked:
+            return None
+        _fail("vpn_control_binding_changed")
+    subscription = subscription_by_id.get(access_key.subscription_id)
+    if subscription is None:
+        _fail("vpn_control_binding_changed")
+    worker = await db.scalar(
+        _locked(
+            select(WorkerNode).where(WorkerNode.id == worker_id),
+            skip_locked=skip_locked,
+        )
+    )
+    if worker is None and skip_locked:
+        return None
+    endpoint = await db.scalar(
+        _locked(
+            select(VpnEndpoint).where(VpnEndpoint.id == endpoint_id),
+            skip_locked=skip_locked,
+        )
+    )
+    if endpoint is None and skip_locked:
+        return None
+    if worker is None or endpoint is None:
+        _fail("vpn_control_binding_changed")
+    return customer, subscription, access_key, worker, endpoint
+
+
+async def claim_next_vpn_control_operation(
+    db: AsyncSession,
+    *,
+    claim_token: UUID,
+    now: datetime | None = None,
+) -> VpnControlOperation | None:
+    """Claim one current queued intent; the caller owns the transaction."""
+    token = _uuid(claim_token, "vpn_control_claim_token_invalid")
+    current = _current_time(now)
+    if db.sync_session.new or db.sync_session.dirty or db.sync_session.deleted:
+        _fail("vpn_control_unflushed_state")
+    if await db.scalar(
+        select(VpnControlOperation.id).where(
+            VpnControlOperation.claim_token == str(token)
+        )
+    ) is not None:
+        _fail("vpn_control_claim_token_conflict")
+
+    reserved_workers = select(VpnControlOperation.worker_id).where(
+        VpnControlOperation.state.in_(("claimed", "uncertain"))
+    )
+    candidates = (
+        await db.execute(
+            select(
+                VpnControlOperation.id,
+                VpnControlOperation.access_key_id,
+                VpnControlOperation.worker_id,
+                VpnControlOperation.endpoint_id,
+            )
+            .where(
+                VpnControlOperation.state == "queued",
+                VpnControlOperation.worker_id.not_in(reserved_workers),
+            )
+            .order_by(
+                VpnControlOperation.generation,
+                VpnControlOperation.created_at,
+                VpnControlOperation.id,
+            )
+        )
+    ).all()
+    if not candidates:
+        return None
+
+    async def attempt(candidate) -> tuple[VpnControlOperation, bool]:
+        context = await _lock_context(
+            db,
+            access_key_id=candidate.access_key_id,
+            worker_id=candidate.worker_id,
+            endpoint_id=candidate.endpoint_id,
+            skip_locked=True,
+        )
+        if context is None:
+            raise _CandidateBusy
+        customer, subscription, access_key, _worker, endpoint = context
+        if await db.scalar(
+            select(VpnControlOperation.id).where(
+                VpnControlOperation.worker_id == candidate.worker_id,
+                VpnControlOperation.state.in_(("claimed", "uncertain")),
+            )
+        ) is not None:
+            raise _CandidateBusy
+        operation = await db.scalar(
+            _locked(
+                select(VpnControlOperation).where(
+                    VpnControlOperation.id == candidate.id,
+                    VpnControlOperation.state == "queued",
+                ),
+                skip_locked=True,
+            )
+        )
+        if operation is None:
+            raise _CandidateBusy
+        if (
+            operation.access_key_id != access_key.id
+            or operation.worker_id != candidate.worker_id
+            or operation.endpoint_id != candidate.endpoint_id
+        ):
+            _fail("vpn_control_binding_changed")
+        request = _operation_request(operation)
+        if not _intent_matches(
+            operation,
+            request,
+            access_key,
+            subscription,
+            customer,
+            endpoint,
+            current,
+        ):
+            operation.state = "superseded"
+            operation.finished_at = current
+            operation.error_code = "vpn_control_superseded"
+            operation.updated_at = current
+            await db.flush()
+            return operation, False
+        operation.state = "claimed"
+        operation.claim_token = str(token)
+        operation.claimed_at = current
+        operation.error_code = None
+        operation.updated_at = current
+        await db.flush()
+        return operation, True
+
+    if db.get_bind().dialect.name != "postgresql":
+        try:
+            operation, claimed = await attempt(candidates[0])
+        except _CandidateBusy:
+            return None
+        except IntegrityError:
+            _fail("vpn_control_claim_conflict")
+        return operation if claimed else None
+
+    for candidate in candidates:
+        try:
+            async with db.begin_nested():
+                operation, claimed = await attempt(candidate)
+                return operation if claimed else None
+        except _CandidateBusy:
+            continue
+        except IntegrityError:
+            _fail("vpn_control_claim_conflict")
+    return None
+
+
+async def finalize_vpn_control_operation(
+    db: AsyncSession,
+    operation_id: UUID,
+    claim_token: UUID,
+    *,
+    receipt_state: Literal["observed", "failed", "uncertain", "stale", "blocked"],
+    error_code: str | None,
+    now: datetime | None = None,
+) -> VpnControlOperation:
+    """Apply a node receipt only while its persisted intent is still authoritative."""
+    identity = _uuid(operation_id, "vpn_control_operation_id_invalid")
+    token = _uuid(claim_token, "vpn_control_claim_token_invalid")
+    if (receipt_state, error_code) not in _RECEIPTS:
+        _fail("vpn_control_receipt_invalid")
+    current = _current_time(now)
+    if db.sync_session.new or db.sync_session.dirty or db.sync_session.deleted:
+        _fail("vpn_control_unflushed_state")
+
+    discovered = (
+        await db.execute(
+            select(
+                VpnControlOperation.access_key_id,
+                VpnControlOperation.worker_id,
+                VpnControlOperation.endpoint_id,
+            ).where(VpnControlOperation.id == str(identity))
+        )
+    ).one_or_none()
+    if discovered is None:
+        _fail("vpn_control_operation_not_found")
+    context = await _lock_context(
+        db,
+        access_key_id=discovered.access_key_id,
+        worker_id=discovered.worker_id,
+        endpoint_id=discovered.endpoint_id,
+    )
+    assert context is not None
+    customer, subscription, access_key, _worker, endpoint = context
+    operation = await db.scalar(
+        _locked(
+            select(VpnControlOperation).where(
+                VpnControlOperation.id == str(identity)
+            )
+        )
+    )
+    if operation is None:
+        _fail("vpn_control_operation_not_found")
+    if (
+        operation.access_key_id != access_key.id
+        or operation.worker_id != endpoint.worker_id
+        or operation.endpoint_id != endpoint.id
+    ):
+        _fail("vpn_control_binding_changed")
+    if operation.claim_token != str(token):
+        _fail("vpn_control_claim_token_mismatch")
+    request = _operation_request(operation)
+    if operation.state in {"succeeded", "failed", "superseded"}:
+        return operation
+    if operation.state == "uncertain":
+        if receipt_state == "uncertain" or (
+            receipt_state == "blocked"
+            and error_code == "vpn_node_reconciliation_required"
+        ):
+            return operation
+        _fail("vpn_control_reconciliation_required")
+    if operation.state != "claimed":
+        _fail("vpn_control_operation_not_claimed")
+
+    current_intent = _intent_matches(
+        operation,
+        request,
+        access_key,
+        subscription,
+        customer,
+        endpoint,
+        current,
+    )
+    if receipt_state == "uncertain" or (
+        receipt_state == "blocked" and error_code == "vpn_node_reconciliation_required"
+    ):
+        operation.state = "uncertain"
+        operation.error_code = error_code
+        operation.updated_at = current
+        await db.flush()
+        return operation
+
+    if receipt_state == "stale" or not current_intent:
+        operation.state = "superseded"
+        operation.error_code = (
+            error_code if receipt_state == "stale" else "vpn_control_superseded"
+        )
+        operation.finished_at = current
+        operation.updated_at = current
+        await db.flush()
+        return operation
+
+    if receipt_state in {"failed", "blocked"}:
+        operation.state = "failed"
+        operation.error_code = error_code
+        operation.finished_at = current
+        operation.updated_at = current
+        access_key.status = _PENDING_STATUS[operation.action]
+        access_key.last_synced_at = current
+        access_key.last_error = error_code
+        access_key.updated_at = current
+        await db.flush()
+        return operation
+
+    operation.state = "succeeded"
+    operation.error_code = None
+    operation.finished_at = current
+    operation.updated_at = current
+    access_key.status = {
+        "provision": "active",
+        "suspend": "suspended",
+        "revoke": "revoked",
+    }[operation.action]
+    access_key.expires_at = subscription.expires_at
+    access_key.last_synced_at = current
+    access_key.last_error = None
+    access_key.updated_at = current
+    if operation.action == "provision" and request.target.security == "reality":
+        access_key.config_uri = build_control_config_uri(request)
+    elif operation.action == "revoke":
+        access_key.revoked_at = access_key.revoked_at or current
+    await db.flush()
+    return operation
+
+
+async def active_vpn_control_worker_ids(db: AsyncSession) -> set[int]:
+    """Return every worker protected before or during endpoint dispatch."""
+    return set(
+        await db.scalars(
+            select(VpnControlOperation.worker_id)
+            .where(
+                VpnControlOperation.state.in_(("queued", "claimed", "uncertain"))
+            )
+            .distinct()
+        )
+    )

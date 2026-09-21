@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta, timezone
 from importlib import import_module
 from urllib.parse import parse_qs, urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -251,12 +251,22 @@ class RecordingSession:
         self.statements.append(statement)
         return await self.session.scalars(statement)
 
+    async def execute(self, statement):
+        self.statements.append(statement)
+        return await self.session.execute(statement)
+
     def add(self, instance) -> None:
         self.session.add(instance)
 
     async def flush(self) -> None:
         self.flushes += 1
         await self.session.flush()
+
+    def begin_nested(self):
+        return self.session.begin_nested()
+
+    def get_bind(self):
+        return self.session.get_bind()
 
     async def commit(self) -> None:
         raise AssertionError("staging must not commit")
@@ -948,3 +958,508 @@ async def test_stage_rolls_back_with_caller_transaction(session_factory):
         assert key is not None
         assert (key.operation_generation, key.status) == (0, "pending_sync")
         assert await verification.get(VpnControlOperation, operation_id) is None
+
+
+async def _stage_claimed(
+    session_factory,
+    *,
+    action="provision",
+    now=NOW,
+):
+    api = _api()
+    token = uuid4()
+    async with session_factory() as session:
+        operation = await api.stage_vpn_control_operation(session, 7, action, now=now)
+        operation_id = UUID(operation.id)
+        await session.commit()
+    async with session_factory() as session:
+        claimed = await api.claim_next_vpn_control_operation(
+            session,
+            claim_token=token,
+            now=now + timedelta(seconds=1),
+        )
+        assert claimed is not None and UUID(claimed.id) == operation_id
+        await session.commit()
+    return operation_id, token
+
+
+@pytest.mark.asyncio
+async def test_claim_oldest_operation_reserves_worker_and_never_commits(session_factory):
+    api = _api()
+    async with session_factory() as session:
+        first = await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+        await session.commit()
+    async with session_factory() as session:
+        second = await api.stage_vpn_control_operation(
+            session,
+            8,
+            "provision",
+            now=NOW + timedelta(seconds=1),
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        token = uuid4()
+        claimed = await api.claim_next_vpn_control_operation(
+            session,
+            claim_token=token,
+            now=NOW + timedelta(seconds=2),
+        )
+        assert claimed is not None
+        assert claimed.id == first.id
+        assert claimed.state == "claimed"
+        assert claimed.claim_token == str(token)
+        assert _utc(claimed.claimed_at) == NOW + timedelta(seconds=2)
+        assert await api.active_vpn_control_worker_ids(session) == {2}
+        assert (
+            await api.claim_next_vpn_control_operation(
+                session,
+                claim_token=uuid4(),
+                now=NOW + timedelta(days=30),
+            )
+            is None
+        )
+        assert (await session.get(VpnControlOperation, second.id)).state == "queued"
+        await session.rollback()
+
+    async with session_factory() as session:
+        reclaimed = await api.claim_next_vpn_control_operation(
+            session,
+            claim_token=uuid4(),
+            now=NOW + timedelta(seconds=3),
+        )
+        assert reclaimed is not None and reclaimed.id == first.id
+
+
+@pytest.mark.asyncio
+async def test_claim_locks_authoritative_rows_in_canonical_order_and_operation_last(
+    session_factory,
+):
+    api = _api()
+    async with session_factory() as session:
+        await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+        await session.commit()
+    async with session_factory() as session:
+        recording = RecordingSession(session)
+        claimed = await api.claim_next_vpn_control_operation(
+            recording,
+            claim_token=uuid4(),
+            now=NOW + timedelta(seconds=1),
+        )
+        assert claimed is not None
+        tables = [_statement_tables(statement) for statement in recording.statements]
+        assert tables == [
+            frozenset({"vpn_control_operations"}),
+            frozenset({"vpn_control_operations"}),
+            frozenset({"vpn_access_keys", "vpn_subscriptions"}),
+            frozenset({"vpn_customers"}),
+            frozenset({"vpn_subscriptions"}),
+            frozenset({"vpn_access_keys"}),
+            frozenset({"worker_nodes"}),
+            frozenset({"vpn_endpoints"}),
+            frozenset({"vpn_control_operations"}),
+            frozenset({"vpn_control_operations"}),
+        ]
+        assert all(statement._for_update_arg is None for statement in recording.statements[:3])
+        assert all(statement._for_update_arg is not None for statement in recording.statements[3:8])
+        assert all(
+            statement._for_update_arg.skip_locked is True
+            for statement in recording.statements[3:8]
+        )
+        assert recording.statements[8]._for_update_arg is None
+        assert recording.statements[9]._for_update_arg is not None
+        assert recording.statements[9]._for_update_arg.skip_locked is True
+
+
+@pytest.mark.asyncio
+async def test_claim_supersedes_queued_operation_when_persisted_policy_changed(
+    session_factory,
+):
+    api = _api()
+    async with session_factory() as session:
+        operation = await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+        await session.commit()
+    async with session_factory() as session:
+        subscription = await session.get(VpnSubscription, 3)
+        assert subscription is not None
+        subscription.status = "disabled"
+        await session.commit()
+    async with session_factory() as session:
+        assert (
+            await api.claim_next_vpn_control_operation(
+                session,
+                claim_token=uuid4(),
+                now=NOW + timedelta(minutes=1),
+            )
+            is None
+        )
+        stale = await session.get(VpnControlOperation, operation.id)
+        assert stale is not None
+        assert (stale.state, stale.error_code) == (
+            "superseded",
+            "vpn_control_superseded",
+        )
+        assert _utc(stale.finished_at) == NOW + timedelta(minutes=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_token", [None, "not-a-uuid", UUID(int=0)])
+async def test_claim_rejects_invalid_token_before_sql(session_factory, bad_token):
+    api = _api()
+    async with session_factory() as session:
+        recording = RecordingSession(session)
+        with pytest.raises(api.VpnControlIntentError) as caught:
+            await api.claim_next_vpn_control_operation(
+                recording,
+                claim_token=bad_token,
+                now=NOW,
+            )
+        assert caught.value.code == "vpn_control_claim_token_invalid"
+        assert recording.statements == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_observed_provision_sets_exact_uri_and_sync_fields(session_factory):
+    api = _api()
+    operation_id, token = await _stage_claimed(session_factory)
+
+    async with session_factory() as session:
+        finalized = await api.finalize_vpn_control_operation(
+            session,
+            operation_id,
+            token,
+            receipt_state="observed",
+            error_code=None,
+            now=NOW + timedelta(seconds=2),
+        )
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        assert (finalized.state, finalized.error_code) == ("succeeded", None)
+        assert _utc(finalized.finished_at) == NOW + timedelta(seconds=2)
+        assert key.status == "active"
+        assert key.config_uri == api.build_control_config_uri(
+            parse_node_request(finalized.request_snapshot)
+        )
+        assert key.expires_at is not None and _utc(key.expires_at) == EXPIRES_AT
+        assert _utc(key.last_synced_at) == NOW + timedelta(seconds=2)
+        assert key.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_finalize_discovers_without_lock_then_locks_operation_last(session_factory):
+    api = _api()
+    operation_id, token = await _stage_claimed(session_factory)
+    async with session_factory() as session:
+        recording = RecordingSession(session)
+        finalized = await api.finalize_vpn_control_operation(
+            recording,
+            operation_id,
+            token,
+            receipt_state="observed",
+            error_code=None,
+            now=NOW + timedelta(seconds=2),
+        )
+        assert finalized.state == "succeeded"
+        tables = [_statement_tables(statement) for statement in recording.statements]
+        assert tables == [
+            frozenset({"vpn_control_operations"}),
+            frozenset({"vpn_access_keys", "vpn_subscriptions"}),
+            frozenset({"vpn_customers"}),
+            frozenset({"vpn_subscriptions"}),
+            frozenset({"vpn_access_keys"}),
+            frozenset({"worker_nodes"}),
+            frozenset({"vpn_endpoints"}),
+            frozenset({"vpn_control_operations"}),
+        ]
+        assert recording.statements[0]._for_update_arg is None
+        assert recording.statements[1]._for_update_arg is None
+        assert all(statement._for_update_arg is not None for statement in recording.statements[2:])
+
+
+@pytest.mark.asyncio
+async def test_finalize_old_provision_after_new_revoke_never_activates_or_writes_uri(
+    session_factory,
+):
+    api = _api()
+    operation_id, token = await _stage_claimed(session_factory)
+    async with session_factory() as session:
+        newer = await api.stage_vpn_control_operation(
+            session,
+            7,
+            "revoke",
+            now=NOW + timedelta(seconds=2),
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        finalized = await api.finalize_vpn_control_operation(
+            session,
+            operation_id,
+            token,
+            receipt_state="observed",
+            error_code=None,
+            now=NOW + timedelta(seconds=3),
+        )
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        assert finalized.state == "superseded"
+        assert key.operation_generation == newer.generation == 2
+        assert key.status == "pending_revoke"
+        assert key.config_uri is None
+        assert key.last_synced_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("receipt_state", "error_code", "expected_state"),
+    [
+        ("failed", "vpn_node_preflight_failed", "failed"),
+        ("failed", "vpn_node_interrupted_before_mutation", "failed"),
+        ("uncertain", "vpn_node_mutation_uncertain", "uncertain"),
+        ("blocked", "vpn_node_reconciliation_required", "uncertain"),
+        ("stale", "vpn_node_operation_stale", "superseded"),
+        ("blocked", "vpn_node_key_revoked", "failed"),
+    ],
+)
+async def test_finalize_maps_static_node_receipts_without_losing_pending_policy(
+    session_factory,
+    receipt_state,
+    error_code,
+    expected_state,
+):
+    api = _api()
+    operation_id, token = await _stage_claimed(session_factory)
+    async with session_factory() as session:
+        finalized = await api.finalize_vpn_control_operation(
+            session,
+            operation_id,
+            token,
+            receipt_state=receipt_state,
+            error_code=error_code,
+            now=NOW + timedelta(seconds=2),
+        )
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        assert finalized.state == expected_state
+        assert finalized.error_code == error_code
+        assert key.status == "pending_sync"
+        assert key.config_uri is None
+        if expected_state == "uncertain":
+            assert finalized.finished_at is None
+            assert await api.active_vpn_control_worker_ids(session) == {2}
+        else:
+            assert _utc(finalized.finished_at) == NOW + timedelta(seconds=2)
+            if expected_state == "failed":
+                assert key.last_error == error_code
+            else:
+                assert key.last_error is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "subscription_status", "expected_status"),
+    [
+        ("suspend", "expired", "suspended"),
+        ("revoke", "cancelled", "revoked"),
+    ],
+)
+async def test_finalize_observed_suspend_and_revoke_preserve_uri(
+    session_factory,
+    action,
+    subscription_status,
+    expected_status,
+):
+    api = _api()
+    async with session_factory() as session:
+        subscription = await session.get(VpnSubscription, 3)
+        key = await session.get(VpnAccessKey, 7)
+        assert subscription is not None and key is not None
+        subscription.status = subscription_status
+        key.config_uri = "vless://preserved-private-uri"
+        await session.commit()
+    operation_id, token = await _stage_claimed(
+        session_factory,
+        action=action,
+        now=NOW,
+    )
+    async with session_factory() as session:
+        finalized = await api.finalize_vpn_control_operation(
+            session,
+            operation_id,
+            token,
+            receipt_state="observed",
+            error_code=None,
+            now=NOW + timedelta(seconds=2),
+        )
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        assert finalized.state == "succeeded"
+        assert key.status == expected_status
+        assert key.config_uri == "vless://preserved-private-uri"
+        if action == "revoke":
+            assert _utc(key.revoked_at) == NOW + timedelta(seconds=2)
+
+
+@pytest.mark.asyncio
+async def test_finalize_endpoint_disable_blocks_provision_but_allows_confirmed_revoke(
+    session_factory,
+):
+    api = _api()
+    operation_id, token = await _stage_claimed(session_factory)
+    async with session_factory() as session:
+        endpoint = await session.get(VpnEndpoint, 5)
+        assert endpoint is not None
+        endpoint.status = "disabled"
+        await session.commit()
+    async with session_factory() as session:
+        finalized = await api.finalize_vpn_control_operation(
+            session,
+            operation_id,
+            token,
+            receipt_state="observed",
+            error_code=None,
+            now=NOW + timedelta(seconds=2),
+        )
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        assert finalized.state == "superseded"
+        assert (key.status, key.config_uri) == ("pending_sync", None)
+        await session.commit()
+
+    async with session_factory() as session:
+        key = await session.get(VpnAccessKey, 7)
+        endpoint = await session.get(VpnEndpoint, 5)
+        assert key is not None and endpoint is not None
+        key.config_uri = "vless://preserved-private-uri"
+        endpoint.status = "ready"
+        await session.commit()
+    revoke_id, revoke_token = await _stage_claimed(
+        session_factory,
+        action="revoke",
+        now=NOW,
+    )
+    async with session_factory() as session:
+        endpoint = await session.get(VpnEndpoint, 5)
+        assert endpoint is not None
+        endpoint.status = "disabled"
+        await session.commit()
+    async with session_factory() as session:
+        finalized = await api.finalize_vpn_control_operation(
+            session,
+            revoke_id,
+            revoke_token,
+            receipt_state="observed",
+            error_code=None,
+            now=NOW + timedelta(seconds=2),
+        )
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        assert finalized.state == "succeeded"
+        assert key.status == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_finalize_is_idempotent_for_same_token_and_rejects_other_token(
+    session_factory,
+):
+    api = _api()
+    operation_id, token = await _stage_claimed(session_factory)
+    async with session_factory() as session:
+        first = await api.finalize_vpn_control_operation(
+            session,
+            operation_id,
+            token,
+            receipt_state="observed",
+            error_code=None,
+            now=NOW + timedelta(seconds=2),
+        )
+        await session.commit()
+    async with session_factory() as session:
+        replay = await api.finalize_vpn_control_operation(
+            session,
+            operation_id,
+            token,
+            receipt_state="observed",
+            error_code=None,
+            now=NOW + timedelta(days=1),
+        )
+        assert replay.state == "succeeded"
+        assert _utc(replay.finished_at) == _utc(first.finished_at)
+        with pytest.raises(api.VpnControlIntentError) as caught:
+            await api.finalize_vpn_control_operation(
+                session,
+                operation_id,
+                uuid4(),
+                receipt_state="observed",
+                error_code=None,
+                now=NOW + timedelta(days=1),
+            )
+        assert caught.value.code == "vpn_control_claim_token_mismatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("receipt_state", "error_code"),
+    [
+        ("observed", "vpn_node_preflight_failed"),
+        ("failed", None),
+        ("uncertain", "arbitrary-secret-text"),
+        ("blocked", "vpn_node_mutation_uncertain"),
+        ("unknown", None),
+    ],
+)
+async def test_finalize_rejects_noncontract_receipt_pairs_before_sql(
+    session_factory,
+    receipt_state,
+    error_code,
+):
+    api = _api()
+    async with session_factory() as session:
+        recording = RecordingSession(session)
+        with pytest.raises(api.VpnControlIntentError) as caught:
+            await api.finalize_vpn_control_operation(
+                recording,
+                OPERATION_UUID,
+                uuid4(),
+                receipt_state=receipt_state,
+                error_code=error_code,
+                now=NOW,
+            )
+        assert caught.value.code == "vpn_control_receipt_invalid"
+        assert recording.statements == []
+
+
+@pytest.mark.asyncio
+async def test_active_worker_ids_include_only_queued_claimed_and_uncertain(session_factory):
+    api = _api()
+    async with session_factory() as session:
+        session.add_all(
+            [
+                _operation(
+                    operation_id=f"30000000-0000-4000-8000-{generation:012d}",
+                    access_key_id=7 if generation == 1 else 8,
+                    generation=generation,
+                    state=state,
+                )
+                for generation, state in enumerate(
+                    ("queued", "succeeded"),
+                    1,
+                )
+            ]
+        )
+        await session.flush()
+        assert await api.active_vpn_control_worker_ids(session) == {2}
+        queued = await session.get(
+            VpnControlOperation,
+            "30000000-0000-4000-8000-000000000001",
+        )
+        assert queued is not None
+        for active_state in ("claimed", "uncertain"):
+            queued.state = active_state
+            queued.claim_token = str(uuid4())
+            await session.flush()
+            assert await api.active_vpn_control_worker_ids(session) == {2}
+        queued.state = "failed"
+        queued.claim_token = None
+        await session.flush()
+        assert await api.active_vpn_control_worker_ids(session) == set()
