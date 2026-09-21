@@ -384,6 +384,15 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
         )
     }
     expected_endpoint_indexes = {index.name for index in endpoint_table.indexes}
+    expected_endpoint_constraint_types = {
+        "uq_vpn_endpoint_worker_inbound": "u",
+        "uq_vpn_endpoint_id_worker": "u",
+        "ck_vpn_endpoint_inbound": "c",
+        "ck_vpn_endpoint_port": "c",
+        "ck_vpn_endpoint_status": "c",
+        "ck_vpn_endpoint_security": "c",
+        "ck_vpn_endpoint_ready": "c",
+    }
 
     async with postgres_schema.engine.connect() as connection:
         constraint_rows = (
@@ -425,6 +434,10 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
         assert all(
             constraint_catalog[name][1] == 1 for name in expected_named_constraints
         )
+        assert {
+            name: constraint_catalog[name][0]
+            for name in expected_endpoint_constraint_types
+        } == expected_endpoint_constraint_types
         assert constraint_catalog["fk_vpn_access_key_endpoint_worker"] == ("f", 1)
         assert constraint_catalog["ck_vpn_access_key_endpoint_worker"] == ("c", 1)
         assert constraint_catalog["vpn_endpoints_pkey"] == ("p", 1)
