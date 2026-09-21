@@ -21,6 +21,8 @@ from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
 TEST_DATABASE_NAME = "veltrix_portal_test"
 TEST_DATABASE_HOST = "127.0.0.1"
 UNSAFE_DATABASE_URL_ERROR = "unsafe VPN_PORTAL_TEST_PG_URL"
+PRE_TASK1_MIGRATIONS = VPN_ENDPOINT_MIGRATIONS[:6]
+TASK1_MIGRATIONS = VPN_ENDPOINT_MIGRATIONS[6:]
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,93 @@ async def _run_endpoint_migrations_twice(engine: AsyncEngine) -> None:
         async with engine.begin() as connection:
             for statement in VPN_ENDPOINT_MIGRATIONS:
                 await connection.execute(text(statement))
+
+
+async def _run_task1_migrations_twice(engine: AsyncEngine) -> None:
+    for _ in range(2):
+        async with engine.begin() as connection:
+            for statement in TASK1_MIGRATIONS:
+                await connection.execute(text(statement))
+
+
+async def _assert_operation_unique_index_catalog(
+    connection: AsyncConnection,
+) -> None:
+    canonical_index = "expected_vpn_control_operations_worker_reserved_predicate"
+    await connection.execute(
+        text(
+            f"""
+            CREATE INDEX {canonical_index}
+            ON vpn_control_operations(worker_id)
+            WHERE state IN ('claimed','uncertain')
+            """
+        )
+    )
+    try:
+        rows = (
+            (
+                await connection.execute(
+                    text(
+                        f"""
+                        SELECT index_table.relname AS index_name,
+                               catalog_index.indisunique AS is_unique,
+                               ARRAY(
+                                   SELECT attribute.attname::text
+                                   FROM unnest(catalog_index.indkey::smallint[])
+                                       WITH ORDINALITY
+                                       AS indexed_column(attnum, position)
+                                   JOIN pg_attribute AS attribute
+                                     ON attribute.attrelid = source_table.oid
+                                    AND attribute.attnum = indexed_column.attnum
+                                   WHERE indexed_column.attnum <> 0
+                                   ORDER BY indexed_column.position
+                               ) AS columns,
+                               pg_get_expr(
+                                   catalog_index.indpred,
+                                   catalog_index.indrelid,
+                                   true
+                               ) AS predicate
+                        FROM pg_index AS catalog_index
+                        JOIN pg_class AS source_table
+                          ON source_table.oid = catalog_index.indrelid
+                        JOIN pg_namespace AS source_schema
+                          ON source_schema.oid = source_table.relnamespace
+                        JOIN pg_class AS index_table
+                          ON index_table.oid = catalog_index.indexrelid
+                        WHERE source_schema.nspname = current_schema()
+                          AND source_table.relname = 'vpn_control_operations'
+                          AND index_table.relname IN (
+                              'uq_vpn_control_operations_claim_token',
+                              'uq_vpn_control_operations_worker_reserved',
+                              '{canonical_index}'
+                          )
+                        """
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    finally:
+        await connection.execute(text(f"DROP INDEX {canonical_index}"))
+
+    catalog = {row["index_name"]: row for row in rows}
+    assert set(catalog) == {
+        "uq_vpn_control_operations_claim_token",
+        "uq_vpn_control_operations_worker_reserved",
+        canonical_index,
+    }
+    claim_token_index = catalog["uq_vpn_control_operations_claim_token"]
+    assert claim_token_index["is_unique"] is True
+    assert claim_token_index["columns"] == ["claim_token"]
+    assert claim_token_index["predicate"] is None
+
+    worker_reservation_index = catalog["uq_vpn_control_operations_worker_reserved"]
+    assert worker_reservation_index["is_unique"] is True
+    assert worker_reservation_index["columns"] == ["worker_id"]
+    assert (
+        worker_reservation_index["predicate"] == catalog[canonical_index]["predicate"]
+    )
 
 
 def _postgres_error_details(error: IntegrityError) -> tuple[str | None, str | None]:
@@ -170,20 +259,55 @@ def test_test_database_url_accepts_only_the_allowlisted_target() -> None:
     assert url.database == TEST_DATABASE_NAME
 
 
+def test_task1_migrations_follow_the_existing_endpoint_schema() -> None:
+    assert PRE_TASK1_MIGRATIONS[-1] == (
+        "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_endpoint_id "
+        "ON vpn_access_keys(endpoint_id)"
+    )
+    assert "operation_generation" in TASK1_MIGRATIONS[0]
+    assert not any(
+        "vpn_control_operations" in statement for statement in PRE_TASK1_MIGRATIONS
+    )
+
+
 @pytest.mark.asyncio
 async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownership(
     postgres_schema: PostgresSchema,
 ) -> None:
     issued_at = datetime(2026, 9, 20, 10, 30, tzinfo=UTC)
     expires_at = datetime(2026, 10, 20, 10, 30, tzinfo=UTC)
+    verified_at = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
+    endpoint_created_at = datetime(2026, 9, 19, 8, 0, tzinfo=UTC)
+    endpoint_updated_at = datetime(2026, 9, 20, 9, 45, tzinfo=UTC)
     expected_legacy_values = {
         "id": 1,
         "worker_id": 1,
+        "endpoint_id": 1,
         "external_uuid": "legacy-endpoint-migration",
         "config_uri": "vless://legacy-endpoint-migration@example.test",
         "status": "active",
         "issued_at": issued_at,
         "expires_at": expires_at,
+    }
+    expected_endpoint_values = {
+        "id": 1,
+        "worker_id": 1,
+        "inbound_id": 19,
+        "public_host": "legacy-vpn.example.test",
+        "port": 8443,
+        "protocol": "vless",
+        "transport": "tcp",
+        "security": "reality",
+        "server_name": "cover.example.test",
+        "public_key": "legacy-public-key",
+        "short_id": "0123abcd",
+        "fingerprint": "chrome",
+        "flow": "xtls-rprx-vision",
+        "status": "ready",
+        "verified_at": verified_at,
+        "last_error_code": "legacy-observation",
+        "created_at": endpoint_created_at,
+        "updated_at": endpoint_updated_at,
     }
 
     async with postgres_schema.engine.begin() as connection:
@@ -209,37 +333,79 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
                 """
             )
         )
+        for statement in PRE_TASK1_MIGRATIONS:
+            await connection.execute(text(statement))
         await connection.execute(text("INSERT INTO worker_nodes (id) VALUES (1), (2)"))
         await connection.execute(
             text(
                 """
-                INSERT INTO vpn_access_keys (
-                    id, worker_id, external_uuid, config_uri, status, issued_at, expires_at
+                INSERT INTO vpn_endpoints (
+                    id, worker_id, inbound_id, public_host, port, protocol,
+                    transport, security, server_name, public_key, short_id,
+                    fingerprint, flow, status, verified_at, last_error_code,
+                    created_at, updated_at
                 ) VALUES (
-                    1, :worker_id, :external_uuid, :config_uri, :status, :issued_at, :expires_at
+                    :id, :worker_id, :inbound_id, :public_host, :port, :protocol,
+                    :transport, :security, :server_name, :public_key, :short_id,
+                    :fingerprint, :flow, :status, :verified_at, :last_error_code,
+                    :created_at, :updated_at
+                )
+                """
+            ),
+            expected_endpoint_values,
+        )
+        await connection.execute(
+            text(
+                """
+                INSERT INTO vpn_access_keys (
+                    id, worker_id, endpoint_id, external_uuid, config_uri,
+                    status, issued_at, expires_at
+                ) VALUES (
+                    :id, :worker_id, :endpoint_id, :external_uuid, :config_uri,
+                    :status, :issued_at, :expires_at
                 )
                 """
             ),
             expected_legacy_values,
         )
-        before = (
+        before_key = (
             (
                 await connection.execute(
                     text(
                         """
-                    SELECT id, worker_id, external_uuid, config_uri, status, issued_at, expires_at
-                    FROM vpn_access_keys
-                    WHERE id = 1
-                    """
+                        SELECT id, worker_id, endpoint_id, external_uuid, config_uri,
+                               status, issued_at, expires_at
+                        FROM vpn_access_keys
+                        WHERE id = 1
+                        """
                     )
                 )
             )
             .mappings()
             .one()
         )
-        assert dict(before) == expected_legacy_values
+        before_endpoint = (
+            (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT id, worker_id, inbound_id, public_host, port,
+                               protocol, transport, security, server_name,
+                               public_key, short_id, fingerprint, flow, status,
+                               verified_at, last_error_code, created_at, updated_at
+                        FROM vpn_endpoints
+                        WHERE id = 1
+                        """
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert dict(before_key) == expected_legacy_values
+        assert dict(before_endpoint) == expected_endpoint_values
 
-    await _run_endpoint_migrations_twice(postgres_schema.engine)
+    await _run_task1_migrations_twice(postgres_schema.engine)
 
     async with postgres_schema.engine.begin() as connection:
         upgraded = (
@@ -259,30 +425,39 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
             .mappings()
             .one()
         )
-        assert {
-            key: upgraded[key] for key in expected_legacy_values
-        } == expected_legacy_values
-        assert upgraded["endpoint_id"] is None
+        upgraded_endpoint = (
+            (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT id, worker_id, inbound_id, public_host, port,
+                               protocol, transport, security, server_name,
+                               public_key, short_id, fingerprint, flow, status,
+                               verified_at, last_error_code, created_at, updated_at
+                        FROM vpn_endpoints
+                        WHERE id = 1
+                        """
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert {key: upgraded[key] for key in before_key} == dict(before_key)
+        assert dict(upgraded_endpoint) == dict(before_endpoint)
         assert upgraded["operation_generation"] == 0
         assert upgraded["revoke_requested_at"] is None
         assert upgraded["verified_client_email"] is None
         assert upgraded["panel_sub_id"] is None
-        assert await connection.scalar(text("SELECT count(*) FROM vpn_endpoints")) == 0
-        assert await connection.scalar(text("SELECT count(*) FROM vpn_control_operations")) == 0
+        assert await connection.scalar(text("SELECT count(*) FROM vpn_endpoints")) == 1
+        assert (
+            await connection.scalar(text("SELECT count(*) FROM vpn_control_operations"))
+            == 0
+        )
+        await _assert_operation_unique_index_catalog(connection)
 
         await connection.execute(
-            text(
-                """
-                INSERT INTO vpn_endpoints (id, worker_id, inbound_id, public_host, port)
-                VALUES (1, 1, 1, 'vpn.example', 443)
-                """
-            )
-        )
-        await connection.execute(
-            text(
-                "UPDATE vpn_access_keys SET endpoint_id = 1, panel_sub_id = '' "
-                "WHERE id = 1"
-            )
+            text("UPDATE vpn_access_keys SET panel_sub_id = '' WHERE id = 1")
         )
         await connection.execute(
             text(
@@ -293,10 +468,14 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
             )
         )
         panel_sub_ids = (
-            await connection.execute(
-                text("SELECT panel_sub_id FROM vpn_access_keys ORDER BY id")
+            (
+                await connection.execute(
+                    text("SELECT panel_sub_id FROM vpn_access_keys ORDER BY id")
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert panel_sub_ids == ["", None]
 
         await connection.execute(
@@ -502,6 +681,7 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
     }
 
     async with postgres_schema.engine.connect() as connection:
+        await _assert_operation_unique_index_catalog(connection)
         constraint_rows = (
             (
                 await connection.execute(
@@ -604,9 +784,7 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
                 .all()
             )
         }
-        assert operation_foreign_keys[
-            "fk_vpn_control_operation_endpoint_worker"
-        ] == (
+        assert operation_foreign_keys["fk_vpn_control_operation_endpoint_worker"] == (
             "FOREIGN KEY (endpoint_id, worker_id) "
             "REFERENCES vpn_endpoints(id, worker_id) ON DELETE RESTRICT",
             "r",
@@ -640,9 +818,7 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
         assert actual_endpoint_indexes == expected_endpoint_indexes
         assert "ix_vpn_access_keys_endpoint_id" in index_names
         assert {
-            name
-            for name in index_names
-            if name in expected_operation_indexes
+            name for name in index_names if name in expected_operation_indexes
         } == expected_operation_indexes
 
 
