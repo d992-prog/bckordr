@@ -224,7 +224,7 @@ lifecycle, TCP 443 or invitation change was made.
 - Modify: `backend/tests/test_vpn_control_intents.py`
 - Create: `backend/tests/test_vpn_control_intents_postgres.py`
 
-- [ ] **Step 1: Write failing claim/finalize unit tests**
+- [x] **Step 1: Write failing claim/finalize unit tests**
 
 Define:
 
@@ -264,17 +264,17 @@ required `blocked` become `uncertain`, keep the worker reserved and cannot be
 automatically retried. Terminal replay with the same token is idempotent; a
 different token is rejected.
 
-- [ ] **Step 2: Run focused tests and confirm RED**
+- [x] **Step 2: Run focused tests and confirm RED**
 
 Expected failures: missing claim/finalize/reservation functions.
 
-- [ ] **Step 3: Implement the minimal state machine**
+- [x] **Step 3: Implement the minimal state machine**
 
 Keep SQLAlchemy queries in the existing service; do not add a repository,
 background scheduler, lease, retry framework or SSH adapter. Accept only static
 allowlisted receipt/error codes from the node contract.
 
-- [ ] **Step 4: Add real PostgreSQL concurrency tests**
+- [x] **Step 4: Add real PostgreSQL concurrency tests**
 
 Using the existing validated `VPN_PORTAL_TEST_PG_URL` fixture and independent
 backend PIDs, prove:
@@ -294,7 +294,7 @@ backend PIDs, prove:
 Use `pg_backend_pid()` and `pg_blocking_pids()` where waiting is part of the claim;
 events alone are not proof of database locking.
 
-- [ ] **Step 5: Run GREEN verification and commit**
+- [x] **Step 5: Run GREEN verification and commit**
 
 Run new SQLite tests, actual PostgreSQL tests in the isolated approved cluster,
 all endpoint/lifecycle/subscription/decommission tests, Ruff and diff check. Stop
@@ -303,6 +303,15 @@ and delete only the exact synthetic cluster after the run. Commit:
 ```text
 feat(vpn): claim and finalize durable control intents
 ```
+
+Evidence: commits `8eb0896`, `3504da2`, `27ef269`; the final actual PostgreSQL
+run passed `13` tests, including two-connection contention, rollback, stale
+policy snapshots, partial sibling locks and stale-first queue traversal. The
+local Task 3 run passed `96` tests with `13` expected PostgreSQL skips. The
+temporary synthetic cluster `/tmp/veltrix-portal-test-p_uov2h2` was stopped and
+removed, its listener closed and the control service remained active. Independent
+spec and code-quality re-reviews approved the final state. No network dispatch,
+deployment, route, lifecycle, TCP 443 or invitation change was made.
 
 ## Task 4: Independent review and release-boundary evidence
 
