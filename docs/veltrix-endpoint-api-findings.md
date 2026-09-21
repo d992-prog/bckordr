@@ -197,3 +197,89 @@ it creates a token or regenerates a named fallback token, invalidating the prior
 one. Existing tokens are hashes, not retrievable plaintext. Running that helper
 would create/change privileged access and is not a substitute for authorized
 authentication. The helper was inspected but not invoked.
+
+## Interrupted-run recovery and policy compatibility
+
+The synthetic PostgreSQL rehearsal left `/tmp/veltrix-portal-test-k0y567tf`
+running after the local tool session was lost. A fresh strict-SSH recovery
+verified its exact data directory, PID command line and port60301, stopped it,
+then deleted only that temporary directory. The directory is absent, its listener
+is closed and `domain-drop-control.service` is active. Synthetic data were
+removed; no production database restore or migration was performed.
+
+Fresh read-only panel observations confirmed one owner client and one inbound,
+both reset policies `never`, neutral renewal/HWID settings, no external or tunnel
+attachments, and the expected local counter schema. The owner has an empty subId
+and a nonempty password field. Neither value was exported or changed.
+
+The pinned [full-update implementation](https://github.com/MHSanaei/3x-ui/blob/v3.8.5/internal/web/service/client_crud.go#L572)
+generates a subId if both old and requested values are empty. An executor cannot
+promise full-update identity preservation for that legacy record. No-op and bulk
+enable/disable remain possible; an expiry/quota change requiring full update must
+fail before sending until a separate migration is authorized. New managed
+profiles must have a nonempty persisted subId from their first request.
+
+An existing password string can be preserved for the independently verified
+exclusive VLESS attachment: the [VLESS account schema](https://github.com/XTLS/Xray-core/blob/v26.9.9/proxy/vless/account.proto)
+does not use it. This does not establish why it was originally populated.
+Deleting it merely to fit a neutral test fixture would be an unauthorized change.
+
+## Durable control integration audit checkpoint
+
+The existing per-event-loop mutation lock is not a PostgreSQL concurrency fence.
+Keep the endpoint-bound mutation barrier until staging, claim, execution and
+finalization are connected. The minimum persisted data are key generation,
+sticky revoke intent, verified client email/subId, and an operation row containing
+the exact request snapshot/digest and claim identity. Reuse existing subscription,
+worker and endpoint records; do not add a second policy engine.
+
+Required integration corrections:
+
+- Commit staged policy and operation before SSH; never perform remote IO inside
+  the staging transaction. Claims reserve the worker durably before execution.
+- Use one lock order: customer, subscriptions by ID, keys by ID, workers by ID,
+  endpoint, operation. Refresh locked ORM state before applying caller changes;
+  do not overwrite already staged unflushed changes with a later refresh.
+- Lifecycle currently marks expired subscriptions before locking. Recheck the
+  expiration under a fresh lock so a concurrent extension is not overwritten.
+- Archive, subscription edits, manual retry/revoke, compatibility DELETE and
+  worker decommission must route through the same bound-key intent staging.
+- Compare claim identity, generation and current policy during finalization.
+  A historical provision receipt cannot overwrite a newer revoke or suspension.
+- A timed-out claim with possible remote writes remains reserved and requires
+  reconciliation; lease expiry alone cannot authorize a competing mutation.
+- Domain protection must include planned tasks and every task associated with
+  a verifying run (its tasks may already be cancelled). Recheck reservations
+  after worker row locks, not only before them. Include queued operations to
+  protect the interval before dispatch and between superseding policies.
+- Maintenance and decommission must respect reservations and retain SSH/panel
+  credentials while revocation remains unresolved. Do not bypass this through
+  an empty config URI or missing-node shortcut for a bound key.
+
+These are remaining implementation requirements, not implemented behavior.
+Real PostgreSQL tests must cover rollback, two claimers, stale ORM reads,
+provision versus revoke/archive/expiry, extension versus expiry, reservation
+races, uncertain claims, endpoint disable and migration idempotency. The earlier
+57-pass PostgreSQL run covered existing endpoint migrations and portal auth;
+it did not test this still-unimplemented operation queue.
+
+## Runtime trust prerequisite and authorized ownership repair
+
+The actual new runtime reader initially refused to run: `/usr/local/x-ui`,
+`/usr/local/x-ui/bin` and `/usr/local/x-ui/bin/xray-linux-amd64` belonged to
+UID/GID1001. A read-only check found no account with that UID; both the panel
+service and running Xray use root. The configuration file already belonged to
+root. Trust checks were not weakened to accept this installation state.
+
+Automatic safety review rejected changing production file ownership without
+specific consent. The owner then explicitly authorized exactly these three
+paths. Only their UID was changed to root; GID, permission bits, inode/device,
+binary content and configuration content were preserved. The same PID/start
+generation remained running. No VPN restart occurred. Original ownership and
+mode metadata are saved root-only at
+`/var/lib/veltrix-vpn/control-auth/xray-archive-owner-before.json`.
+
+Afterward, two calls of the actual runtime module on the node both matched the
+owner's existing credential and observed the same process generation. This is
+read-only runtime evidence, not external connection acceptance, transport
+readiness, a completed mutation executor or readiness to invite friends.
