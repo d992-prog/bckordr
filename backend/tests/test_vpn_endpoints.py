@@ -335,7 +335,24 @@ async def test_status_operation_matrix_for_ready_and_draining_endpoints(
             target = await module.resolve_recorded_endpoint(
                 session, access_key, worker=worker, operation=operation
             )
-            assert target.endpoint_id == endpoint_id
+            if endpoint_id == 20:
+                assert target == module.VpnEndpointTarget(
+                    endpoint_id=20,
+                    worker_id=1,
+                    inbound_id=20,
+                    public_host="reality.example",
+                    port=443,
+                    protocol="vless",
+                    transport="raw",
+                    security="reality",
+                    server_name="cdn.example",
+                    public_key="public-key",
+                    short_id="0123456789abcdef",
+                    fingerprint="chrome",
+                    flow="xtls-rprx-vision",
+                )
+            else:
+                assert target.endpoint_id == endpoint_id
         else:
             await _assert_error(
                 expected_error,
