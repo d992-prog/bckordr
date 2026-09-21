@@ -523,7 +523,8 @@ def sync_client_inbounds_table(conn, client_pk):
     if "flow_override" in columns:
         values["flow_override"] = ""
     if "created_at" in columns:
-        values["created_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        timestamp_info = column_info_by_name(conn, "client_inbounds")["created_at"]
+        values["created_at"] = default_column_value("created_at", timestamp_info.get("type"))
     if not {"client_id", "inbound_id"}.issubset(values):
         return "client_inbounds unsupported columns"
     existing = []

@@ -107,10 +107,17 @@ The first installer call returned an ambiguous control error. Read-only recovery
 confirmed zero automation tokens, no installation files and no other node
 operation processes. Full preflight passed before the separately initiated
 successful invocation; no automatic creation/rotation retry was used.
+The precise cause of that first control error was not established.
 
 Live token auth/status, settings read and inbound list passed. The panel reported
 3x-UI3.8.5, Xray26.9.9 running without an error, restart-on-disable=true and one
 inbound. **Global client listing returned HTTP200, success:false, obj:null.** The
 session correctly rejected it; its message/body was not exported. This upstream
-read error still requires investigation. No client mutation, restart, port change,
-endpoint binding or application deployment occurred as part of this checkpoint.
+read error was subsequently traced to a legacy text timestamp in the single
+client attachment. The separately approved one-field repair is documented in
+`2026-09-21-veltrix-client-link-timestamp-repair.md`: after private-copy rehearsal
+and backup, the timestamp was converted to milliseconds with no other row/schema
+changes and no Xray restart. Live global client listing now passes, as does the
+new node-local observer for the existing owner's exact legacy configuration.
+No client policy mutation, restart, port change, endpoint binding or application
+deployment occurred as part of these checkpoints.
