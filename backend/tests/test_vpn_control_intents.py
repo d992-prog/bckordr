@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from importlib import import_module
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID
@@ -348,6 +348,34 @@ def test_build_control_request_normalizes_naive_times_as_utc_and_unlimited_value
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("expires_at", datetime.min.replace(tzinfo=timezone(timedelta(hours=14)))),
+        ("expires_at", datetime.max.replace(tzinfo=timezone(-timedelta(hours=14)))),
+        ("issued_at", datetime.min.replace(tzinfo=timezone(timedelta(hours=14)))),
+        ("issued_at", datetime.max.replace(tzinfo=timezone(-timedelta(hours=14)))),
+    ],
+)
+def test_build_control_request_rejects_utc_normalization_overflow_with_static_error(
+    field,
+    value,
+):
+    api = _api()
+    changes = (
+        {"subscription": _subscription(expires_at=value)}
+        if field == "expires_at"
+        else {"access_key": _key(issued_at=value)}
+    )
+
+    with pytest.raises(api.VpnControlIntentError) as caught:
+        _request(**changes)
+
+    assert caught.value.code == "vpn_control_time_invalid"
+    assert str(caught.value) == "vpn_control_time_invalid"
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize(
     ("change", "code"),
     [
         ({"access_key": _key(external_uuid="11111111222243338444555555555555")}, "vpn_control_client_identity_invalid"),
@@ -380,6 +408,37 @@ def test_build_control_request_preserves_verified_empty_legacy_sub_id_without_cr
     assert request.sub_id == ""
     assert request.action == "suspend"
     assert request.allow_shared_restart is True
+
+
+@pytest.mark.parametrize("action", ["provision", "suspend"])
+def test_build_control_request_rejects_every_non_revoke_action_after_sticky_revoke(action):
+    api = _api()
+    with pytest.raises(api.VpnControlIntentError) as caught:
+        _request(
+            access_key=_key(
+                revoke_requested_at=NOW,
+                config_uri="vless://persisted-secret",
+            ),
+            action=action,
+            allow_create=False,
+            allow_shared_restart=action == "suspend",
+        )
+    assert caught.value.code == "vpn_control_revoke_sticky"
+
+
+def test_build_control_request_allows_repeated_revoke_after_sticky_revoke():
+    request = _request(
+        access_key=_key(
+            revoke_requested_at=NOW,
+            config_uri="vless://persisted-secret",
+            status="pending_revoke",
+        ),
+        action="revoke",
+        allow_create=False,
+        allow_shared_restart=True,
+    )
+
+    assert request.action == "revoke"
 
 
 def test_build_control_config_uri_is_exact_percent_encoded_reality_uri_without_fragment():
@@ -529,6 +588,28 @@ async def test_stage_rejects_unflushed_caller_state_before_any_refresh(session_f
 
         assert caught.value.code == "vpn_control_unflushed_state"
         assert subscription.status == "disabled"
+        assert recording.statements == []
+        assert recording.flushes == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_now",
+    [
+        0,
+        datetime.min.replace(tzinfo=timezone(timedelta(hours=14))),
+        datetime.max.replace(tzinfo=timezone(-timedelta(hours=14))),
+    ],
+)
+async def test_stage_rejects_invalid_now_before_any_sql(session_factory, invalid_now):
+    api = _api()
+    async with session_factory() as session:
+        recording = RecordingSession(session)
+
+        with pytest.raises(api.VpnControlIntentError) as caught:
+            await api.stage_vpn_control_operation(recording, 7, "provision", now=invalid_now)
+
+        assert caught.value.code == "vpn_control_time_invalid"
         assert recording.statements == []
         assert recording.flushes == 0
 
@@ -811,6 +892,47 @@ async def test_stage_accepts_verified_legacy_empty_sub_id_only_for_existing_prof
         assert request.sub_id == ""
         assert request.target.security == "none"
         assert request.allow_create is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config_uri", ["", " \t "])
+async def test_stage_treats_empty_or_whitespace_uri_as_creation_on_draining_endpoint(
+    session_factory,
+    config_uri,
+):
+    api = _api()
+    async with session_factory() as session:
+        endpoint = await session.get(VpnEndpoint, 5)
+        key = await session.get(VpnAccessKey, 7)
+        assert endpoint is not None and key is not None
+        endpoint.status = "draining"
+        key.config_uri = config_uri
+        await session.commit()
+
+        with pytest.raises(api.VpnControlIntentError) as caught:
+            await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+
+        assert caught.value.code == "vpn_control_endpoint_creation_unavailable"
+        assert key.config_uri == config_uri
+        assert key.operation_generation == 0
+
+
+@pytest.mark.asyncio
+async def test_stage_does_not_strip_or_replace_an_actual_nonempty_uri(session_factory):
+    api = _api()
+    uri = "  vless://existing-private-uri  "
+    async with session_factory() as session:
+        endpoint = await session.get(VpnEndpoint, 5)
+        key = await session.get(VpnAccessKey, 7)
+        assert endpoint is not None and key is not None
+        endpoint.status = "draining"
+        key.config_uri = uri
+        await session.commit()
+
+        operation = await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+
+        assert parse_node_request(operation.request_snapshot).allow_create is False
+        assert key.config_uri == uri
 
 
 @pytest.mark.asyncio

@@ -39,7 +39,11 @@ class VpnControlIntentError(ValueError):
 
 
 def _fail(code: str) -> None:
-    raise VpnControlIntentError(code) from None
+    error = VpnControlIntentError(code)
+    try:
+        raise error from None
+    finally:
+        error.__context__ = None
 
 
 def _milliseconds(value: datetime | None, *, required: bool) -> int:
@@ -49,9 +53,12 @@ def _milliseconds(value: datetime | None, *, required: bool) -> int:
         return 0
     if not isinstance(value, datetime):
         _fail("vpn_control_time_invalid")
-    normalized = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
-    delta = normalized - _EPOCH
-    milliseconds = (delta.days * 86_400 + delta.seconds) * 1000 + delta.microseconds // 1000
+    try:
+        normalized = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        delta = normalized - _EPOCH
+        milliseconds = (delta.days * 86_400 + delta.seconds) * 1000 + delta.microseconds // 1000
+    except OverflowError:
+        _fail("vpn_control_time_invalid")
     if milliseconds < int(required) or milliseconds > _MAX_INTEGER:
         _fail("vpn_control_time_invalid")
     return milliseconds
@@ -112,7 +119,7 @@ def build_control_request(
     allow_shared_restart: bool,
 ) -> VpnNodeRequest:
     """Derive one validated node request exclusively from persisted records."""
-    if action == "provision" and (
+    if action != "revoke" and (
         access_key.revoke_requested_at is not None
         or access_key.revoked_at is not None
         or access_key.status in ("pending_revoke", "revoked")
@@ -189,10 +196,13 @@ def _locked(statement):
 
 
 def _current_time(value: datetime | None) -> datetime:
-    current = value or utcnow()
+    current = utcnow() if value is None else value
     if not isinstance(current, datetime):
         _fail("vpn_control_time_invalid")
-    return current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    try:
+        return current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
+    except OverflowError:
+        _fail("vpn_control_time_invalid")
 
 
 def _validate_endpoint_policy(
@@ -209,7 +219,10 @@ def _validate_endpoint_policy(
     if endpoint.security not in {"none", "reality"}:
         _fail("vpn_control_endpoint_unsupported")
 
-    allow_create = action == "provision" and access_key.config_uri is None
+    existing_uri = access_key.config_uri
+    allow_create = action == "provision" and not (
+        isinstance(existing_uri, str) and bool(existing_uri.strip())
+    )
     if action == "provision":
         if allow_create:
             if endpoint.status != "ready":
