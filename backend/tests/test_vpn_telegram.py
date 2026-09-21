@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -26,7 +27,11 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.services import vpn_telegram as vpn_telegram_service
-from app.services.vpn_telegram import process_telegram_update, telegram_keyboard
+from app.services.vpn_telegram import (
+    process_telegram_update,
+    send_telegram_message,
+    telegram_keyboard,
+)
 
 
 VALID_VLESS_URI = (
@@ -149,7 +154,7 @@ async def seed_subscription(
     return customer, subscription, key
 
 
-def test_telegram_keyboard_adds_cabinet_only_for_allowed_private_identity():
+def test_telegram_reply_keyboard_never_launches_an_authenticated_mini_app():
     settings = Settings(
         VPN_TELEGRAM_BOT_TOKEN="bot-token",
         VPN_PORTAL_ENABLED=True,
@@ -161,14 +166,144 @@ def test_telegram_keyboard_adds_cabinet_only_for_allowed_private_identity():
     disallowed = telegram_keyboard(settings, "54321")
     group = telegram_keyboard(settings, "-10012345")
 
-    assert allowed["keyboard"][-1] == [
-        {
-            "text": "Личный кабинет",
-            "web_app": {"url": "https://portal.example/cabinet/"},
-        }
+    # Telegram does not supply WebAppInitData for a reply-keyboard launch.
+    assert allowed["keyboard"] == [
+        [{"text": "Моя подписка"}, {"text": "Мои профили"}],
+        [{"text": "Помощь"}],
     ]
+    assert all("web_app" not in button for row in allowed["keyboard"] for button in row)
     assert all("web_app" not in button for row in disallowed["keyboard"] for button in row)
     assert all("web_app" not in button for row in group["keyboard"] for button in row)
+
+
+@pytest.fixture
+def bot_api_requests(monkeypatch):
+    requests = []
+    real_client = httpx.AsyncClient
+
+    def handle(request):
+        assert request.url.host == "api.telegram.org"
+        assert request.url.path.endswith("/sendMessage")
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": len(requests)}})
+
+    def client_factory(**kwargs):
+        return real_client(transport=httpx.MockTransport(handle), **kwargs)
+
+    monkeypatch.setattr(vpn_telegram_service.httpx, "AsyncClient", client_factory)
+    return requests
+
+
+@pytest.mark.asyncio
+async def test_bot_sends_one_inline_cabinet_entry_after_all_response_chunks(bot_api_requests):
+    settings = Settings(
+        VPN_TELEGRAM_BOT_TOKEN="bot-token",
+        VPN_PORTAL_ENABLED=True,
+        VPN_PORTAL_PUBLIC_ORIGIN="https://portal.example",
+        VPN_PORTAL_ALLOWED_TELEGRAM_IDS="12345",
+    )
+    text = "Подписка\n" + "x" * 8500
+
+    await vpn_telegram_service.send_telegram_message(settings, "12345", text)
+
+    chunks = vpn_telegram_service.split_telegram_text(text)
+    assert len(bot_api_requests) == len(chunks) + 1
+    assert [item["text"] for item in bot_api_requests[:-1]] == chunks
+    for item in bot_api_requests[:-1]:
+        assert item["reply_markup"] == telegram_keyboard(settings, "12345")
+        assert all("web_app" not in button for row in item["reply_markup"]["keyboard"] for button in row)
+    entry = bot_api_requests[-1]
+    assert entry["chat_id"] == "12345"
+    assert entry["text"] == "Подписка, VPN-профили и инструкции по подключению — в личном кабинете."
+    assert entry["reply_markup"] == {
+        "inline_keyboard": [[{
+            "text": "Личный кабинет",
+            "web_app": {"url": "https://portal.example/cabinet/"},
+        }]],
+    }
+    assert "keyboard" not in entry["reply_markup"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_id", ["54321", "-10012345", "0", "000", "not-a-chat", "12.5", ""])
+async def test_bot_never_sends_cabinet_entry_to_disallowed_identity(bot_api_requests, chat_id):
+    settings = Settings(
+        VPN_TELEGRAM_BOT_TOKEN="bot-token",
+        VPN_PORTAL_ENABLED=True,
+        VPN_PORTAL_PUBLIC_ORIGIN="https://portal.example",
+        VPN_PORTAL_ALLOWED_TELEGRAM_IDS="12345",
+    )
+
+    await vpn_telegram_service.send_telegram_message(settings, chat_id, "Ответ")
+
+    assert len(bot_api_requests) == 1
+    assert "inline_keyboard" not in bot_api_requests[0]["reply_markup"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changes", [
+    {"VPN_PORTAL_ENABLED": False},
+    {"VPN_PORTAL_PUBLIC_ORIGIN": "not-an-origin"},
+    {"VPN_TELEGRAM_BOT_TOKEN": ""},
+    {"VPN_PORTAL_ALLOWED_TELEGRAM_IDS": ""},
+])
+async def test_bot_never_sends_cabinet_entry_when_unavailable(bot_api_requests, changes):
+    values = {
+        "VPN_TELEGRAM_BOT_TOKEN": "bot-token",
+        "VPN_PORTAL_ENABLED": True,
+        "VPN_PORTAL_PUBLIC_ORIGIN": "https://portal.example",
+        "VPN_PORTAL_ALLOWED_TELEGRAM_IDS": "12345",
+        **changes,
+    }
+
+    await vpn_telegram_service.send_telegram_message(Settings(**values), "12345", "Ответ")
+
+    assert len(bot_api_requests) == 1
+    assert "inline_keyboard" not in bot_api_requests[0]["reply_markup"]
+
+
+@pytest.mark.asyncio
+async def test_inline_delivery_failure_does_not_replay_delivered_key(telegram_app, monkeypatch):
+    async with telegram_app.session_factory() as session:
+        await seed_subscription(
+            session, telegram_user_id="12345", key_status="active", config_uri=VALID_VLESS_URI,
+        )
+    settings = telegram_app.settings.model_copy(update={
+        "vpn_portal_enabled": True,
+        "vpn_portal_public_origin": "https://portal.example",
+        "vpn_portal_allowed_telegram_ids": "12345",
+    })
+    requests = []
+    real_client = httpx.AsyncClient
+
+    def handle(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if "inline_keyboard" in payload["reply_markup"]:
+            return httpx.Response(503, json={"ok": False})
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    monkeypatch.setattr(
+        vpn_telegram_service.httpx, "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    payload = telegram_message(123, 12345, "/keys")
+    async with telegram_app.session_factory() as session:
+        first = await process_telegram_update(session, payload, settings, sender=send_telegram_message)
+        await session.commit()
+    async with telegram_app.session_factory() as session:
+        second = await process_telegram_update(session, payload, settings, sender=send_telegram_message)
+        update = await session.scalar(
+            select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "123")
+        )
+        assert update.error_message is not None
+        assert "bot-token" not in update.error_message
+
+    assert first == {"processed": False, "duplicate": False}
+    assert second == {"processed": False, "duplicate": True}
+    assert len(requests) == 2
+    assert "vless://" in requests[0]["text"]
+    assert "inline_keyboard" in requests[1]["reply_markup"]
 
 
 @pytest.mark.parametrize("chat_id", ["0", "000", "not-a-chat", "12.5", ""])

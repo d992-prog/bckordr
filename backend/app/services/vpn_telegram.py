@@ -92,11 +92,18 @@ def parse_telegram_message(payload: dict) -> TelegramMessage:
 
 
 def telegram_keyboard(settings: Settings, chat_id: str) -> dict:
-    """Return a command keyboard with a safely gated Mini App entry point."""
-    keyboard: list[list[dict[str, object]]] = [
-        [{"text": "Моя подписка"}, {"text": "Мои профили"}],
-        [{"text": "Помощь"}],
-    ]
+    """Keep commands available and replace any previously sent WebApp keyboard."""
+    return {
+        "keyboard": [
+            [{"text": "Моя подписка"}, {"text": "Мои профили"}],
+            [{"text": "Помощь"}],
+        ],
+        "resize_keyboard": True,
+    }
+
+
+def telegram_cabinet_keyboard(settings: Settings, chat_id: str) -> dict | None:
+    """Use an inline launch: reply-keyboard WebApps receive no signed initData."""
     try:
         private_chat_id = int(chat_id)
     except (TypeError, ValueError):
@@ -106,15 +113,15 @@ def telegram_keyboard(settings: Settings, chat_id: str) -> dict:
         and portal_capabilities(settings)["mini_app_enabled"]
         and identity_allowed(settings, chat_id)
     ):
-        keyboard.append(
-            [
-                {
+        return {
+            "inline_keyboard": [
+                [{
                     "text": "Личный кабинет",
                     "web_app": {"url": public_origin(settings) + "/cabinet/"},
-                }
+                }],
             ]
-        )
-    return {"keyboard": keyboard, "resize_keyboard": True}
+        }
+    return None
 
 
 async def send_telegram_message(settings: Settings, chat_id: str, text: str) -> None:
@@ -127,6 +134,16 @@ async def send_telegram_message(settings: Settings, chat_id: str, text: str) -> 
                 "reply_markup": telegram_keyboard(settings, chat_id),
             }
             response = await client.post(url, json=payload)
+            response.raise_for_status()
+        cabinet_keyboard = telegram_cabinet_keyboard(settings, chat_id)
+        if cabinet_keyboard is not None:
+            # Telegram permits only one reply_markup type per message. Keep the
+            # command keyboard above and add exactly one authenticated launch.
+            response = await client.post(url, json={
+                "chat_id": chat_id,
+                "text": "Подписка, VPN-профили и инструкции по подключению — в личном кабинете.",
+                "reply_markup": cabinet_keyboard,
+            })
             response.raise_for_status()
 
 
