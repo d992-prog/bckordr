@@ -1,7 +1,58 @@
 # Current State
 
-## Veltrix customer product direction (2026-09-20)
+## Current release checkpoint (2026-09-21)
 
+- Production control at `/opt/domain-drop-catcher` now runs reviewed revision
+  `46caa1010e452dc94d606dc2b7b2a59f18816ac7`. Tasks 1–12 are implemented and reviewed.
+  Task 13's disabled deployment and post-release checks passed; real Telegram pilot
+  and final integration remain pending. Work continues on `codex/veltrix-customer-portal`
+  in `.worktrees/veltrix-customer-portal`; main checkout remains unchanged.
+- Both `VPN_PORTAL_ENABLED` and `VPN_PORTAL_PUBLIC_ACCESS` remain false. The live
+  `/cabinet/` entry loads, but customer login is intentionally unavailable until
+  the Telegram configuration and actual browser/iPhone checks are completed.
+  Do not treat mock SDK/browser tests as live Telegram evidence. Payments remain deferred.
+- Final pre-release verification: `python -m pytest` — 664 passed in 139.42 seconds
+  with real PostgreSQL and no skips; `python -m ruff check app tests` clean;
+  `npm test` — 52 passed; `npm run build` passed. Independent auth, specification,
+  quality and operational safety reviews approved their respective scopes.
+- Server-side post-release probe passed all 20 checks: additive schema and names,
+  all pre-existing VPN identity hashes unchanged, no-store/no-referrer, public health,
+  disabled customer login, existing admin login/profile reads, admin/customer cookie
+  isolation and logout of the probe's own admin session. Existing key8/test1 still
+  transports certificate-validated HTTPS (200) and UDP DNS. No URI or credential printed.
+- A fresh browser check of the actual public `/cabinet/` at 390px loaded its assets
+  and showed the disabled-login state, without page errors or horizontal overflow.
+  This is live deployment/UI evidence, not a real Telegram login or iPhone-client test.
+- PyJWT 2.14.0 was installed without unrelated runtime upgrades. Only the control
+  service was restarted and Nginx reloaded; actual root service unit, worker allowlist,
+  generated production build cache, VPN nodes and transport were preserved.
+- Rollback backup retained: `/opt/backups/veltrix-cabinet-20260921-003811`, including
+  full validated DB dump, original environment/unit/Nginx/frontend, VPN identity
+  hashes and release marker. Do not restore the entire old DB over newer business data.
+  Synthetic PostgreSQL `/tmp/veltrix-portal-test-h8t_gmwt` was stopped and removed;
+  both real-snapshot rehearsal copies and isolated Nginx instances were already removed.
+- Operational steps and remaining BotFather/client checks:
+  `docs/vpn-customer-portal-runbook.md`. No public launch or true end-to-end Telegram
+  authentication claim is made. The production runtime's Python 3.11.0rc1 and VPN
+  transport hardening remain separate pre-public-launch tasks.
+
+## Veltrix implementation history (2026-09-20–21, before the release above)
+
+The entries below are chronological implementation evidence, not the current
+deployment state. The release checkpoint above supersedes earlier pending statuses.
+
+- Fresh release backup created and validated on the managing server at
+  `/opt/backups/veltrix-cabinet-20260921-003811`: full custom dump 1,133,002,179 bytes,
+  required-table TOC plus config/previous frontend archives verified. No DB data was
+  downloaded. Environment, actual service unit, generated build cache and VPN identity
+  hashes are retained privately for rollback verification. At that checkpoint the
+  production app was unchanged; deployment is recorded above.
+  No active attack/worker/maintenance/zone-scan jobs; ordinary discovery work continues.
+- During Task 12 implementation/review, a separate unprivileged, loopback-only
+  Nginx 1.18 rehearsal passed callback/400/413/429/502, cookie flags, scoped no-store,
+  cabinet no-referrer and secret-marker log checks. Its exact temporary process and
+  directory were removed; production Nginx was not reloaded. Independent final static
+  auth review of Tasks 1–11 found no important issue; live Telegram remains unverified.
 - Task 11 is complete with specification and quality re-review approval. Bot and
   admin share safe profile names and entitlement rules; admin rename changes only
   display_name/updated_at and preserves VPN identity. Inline rename, full copy,

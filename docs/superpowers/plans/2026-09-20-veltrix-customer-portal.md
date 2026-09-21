@@ -1397,13 +1397,13 @@ VPN_PORTAL_PUBLIC_ACCESS=false
 - [x] Before production changes inspect current revision, dirty generated files,
   active domain jobs, node maintenance, actual Nginx include layout and service unit.
   Make and validate a new full DB/config backup. Do not reuse an old partial dump.
-- [ ] Deploy feature disabled, migrate, build, control-only restart and verify
+- [x] Deploy feature disabled, migrate, build, control-only restart and verify
   local/public health and existing admin login. No VPN-node restart, transport change,
   credential regeneration, payment settings or unrelated generated-file overwrite.
 - [ ] Enable only confirmed pilot IDs, perform two-user ownership checks plus
   browser and iPhone Mini App login. Verify original VPN link still transports
   certificate-valid HTTPS and DNS, and renamed export has unchanged credential/host.
-- [ ] If live identity/config requires user action, report the exact outstanding
+- [x] If live identity/config requires user action, report the exact outstanding
   step and keep public access false. Do not mark the whole feature production-verified
   based only on synthetic auth or mock screenshots.
 - [ ] Rollback rehearsal: disable portal and bot button, revoke customer sessions,
@@ -1444,7 +1444,8 @@ same task on 2026-09-20. Use a fresh implementer per task, specification review 
 then quality review before the next task. The prepared worktree has passing baseline
 tests. The plan's 26 Python snippets were parsed; 14 pure display examples and the
 trimmed-name DTO example were exercised in memory. These are plan checks, not feature
-verification. Implementation progress is recorded below; production remains unchanged.
+verification. Implementation progress and the later disabled production deployment
+are recorded below; these initial planning notes are not the current release state.
 
 Browser QA environment probe succeeded on 2026-09-21: bundled Playwright 1.62.1
 launched the already-installed Chromium headless 148.0.7778.96 with an explicit
@@ -1467,7 +1468,7 @@ the test runtime is available, not that the not-yet-built cabinet has passed QA.
 | 10 | Complete | Both reviews approved after auth, safe-area and request-race amendments. Parent 37 frontend tests, TypeScript/Vite build, full HTTP-mocked browser QA at 320/390/768/1280 in light/dark, official SDK synthetic cache spot-check and real FastAPI static probe passed. Live Telegram pilot remains pending |
 | 11 | Complete | Both re-reviews approved; parent backend634 passed140.45s with real PG/no skips, final Telegram37/frontend52/build/Ruff passed. Actual admin bundle browser QA verified rename/cancel/copy/selection/390px and held GET/PATCH/external revoke/per-key pending races; microsecond timestamp regression covered |
 | 12 | Complete | Specification and quality re-reviews approved. Parent final backend: 664 passed in 139.42s with real PG/no skips; full Ruff clean; frontend52/build passed. 30 logging regressions include structured headers, exception causes/contexts/notes/groups, SQL parameters and late ASGI failures. Actual isolated Nginx 1.18 passed 200/400/413/429/502, cookie flags, scoped no-store/no-referrer and secret-free logs; temporary instance removed |
-| 13 | In progress; live Telegram pending | Real production snapshot passed two migrations/backfills, legacy field/identity/limit preservation and previous ORM rollback compatibility; disposable copies removed and absence confirmed. Fresh validated full DB/config/frontend backup retained at `/opt/backups/veltrix-cabinet-20260921-003811`. Auth static review approved; disabled deployment/rollback and post-release probe scripts safety-reviewed. Production app not yet changed; real Telegram credentials/client checks still outstanding |
+| 13 | Deployed disabled; live Telegram pending | Production updated to `46caa1010e452dc94d606dc2b7b2a59f18816ac7` with control-only restart and Nginx reload. All 20 post-release checks passed: schema/names, all prior VPN identity hashes, HTTPS admin login/profile reads/session isolation/logout, disabled portal and no-store/no-referrer, certificate-valid HTTPS200 and UDP DNS through key8/test1. Real-snapshot two-pass migration/old-ORM rehearsal passed; all disposable PG/Nginx instances removed. Validated full backup retained at `/opt/backups/veltrix-cabinet-20260921-003811`. Public and pilot login remain disabled; live Telegram browser/iPhone verification and final branch integration still pending. Rollback reviewed, not forced on healthy production |
 
 Verification repair: the old partial-cycle durability test raced a 0.1-second
 effective timeout against initial SQLite work (configured 0.05 is clamped). A
@@ -1483,7 +1484,9 @@ to browser-compressed form, and scoped IPv6 addresses are accepted by the parser
 The intended `https://veltrix.qzz.io` DNS-origin deployment is unaffected; do not
 claim arbitrary IPv6-origin support without fixing and testing that edge.
 
-PostgreSQL rehearsal used only a separately initialized disposable test cluster,
-with explicit user approval and synthetic data. No production DB/app/VPN settings
-were changed. The current tunnel must be stopped and its exact test-cluster directory
-removed when verification finishes; parent owns cleanup.
+Historical concurrency-test setup used a separately initialized disposable
+PostgreSQL cluster, with explicit user approval and synthetic data; those tests
+did not change production DB/app/VPN settings. After the final 664-test run, the
+parent stopped its SSH tunnel and the cluster; removal of the exact directory
+`/tmp/veltrix-portal-test-h8t_gmwt` completed with exit status 0. Later real-snapshot
+rehearsals and the disabled production release are recorded separately above.
