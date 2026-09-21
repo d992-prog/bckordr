@@ -1,5 +1,82 @@
 # Current State
 
+## Node-local API, journal and approved live repair (2026-09-21 continuation)
+
+This is the newest checkpoint; sections below are historical. Continue in
+`.worktrees/veltrix-customer-portal`, branch `codex/veltrix-customer-portal`.
+The friend beta is **not ready**: no protected inbound, invitation activation,
+complete mutation executor, durable control queue or reconciliation workflow yet.
+Payments and public cabinet admission remain disabled. Do not deploy this local
+intermediate branch or remove the bound-profile mutation barriers.
+
+### Implemented locally
+
+- `f393478`: stdlib node-local panel session with direct loopback networking,
+  bounded responses/deadlines, strict envelopes, no retries and explicit mutation
+  uncertainty. `b7a9096`: configuration observer checks exact panel identity,
+  inbound coverage against read-only local SQLite and the expected transport.
+  Full inbound responses, including REALITY private keys, stay on the node.
+- `a05040e`: dedicated Bearer-token mode. No browser login/cookie/CSRF/logout or
+  credential fallback in that mode; secrets cleared on context close. Status
+  success alone is not proof of administrative scope or runtime application.
+- `b449e52`, `vpn_node_journal.py`: separate SQLite gate and durable operation ledger,
+  generation/permanent-revoke fences, no automatic replay, and node-wide blocking
+  after uncertain sends. Real process-death and late-HTTP-handler tests pass.
+  **Not anti-rollback storage:** restoring an old same-installation ledger can
+  erase fences. Never restore/reinitialize ledger files as recovery. Explicit
+  control-side reconciliation is a release gate, not implemented yet.
+- `6067819`: the legacy attachment insert now uses its existing schema-aware timestamp
+  helper: INTEGER/BIGINT gets Unix milliseconds, legacy TEXT stays compatible.
+  Existing rows are never repaired implicitly. This prevention patch is still
+  local; its deployed already-linked path does not rewrite the repaired row.
+
+### Authorized production actions actually completed
+
+- The owner permitted a dedicated administrative 3x-UI API token, stored only
+  on the node at `/var/lib/veltrix-vpn/control-auth/api-token`, root-owned0600
+  below private0700 directories. Creation used a fresh unique name after strict
+  SSH, worker reservation, backup and private-copy CLI-initialization rehearsal.
+  Existing tokens, password, clients and inbound configuration stayed unchanged.
+  Do not rerun the installer: the CLI can rotate existing named tokens.
+- Live global client listing initially failed because the owner's single
+  `client_inbounds.created_at` held text although pinned 3x-UI expects int64
+  milliseconds. After separate explicit owner permission, a fresh backup and
+  private-copy rehearsal, exactly that field was converted. Full table/schema
+  comparisons verified no other changes; Xray PID/start-time was unchanged.
+  UUID, URI, expiry and counters were preserved; no restart was performed.
+- Live token authentication, status, settings, inbound list and global client
+  list now pass. The new node-local observer checked the actual existing owner
+  candidate: matched, enabled, transport matched, runtime running. This is a
+  read-only configuration observation, not endpoint binding or revocation proof.
+- Backups and rehearsal copies remain private on the VPN node below
+  `/var/lib/veltrix-vpn/control-auth/`, including `created-at-repair/`.
+  Neither panel credentials nor raw panel responses were exported to chat.
+- Permanent public TCP443 for the protected VPN was explicitly authorized, but
+  **has not been opened**. Existing8443 and the owner's link are unchanged. No
+  application deployment occurred; last recorded deployed revision is `e635f0b`.
+
+### Verification and next gate
+
+- Parent final full backend: **1311 passed, 13 skipped in 201.15s**. Eight require
+  a separate PostgreSQL test URL; five are journal platform checks. Whole-backend
+  Ruff and whitespace checks passed. No frontend source changed; preserve the
+  existing generated `frontend/tsconfig.tsbuildinfo` modification.
+- Independent specification review then quality review approved each component
+  after fixes. Fourteen synthetic POSIX checks also passed on the control server's
+  application Python3.11.0. Only private temporary synthetic files were used and
+  removed; no working database or service was involved in those checks.
+- Final integrated independent review approved this bounded checkpoint with no
+  actionable findings; its targeted rerun passed 140 tests with five platform
+  skips. This is not production-launch approval.
+- Next: connected node mutation/runtime verification, durable control staging
+  and worker reservations, strict SSH execution, recovery/reconciliation and
+  real PostgreSQL race tests; then verified legacy import, protected inbound
+  acceptance and one-use invitations. Keep current owner-only access throughout.
+- Detailed evidence and limits are in the dated node-panel-session,
+  node-observation, node-token-session, node-operation-journal and
+  client-link-timestamp-repair plans. The old xui-remote-session plan is explicitly
+  superseded; never forward full inbound responses to the control process.
+
 ## Pinned 3x-UI identity observation (2026-09-21, local only)
 
 - `a823868` implements the next bounded component in
