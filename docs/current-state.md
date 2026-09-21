@@ -1,5 +1,19 @@
 # Current State
 
+## Closed-beta disconnect policy approved (2026-09-21)
+
+- After the owner's next continuation, official 3x-UI 3.8.5 release notes and
+  its upstream disconnect clarification confirmed the release constraint below.
+  The owner explicitly accepted shared reconnections on disable/expiry for the
+  first ten-person closed test. The approved spec now records this narrow exception;
+  effective removal must still stop already-authenticated traffic, not just reject
+  a new handshake. Preserve existing UUIDs and links, and measure recovery.
+- This choice does not authorize opening a new port or immediately changing the
+  node. No production setting or VPN connection has changed in this continuation.
+  IP bans are not profile-level revocation. Add/update hot-apply failures may also
+  restart the core: do not promise unconditional continuity or an unmeasured outage.
+  Details: `docs/veltrix-endpoint-api-findings.md`.
+
 ## Recorded endpoint resolution and safety barrier (2026-09-21, local only)
 
 - Continue in `.worktrees/veltrix-customer-portal` on

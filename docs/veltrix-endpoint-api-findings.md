@@ -36,12 +36,12 @@ our acceptance tests is that failure of a **new** login alone is insufficient:
 already-authenticated traffic must be tested separately. See the
 [26.9.9 VLESS handler](https://raw.githubusercontent.com/XTLS/Xray-core/v26.9.9/proxy/vless/inbound/inbound.go).
 
-The approved design requires both effective suspension/revocation and no routine
-interruption of another client's control connection. A plain API wrapper does not
-yet satisfy that contract. Before implementing a live mutation adapter, resolve
-this incompatibility with a tested approach or an explicitly approved design
-change. Do not silently weaken the criterion, patch/replace the installed panel,
-change its settings, or declare a best-effort hot update sufficient.
+The original design required both effective suspension/revocation and no routine
+interruption of another client's control connection. The owner has now accepted
+shared reconnections on disable/expiry for the ten-person closed beta (see below).
+A plain API wrapper still does not prove effective removal or successful recovery.
+Do not silently extend the exception, patch/replace the installed panel, change
+its settings, or declare a best-effort hot update sufficient.
 
 ## Current safe increment
 
@@ -82,3 +82,29 @@ claim to replace their current authorization or transaction policy:
 Do not turn the temporary unbound compatibility path into a permanent fallback.
 No control/lifecycle refactor, remote import or endpoint selection was performed
 as part of this source audit.
+
+## Follow-up: owner-approved closed-beta disconnect exception
+
+On the next continuation, the parent checked the official
+[3.8.5 release notes](https://github.com/MHSanaei/3x-ui/releases/tag/v3.8.5), which
+explicitly describe manual disable/delete as well as expiry/quota disabling under
+the restart-on-client-disable setting. They distinguish credential removal from
+ending established traffic. This confirms that the prior source finding is an
+upstream-described behavior, not merely an inferred application bug.
+
+The upstream [disconnect clarification](https://github.com/MHSanaei/3x-ui/pull/6551)
+also explains that the IP-limit helper's temporary credential removal is not a
+per-client live-session shutdown; its enforcement relies on fail2ban at the IP
+layer. A public-IP ban is not a suitable substitute for our profile-level revoke:
+users can share an address behind NAT, and an account can reconnect elsewhere.
+No IP ban, panel login, setting change, restart or empirical node test was performed.
+
+The owner explicitly answered: “Да, для закрытого теста допускаем переподключение
+(рекомендую)”. This permits shared reconnections on disabling access or subscription
+expiry for the first ten-person closed beta; it is not a general restart policy
+for public release. The amended design still requires identity preservation,
+effective removal of established traffic and recovery of the control profile.
+Add/update failure paths may also restart the core; report and test these rather
+than promising unconditional continuity. This design choice does not authorize
+opening a port or immediately modifying the running node. No reconnection duration
+has been measured. Public-release continuity remains a separate design decision.
