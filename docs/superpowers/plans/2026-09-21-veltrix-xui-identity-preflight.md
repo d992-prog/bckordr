@@ -46,7 +46,7 @@ mutated. The transport loader must later discard raw payloads without logging.
 - Create: `backend/tests/test_vpn_xui_identity.py`
 - Existing dependency (read only): `backend/app/services/vpn_endpoints.py`
 
-- [ ] **Step 1: Add failing synthetic wire-contract tests.** Start with the following
+- [x] **Step 1: Add failing synthetic wire-contract tests.** Start with the following
   fixture and successful-case test; then add parametrized cases listed below.
   UUIDs and emails must be fictional. Tests call real parsing/inspection, no mocks.
 
@@ -103,7 +103,7 @@ does not claim the target matched; transport differences are not validated here;
 exceptions/traceback and repr do not contain synthetic secret sentinels. Include
 unmatched credentials in a second inbound to prove no first-row/default selection.
 
-- [ ] **Step 2: Verify RED.** From the active worktree's `backend`, run:
+- [x] **Step 2: Verify RED.** From the active worktree's `backend`, run:
 
 ```powershell
 $vpnIdentityTemp = Join-Path (Get-Location).Path ('.pytest_cache/xui-identity-red-' + [guid]::NewGuid().ToString('N'))
@@ -114,7 +114,7 @@ if (Test-Path -LiteralPath $vpnIdentityTemp) { throw 'Scratch exists' }
 Expected initial missing module/function, then assertion failures when a minimal
 stub exists; record evidence of actual missing behavior, not fixture mistakes.
 
-- [ ] **Step 3: Implement the observation boundary.** The following is the complete
+- [x] **Step 3: Implement the observation boundary.** The following is the complete
   intended implementation. Small refactors preserving the contract are permitted;
   unsupported wire behavior must be raised, not invented.
 
@@ -269,13 +269,13 @@ def inspect_xui_client_identity(
     return XuiClientObservation("matched", record_id, enabled)
 ```
 
-- [ ] **Step 4: Verify GREEN and existing boundaries.** Use a new unique basetemp
+- [x] **Step 4: Verify GREEN and existing boundaries.** Use a new unique basetemp
   for each invocation of pytest. Run the new file plus `test_vpn_endpoints.py`
   and `test_vpn_endpoint_legacy_barrier.py`; expect all passed. Run
   `.\.venv\Scripts\python.exe -m ruff check app tests` and `git diff --check`.
-- [ ] **Step 5: Self-review, then specification review, then quality review.**
+- [x] **Step 5: Self-review, then specification review, then quality review.**
   No reviewer may treat this observation as a completed adapter or approve deploy.
-- [ ] **Step 6: Commit only the two files after reviews.**
+- [x] **Step 6: Commit only the two files after reviews.**
 
 ```powershell
 git add -- backend/app/services/vpn_xui_identity.py backend/tests/test_vpn_xui_identity.py
@@ -284,14 +284,39 @@ git commit -m "feat(vpn): cross-check pinned panel client identity"
 
 ## Task 2: Parent integration verification and handoff
 
-- [ ] Run full backend pytest with a fresh local basetemp, count PostgreSQL-only
+- [x] Run full backend pytest with a fresh local basetemp, count PostgreSQL-only
   skips explicitly; no concurrent database proof is claimed from SQLite.
-- [ ] Re-run backend Ruff and diff check. No frontend source/build changes expected.
-- [ ] Obtain final integrated independent review of the full increment.
-- [ ] Update `docs/current-state.md` and this ledger with actual evidence, local-only
+- [x] Re-run backend Ruff and diff check. No frontend source/build changes expected.
+- [x] Obtain final integrated independent review of the full increment.
+- [x] Update `docs/current-state.md` and this ledger with actual evidence, local-only
   status and next requirement: trusted collection/transport verification and durable
   endpoint-aware mutations, followed by legacy import and protected inbound tests.
-- [ ] Preserve `frontend/tsconfig.tsbuildinfo`; no deployment, push or merge.
+- [x] Preserve `frontend/tsconfig.tsbuildinfo`; no deployment, push or merge.
+
+### Verification ledger
+
+- RED: initial missing-module collection failure; stub 203 failures + 87 passes,
+  then split-identity regressions brought RED to 205 failures + 87 passes.
+- GREEN: 292 related tests passed; after strengthening the secret-sentinel test,
+  the implementer repeated 292 passes in 44.78 seconds.
+- Parent independent latest focused run: 205 passed in 1.20 seconds.
+- Parent full backend: 990 passed, 8 PostgreSQL-only skips in 164.10 seconds.
+  The full run began before the final test-only sentinel strengthening; production
+  code did not change, and the latest focused/related reruns verify that amendment.
+- Parent repeated full backend on committed `a823868`, including the final test
+  amendment: **990 passed, 8 PostgreSQL-only skips in 139.83 seconds**.
+- Whole-backend Ruff and diff whitespace checks pass. The specification reviewer
+  independently ran the latest 205 tests; the quality reviewer also passed 205
+  tests and focused Ruff. Both approved this local-only boundary without findings.
+- No deployment, server/node query, API login or port change. No frontend source
+  change. Existing bound mutation barriers remain in place.
+- Code commit: `a823868`. Final integrated review approved the code, amended beta
+  policy and documentation as a local checkpoint with no actionable findings.
+- Invocation caveat: root-cwd Ruff inferred Python 3.10 and flagged the pre-existing
+  `ExceptionGroup` test. `--show-settings` confirmed backend-cwd inference is 3.11
+  from `requires-python`; the prescribed backend check passes. Root invocation
+  with explicit `--target-version py311` also passes. No source/config change was
+  needed. Always run project verification from `backend` as specified above.
 
 ## Plan self-review
 

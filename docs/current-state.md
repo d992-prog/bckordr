@@ -1,5 +1,39 @@
 # Current State
 
+## Pinned 3x-UI identity observation (2026-09-21, local only)
+
+- `a823868` implements the next bounded component in
+  `backend/app/services/vpn_xui_identity.py`.
+  It compares the exact UUID/email pair, exclusive inbound attachment and enabled
+  state across the pinned 3x-UI 3.8.5 global-client and inbound inventories.
+  It rejects duplicate identities, stale/split matches, malformed responses,
+  orphan/multi-attached clients and unsupported target types using static errors.
+  Frozen observations contain no credentials or raw response. The UUID-parser
+  regression proves secret-bearing underlying errors are suppressed in formatted
+  exception chains; do not enable traceback-local capture for these payloads.
+- This function is pure and **not wired into provisioning**. `matched` is not
+  permission to mutate, and `not_observed` is not proof of global absence or
+  completed revocation. User-scoped and non-atomic API lists remain an explicit
+  limitation. No transport/REALITY validation or trusted full collector is implied.
+  Existing bound-profile barriers remain unchanged; do not deploy this checkpoint.
+- Plan: `docs/superpowers/plans/2026-09-21-veltrix-xui-identity-preflight.md`.
+  TDD: 205 new tests failed against the stub while 87 existing tests passed;
+  the final related slice passed all 292 tests. Independent specification and
+  quality reviews and final integrated review approved the local component
+  without findings. Parent reran
+  all 205 new tests successfully after the final test-only secret assertion.
+  Parent full backend on committed `a823868`: **990 passed, 8 skipped in 139.83
+  seconds**, repeating the initial 164.10-second run. The skips
+  require `VPN_PORTAL_TEST_PG_URL` (three migration and five portal PostgreSQL
+  tests). No fresh PostgreSQL concurrency evidence is claimed. Whole-backend
+  Ruff and whitespace checks pass. No frontend source changed or build was run.
+- No control-server/VPN-node calls or changes, panel login, port opening or
+  credential rotation occurred. Deployed state is not reverified here; the last
+  recorded production revision remains `e635f0b`. Preserve the unrelated generated
+  `frontend/tsconfig.tsbuildinfo` modification. Next: trusted collection and transport
+  validation, durable endpoint-aware mutations, verified legacy import and protected
+  inbound/runtime acceptance; invitation implementation still follows that work.
+
 ## Closed-beta disconnect policy approved (2026-09-21)
 
 - After the owner's next continuation, official 3x-UI 3.8.5 release notes and

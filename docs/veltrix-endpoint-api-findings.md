@@ -52,6 +52,40 @@ not the final migration policy. Do not deploy this checkpoint or create producti
 endpoint bindings. Next work also needs verified legacy import, strict SSH trust,
 remote identity checks, and real PostgreSQL concurrency/recovery evidence.
 
+## Pinned inventory contract for identity preflight
+
+The next local helper consumes decoded responses without fetching or retaining
+raw data. It is configuration observation only; it does not authorize mutation.
+The pinned [global list implementation](https://github.com/MHSanaei/3x-ui/blob/v3.8.5/internal/web/service/client_lookup.go#L171)
+lists normalized client records without user filtering or pagination. The
+[response type](https://github.com/MHSanaei/3x-ui/blob/v3.8.5/internal/web/service/client.go#L19)
+flattens those fields and adds `inboundIds` (possibly null for an orphan).
+Record `id` is numeric; `uuid` is the credential. Per-inbound flow can override
+the global value, so this identity-only check must not compare global flow.
+
+In contrast, the [inbound list](https://github.com/MHSanaei/3x-ui/blob/v3.8.5/internal/web/service/inbound.go#L180)
+is scoped to the authenticated panel user. Its stored `settings.clients` may
+contain stale identities, while normalized records supply runtime configuration.
+Require the exact UUID/email pair, exclusive attachment and consistent enabled
+state in both lists. Refuse ambiguity instead of repairing it automatically.
+The helper's `not_observed` is deliberately weaker than absence: two non-atomic,
+potentially incomplete responses cannot establish safe creation or revocation.
+
+Valid [inbound JSON serialization](https://github.com/MHSanaei/3x-ui/blob/v3.8.5/internal/database/model/model.go#L165)
+emits nested settings objects. Malformed saved settings can become strings and
+must be rejected by the pinned parser. No generic string-decoding fallback is
+needed for this contract. Unknown panel versions require separate validation.
+The [mutation pending response](https://github.com/MHSanaei/3x-ui/blob/v3.8.5/internal/web/controller/util.go#L175)
+has `obj: {nodePending: true}` and is not an inventory. Missing this flag in a
+list response does not prove the running core matches the panel's database.
+
+The later transport checker must use the actual nested
+[REALITY schema](https://github.com/MHSanaei/3x-ui/blob/v3.8.5/frontend/src/schemas/protocols/security/reality.ts#L3):
+`realitySettings.serverNames`, `shortIds` and `settings.publicKey/fingerprint`.
+Identity comparison alone checks none of these and must not mark an endpoint
+ready. A trusted full collector, SSH pin enforcement, complete transport validation,
+durable intents and runtime postconditions remain separate release requirements.
+
 ## Application integration still required before release
 
 Source audit at `a39dedd` found these caller boundaries; the local barrier does not
