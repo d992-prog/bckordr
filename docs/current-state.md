@@ -1,5 +1,47 @@
 # Current State
 
+## Recorded endpoint resolution and safety barrier (2026-09-21, local only)
+
+- Continue in `.worktrees/veltrix-customer-portal` on
+  `codex/veltrix-customer-portal`; do not switch to the root checkout for this work.
+  Plan: `docs/superpowers/plans/2026-09-21-veltrix-endpoint-resolution.md`.
+  `541b2c3` adds the immutable recorded-endpoint resolver; `e8cee3e` and `a39dedd`
+  strengthen its regression checks. Both task reviews approved the resolver;
+  56 focused tests pass, including changed/cleared worker defaults, identity
+  preservation, stale endpoint refresh and directly observed no-flush/no-commit.
+- `221a835` adds the legacy-mutation/decommission barrier. Bound provision,
+  suspension and revocation stay pending with static diagnostics and no SSH,
+  UUID/URI replacement, issue/expiry/revoke/sync time rewrite, success event or worker-health
+  mutation; only the requested pending status, error and key update time change.
+  Direct service calls preserve permanent revocation. Node retirement refuses any non-revoked
+  bound profile before clearing keys or credentials, including unknown statuses;
+  confirmed-revoked history and existing unbound retirement remain compatible.
+  Task specification/quality reviews and the independent final integrated review
+  approved this local gate with no remaining findings.
+  This is **not** a deployable endpoint-aware release:
+  there is no remote adapter, durable operation intent, verified legacy import,
+  endpoint-aware lifecycle selection, protected inbound or friend invitation yet.
+  Do not bind production keys or deploy this intermediate checkpoint.
+- Source research exposed an unresolved release constraint in installed 3x-UI
+  3.8.5 / Xray 26.9.9: hot API changes can fall back to a shared-process restart,
+  whereas credential removal alone need not end existing authenticated traffic.
+  See `docs/veltrix-endpoint-api-findings.md` for pinned primary sources and caller
+  integration gaps. Turning off restart-on-disable does not prove both effective
+  revocation and uninterrupted operation. Resolve this before a live adapter;
+  do not silently weaken the approved acceptance criteria.
+- Parent full backend verification on committed `221a835`: **785 passed,
+  8 skipped in 131.27 seconds**, repeating the initial 158.23-second successful run.
+  The skips explicitly require a PostgreSQL test URL
+  (three migration and five portal tests); no concurrency proof is inferred from
+  SQLite. The implementer also ran 162 related regression tests successfully.
+  Whole-backend Ruff and diff whitespace checks passed. No frontend source changed,
+  so frontend tests/build were not rerun in this increment.
+- This increment has made no control/VPN-node calls or changes. The last verified deployed
+  revision remains `e635f0b`, as recorded below; no fresh production-health claim
+  is made by the local test results. Closed owner-only admission and payment
+  deferral remain unchanged. Preserve the existing generated
+  `frontend/tsconfig.tsbuildinfo` modification; it is not part of this increment.
+
 ## Protected VPN endpoints: local storage gate (2026-09-21, not deployed)
 
 - The owner approved continuing the protected-endpoint design before the friend

@@ -47,7 +47,7 @@ durable operation intents, exact remote identity checks and hot API operations.
 
 ## Task 1: Read-only recorded endpoint resolution
 
-- [ ] Write a missing-contract RED test before creating the module:
+- [x] Write a missing-contract RED test before creating the module:
 
 ```python
 from importlib.util import find_spec
@@ -59,7 +59,7 @@ def test_recorded_endpoint_resolver_is_available():
 Run `.\.venv\Scripts\python.exe -m pytest tests/test_vpn_endpoints.py -q`;
 expect the assertion to fail, not collection/import failure.
 
-- [ ] Implement the following contract in `vpn_endpoints.py`.
+- [x] Implement the following contract in `vpn_endpoints.py`.
 
 ```python
 from dataclasses import dataclass
@@ -163,7 +163,7 @@ accept this result as a complete verification certificate. Do not create an
 endpoint ORM relationship or read worker VPN defaults. Do not mutate keys/rows,
 commit, obtain locks, perform SSH or generate UUIDs in this resolver.
 
-- [ ] Add RED/GREEN behavior tests using actual in-memory SQLite sessions, valid
+- [x] Add RED/GREEN behavior tests using actual SQLite sessions, valid
   seeded worker/customer/subscription/endpoints and synthetic UUID/URI. Use detached
   access-key objects for mismatch/missing-binding tests rather than corrupting DB FKs.
   A core test must contain these assertions:
@@ -186,20 +186,28 @@ errors. Test stale identity-map refresh using a second committed session; test n
 autoflush does not write unrelated dirty worker values during resolution. SQLite
 tests prove recorded resolution only, not inter-process locking or live transport.
 
-- [ ] Run focused tests and configured Ruff from backend; self-review, commit only
+- [x] Run focused tests and configured Ruff from backend; self-review, commit only
   the two files as `feat(vpn): resolve recorded endpoint identity without defaults`.
   Specification review then quality review before Task 2.
 
+Task 1 evidence: `541b2c3` implements the resolver after 54 expected RED failures.
+Internal tab/NBSP host regressions produced two additional RED failures before the
+whitespace fix. Independent parent and reviewers ran the 56-case GREEN suite and
+Ruff. `e8cee3e` strengthens no-autoflush proof: disabling the context at runtime now
+fails with one observed flush; normal scoped flush/commit counters stay zero.
+`a39dedd` asserts the complete populated REALITY snapshot. Specification and quality
+review findings are closed. No remote operation or production change occurred.
+
 ## Task 2: Prevent legacy operations from mutating bound identities
 
-- [ ] RED: with real SQLite seed a verified bound key on inbound10 and worker default
+- [x] RED: with real SQLite seed a verified bound key on inbound10 and worker default
   inbound99; mock only `execute_worker_ssh_commands` to count calls and fail if used.
   Parameterize provision/suspend/revoke. Snapshot external_uuid, config_uri, issued_at,
   expires_at, revoked_at, endpoint_id, worker_id. After each call assert no SSH,
   unchanged identity, and pending action with a static error. Start with existing
   code so this assertion fails because SSH is called / identity is regenerated.
 
-- [ ] Import resolver/error/UUID validation into `vpn_provisioning.py`. Add this
+- [x] Import resolver/error/UUID validation into `vpn_provisioning.py`. Add this
   helper (forward references to the existing sanitize helper are unnecessary):
 
 ```python
@@ -266,24 +274,49 @@ AND status != 'revoked' LIMIT 1` under the locked worker before mutations, inste
 of assuming DEVICE_SLOT_STATUSES is exhaustive. Keep existing unbound retirement
 behavior intact. Final disabled endpoint policy is a later release concern.
 
-- [ ] Extend tests: invalid/missing UUID never regenerated, no changed URI/times,
+- [x] Extend tests: invalid/missing UUID never regenerated, no changed URI/times,
   unbound baseline retained, disabled bound revoke remains pending not false success,
   resolver mismatch surfaced safely, no worker default needed, manual revoke remains
   final on direct provision/suspend, direct builders reject, decommission refuses
   active/pending/unknown bound records without clearing SSH secrets or profiles,
   confirmed-revoked bound history does not block retirement. No raw credential in
   event/errors. Existing test files remain the unbound compatibility regression.
-- [ ] Run `python -m pytest tests/test_vpn_endpoints.py tests/test_vpn_endpoint_legacy_barrier.py tests/test_vpn_provisioning.py tests/test_vpn_policy.py tests/test_vpn_lifecycle.py tests/test_vpn_subscription_sync.py tests/test_worker_decommission.py -q` from backend using its venv.
+- [x] Run `python -m pytest tests/test_vpn_endpoints.py tests/test_vpn_endpoint_legacy_barrier.py tests/test_vpn_provisioning.py tests/test_vpn_policy.py tests/test_vpn_lifecycle.py tests/test_vpn_subscription_sync.py tests/test_worker_decommission.py -q` from backend using its venv.
   Check actual decommission test filename before running. Run configured Ruff.
   Commit only Task 2 code/tests as `fix(vpn): block legacy mutations for bound profiles`.
   Specification review then quality review; fix and re-review findings.
 
+Task 2 evidence: `221a835` changes only the two services and the new integration
+test file. Initial RED collected 31 cases cleanly: 27 failed on expected missing
+barriers, four existing-safe cases passed. GREEN: all 31 passed; the complete
+related regression command above passed 162 cases in 93.06 seconds. Bound profile
+expiry intentionally differs from subscription expiry, and the provision case
+starts with no issue timestamp. Mixed bound/unbound retirement checks show neither
+key is changed when retirement is refused. Specification and quality reviews
+approved this intermediate boundary with no remaining findings.
+
 ## Final verification and handoff
 
-- [ ] Run full backend suite from backend and record optional PostgreSQL skips
+- [x] Run full backend suite from backend and record optional PostgreSQL skips
   honestly; this increment does not introduce lock/transaction/concurrency claims.
   Existing real PostgreSQL migration proof is recorded in the preceding plan.
-- [ ] Independent final integrated review, `git diff --check`, configured Ruff.
-- [ ] Record exact commits/results and unimplemented runtime/verification pieces in
+- [x] Independent final integrated review, `git diff --check`, configured Ruff.
+- [x] Record exact commits/results and unimplemented runtime/verification pieces in
   `docs/current-state.md`. Preserve worktree; do not deploy this barrier-only version
   or create production endpoint rows. No temporary server DB is needed here.
+
+Parent verification on the complete initial Task 2 implementation:
+`python -m pytest -q -rs --basetemp <new local .pytest_cache directory>` from
+`backend` finished with **785 passed, 8 skipped in 158.23 seconds**. The skips are
+three endpoint migration checks and five portal PostgreSQL checks, all explicitly
+requiring `VPN_PORTAL_TEST_PG_URL`. No test server was started in this increment.
+Whole-backend `python -m ruff check app tests` and `git diff --check` passed.
+Frontend tests/build were not rerun: this increment changes no frontend source.
+Parent repeated the full suite on committed `221a835`: **785 passed, 8 skipped in
+131.27 seconds**, with the same eight explicitly optional PostgreSQL checks.
+Independent integrated review of `9d6f28e..221a835` and the handoff documentation
+found no Critical, Important or Minor issues within this intermediate scope.
+Final Ruff and committed/working-tree diff whitespace checks passed. The approved
+protected-endpoint release remains incomplete; read
+`docs/veltrix-endpoint-api-findings.md` before planning the live adapter. No deploy,
+production binding, service restart, panel authentication or node call occurred.
