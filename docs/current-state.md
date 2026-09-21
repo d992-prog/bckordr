@@ -1,16 +1,66 @@
 # Current State
 
+## Protected VPN endpoints: local storage gate (2026-09-21, not deployed)
+
+- The owner approved continuing the protected-endpoint design before the friend
+  beta. First group remains ten individual one-use invitations, seven days from
+  confirmed readiness and one profile per participant; no payment integration or
+  public admission. Invitations and the protected inbound are not implemented yet.
+- `c8e78b8` adds endpoint storage and nullable key bindings, with no startup
+  backfill, remote calls or runtime routing change. Both task specification reviews
+  and the final integrated quality review approved this storage-only scope.
+  `14fa67a` + `019bf99` add real PostgreSQL upgrade/repeat/fresh-schema proof;
+  use `docs/superpowers/plans/2026-09-21-veltrix-vpn-endpoint-storage.md` for the ledger.
+  Do not deploy this storage-only checkpoint as an endpoint-aware release.
+- Parent verification: 706 backend tests passed with real PostgreSQL/no skips;
+  after the last test-only review amendment, all 29 schema/migration tests passed.
+  Configured backend Ruff clean; frontend 52 tests and TypeScript/Vite build passed.
+  The synthetic cluster `/tmp/veltrix-portal-test-s7iqczfs` was stopped and removed;
+  independent SSH inspection confirmed its exact directory absent and port closed.
+  Control remains active on `e635f0b`; existing test1 passed certificate-valid
+  HTTPS200 and UDP DNS. Public HTTPS health returned 200/ok. An initial probe with
+  urllib's default User-Agent received Cloudflare 403; paired otherwise-identical
+  requests using the prior httpx User-Agent returned 200. No edge/app settings changed.
+- Read-only inspection of VPN worker 15 found 3x-UI **3.8.5**, Xray **26.9.9**,
+  one VLESS/none inbound on 8443, and no TCP listener on 443 at inspection time.
+  Firewall/external reachability of 443 was not established and no port was opened.
+  Production remains `e635f0b`; no working VPN key or node setting was changed.
+- The owner could not independently compare the SSH host fingerprint and explicitly
+  authorized trusting the currently presented key. The inspection pins that key
+  in local ignored `.pytest_cache/vpn-node-15-known-hosts`, with fingerprint
+  `SHA256:YoFFLpJcKF3MTbHICP8hOV+HUBCUorQuAKCruYd13D0`. This is owner-authorized
+  first-contact trust, **not** a hosting-console verification. Authenticated
+  read-only inspection then passed against that pin. Preserve it; do not silently
+  replace a changed host key. The existing application SSH helper still uses
+  `known_hosts=None`; no claim is made that production worker SSH is now pinned.
+  A durable strict-verification path is required before protected-endpoint mutation.
+- The node has no explicit `restartXrayOnClientDisable` setting. The installed
+  version's [setting source](https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.8.5/internal/web/service/setting.go)
+  defaults missing values to true. Client operations must therefore be checked for
+  restart/connection behavior before friend admission; merely calling the panel API
+  does not establish uninterrupted operation. No panel setting or token was changed.
+
 ## Mini App launch correction (2026-09-21, supersedes release revision below)
 
+- Owner has now confirmed the corrected real iPhone Mini App launch works
+  ("проверил, уже работает"). This is user-reported live acceptance of the login
+  correction, not a new automated check. Owner then confirmed copying the connection
+  from the cabinet and using it in Happ works ("да, всё копируется и всё работает").
+  Owner also confirmed renaming the profile, retaining its name after reopening the
+  cabinet, and continued VPN operation. Owner then confirmed seeing the successful
+  logout screen and automatic sign-in after closing/reopening Telegram and Mini App.
+  The main flow, rename persistence and logout/re-entry are user-accepted. Wider
+  pilot checks and final integration remain; this is not public-launch approval.
+  No new server changes accompanied these confirmations.
 - Production now runs `e635f0b078cb4ee91f9b4d1dd5e6ce54fd7ea1b2`. Owner reports
-  browser sign-in completed, but has not yet confirmed subscription/profile rendering.
+  browser sign-in completed; detailed subscription-data comparison remains unchecked.
   Real iPhone Mini App screenshot exposed an empty-initData launch from the bot's
   reply keyboard. Telegram documents that this launch type provides no WebAppInitData.
 - Fixed only bot entry delivery: command reply keyboard remains, old WebApp row is
   replaced on the next reply, and one separately gated inline cabinet button follows
   all response chunks. Authentication validation and closed single-owner access remain
-  unchanged. Owner must close the old window, send `/start`, and use the new button
-  below the bot message. Real Mini App sign-in after correction remains pending.
+  unchanged. Owner followed the fresh `/start`/new inline-button retest and confirmed
+  it works. Do not repeat BotFather or credential setup.
 - Regression evidence: 2 launch tests failed before correction; final bot suite 50
   passed, including partial-delivery failure without replaying a delivered key.
   Broader portal/customer/bot checks before the last added test: 267 passed, 5 optional
@@ -29,7 +79,7 @@
   returned 401. Unrelated Cloudflare analytics DNS failure did not block rendering.
   This is deployment/UI evidence, not a completed user Mini App login.
 
-## Current release checkpoint (2026-09-21)
+## Initial release and activation checkpoint (historical, 2026-09-21)
 
 - Post-release setup: user switched BotFather from legacy Login Widget to OIDC,
   then reported saving callback under Redirect URIs and origin under Trusted Origins.

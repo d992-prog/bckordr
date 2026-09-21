@@ -1404,12 +1404,19 @@ VPN_PORTAL_PUBLIC_ACCESS=false
   backup `/opt/backups/veltrix-pilot-da5nmqms`, control-only restart, OIDC redirect/cancel
   and unchanged VPN identity checks passed; existing link still transports HTTPS/DNS.
 - [ ] Complete real browser and iPhone Mini App login and live ownership checks.
-  Owner reports browser authorization completed; profile/subscription rendering is
-  not yet confirmed. iPhone exposed missing initData from reply-keyboard launch.
+  Owner reports browser authorization completed. Profile copy/rename was subsequently
+  accepted; detailed subscription-data comparison remains unchecked.
+  iPhone exposed missing initData from reply-keyboard launch.
   Correction `e635f0b` deployed: preserved command keyboard plus gated inline entry;
   50 bot tests, 52 frontend tests, broader 267 passed/5 optional PG checks skipped,
   independent reviews, source backup `/opt/backups/veltrix-miniapp-VsJUzooa`.
-  Fresh `/start` and new inline-button launch on iPhone remain required.
+  Owner subsequently confirmed the fresh `/start`/inline-button iPhone launch works
+  ("проверил, уже работает"), then confirmed cabinet copy/export and the imported
+  Happ connection work ("да, всё копируется и всё работает"). Owner then confirmed
+  profile rename persists after reopening and VPN keeps working ("работает").
+  Owner also confirmed the successful logout screen and automatic re-entry after
+  closing/reopening Telegram and Mini App. These confirmations are user-reported;
+  wider pilot checks and final integration remain, with public access still false.
   Verify original VPN link still transports
   certificate-valid HTTPS and DNS, and renamed export has unchanged credential/host.
 - [x] If live identity/config requires user action, report the exact outstanding
@@ -1477,7 +1484,7 @@ the test runtime is available, not that the not-yet-built cabinet has passed QA.
 | 10 | Complete | Both reviews approved after auth, safe-area and request-race amendments. Parent 37 frontend tests, TypeScript/Vite build, full HTTP-mocked browser QA at 320/390/768/1280 in light/dark, official SDK synthetic cache spot-check and real FastAPI static probe passed. Live Telegram pilot remains pending |
 | 11 | Complete | Both re-reviews approved; parent backend634 passed140.45s with real PG/no skips, final Telegram37/frontend52/build/Ruff passed. Actual admin bundle browser QA verified rename/cancel/copy/selection/390px and held GET/PATCH/external revoke/per-key pending races; microsecond timestamp regression covered |
 | 12 | Complete | Specification and quality re-reviews approved. Parent final backend: 664 passed in 139.42s with real PG/no skips; full Ruff clean; frontend52/build passed. 30 logging regressions include structured headers, exception causes/contexts/notes/groups, SQL parameters and late ASGI failures. Actual isolated Nginx 1.18 passed 200/400/413/429/502, cookie flags, scoped no-store/no-referrer and secret-free logs; temporary instance removed |
-| 13 | Closed pilot active; live Telegram pending | Production revision `46caa1010e452dc94d606dc2b7b2a59f18816ac7`. Initial disabled release passed all 20 server checks and real-snapshot migration/old-ORM rehearsal; temporary PG/Nginx instances removed. Full backup retained at `/opt/backups/veltrix-cabinet-20260921-003811`. Owner configured BotFather and privately entered OIDC credentials. Closed pilot enabled for exactly the previously verified owner, public=false; config backup `/opt/backups/veltrix-pilot-da5nmqms`, control-only restart. Owner proof, capabilities, anonymous rejection, PKCE redirect/binding cookie/own cancellation, unchanged VPN identities and certificate-valid HTTPS200/UDP DNS through test1 passed. Real Telegram browser/iPhone login and final branch integration pending. Rollback reviewed, not forced on healthy production |
+| 13 | Core closed-pilot flow accepted; remaining client checks pending | Production revision `e635f0b078cb4ee91f9b4d1dd5e6ce54fd7ea1b2`. Initial disabled release passed all 20 server checks and real-snapshot migration/old-ORM rehearsal; temporary PG/Nginx instances removed. Full backup retained at `/opt/backups/veltrix-cabinet-20260921-003811`. Owner configured BotFather and privately entered OIDC credentials. Closed pilot enabled for exactly the previously verified owner, public=false; config backup `/opt/backups/veltrix-pilot-da5nmqms`, control-only restart. Owner proof, capabilities, anonymous rejection, PKCE redirect/binding cookie/own cancellation, unchanged VPN identities and certificate-valid HTTPS200/UDP DNS through test1 passed. Owner reports browser authorization and confirms corrected inline-button iPhone Mini App login, cabinet copy/export and imported Happ connection work. Remaining client actions and final branch integration pending. Rollback reviewed, not forced on healthy production |
 
 Verification repair: the old partial-cycle durability test raced a 0.1-second
 effective timeout against initial SQLite work (configured 0.05 is clamped). A

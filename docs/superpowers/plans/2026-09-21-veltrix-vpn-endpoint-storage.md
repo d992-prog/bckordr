@@ -42,7 +42,7 @@ Three pre-existing dirty documentation files are parent-owned checkpoints; prese
 
 ## Task 1: Inert model and additive migration
 
-- [ ] **1. RED: add schema tests, then run them before editing application code.**
+- [x] **1. RED: add schema tests, then run them before editing application code.**
 
 Create `backend/tests/test_vpn_endpoint_schema.py`. The first test must fail on the
 missing table, not on an import error:
@@ -68,7 +68,7 @@ def test_existing_key_does_not_require_endpoint():
 Run from `backend`: `.\.venv\Scripts\python.exe -m pytest tests/test_vpn_endpoint_schema.py -q`.
 Expected: assertion failures for missing endpoint table/column.
 
-- [ ] **2. GREEN: add the model and migration.**
+- [x] **2. GREEN: add the model and migration.**
 
 Add `CheckConstraint` and `ForeignKeyConstraint` to the SQLAlchemy imports in
 `models.py`. Insert the following model immediately before `VpnAccessKey`:
@@ -162,7 +162,7 @@ VPN_ENDPOINT_MIGRATIONS = (
             ALTER TABLE vpn_access_keys ADD CONSTRAINT ck_vpn_access_key_endpoint_worker
             CHECK (endpoint_id IS NULL OR worker_id IS NOT NULL);
         END IF;
-    END $$""",
+    END; $$""",
     "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_endpoint_id ON vpn_access_keys(endpoint_id)",
 )
 ```
@@ -170,7 +170,7 @@ VPN_ENDPOINT_MIGRATIONS = (
 In `migrations.py` import `VPN_ENDPOINT_MIGRATIONS` from the new module and append
 it to the existing `MIGRATIONS` tuple. Do not modify older statements or startup.
 
-- [ ] **3. RED/GREEN: extend schema tests with actual FK enforcement.**
+- [x] **3. RED/GREEN: extend schema tests with actual FK enforcement.**
 
 Use real SQLite foreign-key enforcement. Add these imports, fixture and tests
 to the Task 1 test file (keep the two initial RED tests):
@@ -317,7 +317,7 @@ These are storage checks, not runtime validation. Keep RED evidence for the
 missing schema; constraint tests can be introduced together before the model
 patch by importing the model through `models` inside tests/fixtures.
 
-- [ ] **4. Verify and commit only Task 1 files.**
+- [x] **4. Verify and commit only Task 1 files.**
 
 Run `.\.venv\Scripts\python.exe -m pytest tests/test_vpn_endpoint_schema.py tests/test_vpn_portal_schema.py tests/test_vpn_policy.py -q`
 and `.\.venv\Scripts\python.exe -m ruff check app/db tests/test_vpn_endpoint_schema.py`.
@@ -326,7 +326,7 @@ Commit message: `feat(vpn): add stable endpoint identity storage`.
 
 ## Task 2: Actual PostgreSQL repeat-migration rehearsal
 
-- [ ] **1. Create an optional PostgreSQL fixture using `VPN_PORTAL_TEST_PG_URL`,
+- [x] **1. Create an optional PostgreSQL fixture using `VPN_PORTAL_TEST_PG_URL`,
   the existing isolated-test environment variable.**
 
 Validate `make_url(url)` is PostgreSQL+asyncpg, its hostname is `127.0.0.1`,
@@ -388,7 +388,7 @@ async def repeat_migration(engine):
                 await connection.execute(text(statement))
 ```
 
-- [ ] **2. Test the old-schema upgrade, both constraint enforcement and preservation.**
+- [x] **2. Test the old-schema upgrade, both constraint enforcement and preservation.**
 
 Create minimal legacy tables in the isolated schema and use these statements:
 
@@ -451,7 +451,7 @@ async def test_legacy_upgrade_preserves_rows_and_enforces_bindings(migration_eng
                     await connection.execute(text(statement))
 ```
 
-- [ ] **3. Test the application's fresh-schema startup order.**
+- [x] **3. Test the application's fresh-schema startup order.**
 
 In a second empty schema run `Base.metadata.create_all`, then run the endpoint
 statements twice. Inspect named FK/CHECK/UNIQUE constraints and assert the two
@@ -472,7 +472,7 @@ async def test_fresh_metadata_then_repeat_migration(migration_engine):
     assert names.count("ck_vpn_access_key_endpoint_worker") == 1
 ```
 
-- [ ] **4. Run against a separately authorized disposable PostgreSQL cluster.**
+- [x] **4. Run against a separately authorized disposable PostgreSQL cluster.**
 
 Use the reviewed private test-cluster helper, not the production database. Parent
 owns provisioning/cleanup of the fixture. Record real test results, stop the
@@ -487,3 +487,35 @@ data mutation, and both review stages constitute completion of this storage plan
 No VPN transport, admission, invitation or deployment completion is implied.
 Next plan connects the stable identity to verified binding and runtime operations;
 production remains on its existing working version until that release is ready.
+
+## Execution ledger (2026-09-21)
+
+- Task 1: `c8e78b8`, independently specification- and quality-reviewed. Implementer
+  recorded initial missing-table/column RED assertions; parent verified the final
+  schema/portal-schema/policy group (36 passed). The endpoint-worker direct DELETE
+  coverage improvement identified by review is included in Task 2.
+- Task 2: `14fa67a`, plus `019bf99` for explicit PostgreSQL CHECK/UNIQUE type
+  assertions requested by specification review. The re-review is compliant. Real
+  PostgreSQL tests corrected a test-only catalog decoding assumption (`"char"`
+  values arrive as bytes through asyncpg; query casts now request text).
+  No production migration correction was necessary.
+- Parent full backend verification at `14fa67a`: **706 passed in 189.80s**, no
+  skips, with the authorized separate synthetic PostgreSQL cluster. Frontend:
+  **52 passed**, TypeScript/Vite build passed; full configured backend Ruff clean.
+  Final parent schema/migration run at `019bf99`: **29 passed in 47.91s**, no skips.
+  Independent final integrated quality review approved the storage gate with no
+  critical, important or minor findings; both task specification reviews approved.
+  Reviewer's local optional-DB run: 44 passed/3 skipped; that local run is not the
+  real PostgreSQL proof (the parent's no-skip runs above are).
+- Operational inspection is read-only: version and trust facts are recorded in
+  `docs/current-state.md`. Existing test1 again passed certificate-valid HTTPS200
+  and UDP DNS without exporting its credentials. Production stays on `e635f0b`.
+- Parent stopped and removed the exact synthetic cluster
+  `/tmp/veltrix-portal-test-s7iqczfs`. Independent read-only verification confirmed
+  directory absent, remote port 60709 closed, control service active and production
+  revision unchanged. Public HTTPS health returned 200/ok using the prior probe's
+  httpx User-Agent; default urllib User-Agent received a Cloudflare 403. No health
+  or edge settings were modified. No running test database is left behind.
+- This two-task storage plan is complete. The feature branch/worktree is retained
+  for the subsequent endpoint-resolution/verified-binding and operation stages;
+  no merge, public launch, invitations, new listener or deployment was performed.
