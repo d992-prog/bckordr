@@ -24,6 +24,7 @@ from app.db.models import (
 )
 from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
 from app.services.vpn_control_intents import (
+    VpnControlIntentError,
     active_vpn_control_worker_ids,
     claim_next_vpn_control_operation,
     finalize_vpn_control_operation,
@@ -219,6 +220,29 @@ async def _claim(control: PostgresControl, *, now: datetime = NOW):
         )
         await session.commit()
     return operation, token
+
+
+@pytest.mark.asyncio
+async def test_stage_rejects_exhausted_integer_generation_without_aborting_transaction(
+    postgres_control,
+):
+    await _seed(postgres_control)
+    maximum = 2**31 - 1
+    async with postgres_control.sessions() as session:
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        key.operation_generation = maximum
+        await session.commit()
+
+        with pytest.raises(VpnControlIntentError) as caught:
+            await stage_vpn_control_operation(session, 7, "provision", now=NOW)
+
+        assert caught.value.code == "vpn_control_generation_invalid"
+        assert await session.scalar(text("SELECT 1")) == 1
+        assert await session.scalar(
+            select(VpnAccessKey.operation_generation).where(VpnAccessKey.id == 7)
+        ) == maximum
+        assert not (await session.scalars(select(VpnControlOperation))).all()
 
 
 @pytest.mark.asyncio

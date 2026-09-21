@@ -389,6 +389,13 @@ def test_build_control_request_normalizes_naive_times_as_utc_and_unlimited_value
     assert request.traffic_limit_bytes == 0
 
 
+def test_build_control_request_rejects_generation_above_postgres_integer_range():
+    api = _api()
+    with pytest.raises(api.VpnControlIntentError) as caught:
+        _request(generation=2**31)
+    assert caught.value.code == "vpn_control_generation_invalid"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -654,6 +661,30 @@ async def test_stage_rejects_invalid_now_before_any_sql(session_factory, invalid
         assert caught.value.code == "vpn_control_time_invalid"
         assert recording.statements == []
         assert recording.flushes == 0
+
+
+@pytest.mark.asyncio
+async def test_stage_rejects_exhausted_postgres_integer_generation_before_flush(
+    session_factory,
+):
+    api = _api()
+    maximum = 2**31 - 1
+    async with session_factory() as session:
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        key.operation_generation = maximum
+        await session.commit()
+
+        recording = RecordingSession(session)
+        with pytest.raises(api.VpnControlIntentError) as caught:
+            await api.stage_vpn_control_operation(recording, 7, "provision", now=NOW)
+
+        assert caught.value.code == "vpn_control_generation_invalid"
+        assert recording.flushes == 0
+        assert await session.scalar(
+            select(VpnAccessKey.operation_generation).where(VpnAccessKey.id == 7)
+        ) == maximum
+        assert not (await session.scalars(select(VpnControlOperation))).all()
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,7 @@ from app.services.vpn_subscription_sync import subscription_key_action
 
 
 _MAX_INTEGER = 2**63 - 1
+_MAX_GENERATION = 2**31 - 1
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _PENDING_STATUS = {
     "provision": "pending_sync",
@@ -140,6 +141,8 @@ def build_control_request(
     allow_shared_restart: bool,
 ) -> VpnNodeRequest:
     """Derive one validated node request exclusively from persisted records."""
+    if type(generation) is not int or not 1 <= generation <= _MAX_GENERATION:
+        _fail("vpn_control_generation_invalid")
     if action != "revoke" and (
         access_key.revoke_requested_at is not None
         or access_key.revoked_at is not None
@@ -374,7 +377,7 @@ async def stage_vpn_control_operation(
     allow_create = _validate_endpoint_policy(access_key, endpoint, action)
     if (
         type(access_key.operation_generation) is not int
-        or not 0 <= access_key.operation_generation < _MAX_INTEGER
+        or not 0 <= access_key.operation_generation < _MAX_GENERATION
     ):
         _fail("vpn_control_generation_invalid")
     generation = access_key.operation_generation + 1
