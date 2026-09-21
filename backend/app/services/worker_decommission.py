@@ -47,6 +47,20 @@ async def decommission_worker(
     if worker is None:
         raise WorkerDecommissionNotFoundError("Worker not found")
 
+    bound_profile_id = await session.scalar(
+        select(VpnAccessKey.id)
+        .where(
+            VpnAccessKey.worker_id == worker_id,
+            VpnAccessKey.endpoint_id.is_not(None),
+            VpnAccessKey.status != "revoked",
+        )
+        .limit(1)
+    )
+    if bound_profile_id is not None:
+        raise WorkerDecommissionConflictError(
+            "Endpoint-bound VPN profiles must be remotely revoked before node removal"
+        )
+
     active_attack_task_id = await session.scalar(
         select(WorkerTask.id)
         .join(AttackRun, AttackRun.id == WorkerTask.attack_run_id)
