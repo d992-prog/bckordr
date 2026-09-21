@@ -8,14 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
 from app.db.models import (
-    AttackRun,
     VpnAccessKey,
     VpnNodeEvent,
     WorkerMaintenanceJob,
     WorkerNode,
-    WorkerTask,
 )
-from app.services.vpn_policy import DEVICE_SLOT_STATUSES
+from app.services.vpn_policy import DEVICE_SLOT_STATUSES, active_attack_worker_ids
 
 
 class WorkerDecommissionNotFoundError(ValueError):
@@ -61,17 +59,7 @@ async def decommission_worker(
             "Endpoint-bound VPN profiles must be remotely revoked before node removal"
         )
 
-    active_attack_task_id = await session.scalar(
-        select(WorkerTask.id)
-        .join(AttackRun, AttackRun.id == WorkerTask.attack_run_id)
-        .where(
-            WorkerTask.worker_id == worker_id,
-            WorkerTask.status.in_(("queued", "planned", "running")),
-            AttackRun.status.in_(("planned", "running")),
-        )
-        .limit(1)
-    )
-    if active_attack_task_id is not None:
+    if worker_id in await active_attack_worker_ids(session):
         raise WorkerDecommissionConflictError("Worker is assigned to an active domain attack")
 
     active_maintenance_id = await session.scalar(

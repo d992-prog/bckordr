@@ -163,7 +163,14 @@ async def test_count_device_slots_includes_retryable_states_and_can_exclude_key(
 
 
 @pytest.mark.asyncio
-async def test_select_vpn_node_excludes_worker_with_active_attack(session_factory):
+@pytest.mark.parametrize("run_status,task_status,blocked", [
+    ("running", "running", True), ("planned", "planned", True), ("running", "planned", True),
+    ("verifying", "cancelled", True), ("verifying", "succeeded", True), ("verifying", "failed", True),
+    ("success", "running", False), ("failed", "queued", False), ("stopped", "planned", False),
+])
+async def test_vpn_node_selection_respects_domain_work_phase(
+    session_factory, run_status, task_status, blocked,
+):
     async with session_factory() as session:
         busy = _vpn_worker("busy")
         busy.vpn_role = "drop_worker+vpn_node"
@@ -175,7 +182,7 @@ async def test_select_vpn_node_excludes_worker_with_active_attack(session_factor
         await session.flush()
         run = AttackRun(
             domain_id=domain.id,
-            status="running",
+            status=run_status,
             planned_start_at=datetime.now(UTC),
             planned_end_at=datetime.now(UTC) + timedelta(minutes=1),
         )
@@ -186,7 +193,7 @@ async def test_select_vpn_node_excludes_worker_with_active_attack(session_factor
                 attack_run_id=run.id,
                 domain_id=domain.id,
                 worker_id=busy.id,
-                status="running",
+                status=task_status,
             )
         )
         await session.commit()
@@ -195,9 +202,11 @@ async def test_select_vpn_node_excludes_worker_with_active_attack(session_factor
         busy_eligibility = await evaluate_vpn_node(session, busy)
 
         assert selected is not None
-        assert selected.id == free.id
-        assert busy_eligibility.eligible is False
-        assert busy_eligibility.reasons == ("Worker is assigned to an active domain attack",)
+        assert selected.id == (free.id if blocked else busy.id)
+        assert busy_eligibility.eligible is not blocked
+        assert busy_eligibility.reasons == (
+            ("Worker is assigned to an active domain attack",) if blocked else ()
+        )
 
 
 @pytest.mark.asyncio

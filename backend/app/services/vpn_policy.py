@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
@@ -123,8 +123,14 @@ async def active_attack_worker_ids(session: AsyncSession) -> set[int]:
         select(WorkerTask.worker_id)
         .join(AttackRun, AttackRun.id == WorkerTask.attack_run_id)
         .where(
-            WorkerTask.status.in_(("queued", "running")),
-            AttackRun.status.in_(("planned", "running")),
+            or_(
+                # Finalization cancels tasks before the run finishes verifying.
+                AttackRun.status == "verifying",
+                and_(
+                    AttackRun.status.in_(("planned", "running")),
+                    WorkerTask.status.in_(("planned", "queued", "running")),
+                ),
+            ),
         )
         .distinct()
     )

@@ -164,7 +164,13 @@ async def test_decommission_worker_archives_node_and_retires_attached_keys(sessi
 
 
 @pytest.mark.asyncio
-async def test_decommission_worker_rejects_active_attack_without_partial_changes(session_factory):
+@pytest.mark.parametrize("run_status,task_status", [
+    ("running", "running"), ("planned", "planned"),
+    ("verifying", "cancelled"), ("verifying", "succeeded"),
+])
+async def test_decommission_worker_rejects_active_attack_without_partial_changes(
+    session_factory, run_status, task_status,
+):
     async with session_factory() as session:
         worker, _, _, access_key = await seed_vpn_node(session)
         now = datetime.now(UTC)
@@ -173,7 +179,7 @@ async def test_decommission_worker_rejects_active_attack_without_partial_changes
         await session.flush()
         run = AttackRun(
             domain_id=domain.id,
-            status="running",
+            status=run_status,
             planned_start_at=now,
             planned_end_at=now + timedelta(minutes=1),
         )
@@ -184,7 +190,7 @@ async def test_decommission_worker_rejects_active_attack_without_partial_changes
                 attack_run_id=run.id,
                 domain_id=domain.id,
                 worker_id=worker.id,
-                status="running",
+                status=task_status,
             )
         )
         await session.commit()
@@ -255,7 +261,13 @@ async def test_delete_worker_archives_and_hides_it_from_active_apis(
 
 
 @pytest.mark.asyncio
-async def test_delete_worker_returns_409_for_active_attack(api_client, session_factory):
+@pytest.mark.parametrize("run_status,task_status", [
+    ("running", "running"), ("planned", "planned"),
+    ("verifying", "cancelled"), ("verifying", "succeeded"),
+])
+async def test_delete_worker_returns_409_for_active_attack(
+    api_client, session_factory, run_status, task_status,
+):
     async with session_factory() as session:
         worker, _, _, access_key = await seed_vpn_node(session)
         worker_id = worker.id
@@ -266,7 +278,7 @@ async def test_delete_worker_returns_409_for_active_attack(api_client, session_f
         await session.flush()
         run = AttackRun(
             domain_id=domain.id,
-            status="running",
+            status=run_status,
             planned_start_at=now,
             planned_end_at=now + timedelta(minutes=1),
         )
@@ -277,7 +289,7 @@ async def test_delete_worker_returns_409_for_active_attack(api_client, session_f
                 attack_run_id=run.id,
                 domain_id=domain.id,
                 worker_id=worker_id,
-                status="running",
+                status=task_status,
             )
         )
         await session.commit()
