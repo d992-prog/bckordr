@@ -31,7 +31,7 @@
 - Modify: `backend/tests/test_vpn_endpoint_schema.py`
 - Modify: `backend/tests/test_vpn_endpoint_migrations.py`
 
-- [ ] **Step 1: Write failing metadata tests**
+- [x] **Step 1: Write failing metadata tests**
 
 Assert `VpnAccessKey` has these backward-compatible columns:
 
@@ -55,7 +55,7 @@ Test defaults, signed JSON round-trip, `ON DELETE RESTRICT` references, unique
 non-null claim token and one `claimed`/`uncertain` row per worker. SQLite tests
 must reject invalid rows with `IntegrityError`; they do not claim concurrency.
 
-- [ ] **Step 2: Run the focused schema test and confirm RED**
+- [x] **Step 2: Run the focused schema test and confirm RED**
 
 Run from `backend/` with a unique directory below `.pytest_cache`:
 
@@ -65,7 +65,7 @@ Run from `backend/` with a unique directory below `.pytest_cache`:
 
 Expected: failures because the four key fields/table do not exist.
 
-- [ ] **Step 3: Add the minimal ORM model**
+- [x] **Step 3: Add the minimal ORM model**
 
 Use existing SQLAlchemy types (`String(36)` for UUID strings and `JSON` for the
 snapshot). Add named constraints:
@@ -83,7 +83,7 @@ Add indexes for `state`, `worker_id`, `access_key_id`, unique `claim_token`, and
 a partial unique index on `worker_id` where state is `claimed` or `uncertain`.
 Do not add relationships, cascade deletion, lease expiry or retry counters.
 
-- [ ] **Step 4: Add the PostgreSQL migration and migration tests**
+- [x] **Step 4: Add the PostgreSQL migration and migration tests**
 
 Append idempotent statements to `VPN_ENDPOINT_MIGRATIONS`: four `ADD COLUMN IF
 NOT EXISTS`, the operation table, schema-local named constraints and indexes.
@@ -100,7 +100,7 @@ metadata schema. They verify old UUID/URI/status/endpoint rows byte-for-byte,
 NULL-versus-empty `panel_sub_id`, defaults, catalog parity, exact FK delete
 actions and cross-schema decoys.
 
-- [ ] **Step 5: Run GREEN verification and commit**
+- [x] **Step 5: Run GREEN verification and commit**
 
 Run schema + migration tests (PostgreSQL tests skip locally without the explicit
 safe test URL), Ruff on changed files, and `git diff --check`. Commit only Task 1:
@@ -108,6 +108,10 @@ safe test URL), Ruff on changed files, and `git diff --check`. Commit only Task 
 ```text
 feat(vpn): persist endpoint control operations
 ```
+
+Evidence: commits `ab78ede`, `dec5723`, `1ddd5bf`; independent PostgreSQL
+verification `47 passed`; temporary synthetic cluster removed, listener closed,
+control service remained active; spec and code-quality reviews approved.
 
 ## Task 2: Immutable request derivation and transactional staging
 
