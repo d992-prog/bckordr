@@ -471,40 +471,6 @@ def _operation_request(operation: VpnControlOperation) -> VpnNodeRequest:
     return request
 
 
-def _endpoint_matches_request(
-    endpoint: VpnEndpoint,
-    request: VpnNodeRequest,
-) -> bool:
-    target = request.target
-    return (
-        endpoint.id == target.endpoint_id
-        and endpoint.worker_id == target.worker_id
-        and endpoint.inbound_id == target.inbound_id
-        and endpoint.public_host == target.public_host
-        and endpoint.port == target.port
-        and endpoint.protocol == target.protocol
-        and endpoint.transport == target.transport
-        and endpoint.security == target.security
-        and endpoint.server_name == target.server_name
-        and endpoint.public_key == target.public_key
-        and endpoint.short_id == target.short_id
-        and endpoint.fingerprint == target.fingerprint
-        and endpoint.flow == target.flow
-        and endpoint.verified_at is not None
-    )
-
-
-def _endpoint_allows_request(endpoint: VpnEndpoint, request: VpnNodeRequest) -> bool:
-    if not _endpoint_matches_request(endpoint, request):
-        return False
-    if request.action == "provision":
-        return endpoint.status == "ready" if request.allow_create else endpoint.status in {
-            "ready",
-            "draining",
-        }
-    return endpoint.status in {"ready", "draining", "disabled"}
-
-
 def _intent_matches(
     operation: VpnControlOperation,
     request: VpnNodeRequest,
@@ -514,15 +480,44 @@ def _intent_matches(
     endpoint: VpnEndpoint,
     now: datetime,
 ) -> bool:
-    return (
+    if not (
         operation.generation == access_key.operation_generation
         and operation.action == _desired_action(access_key, subscription, customer, now)
         and access_key.status == _PENDING_STATUS[operation.action]
         and access_key.subscription_id == subscription.id
         and access_key.worker_id == operation.worker_id == endpoint.worker_id
         and access_key.endpoint_id == operation.endpoint_id == endpoint.id
-        and _endpoint_allows_request(endpoint, request)
+    ):
+        return False
+    try:
+        expected = build_control_request(
+            access_key,
+            subscription,
+            endpoint,
+            operation_id=request.operation_id,
+            generation=operation.generation,
+            action=operation.action,
+            allow_create=_validate_endpoint_policy(
+                access_key,
+                endpoint,
+                operation.action,
+            ),
+            allow_shared_restart=operation.action in {"suspend", "revoke"},
+        )
+    except VpnControlIntentError:
+        return False
+    return (
+        serialize_node_request(expected) == operation.request_snapshot
+        and node_request_digest(expected) == operation.request_digest
     )
+
+
+def _require_complete_context(complete: bool, *, skip_locked: bool) -> None:
+    if complete:
+        return
+    if skip_locked:
+        raise _CandidateBusy
+    _fail("vpn_control_binding_changed")
 
 
 async def _lock_context(
@@ -550,36 +545,59 @@ async def _lock_context(
         if skip_locked:
             return None
         _fail("vpn_control_binding_changed")
+    subscription_ids = tuple(
+        await db.scalars(
+            select(VpnSubscription.id)
+            .where(VpnSubscription.customer_id == customer.id)
+            .order_by(VpnSubscription.id)
+        )
+    )
+    _require_complete_context(bool(subscription_ids), skip_locked=skip_locked)
     subscriptions = (
         await db.scalars(
             _locked(
                 select(VpnSubscription)
-                .where(VpnSubscription.customer_id == customer.id)
+                .where(VpnSubscription.id.in_(subscription_ids))
                 .order_by(VpnSubscription.id),
                 skip_locked=skip_locked,
             )
         )
     ).all()
+    _require_complete_context(
+        tuple(subscription.id for subscription in subscriptions) == subscription_ids
+        and all(subscription.customer_id == customer.id for subscription in subscriptions),
+        skip_locked=skip_locked,
+    )
     subscription_by_id = {subscription.id: subscription for subscription in subscriptions}
-    if not subscription_by_id:
-        if skip_locked:
-            return None
-        _fail("vpn_control_binding_changed")
+    access_key_ids = tuple(
+        await db.scalars(
+            select(VpnAccessKey.id)
+            .where(VpnAccessKey.subscription_id.in_(subscription_ids))
+            .order_by(VpnAccessKey.id)
+        )
+    )
+    _require_complete_context(
+        access_key_id in access_key_ids,
+        skip_locked=skip_locked,
+    )
     access_keys = (
         await db.scalars(
             _locked(
                 select(VpnAccessKey)
-                .where(VpnAccessKey.subscription_id.in_(tuple(subscription_by_id)))
+                .where(VpnAccessKey.id.in_(access_key_ids))
                 .order_by(VpnAccessKey.id),
                 skip_locked=skip_locked,
             )
         )
     ).all()
+    _require_complete_context(
+        tuple(key.id for key in access_keys) == access_key_ids
+        and all(key.subscription_id in subscription_by_id for key in access_keys),
+        skip_locked=skip_locked,
+    )
     access_key = next((key for key in access_keys if key.id == access_key_id), None)
-    if access_key is None:
-        if skip_locked:
-            return None
-        _fail("vpn_control_binding_changed")
+    _require_complete_context(access_key is not None, skip_locked=skip_locked)
+    assert access_key is not None
     subscription = subscription_by_id.get(access_key.subscription_id)
     if subscription is None:
         _fail("vpn_control_binding_changed")

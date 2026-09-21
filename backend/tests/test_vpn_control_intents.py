@@ -272,6 +272,38 @@ class RecordingSession:
         raise AssertionError("staging must not commit")
 
 
+class _ScalarList:
+    def __init__(self, values) -> None:
+        self.values = values
+
+    def all(self):
+        return self.values
+
+
+class PartialLockedSetSession(RecordingSession):
+    def __init__(self, session: AsyncSession, table: str) -> None:
+        super().__init__(session)
+        self.table = table
+
+    async def scalars(self, statement):
+        result = await super().scalars(statement)
+        lock = statement._for_update_arg
+        if (
+            self.table in _statement_tables(statement)
+            and lock is not None
+            and lock.skip_locked
+        ):
+            return _ScalarList(result.all()[:-1])
+        return result
+
+    def get_bind(self):
+        class PostgresBind:
+            class dialect:
+                name = "postgresql"
+
+        return PostgresBind()
+
+
 def _operation(
     *,
     operation_id: str,
@@ -1054,21 +1086,21 @@ async def test_claim_locks_authoritative_rows_in_canonical_order_and_operation_l
             frozenset({"vpn_access_keys", "vpn_subscriptions"}),
             frozenset({"vpn_customers"}),
             frozenset({"vpn_subscriptions"}),
+            frozenset({"vpn_subscriptions"}),
+            frozenset({"vpn_access_keys"}),
             frozenset({"vpn_access_keys"}),
             frozenset({"worker_nodes"}),
             frozenset({"vpn_endpoints"}),
             frozenset({"vpn_control_operations"}),
             frozenset({"vpn_control_operations"}),
         ]
-        assert all(statement._for_update_arg is None for statement in recording.statements[:3])
-        assert all(statement._for_update_arg is not None for statement in recording.statements[3:8])
+        unlocked = [0, 1, 2, 4, 6, 10]
+        locked = [3, 5, 7, 8, 9, 11]
+        assert all(recording.statements[index]._for_update_arg is None for index in unlocked)
         assert all(
-            statement._for_update_arg.skip_locked is True
-            for statement in recording.statements[3:8]
+            recording.statements[index]._for_update_arg.skip_locked is True
+            for index in locked
         )
-        assert recording.statements[8]._for_update_arg is None
-        assert recording.statements[9]._for_update_arg is not None
-        assert recording.statements[9]._for_update_arg.skip_locked is True
 
 
 @pytest.mark.asyncio
@@ -1100,6 +1132,111 @@ async def test_claim_supersedes_queued_operation_when_persisted_policy_changed(
             "vpn_control_superseded",
         )
         assert _utc(stale.finished_at) == NOW + timedelta(minutes=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("partial_table", ["vpn_subscriptions", "vpn_access_keys"])
+async def test_claim_rolls_back_candidate_when_skip_locked_returns_partial_sibling_set(
+    session_factory,
+    partial_table,
+):
+    api = _api()
+    async with session_factory() as session:
+        operation = await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+        operation_id = operation.id
+        await session.commit()
+
+    async with session_factory() as session:
+        partial = PartialLockedSetSession(session, partial_table)
+        assert (
+            await api.claim_next_vpn_control_operation(
+                partial,
+                claim_token=uuid4(),
+                now=NOW + timedelta(seconds=1),
+            )
+            is None
+        )
+        await session.rollback()
+
+    async with session_factory() as session:
+        stored = await session.get(VpnControlOperation, operation_id)
+        assert stored is not None
+        assert (stored.state, stored.claim_token, stored.claimed_at) == (
+            "queued",
+            None,
+            None,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["claim", "finalize"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("external_uuid", "99999999-8888-4777-8666-555555555555"),
+        ("external_uuid", "invalid-after-staging"),
+        ("verified_client_email", "veltrix-7-renamed"),
+        ("panel_sub_id", "replacement-sub-id"),
+        ("issued_at", ISSUED_AT + timedelta(seconds=1)),
+        ("config_uri", "vless://concurrent-existing-uri"),
+    ],
+)
+async def test_claim_and_finalize_supersede_exact_request_when_key_snapshot_drifts(
+    session_factory,
+    phase,
+    field,
+    value,
+):
+    api = _api()
+    async with session_factory() as session:
+        operation = await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+        operation_id = UUID(operation.id)
+        await session.commit()
+
+    token = uuid4()
+    if phase == "finalize":
+        async with session_factory() as session:
+            claimed = await api.claim_next_vpn_control_operation(
+                session,
+                claim_token=token,
+                now=NOW + timedelta(seconds=1),
+            )
+            assert claimed is not None
+            await session.commit()
+
+    async with session_factory() as session:
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        setattr(key, field, value)
+        await session.commit()
+
+    async with session_factory() as session:
+        if phase == "claim":
+            assert (
+                await api.claim_next_vpn_control_operation(
+                    session,
+                    claim_token=token,
+                    now=NOW + timedelta(seconds=2),
+                )
+                is None
+            )
+            operation = await session.get(VpnControlOperation, str(operation_id))
+        else:
+            operation = await api.finalize_vpn_control_operation(
+                session,
+                operation_id,
+                token,
+                receipt_state="observed",
+                error_code=None,
+                now=NOW + timedelta(seconds=2),
+            )
+        key = await session.get(VpnAccessKey, 7)
+        assert operation is not None and key is not None
+        assert operation.state == "superseded"
+        assert key.status == "pending_sync"
+        assert key.config_uri == (
+            "vless://concurrent-existing-uri" if field == "config_uri" else None
+        )
 
 
 @pytest.mark.asyncio
@@ -1166,14 +1303,23 @@ async def test_finalize_discovers_without_lock_then_locks_operation_last(session
             frozenset({"vpn_access_keys", "vpn_subscriptions"}),
             frozenset({"vpn_customers"}),
             frozenset({"vpn_subscriptions"}),
+            frozenset({"vpn_subscriptions"}),
+            frozenset({"vpn_access_keys"}),
             frozenset({"vpn_access_keys"}),
             frozenset({"worker_nodes"}),
             frozenset({"vpn_endpoints"}),
             frozenset({"vpn_control_operations"}),
         ]
-        assert recording.statements[0]._for_update_arg is None
-        assert recording.statements[1]._for_update_arg is None
-        assert all(statement._for_update_arg is not None for statement in recording.statements[2:])
+        unlocked = [0, 1, 3, 5]
+        locked = [2, 4, 6, 7, 8, 9]
+        assert all(recording.statements[index]._for_update_arg is None for index in unlocked)
+        assert all(
+            recording.statements[index]._for_update_arg is not None for index in locked
+        )
+        assert all(
+            recording.statements[index]._for_update_arg.skip_locked is False
+            for index in locked
+        )
 
 
 @pytest.mark.asyncio

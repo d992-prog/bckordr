@@ -361,6 +361,69 @@ async def test_newer_revoke_blocks_old_observed_provision_finalizer(postgres_con
 
 
 @pytest.mark.asyncio
+async def test_claim_supersedes_staged_snapshot_after_subscription_policy_drift(
+    postgres_control,
+):
+    await _seed(postgres_control)
+    operation_id = await _stage(postgres_control, 7)
+    async with postgres_control.sessions() as session:
+        subscription = await session.get(VpnSubscription, 3)
+        assert subscription is not None
+        subscription.expires_at = EXPIRES_AT + timedelta(days=1)
+        subscription.traffic_limit_gb = 50
+        await session.commit()
+
+    async with postgres_control.sessions() as session:
+        assert (
+            await claim_next_vpn_control_operation(
+                session,
+                claim_token=uuid4(),
+                now=NOW + timedelta(seconds=1),
+            )
+            is None
+        )
+        operation = await session.get(VpnControlOperation, str(operation_id))
+        key = await session.get(VpnAccessKey, 7)
+        assert operation is not None and key is not None
+        assert operation.state == "superseded"
+        assert key.status == "pending_sync"
+        assert key.config_uri is None
+
+
+@pytest.mark.asyncio
+async def test_observed_provision_cannot_apply_changed_expiry_or_traffic_snapshot(
+    postgres_control,
+):
+    await _seed(postgres_control)
+    operation_id = await _stage(postgres_control, 7)
+    claimed, token = await _claim(postgres_control, now=NOW + timedelta(seconds=1))
+    assert claimed is not None
+    changed_expiry = EXPIRES_AT + timedelta(days=1)
+    async with postgres_control.sessions() as session:
+        subscription = await session.get(VpnSubscription, 3)
+        assert subscription is not None
+        subscription.expires_at = changed_expiry
+        subscription.traffic_limit_gb = 50
+        await session.commit()
+
+    async with postgres_control.sessions() as session:
+        finalized = await finalize_vpn_control_operation(
+            session,
+            operation_id,
+            token,
+            receipt_state="observed",
+            error_code=None,
+            now=NOW + timedelta(seconds=2),
+        )
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        assert finalized.state == "superseded"
+        assert key.status == "pending_sync"
+        assert key.expires_at is None
+        assert key.config_uri is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("policy", "action", "expected_status"),
     [("disabled", "suspend", "pending_suspend"), ("archived", "revoke", "pending_revoke")],
