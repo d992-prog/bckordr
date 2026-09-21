@@ -5,6 +5,7 @@ import http.client
 import logging
 import _thread
 import socket
+import sqlite3
 import ssl
 import threading
 import time
@@ -13,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from traceback import format_exception
 from urllib.parse import parse_qs
+from uuid import UUID
 
 import pytest
 from cryptography import x509
@@ -21,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from app.services.vpn_portal_logging import install_safe_logging
+from app.services.vpn_endpoint_types import VpnEndpointTarget
 from app.services.vpn_xui_node_http import (
     NodePanelError,
     NodePanelSession,
@@ -29,6 +32,7 @@ from app.services.vpn_xui_node_http import (
     validate_request,
     validate_timeout,
 )
+from app.services.vpn_xui_node_observation import observe_node_client
 
 
 SECRET = "synthetic-node-panel-secret"
@@ -42,6 +46,11 @@ class PanelState:
         self.inventory_status = 200
         self.inventory_body = b'{"success":true,"obj":[{"id":7}]}'
         self.inventory_headers: dict[str, str] = {}
+        self.token_status = 200
+        self.token_status_path = "/panel/api/server/status"
+        self.token_body = b'{"success":true,"obj":{"panelVersion":"3.8.5"}}'
+        self.token_headers: dict[str, str] = {}
+        self.route_bodies: dict[str, bytes] = {}
         self.trickle_delay = 0.0
         self.requests = 0
         self.peer_closed = threading.Event()
@@ -64,6 +73,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 "host": self.headers.get("Host"),
                 "cookie": self.headers.get("Cookie"),
                 "csrf": self.headers.get("X-CSRF-Token"),
+                "authorization": self.headers.get("Authorization"),
                 "content_type": self.headers.get("Content-Type"),
                 "body": body,
             }
@@ -135,6 +145,14 @@ class PanelHandler(BaseHTTPRequestHandler):
                 time.sleep(0.3)
             status = 500 if state.mode == "logout_status" else 200
             self._send(status, b'{"success":true,"obj":null}')
+            return
+
+        if path == state.token_status_path and self.headers.get("Authorization"):
+            self._send(
+                state.token_status,
+                state.token_body,
+                headers=state.token_headers,
+            )
             return
 
         if path == "/panel/api/inbounds/list":
@@ -219,7 +237,10 @@ class PanelHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self._send(
-                    200, b'{"success":true,"obj":{"ok":true}}',
+                    200,
+                    state.route_bodies.get(
+                        path, b'{"success":true,"obj":{"ok":true}}'
+                    ),
                     headers=state.inventory_headers,
                 )
             return
@@ -320,6 +341,47 @@ def test_construction_has_no_io_and_repr_is_secret_free() -> None:
 
 
 @pytest.mark.parametrize(
+    ("username", "password", "api_token"),
+    [
+        (None, None, None),
+        ("node-user", None, None),
+        (None, SECRET, None),
+        ("node-user", SECRET, "token"),
+        (None, None, ""),
+        (None, None, " token"),
+        (None, None, "token "),
+        (None, None, "token\nvalue"),
+        (None, None, "token=value.more"),
+        (None, None, "tøken"),
+        (None, None, "a" * 4097),
+        (None, None, 7),
+    ],
+)
+def test_authentication_mode_and_api_token_are_validated_before_io(
+    monkeypatch, username: object, password: object, api_token: object
+) -> None:
+    monkeypatch.setattr(socket, "socket", lambda *_args, **_kwargs: pytest.fail("I/O"))
+    assert_error(
+        "vpn_xui_connection_invalid",
+        lambda: NodePanelSession(
+            "http://panel.example/",
+            username,
+            password,
+            api_token=api_token,
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["a", "A9._~+/-", "header.payload.signature", "base64+/==", "a" * 4096],
+)
+def test_api_token_mode_accepts_only_the_bounded_bearer_grammar(token: str) -> None:
+    session = NodePanelSession("http://panel.example/", api_token=token)
+    assert repr(session) == "NodePanelSession()"
+
+
+@pytest.mark.parametrize(
     ("method", "route", "body", "mutation"),
     [
         ("PUT", "panel/api/inbounds/list", None, False),
@@ -391,6 +453,7 @@ def test_allowlisted_requests_use_authenticated_wire_contract(
         assert event["host"] == f"panel.example:{url.rsplit(':', 1)[1][:-1]}"
         assert event["csrf"] == "fresh-token"
         assert event["cookie"] == "sid=abc"
+        assert event["authorization"] is None
         if method == "POST":
             assert event["content_type"] == "application/json"
             assert json.loads(event["body"]) == body
@@ -416,6 +479,268 @@ def test_context_authenticates_rotates_csrf_and_logs_out() -> None:
             lambda: session.request("GET", "panel/api/inbounds/list"),
         )
         assert_error("vpn_xui_session_not_authenticated", session.__enter__)
+
+
+def test_token_context_uses_one_status_probe_and_authorization_only() -> None:
+    token = "synthetic-token.secret_+/=="
+    state = PanelState()
+    state.token_headers = {"Set-Cookie": 'sid="unterminated'}
+    state.inventory_headers = {"Set-Cookie": 'other="unterminated'}
+    with running_panel(state) as (state, url):
+        session = NodePanelSession(url, api_token=token)
+        with session:
+            session.request("GET", "panel/api/inbounds/list")
+            session.request("POST", "panel/api/setting/all", body={})
+            session.request("POST", "panel/api/clients/add", body={}, mutation=True)
+
+        assert [event["path"] for event in state.events] == [
+            "/panel/api/server/status",
+            "/panel/api/inbounds/list",
+            "/panel/api/setting/all",
+            "/panel/api/clients/add",
+        ]
+        assert all(
+            event["authorization"] == f"Bearer {token}"
+            and event["cookie"] is None
+            and event["csrf"] is None
+            for event in state.events
+        )
+        assert state.events[0]["body"] == b""
+        assert state.events[0]["content_type"] is None
+        assert session._api_token is None
+        assert_error(
+            "vpn_xui_session_not_authenticated",
+            lambda: session.request("GET", "panel/api/inbounds/list"),
+        )
+        assert_error("vpn_xui_session_not_authenticated", session.__enter__)
+
+
+def test_token_entry_status_probe_uses_the_validated_panel_base_path() -> None:
+    state = PanelState()
+    state.token_status_path = "/base/panel/api/server/status"
+    with running_panel(state) as (state, url):
+        with NodePanelSession(url + "base/", api_token="synthetic-base-token"):
+            pass
+        assert [event["path"] for event in state.events] == [
+            "/base/panel/api/server/status"
+        ]
+
+
+def test_token_session_composes_with_read_only_node_observation(tmp_path) -> None:
+    client_uuid = UUID("11111111-2222-4333-8444-555555555555")
+    email = "synthetic-token-profile"
+    database = tmp_path / "panel.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE inbounds (id)")
+        connection.execute("INSERT INTO inbounds VALUES (7)")
+
+    state = PanelState()
+    state.token_body = json.dumps(
+        {
+            "success": True,
+            "obj": {
+                "panelVersion": "3.8.5",
+                "xray": {"state": "running", "errorMsg": ""},
+            },
+        }
+    ).encode()
+    state.inventory_body = json.dumps(
+        {
+            "success": True,
+            "obj": [
+                {
+                    "id": 7,
+                    "protocol": "vless",
+                    "enable": True,
+                    "port": 443,
+                    "settings": {
+                        "decryption": "none",
+                        "clients": [
+                            {
+                                "id": str(client_uuid),
+                                "email": email,
+                                "enable": True,
+                            }
+                        ],
+                    },
+                    "streamSettings": {"network": "raw", "security": "none"},
+                }
+            ],
+        }
+    ).encode()
+    state.route_bodies["/panel/api/clients/list"] = json.dumps(
+        {
+            "success": True,
+            "obj": [
+                {
+                    "id": 19,
+                    "uuid": str(client_uuid),
+                    "email": email,
+                    "enable": True,
+                    "inboundIds": [7],
+                }
+            ],
+        }
+    ).encode()
+    state.token_headers = state.inventory_headers = {
+        "Set-Cookie": 'ignored="unterminated'
+    }
+    token = "synthetic-observer-token"
+    with running_panel(state) as (state, url):
+        with NodePanelSession(url, api_token=token) as session:
+            result = observe_node_client(
+                session,
+                target=VpnEndpointTarget(
+                    1,
+                    1,
+                    7,
+                    "vpn.example.test",
+                    443,
+                    "vless",
+                    "raw",
+                    "none",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                client_uuid=client_uuid,
+                client_email=email,
+                database_path=database,
+            )
+        assert (
+            result.state,
+            result.record_id,
+            result.enabled,
+            result.transport,
+            result.runtime,
+        ) == ("matched", 19, True, "matched", "running")
+        assert [event["path"] for event in state.events] == [
+            "/panel/api/server/status",
+            "/panel/api/server/status",
+            "/panel/api/inbounds/list",
+            "/panel/api/clients/list",
+        ]
+        assert all(
+            event["authorization"] == f"Bearer {token}"
+            and event["cookie"] is None
+            and event["csrf"] is None
+            for event in state.events
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (401, b'{"success":false}'),
+        (403, b'{"success":false}'),
+        (200, b'{"success":false}'),
+        (200, b"not-json"),
+    ],
+)
+def test_token_entry_rejection_is_static_without_fallback_or_retry(
+    status: int, body: bytes
+) -> None:
+    token = "synthetic-rejected-token"
+    state = PanelState()
+    state.token_status = status
+    state.token_body = body
+    with running_panel(state) as (state, url):
+        session = NodePanelSession(url, api_token=token)
+        error = assert_error("vpn_xui_auth_failed", session.__enter__)
+        assert [event["path"] for event in state.events] == [
+            "/panel/api/server/status"
+        ]
+        assert state.events[0]["authorization"] == f"Bearer {token}"
+        assert token not in str(error) + repr(error) + "".join(format_exception(error))
+        assert session._api_token is None
+        assert_error("vpn_xui_session_not_authenticated", session.__enter__)
+
+
+def test_token_entry_preserves_transport_failure_and_clears_secret() -> None:
+    with running_panel() as (_state, url):
+        port = int(url.rsplit(":", 1)[1][:-1])
+    token = "synthetic-transport-token"
+    session = NodePanelSession(
+        f"http://panel.example:{port}/",
+        api_token=token,
+        timeout_seconds=0.1,
+    )
+    error = assert_error("vpn_xui_request_failed", session.__enter__)
+    assert token not in str(error) + repr(error) + "".join(format_exception(error))
+    assert session._api_token is None
+
+
+@pytest.mark.parametrize(
+    ("mode", "code"),
+    [
+        ("mutation_status", "vpn_xui_http_failed"),
+        ("mutation_invalid", "vpn_xui_response_invalid"),
+    ],
+)
+def test_token_post_failures_preserve_read_certainty_and_mutation_uncertainty(
+    mode: str, code: str
+) -> None:
+    token = "synthetic-post-token"
+    with running_panel() as (state, url):
+        with NodePanelSession(url, api_token=token) as session:
+            state.mode = mode
+            assert_error(
+                code,
+                lambda: session.request("POST", "panel/api/setting/all", body={}),
+            )
+            assert_error(
+                code,
+                lambda: session.request(
+                    "POST", "panel/api/clients/add", body={}, mutation=True
+                ),
+                uncertain=True,
+            )
+        assert [event["path"] for event in state.events] == [
+            "/panel/api/server/status",
+            "/panel/api/setting/all",
+            "/panel/api/clients/add",
+        ]
+        assert all(event["authorization"] == f"Bearer {token}" for event in state.events)
+
+
+def test_token_caller_interrupt_propagates_after_local_cleanup() -> None:
+    token = "synthetic-caller-interrupt-token"
+    interruption = KeyboardInterrupt()
+    with running_panel() as (state, url):
+        session = NodePanelSession(url, api_token=token)
+        with pytest.raises(KeyboardInterrupt) as caught:
+            with session:
+                raise interruption
+        assert caught.value is interruption
+        assert session._api_token is None
+        assert [event["path"] for event in state.events] == [
+            "/panel/api/server/status"
+        ]
+
+
+@pytest.mark.parametrize("interruption_type", [KeyboardInterrupt, SystemExit])
+def test_token_entry_interrupt_clears_secret_and_does_not_fallback(
+    monkeypatch, interruption_type
+) -> None:
+    token = "synthetic-interrupted-token"
+    interruption = interruption_type()
+
+    def interrupt(_connection):
+        raise interruption
+
+    with running_panel() as (state, url):
+        session = NodePanelSession(url, api_token=token)
+        monkeypatch.setattr(http.client.HTTPConnection, "getresponse", interrupt)
+        with pytest.raises(interruption_type) as caught:
+            session.__enter__()
+        assert caught.value is interruption
+        assert session._api_token is None
+        assert all(
+            event["path"] not in {"/csrf-token", "/login", "/logout"}
+            for event in state.events
+        )
 
 
 @pytest.mark.parametrize(

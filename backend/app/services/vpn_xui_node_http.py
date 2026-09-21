@@ -33,6 +33,7 @@ _POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*\Z")
 _PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
 _DNS_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _COOKIE_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+\Z")
+_API_TOKEN = re.compile(r"[A-Za-z0-9._~+/\-]+=*\Z", re.ASCII)
 _COOKIE_FIELD = re.compile(
     r"""
     [ ]*[!#$%&'*+.^_`|~0-9A-Za-z-]+
@@ -357,13 +358,31 @@ class NodePanelSession:
     def __init__(
         self,
         panel_url: str,
-        username: str,
-        password: str,
+        username: str | None = None,
+        password: str | None = None,
         *,
-        timeout_seconds: float = 10.0,
+        api_token: str | None = None,
+        timeout_seconds: float = 10,
     ) -> None:
         self._address = validate_panel_url(panel_url)
-        self._username, self._password = validate_credentials(username, password)
+        token_mode = username is None and password is None and api_token is not None
+        password_mode = api_token is None and username is not None and password is not None
+        if token_mode:
+            if (
+                not isinstance(api_token, str)
+                or not 1 <= len(api_token) <= 4096
+                or _API_TOKEN.fullmatch(api_token) is None
+            ):
+                _raise("vpn_xui_connection_invalid")
+            self._username = ""
+            self._password = ""
+            self._api_token: str | None = api_token
+        elif password_mode:
+            self._username, self._password = validate_credentials(username, password)
+            self._api_token = None
+        else:
+            _raise("vpn_xui_connection_invalid")
+        self._token_mode = token_mode
         self._timeout = validate_timeout(timeout_seconds)
         self._cookies: dict[str, str] = {}
         self._csrf_token: str | None = None
@@ -378,6 +397,23 @@ class NodePanelSession:
         if self._closed or self._entered:
             _raise("vpn_xui_session_not_authenticated")
         try:
+            if self._token_mode:
+                try:
+                    self._exchange(
+                        "GET",
+                        self._address.base_path + "panel/api/server/status",
+                        data=None,
+                        content_type=None,
+                        csrf_token=None,
+                        mutation=False,
+                        api_token=self._api_token,
+                    )
+                except NodePanelError as exc:
+                    if exc.code == "vpn_xui_request_failed":
+                        raise
+                    _raise("vpn_xui_auth_failed")
+                self._entered = True
+                return self
             first_token = self._fetch_csrf()
             self._login(first_token)
             self._logged_in = True
@@ -415,7 +451,12 @@ class NodePanelSession:
         mutation: bool = False,
     ) -> dict[str, Any]:
         prepared = validate_request(method, route, body=body, mutation=mutation)
-        if not self._entered or self._closed or self._csrf_token is None:
+        if (
+            not self._entered
+            or self._closed
+            or (self._token_mode and self._api_token is None)
+            or (not self._token_mode and self._csrf_token is None)
+        ):
             _raise("vpn_xui_session_not_authenticated")
         return self._exchange(
             prepared.method,
@@ -424,6 +465,7 @@ class NodePanelSession:
             content_type="application/json" if prepared.encoded_body is not None else None,
             csrf_token=self._csrf_token,
             mutation=prepared.mutation,
+            api_token=self._api_token if self._token_mode else None,
         )
 
     def _fetch_csrf(self) -> str:
@@ -491,6 +533,7 @@ class NodePanelSession:
     def _clear_secrets(self) -> None:
         self._username = ""
         self._password = ""
+        self._api_token = None
         self._cookies.clear()
         self._csrf_token = None
         self._entered = False
@@ -549,6 +592,7 @@ class NodePanelSession:
         content_type: str | None,
         csrf_token: str | None,
         mutation: bool,
+        api_token: str | None = None,
     ) -> dict[str, Any]:
         deadline = time.monotonic() + self._timeout
         connection = http.client.HTTPConnection(
@@ -595,11 +639,14 @@ class NodePanelSession:
             headers = {"Host": self._address.host_header, "Connection": "close"}
             if content_type is not None:
                 headers["Content-Type"] = content_type
-            if csrf_token is not None:
-                headers["X-CSRF-Token"] = csrf_token
-            cookie_header = self._cookie_header()
-            if cookie_header is not None:
-                headers["Cookie"] = cookie_header
+            if api_token is not None:
+                headers["Authorization"] = "Bearer " + api_token
+            else:
+                if csrf_token is not None:
+                    headers["X-CSRF-Token"] = csrf_token
+                cookie_header = self._cookie_header()
+                if cookie_header is not None:
+                    headers["Cookie"] = cookie_header
 
             if connection.sock is not None:
                 connection.sock.settimeout(_remaining(deadline))
@@ -640,7 +687,8 @@ class NodePanelSession:
             _remaining(deadline)
             if expected_length is not None and size != expected_length:
                 _raise("vpn_xui_response_invalid", mutation_uncertain=may_have_sent)
-            self._update_cookies(response.headers)
+            if api_token is None:
+                self._update_cookies(response.headers)
             envelope = _decode_envelope(b"".join(chunks))
             _remaining(deadline)
             completed = True
