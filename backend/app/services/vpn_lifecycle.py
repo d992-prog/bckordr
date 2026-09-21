@@ -218,19 +218,30 @@ async def _run_vpn_lifecycle_maintenance(
     key_timeout_seconds: float,
 ) -> dict[str, int | str]:
     result = _new_result(current_time)
-    expired_subscriptions = (
+    expired_subscription_ids = (
         await db.scalars(
-            select(VpnSubscription).where(
+            select(VpnSubscription.id).where(
                 VpnSubscription.status.in_(EXPIRING_SUBSCRIPTION_STATUSES),
                 VpnSubscription.expires_at.is_not(None),
                 VpnSubscription.expires_at <= current_time,
-            )
+            ).order_by(VpnSubscription.id)
         )
     ).all()
-    for subscription in expired_subscriptions:
+    for subscription_id in expired_subscription_ids:
+        # A candidate can be extended or cancelled before this lock is acquired.
+        # Refresh even rejected candidates so later key processing sees new policy.
+        subscription = await db.scalar(
+            select(VpnSubscription).where(VpnSubscription.id == subscription_id)
+            .with_for_update().execution_options(populate_existing=True)
+        )
+        if subscription is None or subscription.status not in EXPIRING_SUBSCRIPTION_STATUSES:
+            continue
+        expires_at = _as_utc(subscription.expires_at)
+        if expires_at is None or expires_at > current_time:
+            continue
         subscription.status = "expired"
         subscription.updated_at = current_time
-    result["expired_subscriptions"] = len(expired_subscriptions)
+        result["expired_subscriptions"] += 1
     await db.flush()
 
     permanent_policy = or_(VpnSubscription.status == "cancelled", VpnCustomer.status == "archived")

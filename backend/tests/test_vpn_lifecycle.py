@@ -6,7 +6,7 @@ import json
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
@@ -77,6 +77,53 @@ async def _subscription(
     session.add(subscription)
     await session.flush()
     return subscription
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrent_change", ["extension", "cancellation"])
+async def test_expiration_rechecks_policy_after_candidate_selection(
+    session_factory, monkeypatch, concurrent_change,
+):
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
+    old_expiry = now - timedelta(minutes=1)
+    new_expiry = now + timedelta(days=7) if concurrent_change == "extension" else old_expiry
+    new_status = "active" if concurrent_change == "extension" else "cancelled"
+    async with session_factory() as seed:
+        subscription = await _subscription(seed, expires_at=old_expiry)
+        await seed.commit()
+        subscription_id = subscription.id
+
+    async with session_factory() as lifecycle:
+        # Keep an old ORM object alive: acquiring a lock alone does not refresh it.
+        stale = await lifecycle.get(VpnSubscription, subscription_id)
+        assert stale.status == "active"
+        original_scalars = lifecycle.scalars
+        changed = False
+
+        async def scalars_after_concurrent_edit(statement, *args, **kwargs):
+            nonlocal changed
+            result = await original_scalars(statement, *args, **kwargs)
+            if not changed and "vpn_subscriptions" in str(statement):
+                changed = True
+                async with session_factory() as editor:
+                    await editor.execute(
+                        update(VpnSubscription).where(VpnSubscription.id == subscription_id)
+                        .values(status=new_status, expires_at=new_expiry)
+                    )
+                    await editor.commit()
+            return result
+
+        monkeypatch.setattr(lifecycle, "scalars", scalars_after_concurrent_edit)
+        result = await run_vpn_lifecycle_maintenance(lifecycle, now=now)
+        assert changed
+        assert result["expired_subscriptions"] == 0
+        assert stale.status == new_status
+        assert stale.expires_at.replace(tzinfo=UTC) == new_expiry
+
+    async with session_factory() as verifier:
+        stored = await verifier.get(VpnSubscription, subscription_id)
+        assert stored.status == new_status
+        assert stored.expires_at.replace(tzinfo=UTC) == new_expiry
 
 
 @pytest.mark.asyncio
