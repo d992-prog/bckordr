@@ -119,7 +119,7 @@ control service remained active; spec and code-quality reviews approved.
 - Create: `backend/app/services/vpn_control_intents.py`
 - Create: `backend/tests/test_vpn_control_intents.py`
 
-- [ ] **Step 1: Write failing pure derivation tests**
+- [x] **Step 1: Write failing pure derivation tests**
 
 Define static `VpnControlIntentError(code)` and test:
 
@@ -148,7 +148,7 @@ host, port, `security=reality`, transport type, SNI, public key, short ID,
 fingerprint and flow; no display fragment is stored. Values are percent-encoded
 with `urllib.parse`, never hand-concatenated without validation.
 
-- [ ] **Step 2: Run the pure tests and confirm RED**
+- [x] **Step 2: Run the pure tests and confirm RED**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_vpn_control_intents.py -q -k 'build_control' --basetemp .pytest_cache/control-request-red-<guid>
@@ -156,13 +156,13 @@ with `urllib.parse`, never hand-concatenated without validation.
 
 Expected: import/function failures.
 
-- [ ] **Step 3: Implement the pure functions minimally**
+- [x] **Step 3: Implement the pure functions minimally**
 
 Reuse `VpnEndpointTarget`, `VpnNodeRequest`, `serialize_node_request` and
 `node_request_digest`. Do not duplicate node-request validation, add a URI
 library or import application settings/network code.
 
-- [ ] **Step 4: Write failing staging tests**
+- [x] **Step 4: Write failing staging tests**
 
 Define:
 
@@ -197,14 +197,14 @@ Tests prove it:
 `allow_create` is derived as provision with no URI; `allow_shared_restart` is true
 only for suspend/revoke under the already approved closed-beta policy.
 
-- [ ] **Step 5: Implement staging and run GREEN**
+- [x] **Step 5: Implement staging and run GREEN**
 
 Use `select(...).with_for_update().execution_options(populate_existing=True)` for
 every authoritative row. Begin from a non-locking ID lookup only to discover the
 customer ID, then revalidate every relationship after locks. Call `flush()` but
 never `commit()`; the caller owns durability before any future network dispatch.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run the full new SQLite test file, relevant endpoint/subscription/customer tests,
 Ruff and diff check. Commit:
@@ -212,6 +212,10 @@ Ruff and diff check. Commit:
 ```text
 feat(vpn): stage durable endpoint intentions
 ```
+
+Evidence: commits `ad64df7`, `ecb4cc9`; independent verification `162 passed`;
+spec re-review and code-quality review approved. No network, deployment, route,
+lifecycle, TCP 443 or invitation change was made.
 
 ## Task 3: PostgreSQL-safe claim, reservation and generation-aware finalization
 
