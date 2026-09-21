@@ -573,9 +573,25 @@ async def test_no_autoflush_and_resolution_make_no_database_writes(session_facto
     async with session_factory() as session:
         access_key, worker = await _load_bound(session)
         worker.name = "uncommitted-worker-name"
-        target = await module.resolve_recorded_endpoint(
-            session, access_key, worker=worker, operation="suspend"
-        )
+        transaction_events = {"flushes": 0, "commits": 0}
+
+        def _record_flush(_session, _flush_context, _instances) -> None:
+            transaction_events["flushes"] += 1
+
+        def _record_commit(_session) -> None:
+            transaction_events["commits"] += 1
+
+        event.listen(session.sync_session, "before_flush", _record_flush)
+        event.listen(session.sync_session, "before_commit", _record_commit)
+        try:
+            target = await module.resolve_recorded_endpoint(
+                session, access_key, worker=worker, operation="suspend"
+            )
+        finally:
+            event.remove(session.sync_session, "before_flush", _record_flush)
+            event.remove(session.sync_session, "before_commit", _record_commit)
+
+        assert transaction_events == {"flushes": 0, "commits": 0}
 
         async with session_factory() as observer:
             stored_worker = await observer.get(WorkerNode, 1)
