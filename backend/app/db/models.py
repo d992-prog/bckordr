@@ -4,10 +4,12 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     JSON,
     String,
@@ -751,8 +753,76 @@ class VpnSubscription(Base):
     access_keys: Mapped[list["VpnAccessKey"]] = relationship(back_populates="subscription")
 
 
+class VpnEndpoint(Base):
+    __tablename__ = "vpn_endpoints"
+    __table_args__ = (
+        UniqueConstraint("worker_id", "inbound_id", name="uq_vpn_endpoint_worker_inbound"),
+        UniqueConstraint("id", "worker_id", name="uq_vpn_endpoint_id_worker"),
+        CheckConstraint("inbound_id > 0", name="ck_vpn_endpoint_inbound"),
+        CheckConstraint("port BETWEEN 1 AND 65535", name="ck_vpn_endpoint_port"),
+        CheckConstraint(
+            "status IN ('staged','ready','draining','disabled')",
+            name="ck_vpn_endpoint_status",
+        ),
+        CheckConstraint(
+            "security IN ('none','tls','reality')",
+            name="ck_vpn_endpoint_security",
+        ),
+        CheckConstraint(
+            "status <> 'ready' OR (security IN ('tls','reality') AND verified_at IS NOT NULL)",
+            name="ck_vpn_endpoint_ready",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    worker_id: Mapped[int] = mapped_column(
+        ForeignKey("worker_nodes.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    inbound_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    public_host: Mapped[str] = mapped_column(String(255), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(32), default="vless", server_default="vless")
+    transport: Mapped[str] = mapped_column(String(32), default="tcp", server_default="tcp")
+    security: Mapped[str] = mapped_column(String(32), default="none", server_default="none")
+    server_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    public_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    short_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    flow: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="staged", server_default="staged", index=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class VpnAccessKey(Base):
     __tablename__ = "vpn_access_keys"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["endpoint_id", "worker_id"],
+            ["vpn_endpoints.id", "vpn_endpoints.worker_id"],
+            name="fk_vpn_access_key_endpoint_worker",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "endpoint_id IS NULL OR worker_id IS NOT NULL",
+            name="ck_vpn_access_key_endpoint_worker",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     subscription_id: Mapped[int] = mapped_column(ForeignKey("vpn_subscriptions.id", ondelete="CASCADE"), index=True)
@@ -761,6 +831,7 @@ class VpnAccessKey(Base):
         nullable=True,
         index=True,
     )
+    endpoint_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     protocol: Mapped[str] = mapped_column(String(32), default="vless", server_default="vless")
     public_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)

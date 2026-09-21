@@ -1,6 +1,8 @@
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
+
 
 MIGRATIONS = (
     "CREATE TABLE IF NOT EXISTS app_settings (id SERIAL PRIMARY KEY, key VARCHAR(128) UNIQUE NOT NULL, value TEXT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())",
@@ -518,7 +520,7 @@ MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_zone ON zone_scan_candidates(zone)",
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_lifecycle_stage ON zone_scan_candidates(lifecycle_stage)",
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_discovery_domain_id ON zone_scan_candidates(discovery_domain_id)",
-)
+) + VPN_ENDPOINT_MIGRATIONS
 
 
 async def run_startup_migrations(engine: AsyncEngine) -> None:
