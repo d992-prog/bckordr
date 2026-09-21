@@ -283,3 +283,50 @@ Afterward, two calls of the actual runtime module on the node both matched the
 owner's existing credential and observed the same process generation. This is
 read-only runtime evidence, not external connection acceptance, transport
 readiness, a completed mutation executor or readiness to invite friends.
+
+## Connected executor and lifecycle regression checkpoint
+
+The node journal is now composed with typed, digested requests, loopback panel
+operations, canonical policy/counter verification and the actual Xray reader.
+The new modules remain disconnected from application routes and the lifecycle
+dispatcher until durable control intent/claim/finalization is implemented.
+
+A guarded actual-node no-op proof explicitly rejected every non-GET or mutation
+attempt and used only a disposable private journal. It caught a fixture error:
+`tgId` is signed int64 in both pinned ClientRecord and wire Client, not a string.
+The corrected parser preserves it unchanged, uses0 for new clients and rejects
+bool/string/out-of-range values. This was checked against the pinned
+[model source](https://github.com/MHSanaei/3x-ui/blob/7ef22f94c950ff09f0870e2295fa65ad5968742c/internal/database/model/model.go).
+
+Independent spec review also demonstrated false success when unrelated inbound
+policy changed. Fresh node-only snapshots now compare all inbound policy,
+including other effective clients. Only live up/down/clientStats telemetry and
+the exact managed UUID/email entry on the target inbound are excluded. Fifteen
+drift regressions failed before this correction; request/executor tests now
+pass133cases. The actual corrected composition returns observed with zero write
+attempts, an unchanged process generation and owner runtime matched; its scratch
+journal was removed. This is **not** a production mutation/connection acceptance
+test and does not make the protected endpoint or invitations ready.
+
+Two earlier control-audit findings have separate bounded corrections:
+
+- Shared domain protection includes planned work and every task status on a
+  verifying run; decommission uses the same predicate (`a67f25a`).
+- Expiration selects IDs then locks and refreshes each subscription before
+  rechecking its status/date. This prevents a candidate from overwriting a
+  concurrently committed extension or cancellation. Four actual PostgreSQL
+  tests observe the blocking editor connection and verify extension, unlimited,
+  cancellation and still-due outcomes. This is not a global concurrency or
+  durable-operation-queue proof.
+
+The unfinished control-integration requirements above still apply otherwise.
+No application deployment, endpoint binding, firewall opening, invitation issue,
+owner UUID/link change or VPN restart accompanies these local corrections.
+
+Final verification:1601backend tests passed with1POSIX-only skip on Windows,
+including the real isolated-PostgreSQL tests; whole-backend Ruff passed. Both
+independent executor reviews and the bounded-expiry review approved. The exact
+synthetic cluster `/tmp/veltrix-portal-test-18gp4z3o` was stopped and removed,
+its port45065 was closed and the control service remained active. The earlier
+short-lived rehearsal `/tmp/veltrix-portal-test-tpum14jb` also cleaned itself on
+stdin EOF before the interactive tunnel was started; neither cluster remains.

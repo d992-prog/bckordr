@@ -13,9 +13,10 @@
 ## Execution checklist
 
 - [x] Task1: runtime reader, RED/GREEN, spec review, quality review, parent real-node read-only proof.
-- [ ] Task2: typed request/policy preservation and journalled executor, RED/GREEN, spec review, quality review.
-- [ ] Task3: real local HTTP+SQLite integration with late/partial failures and preserved other-client policy.
-- [ ] Parent full backend verification and committed evidence; then continue durable control integration without declaring beta ready.
+- [x] Task2: typed request/policy preservation and journalled executor, RED/GREEN, spec review, quality review.
+- [x] Task3: real local HTTP+SQLite integration with late/partial failures and preserved other-client policy.
+- [x] Parent full backend verification and committed evidence.
+- [ ] Next release stage: durable control integration and transport acceptance; beta is not ready yet.
 
 Task1 evidence: final focused suite125passed, Ruff clean, independent spec and
 quality reviews approved. Actual final module twice matched the existing owner
@@ -23,6 +24,19 @@ on the pinned node with an unchanged process generation. Full backend run during
 the final review passed1432tests with13known skips; that run collected121runtime
 cases, followed by the final125-case run including four namespace regressions.
 No application deployment or new public port accompanies this checkpoint.
+
+Task2/3 evidence:133request/executor tests pass, independent spec and quality
+reviews approved, stdlib-only imports and Ruff pass. Parent guarded live no-op
+proof passed after fixing the real signed-int64 tgId contract; it passed again
+after inbound-policy preservation was added. It attempted zero HTTP writes,
+observed the same running owner process and removed its private scratch journal.
+Final parent backend run with the authorized isolated synthetic PostgreSQL:
+**1601passed,1skipped in397.58s**. The skip is the POSIX ownership/mode test on
+Windows; the journal's separate Linux proof is recorded at its earlier checkpoint.
+Whole-backend Ruff passed from `backend/`. The exact temporary cluster
+`/tmp/veltrix-portal-test-18gp4z3o` was stopped and removed, its port45065 closed,
+and the control service remained active. No live client creation, suspension or
+revocation was performed by the proof or tests.
 
 ## Task1: node-only runtime reader
 
@@ -212,6 +226,11 @@ owner uses it); new clients use0. Security '' or 'auto'. Exact effective/canonic
 flow must match expected supported flow. Canonical createdAt/updatedAt may be0
 for legacy rows; preserve creation time. Existing comment, tgId, subId and every
 untouched value are preserved. No externalLinks or tunnelAllowedIPs mappings.
+
+Live no-op composition caught a synthetic-fixture error: `tgId` is a signed
+int64 in both pinned ClientRecord and wire Client, not a string. Preserve the
+integer exactly (including negative chat IDs); new clients use0. Reject bool,
+strings and values outside signed64. It is not a nonnegative policy counter.
 
 Read-only live preflight found an existing nonempty password on the exclusively
 VLESS owner record. Preserve this string unchanged; new VLESS clients use ''.
