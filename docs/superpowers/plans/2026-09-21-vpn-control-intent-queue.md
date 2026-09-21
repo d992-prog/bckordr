@@ -319,26 +319,35 @@ deployment, route, lifecycle, TCP 443 or invitation change was made.
 - Modify: `docs/veltrix-endpoint-api-findings.md`
 - Modify: `docs/superpowers/plans/2026-09-21-vpn-control-intent-queue.md`
 
-- [ ] **Step 1: Spec review**
+- [x] **Step 1: Spec review**
 
 Verify schema, stage, claim and finalize against the secure-endpoint design and
 the exact task text. Reject any hidden network call, auto-reclaim of uncertainty,
 stale success mutation, secret logging or legacy production cutover.
 
-- [ ] **Step 2: Code-quality review**
+- [x] **Step 2: Code-quality review**
 
 Review query lock order, PostgreSQL/SQLite differences, migration catalog parity,
 error sanitization, URI correctness and test validity. Fix important findings and
 rerun review.
 
-- [ ] **Step 3: Full verification**
+- [x] **Step 3: Full verification**
 
 Run the complete backend suite with actual isolated PostgreSQL, whole-backend
 Ruff and `git diff --check`. Record exact pass/skip counts and cleanup facts.
 
-- [ ] **Step 4: Document the boundary**
+- [x] **Step 4: Document the boundary**
 
 State plainly that the queue is locally implemented but not yet dispatched over
 SSH or deployed; TCP 443, protected inbound, friend invitations and payments are
 unchanged. The next plan must add strict host-key-pinned transport and node module
 deployment before any API/lifecycle path can enqueue production work.
+
+Evidence: final independent spec review approved the complete queue. Quality
+review findings were fixed in `27ef269` and `3bfe59d`, then independently
+re-approved. The complete backend suite at the final commit passed `1727` tests
+with `5` expected platform skips against fresh isolated PostgreSQL; whole-backend
+Ruff and `git diff --check` passed. The exact cluster
+`/tmp/veltrix-portal-test-g3qdsfi3` was stopped and removed, its listener closed
+and the control service remained active. `docs/veltrix-endpoint-api-findings.md`
+records the unchanged production boundary and the required next stage.

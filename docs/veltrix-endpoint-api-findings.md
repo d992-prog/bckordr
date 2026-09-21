@@ -330,3 +330,35 @@ synthetic cluster `/tmp/veltrix-portal-test-18gp4z3o` was stopped and removed,
 its port45065 was closed and the control service remained active. The earlier
 short-lived rehearsal `/tmp/veltrix-portal-test-tpum14jb` also cleaned itself on
 stdin EOF before the interactive tunnel was started; neither cluster remains.
+
+## Durable control queue final checkpoint (2026-09-22)
+
+The application now has a locally implemented durable endpoint-control queue:
+idempotent schema migration, immutable request staging, PostgreSQL-safe claim and
+worker reservation, generation/token compare-and-set finalization, sticky revoke
+intent and explicit uncertain-state retention. A stale operation is superseded
+without changing its key, including when policy/identity changed after staging;
+claim continues to the next valid operation in the same call. Generation values
+are rejected before flush when the next value would exceed PostgreSQL `INTEGER`.
+
+Independent final spec review approved the full schema/stage/claim/finalize
+behavior. Independent quality review found and re-approved fixes for stale-first
+queue traversal and the generation boundary. The final complete backend run at
+`3bfe59d` passed `1727` tests with `5` expected platform skips against a fresh
+isolated PostgreSQL. Whole-backend Ruff and `git diff --check` passed. The exact
+synthetic cluster `/tmp/veltrix-portal-test-g3qdsfi3` was stopped and removed,
+its listener closed and `domain-drop-control.service` remained active.
+
+This is a local integration checkpoint, not a production cutover. No dispatcher
+currently transports claimed requests; strict host-key-pinned SSH is not wired
+to the queue, the node-local modules are not deployed by this application branch,
+and lifecycle/API/routes still use the legacy production behavior. The production
+database was not migrated and this branch was not deployed. TCP 443 remains
+closed for the new path, no protected REALITY inbound was created, and the
+owner's legacy endpoint, UUID, key and working link were not changed. Friend
+invitations, public beta access and payments remain disabled.
+
+The next implementation stage must add the strict host-key-pinned dispatcher and
+deploy/verify the node-local modules before any production path is allowed to
+enqueue or execute these operations. API/lifecycle cutover, protected endpoint
+creation, connection acceptance and invitation release stay behind later gates.
