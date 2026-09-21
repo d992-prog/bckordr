@@ -142,3 +142,41 @@ Add/update failure paths may also restart the core; report and test these rather
 than promising unconditional continuity. This design choice does not authorize
 opening a port or immediately modifying the running node. No reconnection duration
 has been measured. Public-release continuity remains a separate design decision.
+
+## Node-local execution and runtime evidence (2026-09-21 continuation)
+
+The panel's raw inbound response includes REALITY private keys. The approved
+private-key boundary therefore rules out a control-side tunnel HTTP client that
+downloads that response. The new transport and collector execute on the node;
+only an explicit safe observation is eligible to cross SSH. Do not serialize the
+session's raw response or arbitrary exceptions into remote command output.
+
+The installed Xray's [read-only inbound-user CLI](https://github.com/XTLS/Xray-core/blob/v26.9.9/main/commands/all/api/inbound_user.go)
+can query its local HandlerService using an inbound tag. Omitting email requests
+the named-user inventory; a missing inbound is an RPC error, not proof that a
+credential is absent. This offers runtime evidence independent of the panel's
+cached server/status. It still does not replace external TLS/UDP acceptance or
+prove that previously established traffic stopped.
+
+Critically, the pinned [VLESS validator](https://github.com/XTLS/Xray-core/blob/v26.9.9/proxy/vless/validator.go)
+normalizes credential bytes 6 and 7 to zero for runtime lookup and lowercases
+email identities. Exact panel UUID uniqueness alone therefore does not exclude
+runtime collisions. Its named-user enumeration also omits anonymous users. The
+later runtime/mutation checker must handle these distinctions; the existing pure
+panel identity observation deliberately makes no runtime authorization claim.
+No production credentials were inspected or changed for this source finding.
+
+For the pinned panel, create uses a wrapped `client` plus `inboundIds` list, while
+update takes flat client fields and a scoped inbound query. `limitHwid` belongs
+inside the creation wrapper but beside the flat update fields. Both success
+responses may have null obj, not a refreshed record. Canonical policy must be
+reread and preserved; success does not permit interpreting the request as a
+partial patch. References: [client payloads](https://github.com/MHSanaei/3x-ui/blob/7ef22f94c950ff09f0870e2295fa65ad5968742c/internal/web/service/client.go),
+[controller](https://github.com/MHSanaei/3x-ui/blob/7ef22f94c950ff09f0870e2295fa65ad5968742c/internal/web/controller/client.go).
+
+A separate node-local durable journal is planned for interruption safety. Its
+gate stays held for the execution, while intent/receipts commit independently.
+An uncertain write blocks subsequent writes even after the SSH process dies;
+there is no claim that a timeout cancels an already running panel handler. The
+journal's initial creation must be explicit: losing an initialized journal must
+never silently erase permanent-revoke or uncertain-operation history.
