@@ -10,12 +10,14 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     JSON,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -822,6 +824,10 @@ class VpnAccessKey(Base):
             "endpoint_id IS NULL OR worker_id IS NOT NULL",
             name="ck_vpn_access_key_endpoint_worker",
         ),
+        CheckConstraint(
+            "operation_generation >= 0",
+            name="ck_vpn_access_key_operation_generation",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -832,6 +838,18 @@ class VpnAccessKey(Base):
         index=True,
     )
     endpoint_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    operation_generation: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
+    revoke_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    verified_client_email: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    panel_sub_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     protocol: Mapped[str] = mapped_column(String(32), default="vless", server_default="vless")
     public_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -857,6 +875,82 @@ class VpnAccessKey(Base):
 
     subscription: Mapped[VpnSubscription] = relationship(back_populates="access_keys")
     worker: Mapped[WorkerNode | None] = relationship(back_populates="vpn_access_keys")
+
+
+class VpnControlOperation(Base):
+    __tablename__ = "vpn_control_operations"
+    __table_args__ = (
+        UniqueConstraint(
+            "access_key_id",
+            "generation",
+            name="uq_vpn_control_operation_key_generation",
+        ),
+        ForeignKeyConstraint(
+            ["endpoint_id", "worker_id"],
+            ["vpn_endpoints.id", "vpn_endpoints.worker_id"],
+            name="fk_vpn_control_operation_endpoint_worker",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("generation > 0", name="ck_vpn_control_operation_generation"),
+        CheckConstraint(
+            "action IN ('provision','suspend','revoke')",
+            name="ck_vpn_control_operation_action",
+        ),
+        CheckConstraint(
+            "state IN ('queued','claimed','uncertain','succeeded','failed','superseded')",
+            name="ck_vpn_control_operation_state",
+        ),
+        Index("ix_vpn_control_operations_state", "state"),
+        Index("ix_vpn_control_operations_worker_id", "worker_id"),
+        Index("ix_vpn_control_operations_access_key_id", "access_key_id"),
+        Index(
+            "uq_vpn_control_operations_claim_token",
+            "claim_token",
+            unique=True,
+        ),
+        Index(
+            "uq_vpn_control_operations_worker_reserved",
+            "worker_id",
+            unique=True,
+            postgresql_where=text("state IN ('claimed','uncertain')"),
+            sqlite_where=text("state IN ('claimed','uncertain')"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    access_key_id: Mapped[int] = mapped_column(
+        ForeignKey("vpn_access_keys.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    worker_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    endpoint_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    request_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(16),
+        default="queued",
+        server_default="queued",
+        nullable=False,
+    )
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class VpnNodeEvent(Base):

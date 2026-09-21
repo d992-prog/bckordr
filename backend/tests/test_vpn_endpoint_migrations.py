@@ -248,7 +248,8 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
                     text(
                         """
                     SELECT id, worker_id, external_uuid, config_uri, status, issued_at, expires_at,
-                           endpoint_id
+                           endpoint_id, operation_generation, revoke_requested_at,
+                           verified_client_email, panel_sub_id
                     FROM vpn_access_keys
                     WHERE id = 1
                     """
@@ -262,7 +263,12 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
             key: upgraded[key] for key in expected_legacy_values
         } == expected_legacy_values
         assert upgraded["endpoint_id"] is None
+        assert upgraded["operation_generation"] == 0
+        assert upgraded["revoke_requested_at"] is None
+        assert upgraded["verified_client_email"] is None
+        assert upgraded["panel_sub_id"] is None
         assert await connection.scalar(text("SELECT count(*) FROM vpn_endpoints")) == 0
+        assert await connection.scalar(text("SELECT count(*) FROM vpn_control_operations")) == 0
 
         await connection.execute(
             text(
@@ -273,7 +279,60 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
             )
         )
         await connection.execute(
-            text("UPDATE vpn_access_keys SET endpoint_id = 1 WHERE id = 1")
+            text(
+                "UPDATE vpn_access_keys SET endpoint_id = 1, panel_sub_id = '' "
+                "WHERE id = 1"
+            )
+        )
+        await connection.execute(
+            text(
+                """
+                INSERT INTO vpn_access_keys (id, worker_id, endpoint_id, external_uuid)
+                VALUES (2, 1, 1, 'new-after-migration')
+                """
+            )
+        )
+        panel_sub_ids = (
+            await connection.execute(
+                text("SELECT panel_sub_id FROM vpn_access_keys ORDER BY id")
+            )
+        ).scalars().all()
+        assert panel_sub_ids == ["", None]
+
+        await connection.execute(
+            text(
+                """
+                INSERT INTO vpn_control_operations (
+                    id, access_key_id, worker_id, endpoint_id, generation,
+                    action, request_snapshot, request_digest
+                ) VALUES (
+                    '00000000-0000-0000-0000-000000000001', 1, 1, 1, 1,
+                    'provision', '{"expires_at_ms":-1}', :request_digest
+                )
+                """
+            ),
+            {"request_digest": "a" * 64},
+        )
+        stored_operation = (
+            (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT request_snapshot, state, claim_token, claimed_at,
+                               finished_at, error_code
+                        FROM vpn_control_operations
+                        """
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert stored_operation["request_snapshot"] == {"expires_at_ms": -1}
+        assert stored_operation["state"] == "queued"
+        assert all(
+            stored_operation[column] is None
+            for column in ("claim_token", "claimed_at", "finished_at", "error_code")
         )
 
         await _assert_integrity_error(
@@ -314,6 +373,40 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
             constraint_name="fk_vpn_access_key_endpoint_worker",
             sqlstate="23503",
         )
+        await _assert_integrity_error(
+            connection,
+            "UPDATE vpn_access_keys SET operation_generation = -1 WHERE id = 1",
+            None,
+            constraint_name="ck_vpn_access_key_operation_generation",
+            sqlstate="23514",
+        )
+        await _assert_integrity_error(
+            connection,
+            """
+            INSERT INTO vpn_control_operations (
+                id, access_key_id, worker_id, endpoint_id, generation,
+                action, request_snapshot, request_digest
+            ) VALUES (
+                '00000000-0000-0000-0000-000000000002', 1, 1, 1, 1,
+                'suspend', '{}', :request_digest
+            )
+            """,
+            {"request_digest": "b" * 64},
+            constraint_name="uq_vpn_control_operation_key_generation",
+            sqlstate="23505",
+        )
+        for column, value, constraint_name in (
+            ("generation", "0", "ck_vpn_control_operation_generation"),
+            ("action", "'unknown'", "ck_vpn_control_operation_action"),
+            ("state", "'unknown'", "ck_vpn_control_operation_state"),
+        ):
+            await _assert_integrity_error(
+                connection,
+                f"UPDATE vpn_control_operations SET {column} = {value}",
+                None,
+                constraint_name=constraint_name,
+                sqlstate="23514",
+            )
 
         await connection.execute(
             text(
@@ -337,7 +430,7 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
                     text(
                         """
                     SELECT id, worker_id, external_uuid, config_uri, status, issued_at, expires_at,
-                           endpoint_id
+                           endpoint_id, operation_generation, panel_sub_id
                     FROM vpn_access_keys
                     WHERE id = 1
                     """
@@ -351,6 +444,8 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
             key: after_rejections[key] for key in expected_legacy_values
         } == expected_legacy_values
         assert after_rejections["endpoint_id"] == 1
+        assert after_rejections["operation_generation"] == 0
+        assert after_rejections["panel_sub_id"] == ""
 
 
 @pytest.mark.asyncio
@@ -368,22 +463,28 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
 
     endpoint_table = models.VpnEndpoint.__table__
     access_key_table = models.VpnAccessKey.__table__
+    operation_table = models.VpnControlOperation.__table__
     expected_named_constraints = {
         constraint.name
-        for table in (endpoint_table, access_key_table)
+        for table in (endpoint_table, access_key_table, operation_table)
         for constraint in table.constraints
         if constraint.name is not None
         and (
             constraint.name.startswith("ck_vpn_endpoint_")
             or constraint.name.startswith("uq_vpn_endpoint_")
+            or constraint.name.startswith("ck_vpn_control_operation_")
+            or constraint.name.startswith("uq_vpn_control_operation_")
             or constraint.name
             in {
                 "fk_vpn_access_key_endpoint_worker",
                 "ck_vpn_access_key_endpoint_worker",
+                "ck_vpn_access_key_operation_generation",
+                "fk_vpn_control_operation_endpoint_worker",
             }
         )
     }
     expected_endpoint_indexes = {index.name for index in endpoint_table.indexes}
+    expected_operation_indexes = {index.name for index in operation_table.indexes}
     expected_endpoint_constraint_types = {
         "uq_vpn_endpoint_worker_inbound": "u",
         "uq_vpn_endpoint_id_worker": "u",
@@ -392,6 +493,12 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
         "ck_vpn_endpoint_status": "c",
         "ck_vpn_endpoint_security": "c",
         "ck_vpn_endpoint_ready": "c",
+        "ck_vpn_access_key_operation_generation": "c",
+        "uq_vpn_control_operation_key_generation": "u",
+        "fk_vpn_control_operation_endpoint_worker": "f",
+        "ck_vpn_control_operation_generation": "c",
+        "ck_vpn_control_operation_action": "c",
+        "ck_vpn_control_operation_state": "c",
     }
 
     async with postgres_schema.engine.connect() as connection:
@@ -404,7 +511,8 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
                     FROM pg_constraint AS con
                     WHERE con.conrelid IN (
                         'vpn_endpoints'::regclass,
-                        'vpn_access_keys'::regclass
+                        'vpn_access_keys'::regclass,
+                        'vpn_control_operations'::regclass
                     )
                     GROUP BY con.conname, con.contype
                     """
@@ -423,10 +531,14 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
             for name in constraint_catalog
             if name.startswith("ck_vpn_endpoint_")
             or name.startswith("uq_vpn_endpoint_")
+            or name.startswith("ck_vpn_control_operation_")
+            or name.startswith("uq_vpn_control_operation_")
             or name
             in {
                 "fk_vpn_access_key_endpoint_worker",
                 "ck_vpn_access_key_endpoint_worker",
+                "ck_vpn_access_key_operation_generation",
+                "fk_vpn_control_operation_endpoint_worker",
             }
         }
 
@@ -440,6 +552,7 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
         } == expected_endpoint_constraint_types
         assert constraint_catalog["fk_vpn_access_key_endpoint_worker"] == ("f", 1)
         assert constraint_catalog["ck_vpn_access_key_endpoint_worker"] == ("c", 1)
+        assert constraint_catalog["vpn_control_operations_pkey"] == ("p", 1)
         assert constraint_catalog["vpn_endpoints_pkey"] == ("p", 1)
         assert constraint_catalog["vpn_endpoints_worker_id_fkey"] == ("f", 1)
 
@@ -470,6 +583,41 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
         )
         assert endpoint_worker_delete_action == "r"
 
+        operation_foreign_keys = {
+            row["conname"]: (row["definition"], row["delete_action"])
+            for row in (
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT conname,
+                                   pg_get_constraintdef(oid) AS definition,
+                                   confdeltype::text AS delete_action
+                            FROM pg_constraint
+                            WHERE conrelid = 'vpn_control_operations'::regclass
+                              AND contype = 'f'
+                            """
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        }
+        assert operation_foreign_keys[
+            "fk_vpn_control_operation_endpoint_worker"
+        ] == (
+            "FOREIGN KEY (endpoint_id, worker_id) "
+            "REFERENCES vpn_endpoints(id, worker_id) ON DELETE RESTRICT",
+            "r",
+        )
+        access_key_foreign_key = next(
+            value
+            for value in operation_foreign_keys.values()
+            if value[0].startswith("FOREIGN KEY (access_key_id)")
+        )
+        assert access_key_foreign_key[1] == "r"
+
         index_names = set(
             (
                 await connection.execute(
@@ -478,7 +626,9 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
                         SELECT indexname
                         FROM pg_indexes
                         WHERE schemaname = current_schema()
-                          AND tablename IN ('vpn_endpoints', 'vpn_access_keys')
+                          AND tablename IN (
+                              'vpn_endpoints', 'vpn_access_keys', 'vpn_control_operations'
+                          )
                         """
                     )
                 )
@@ -489,6 +639,11 @@ async def test_fresh_metadata_then_migrations_preserve_catalog_parity(
         }
         assert actual_endpoint_indexes == expected_endpoint_indexes
         assert "ix_vpn_access_keys_endpoint_id" in index_names
+        assert {
+            name
+            for name in index_names
+            if name in expected_operation_indexes
+        } == expected_operation_indexes
 
 
 @pytest.mark.asyncio
@@ -511,14 +666,42 @@ async def test_constraint_names_in_another_schema_do_not_block_installation(
                     CREATE TABLE "{decoy_schema}".constraint_decoy (
                         endpoint_id INTEGER,
                         worker_id INTEGER,
+                        generation INTEGER,
+                        action VARCHAR(16),
+                        state VARCHAR(16),
                         CONSTRAINT fk_vpn_access_key_endpoint_worker
                             CHECK (endpoint_id IS NULL OR worker_id IS NOT NULL),
                         CONSTRAINT ck_vpn_access_key_endpoint_worker
-                            CHECK (endpoint_id IS NULL OR worker_id IS NOT NULL)
+                            CHECK (endpoint_id IS NULL OR worker_id IS NOT NULL),
+                        CONSTRAINT ck_vpn_access_key_operation_generation
+                            CHECK (generation IS NULL OR generation >= 0),
+                        CONSTRAINT uq_vpn_control_operation_key_generation
+                            CHECK (generation IS NULL OR generation > 0),
+                        CONSTRAINT fk_vpn_control_operation_endpoint_worker
+                            CHECK (endpoint_id IS NULL OR worker_id IS NOT NULL),
+                        CONSTRAINT ck_vpn_control_operation_generation
+                            CHECK (generation IS NULL OR generation > 0),
+                        CONSTRAINT ck_vpn_control_operation_action
+                            CHECK (action IS NULL OR action <> ''),
+                        CONSTRAINT ck_vpn_control_operation_state
+                            CHECK (state IS NULL OR state <> '')
                     )
                     """
                 )
             )
+            for index_name, column_name in (
+                ("ix_vpn_control_operations_state", "state"),
+                ("ix_vpn_control_operations_worker_id", "worker_id"),
+                ("ix_vpn_control_operations_access_key_id", "endpoint_id"),
+                ("uq_vpn_control_operations_claim_token", "action"),
+                ("uq_vpn_control_operations_worker_reserved", "generation"),
+            ):
+                await connection.execute(
+                    text(
+                        f'CREATE INDEX "{index_name}" '
+                        f'ON "{decoy_schema}".constraint_decoy ({column_name})'
+                    )
+                )
 
         async with postgres_schema.engine.begin() as connection:
             await connection.execute(
@@ -548,7 +731,8 @@ async def test_constraint_names_in_another_schema_do_not_block_installation(
                             WHERE conrelid = 'vpn_access_keys'::regclass
                               AND conname IN (
                                   'fk_vpn_access_key_endpoint_worker',
-                                  'ck_vpn_access_key_endpoint_worker'
+                                  'ck_vpn_access_key_endpoint_worker',
+                                  'ck_vpn_access_key_operation_generation'
                               )
                             """
                         )
@@ -558,6 +742,56 @@ async def test_constraint_names_in_another_schema_do_not_block_installation(
         assert installed == {
             "fk_vpn_access_key_endpoint_worker",
             "ck_vpn_access_key_endpoint_worker",
+            "ck_vpn_access_key_operation_generation",
+        }
+        async with postgres_schema.engine.connect() as connection:
+            operation_constraints = set(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT conname
+                            FROM pg_constraint
+                            WHERE conrelid = 'vpn_control_operations'::regclass
+                              AND conname IN (
+                                  'uq_vpn_control_operation_key_generation',
+                                  'fk_vpn_control_operation_endpoint_worker',
+                                  'ck_vpn_control_operation_generation',
+                                  'ck_vpn_control_operation_action',
+                                  'ck_vpn_control_operation_state'
+                              )
+                            """
+                        )
+                    )
+                ).scalars()
+            )
+            operation_indexes = set(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT indexname
+                            FROM pg_indexes
+                            WHERE schemaname = current_schema()
+                              AND tablename = 'vpn_control_operations'
+                            """
+                        )
+                    )
+                ).scalars()
+            )
+        assert operation_constraints == {
+            "uq_vpn_control_operation_key_generation",
+            "fk_vpn_control_operation_endpoint_worker",
+            "ck_vpn_control_operation_generation",
+            "ck_vpn_control_operation_action",
+            "ck_vpn_control_operation_state",
+        }
+        assert operation_indexes >= {
+            "ix_vpn_control_operations_state",
+            "ix_vpn_control_operations_worker_id",
+            "ix_vpn_control_operations_access_key_id",
+            "uq_vpn_control_operations_claim_token",
+            "uq_vpn_control_operations_worker_reserved",
         }
     finally:
         try:

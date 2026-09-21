@@ -52,4 +52,82 @@ VPN_ENDPOINT_MIGRATIONS = (
     $$
     """,
     "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_endpoint_id ON vpn_access_keys(endpoint_id)",
+    """
+    ALTER TABLE vpn_access_keys
+        ADD COLUMN IF NOT EXISTS operation_generation INTEGER NOT NULL DEFAULT 0
+    """,
+    """
+    ALTER TABLE vpn_access_keys
+        ADD COLUMN IF NOT EXISTS revoke_requested_at TIMESTAMPTZ NULL
+    """,
+    """
+    ALTER TABLE vpn_access_keys
+        ADD COLUMN IF NOT EXISTS verified_client_email VARCHAR(64) NULL
+    """,
+    """
+    ALTER TABLE vpn_access_keys
+        ADD COLUMN IF NOT EXISTS panel_sub_id VARCHAR(64) NULL
+    """,
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='vpn_access_keys'::regclass AND conname='ck_vpn_access_key_operation_generation') THEN
+            ALTER TABLE vpn_access_keys
+                ADD CONSTRAINT ck_vpn_access_key_operation_generation
+                CHECK (operation_generation >= 0);
+        END IF;
+    END;
+    $$
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS vpn_control_operations (
+        id VARCHAR(36) PRIMARY KEY,
+        access_key_id INTEGER NOT NULL REFERENCES vpn_access_keys(id) ON DELETE RESTRICT,
+        worker_id INTEGER NOT NULL,
+        endpoint_id INTEGER NOT NULL,
+        generation INTEGER NOT NULL,
+        action VARCHAR(16) NOT NULL,
+        request_snapshot JSON NOT NULL,
+        request_digest VARCHAR(64) NOT NULL,
+        state VARCHAR(16) NOT NULL DEFAULT 'queued',
+        claim_token VARCHAR(36) NULL,
+        claimed_at TIMESTAMPTZ NULL,
+        finished_at TIMESTAMPTZ NULL,
+        error_code VARCHAR(64) NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT uq_vpn_control_operation_key_generation
+            UNIQUE (access_key_id, generation),
+        CONSTRAINT fk_vpn_control_operation_endpoint_worker
+            FOREIGN KEY (endpoint_id, worker_id)
+            REFERENCES vpn_endpoints(id, worker_id)
+            ON DELETE RESTRICT,
+        CONSTRAINT ck_vpn_control_operation_generation CHECK (generation > 0),
+        CONSTRAINT ck_vpn_control_operation_action
+            CHECK (action IN ('provision','suspend','revoke')),
+        CONSTRAINT ck_vpn_control_operation_state
+            CHECK (state IN ('queued','claimed','uncertain','succeeded','failed','superseded'))
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_vpn_control_operations_state
+    ON vpn_control_operations(state)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_vpn_control_operations_worker_id
+    ON vpn_control_operations(worker_id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_vpn_control_operations_access_key_id
+    ON vpn_control_operations(access_key_id)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_vpn_control_operations_claim_token
+    ON vpn_control_operations(claim_token)
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_vpn_control_operations_worker_reserved
+    ON vpn_control_operations(worker_id)
+    WHERE state IN ('claimed','uncertain')
+    """,
 )
