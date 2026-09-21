@@ -180,3 +180,20 @@ An uncertain write blocks subsequent writes even after the SSH process dies;
 there is no claim that a timeout cancels an already running panel handler. The
 journal's initial creation must be explicit: losing an initialized journal must
 never silently erase permanent-revoke or uncertain-operation history.
+
+## Live authentication preflight (2026-09-21)
+
+A strict-known-hosts, read-only control-database check found that worker 15 has
+a panel URL and username but no `vpn_panel_password`. The node-local session
+probe stopped at that check, before panel login. No password reset, new API token,
+client change, panel database write, restart or firewall change was performed.
+The owner was asked to save the known panel password through the existing
+"Пароль 3x-UI" field, not send it in chat. Local implementation/tests continue
+without treating this unavailable live check as a pass.
+
+The old maintenance helper's `setting -getApiToken true` must not be used as a
+read-only diagnostic. In the pinned upstream [GetApiToken implementation](https://github.com/MHSanaei/3x-ui/blob/7ef22f94c950ff09f0870e2295fa65ad5968742c/main.go#L467),
+it creates a token or regenerates a named fallback token, invalidating the prior
+one. Existing tokens are hashes, not retrievable plaintext. Running that helper
+would create/change privileged access and is not a substitute for authorized
+authentication. The helper was inspected but not invoked.

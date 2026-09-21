@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
-from app.services.vpn_endpoints import VpnEndpointError, VpnEndpointTarget
+from app.services.vpn_endpoint_types import VpnEndpointError, VpnEndpointTarget
 
 
 @dataclass(frozen=True, slots=True)
