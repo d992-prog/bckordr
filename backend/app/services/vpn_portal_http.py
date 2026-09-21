@@ -87,11 +87,11 @@ class PortalHttpMiddleware:
             return
 
         response_started = False
+        response_complete = False
 
         async def no_store_send(message: dict[str, Any]) -> None:
-            nonlocal response_started
+            nonlocal response_complete, response_started
             if message["type"] == "http.response.start":
-                response_started = True
                 headers = [
                     (name, value)
                     for name, value in message.get("headers", [])
@@ -99,6 +99,12 @@ class PortalHttpMiddleware:
                 ]
                 headers.append((b"cache-control", b"no-store"))
                 message = {**message, "headers": headers}
+            if message["type"] == "http.response.start":
+                response_started = True
+            elif message["type"] == "http.response.body" and not message.get(
+                "more_body", False
+            ):
+                response_complete = True
             await send(message)
 
         try:
@@ -129,7 +135,19 @@ class PortalHttpMiddleware:
             await self.app(scope, receive, no_store_send)
         except Exception:
             if response_started:
-                raise
+                logger.error("VPN portal response terminated after an internal failure")
+                if not response_complete:
+                    try:
+                        await send(
+                            {
+                                "type": "http.response.body",
+                                "body": b"",
+                                "more_body": False,
+                            }
+                        )
+                    except Exception:
+                        logger.error("VPN portal response transport unavailable")
+                return
             logger.error("Unhandled VPN portal request failure")
             response = JSONResponse(
                 {"detail": "customer_service_unavailable"},
@@ -138,7 +156,7 @@ class PortalHttpMiddleware:
             if scope.get("path") == self.telegram_callback_path:
                 try:
                     delete_binding_cookie(response, scope["app"].state.settings)
-                except ValueError:
+                except Exception:
                     response.delete_cookie(
                         BINDING_COOKIE,
                         path="/",
@@ -146,7 +164,10 @@ class PortalHttpMiddleware:
                         httponly=True,
                         samesite="lax",
                     )
-            await response(scope, receive, no_store_send)
+            try:
+                await response(scope, receive, no_store_send)
+            except Exception:
+                logger.error("VPN portal error response transport unavailable")
 
     def _mini_app_rejection(self, scope) -> JSONResponse | None:
         headers = {

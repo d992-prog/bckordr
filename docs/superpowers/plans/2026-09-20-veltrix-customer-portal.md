@@ -1323,7 +1323,7 @@ to report failure to the rename flow. Preserve the default error handling of oth
 Inspect `deploy/domain-drop-control.service` but change it only if the logging test
 proves the application filter cannot cover its launcher; do not change its User.
 
-- [ ] Capture logs in tests with synthetic bot token, OAuth code/state, initData,
+- [x] Capture logs in tests with synthetic bot token, OAuth code/state, initData,
   URI and Authorization header. Verify none appear after failed auth/provider calls.
   Include a database/flush failure with a synthetic PKCE verifier in SQLAlchemy
   exception parameters. A portal-scoped unexpected-error boundary must emit a
@@ -1335,11 +1335,11 @@ proves the application filter cannot cover its launcher; do not change its User.
   dependency teardown): do not send a second response, but do not re-raise the raw
   exception/chain into Uvicorn either. Task 8's basic boundary currently re-raises
   this late case; it must be made secret-safe here before deployment.
-- [ ] Suppress HTTPX/HTTPCORE INFO request URLs in the application (bot URLs embed
+- [x] Suppress HTTPX/HTTPCORE INFO request URLs in the application (bot URLs embed
   the existing bot secret). Add a Uvicorn access-log filter stripping query strings
   on portal auth routes and replacing webhook secret path segments with `<redacted>`.
   Do not disable error logging or interpolate exception payloads in safe failures.
-- [ ] Add HTTP-context Nginx declarations, to be included only after inspecting the
+- [x] Add HTTP-context Nginx declarations, to be included only after inspecting the
   actual production configuration and confirming context:
 
 ```nginx
@@ -1351,35 +1351,35 @@ map $uri $veltrix_safe_uri {
 log_format veltrix_safe '$remote_addr - $request_method $veltrix_safe_uri $status $body_bytes_sent';
 ```
 
-- [ ] New server location for `/api/vpn-portal/auth/` sets `limit_req zone=veltrix_auth
+- [x] New server location for `/api/vpn-portal/auth/` sets `limit_req zone=veltrix_auth
   burst=10 nodelay`, `limit_req_status 429`, `client_max_body_size 16k`, safe log format,
   proxy to existing 127.0.0.1:8000 and trusted forwarded headers. Use `$uri`, never
   `$request`/`$request_uri`, in the callback access log. Add safe logging to webhook
   route without changing its secret or dropping Telegram pending updates.
-- [ ] Add/verify no-store headers for portal APIs and no-referrer for cabinet, keep
+- [x] Add/verify no-store headers for portal APIs and no-referrer for cabinet, keep
   strict same-origin credentials. Do not add global X-Frame-Options DENY that breaks
   Telegram Web Mini App; check native iOS and web embedding before enabling.
-- [ ] Test Nginx config and rate-limit/cookie/error headers in a local/rehearsal
+- [x] Test Nginx config and rate-limit/cookie/error headers in a local/rehearsal
   environment. Never copy the repository's www-data service User over production:
   production presently runs root with private root-owned .env, and changing that is
   an independent operational migration.
-- [ ] Run logging tests and full suites; commit as `fix: protect VPN portal authentication secrets and endpoints`.
+- [x] Run logging tests and full suites; commit as `fix: protect VPN portal authentication secrets and endpoints`.
 
 ## Task 13: Verification, closed pilot and reversible deployment
 
 **Files:** Create `docs/vpn-customer-portal-runbook.md`; update
 `docs/current-state.md` only with observed results.
 
-- [ ] Run full backend tests/Ruff, frontend tests/build. Record exact commands,
+- [x] Run full backend tests/Ruff, frontend tests/build. Record exact commands,
   counts and revision. Run a reviewer pass focused on auth isolation, replay,
   display-name identity preservation and uncaught credential logging.
-- [ ] Rehearse additive migration from a pre-feature PostgreSQL snapshot, then rerun
+- [x] Rehearse additive migration from a pre-feature PostgreSQL snapshot, then rerun
   migration/backfill twice. Assert no UUID/public_name/URI/traffic changes, stable
   display names and usable previous application with extra columns left in place.
 - [ ] Explicit browser checks: API A/B ownership, successful browser callback and
   denial/cancel, Mini App payload replay/permutation, stale session, admin/customer
   cookie coexistence, refresh at `/cabinet/`, narrow viewport and copy fallback.
-- [ ] Prepare a runbook with these exact BotFather values (public values only):
+- [x] Prepare a runbook with these exact BotFather values (public values only):
 
 ```text
 Bot: @veltrix_vpn_official_bot
@@ -1394,7 +1394,7 @@ VPN_PORTAL_PUBLIC_ACCESS=false
   server environment. Never ask to paste them in chat. Confirm the pilot's Telegram
   IDs explicitly; do not bind `test1` to an arbitrary bot visitor. Missing credentials
   block live browser login, not unit tests or build.
-- [ ] Before production changes inspect current revision, dirty generated files,
+- [x] Before production changes inspect current revision, dirty generated files,
   active domain jobs, node maintenance, actual Nginx include layout and service unit.
   Make and validate a new full DB/config backup. Do not reuse an old partial dump.
 - [ ] Deploy feature disabled, migrate, build, control-only restart and verify
@@ -1466,7 +1466,8 @@ the test runtime is available, not that the not-yet-built cabinet has passed QA.
 | 9 | Complete | Both reviews approved; parent 22 frontend tests and TypeScript/Vite build passed; reviewer 10 focused tests. Independent DTOs/client, static HTTP/network/parser errors and total Russian state/date helpers |
 | 10 | Complete | Both reviews approved after auth, safe-area and request-race amendments. Parent 37 frontend tests, TypeScript/Vite build, full HTTP-mocked browser QA at 320/390/768/1280 in light/dark, official SDK synthetic cache spot-check and real FastAPI static probe passed. Live Telegram pilot remains pending |
 | 11 | Complete | Both re-reviews approved; parent backend634 passed140.45s with real PG/no skips, final Telegram37/frontend52/build/Ruff passed. Actual admin bundle browser QA verified rename/cancel/copy/selection/390px and held GET/PATCH/external revoke/per-key pending races; microsecond timestamp regression covered |
-| 12–13 | Pending | Logging/deployment work not implemented. Approved real production snapshot passed two migrations/backfills, legacy field/identity/limit preservation and previous ORM rollback compatibility. Both timed-out first copy and successful bounded retry were removed; final absence independently confirmed. No production app changes; fresh deployment backup still required |
+| 12 | Complete | Specification and quality re-reviews approved. Parent final backend: 664 passed in 139.42s with real PG/no skips; full Ruff clean; frontend52/build passed. 30 logging regressions include structured headers, exception causes/contexts/notes/groups, SQL parameters and late ASGI failures. Actual isolated Nginx 1.18 passed 200/400/413/429/502, cookie flags, scoped no-store/no-referrer and secret-free logs; temporary instance removed |
+| 13 | In progress; live Telegram pending | Real production snapshot passed two migrations/backfills, legacy field/identity/limit preservation and previous ORM rollback compatibility; disposable copies removed and absence confirmed. Fresh validated full DB/config/frontend backup retained at `/opt/backups/veltrix-cabinet-20260921-003811`. Auth static review approved; disabled deployment/rollback and post-release probe scripts safety-reviewed. Production app not yet changed; real Telegram credentials/client checks still outstanding |
 
 Verification repair: the old partial-cycle durability test raced a 0.1-second
 effective timeout against initial SQLite work (configured 0.05 is clamped). A

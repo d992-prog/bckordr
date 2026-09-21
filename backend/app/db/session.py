@@ -6,6 +6,7 @@ settings = get_settings()
 
 engine = create_async_engine(
     settings.db_url,
+    hide_parameters=True,
     pool_pre_ping=True,
     future=True,
 )

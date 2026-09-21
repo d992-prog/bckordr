@@ -210,12 +210,16 @@ async def test_portal_error_after_response_start_is_not_double_sent() -> None:
         "headers": [],
         "app": SimpleNamespace(state=SimpleNamespace(settings=Settings())),
     }
-    with pytest.raises(RuntimeError, match="late failure"):
-        await middleware(scope, receive, send)
+    await middleware(scope, receive, send)
 
     starts = [message for message in sent if message["type"] == "http.response.start"]
     assert len(starts) == 1
     assert (b"cache-control", b"no-store") in starts[0]["headers"]
+    assert sent[-1] == {
+        "type": "http.response.body",
+        "body": b"",
+        "more_body": False,
+    }
 
 
 @pytest_asyncio.fixture

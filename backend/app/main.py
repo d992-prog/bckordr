@@ -23,6 +23,7 @@ from app.services.vpn_portal_http import (
     ScopedControlCorsMiddleware,
     is_portal_path,
 )
+from app.services.vpn_portal_logging import install_safe_logging
 from app.services.vpn_portal_telegram import TelegramJWKSProvider
 from app.services.vpn_profile_names import backfill_profile_names
 
@@ -30,6 +31,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+install_safe_logging()
 
 settings = get_settings()
 
