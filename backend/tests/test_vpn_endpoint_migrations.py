@@ -539,9 +539,9 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
             connection,
             """
             INSERT INTO vpn_endpoints (id, worker_id, inbound_id, public_host, port)
-            VALUES (2, 1, 1, 'duplicate.example', 443)
+            VALUES (2, 1, :inbound_id, 'duplicate.example', 443)
             """,
-            None,
+            {"inbound_id": expected_endpoint_values["inbound_id"]},
             constraint_name="uq_vpn_endpoint_worker_inbound",
             sqlstate="23505",
         )
