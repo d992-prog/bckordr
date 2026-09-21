@@ -330,6 +330,34 @@ async def test_rolled_back_claim_is_claimable_again(postgres_control):
 
 
 @pytest.mark.asyncio
+async def test_claim_savepoint_supersedes_stale_first_and_claims_valid_second(
+    postgres_control,
+):
+    await _seed(postgres_control)
+    stale_id = await _stage(postgres_control, 7, now=NOW)
+    valid_id = await _stage(postgres_control, 8, now=NOW + timedelta(seconds=1))
+    async with postgres_control.sessions() as session:
+        subscription = await session.get(VpnSubscription, 3)
+        assert subscription is not None
+        subscription.status = "disabled"
+        await session.commit()
+
+    token = uuid4()
+    async with postgres_control.sessions() as session:
+        claimed = await claim_next_vpn_control_operation(
+            session,
+            claim_token=token,
+            now=NOW + timedelta(seconds=2),
+        )
+        first = await session.get(VpnControlOperation, str(stale_id))
+        second = await session.get(VpnControlOperation, str(valid_id))
+        assert claimed is not None and UUID(claimed.id) == valid_id
+        assert first is not None and first.state == "superseded"
+        assert second is not None
+        assert (second.state, second.claim_token) == ("claimed", str(token))
+
+
+@pytest.mark.asyncio
 async def test_newer_revoke_blocks_old_observed_provision_finalizer(postgres_control):
     await _seed(postgres_control)
     operation_id = await _stage(postgres_control, 7)

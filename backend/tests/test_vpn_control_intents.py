@@ -1135,6 +1135,45 @@ async def test_claim_supersedes_queued_operation_when_persisted_policy_changed(
 
 
 @pytest.mark.asyncio
+async def test_claim_fallback_supersedes_stale_first_and_claims_valid_second(
+    session_factory,
+):
+    api = _api()
+    async with session_factory() as session:
+        stale = await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+        stale_id = stale.id
+        await session.commit()
+    async with session_factory() as session:
+        valid = await api.stage_vpn_control_operation(
+            session,
+            8,
+            "provision",
+            now=NOW + timedelta(seconds=1),
+        )
+        valid_id = valid.id
+        await session.commit()
+    async with session_factory() as session:
+        subscription = await session.get(VpnSubscription, 3)
+        assert subscription is not None
+        subscription.status = "disabled"
+        await session.commit()
+
+    token = uuid4()
+    async with session_factory() as session:
+        claimed = await api.claim_next_vpn_control_operation(
+            session,
+            claim_token=token,
+            now=NOW + timedelta(seconds=2),
+        )
+        first = await session.get(VpnControlOperation, stale_id)
+        second = await session.get(VpnControlOperation, valid_id)
+        assert claimed is not None and claimed.id == valid_id
+        assert first is not None and first.state == "superseded"
+        assert second is not None
+        assert (second.state, second.claim_token) == ("claimed", str(token))
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("partial_table", ["vpn_subscriptions", "vpn_access_keys"])
 async def test_claim_rolls_back_candidate_when_skip_locked_returns_partial_sibling_set(
     session_factory,

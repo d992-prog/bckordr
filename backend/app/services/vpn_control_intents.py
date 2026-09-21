@@ -725,19 +725,23 @@ async def claim_next_vpn_control_operation(
         return operation, True
 
     if db.get_bind().dialect.name != "postgresql":
-        try:
-            operation, claimed = await attempt(candidates[0])
-        except _CandidateBusy:
-            return None
-        except IntegrityError:
-            _fail("vpn_control_claim_conflict")
-        return operation if claimed else None
+        for candidate in candidates:
+            try:
+                operation, claimed = await attempt(candidate)
+            except _CandidateBusy:
+                continue
+            except IntegrityError:
+                _fail("vpn_control_claim_conflict")
+            if claimed:
+                return operation
+        return None
 
     for candidate in candidates:
         try:
             async with db.begin_nested():
                 operation, claimed = await attempt(candidate)
-                return operation if claimed else None
+            if claimed:
+                return operation
         except _CandidateBusy:
             continue
         except IntegrityError:
