@@ -512,6 +512,7 @@ export type VpnAccessKey = {
   worker_id: number | null;
   protocol: string;
   public_name: string | null;
+  display_name: string;
   external_uuid: string | null;
   config_uri: string | null;
   status: string;
@@ -522,6 +523,14 @@ export type VpnAccessKey = {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type VpnAccessKeyCreatePayload = {
+  subscription_id: number;
+  worker_id: number | null;
+  protocol: string;
+  display_name?: string;
+  public_name?: string | null;
 };
 
 export type VpnNodeEligibility = {
@@ -1027,7 +1036,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getVpnAccessKeys: () => request<VpnAccessKey[]>("/control/vpn/access-keys"),
-  createVpnAccessKey: (payload: Record<string, unknown>) =>
+  createVpnAccessKey: (payload: VpnAccessKeyCreatePayload) =>
     request<VpnAccessKey>("/control/vpn/access-keys", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -1036,6 +1045,11 @@ export const api = {
     request<VpnAccessKey>(`/control/vpn/access-keys/${id}/provision`, { method: "POST" }),
   revokeVpnAccessKey: (id: number) =>
     request<VpnAccessKey>(`/control/vpn/access-keys/${id}/revoke`, { method: "POST" }),
+  renameVpnAccessKey: (id: number, displayName: string) =>
+    request<VpnAccessKey>(`/control/vpn/access-keys/${id}/display-name`, {
+      method: "PATCH",
+      body: JSON.stringify({ display_name: displayName }),
+    }),
   getVpnLifecycleStatus: () => request<VpnLifecycleStatus>("/control/vpn/lifecycle/status"),
   runVpnLifecycleMaintenance: () =>
     request<VpnLifecycleStatus>("/control/vpn/lifecycle/run", { method: "POST" }),

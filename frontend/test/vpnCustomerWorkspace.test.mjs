@@ -2,14 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  applyAccessKeyDisplay,
   accessKeyStatusLabel,
   calculateExtendedExpiration,
   classifyVpnCustomer,
   customerStatusOptions,
   filterVpnCustomers,
+  nextAccessKeyEditorAfterRename,
+  reconcileAccessKeyDisplayOverrides,
   selectPrimarySubscription,
   saveSubscriptionAndRequestSync,
+  saveAccessKeyDisplayName,
+  shouldApplyLoadGeneration,
 } from "../src/vpnCustomerWorkspace.ts";
+import { readFile } from "node:fs/promises";
 
 const now = new Date("2026-09-20T12:00:00.000Z");
 const customers = [
@@ -180,4 +186,331 @@ test("a reload error does not misreport a completed subscription save", async ()
     async () => {}, async () => {}, async () => { throw new Error("offline"); },
   );
   assert.deepEqual(result, { syncRequested: true, refreshed: false });
+});
+
+test("a renamed profile keeps the fresh labelled URI when reload fails", async () => {
+  const original = {
+    id: 7,
+    display_name: "Старое имя",
+    config_uri: "vless://old-labelled-uri",
+    updated_at: "2026-09-21T10:00:00.000Z",
+  };
+  const renamed = {
+    ...original,
+    display_name: "Новое имя",
+    config_uri: "vless://new-labelled-uri",
+    updated_at: "2026-09-21T10:01:00.000Z",
+  };
+  const result = await saveAccessKeyDisplayName(
+    async () => renamed,
+    async () => { throw new Error("offline"); },
+  );
+
+  assert.deepEqual(result, { accessKey: renamed, refreshed: false });
+  assert.deepEqual(
+    applyAccessKeyDisplay(original, result.accessKey),
+    renamed,
+  );
+  assert.equal(original.config_uri, "vless://old-labelled-uri");
+});
+
+test("a renamed profile publishes its fresh URI before reload settles", async () => {
+  let releaseReload;
+  const reloadPending = new Promise((resolve) => {
+    releaseReload = resolve;
+  });
+  const published = [];
+  const renamed = {
+    id: 8,
+    display_name: "Новое имя",
+    config_uri: "vless://new-labelled-uri",
+    updated_at: "2026-09-21T10:01:00.000Z",
+  };
+
+  const saving = saveAccessKeyDisplayName(
+    async () => renamed,
+    async () => reloadPending,
+    (accessKey) => published.push(accessKey),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(published, [renamed]);
+  releaseReload();
+  assert.deepEqual(await saving, { accessKey: renamed, refreshed: true });
+});
+
+test("a failed profile rename does not reload or report a saved value", async () => {
+  const calls = [];
+  await assert.rejects(
+    saveAccessKeyDisplayName(
+      async () => { throw new Error("invalid name"); },
+      async () => { calls.push("reload"); },
+    ),
+    /invalid name/,
+  );
+  assert.deepEqual(calls, []);
+});
+
+test("a stale reload cannot replace the optimistic renamed profile", () => {
+  const override = {
+    display_name: "Имя из админки",
+    config_uri: "vless://admin-labelled",
+    updated_at: "2026-09-21T10:01:00.900123Z",
+  };
+  const current = new Map([[7, override]]);
+  const stale = [{
+    id: 7,
+    display_name: "Старое имя",
+    config_uri: "vless://old-labelled",
+    updated_at: "2026-09-21T10:01:00.100999Z",
+  }];
+
+  const reconciled = reconcileAccessKeyDisplayOverrides(current, stale);
+
+  assert.equal(reconciled, current);
+  assert.deepEqual(reconciled.get(7), override);
+});
+
+test("a late pre-rename load cannot replace a matching post-rename refresh", () => {
+  const preRename = [{
+    id: 7,
+    display_name: "Старое имя",
+    config_uri: "vless://old-labelled",
+    updated_at: "2026-09-21T10:00:00.000000Z",
+  }];
+  const renamed = {
+    id: 7,
+    display_name: "Новое имя",
+    config_uri: "vless://new-labelled",
+    updated_at: "2026-09-21T10:01:00.000000Z",
+  };
+  const matchingRefresh = [renamed];
+  const override = new Map([[7, renamed]]);
+
+  let displayed = preRename;
+  let appliedGeneration = 0;
+  if (shouldApplyLoadGeneration(2, appliedGeneration)) {
+    displayed = matchingRefresh;
+    appliedGeneration = 2;
+  }
+  const cleared = reconcileAccessKeyDisplayOverrides(override, displayed);
+  if (shouldApplyLoadGeneration(1, appliedGeneration)) {
+    displayed = preRename;
+    appliedGeneration = 1;
+  }
+
+  assert.equal(cleared.size, 0);
+  assert.equal(appliedGeneration, 2);
+  assert.deepEqual(displayed, matchingRefresh);
+});
+
+test("an older delayed PATCH cannot replace a newer external profile name", () => {
+  const externallyRenamed = {
+    id: 7,
+    display_name: "Имя из кабинета",
+    config_uri: "vless://cabinet-labelled",
+    updated_at: "2026-09-21T10:02:00.000001Z",
+  };
+  const delayedPatch = {
+    display_name: "Запоздавшее имя админа",
+    config_uri: "vless://older-admin-labelled",
+    updated_at: "2026-09-21T10:01:00.900123Z",
+  };
+
+  const displayed = applyAccessKeyDisplay(externallyRenamed, delayedPatch);
+
+  assert.equal(displayed, externallyRenamed);
+  assert.equal(displayed.display_name, "Имя из кабинета");
+  assert.equal(displayed.config_uri, "vless://cabinet-labelled");
+});
+
+test("an older delayed PATCH cannot restore a URI after a newer revoke", () => {
+  const revoked = {
+    id: 7,
+    status: "revoked",
+    display_name: "Профиль",
+    config_uri: null,
+    updated_at: "2026-09-21T10:03:00.000001Z",
+  };
+  const delayedPatch = {
+    display_name: "Старое имя",
+    config_uri: "vless://must-not-return",
+    updated_at: "2026-09-21T10:01:00.900123Z",
+  };
+
+  const displayed = applyAccessKeyDisplay(revoked, delayedPatch);
+
+  assert.equal(displayed, revoked);
+  assert.equal(displayed.status, "revoked");
+  assert.equal(displayed.config_uri, null);
+});
+
+test("display precedence compares backend UTC timestamps beyond milliseconds", () => {
+  const key = (updatedAt, name = "Авторитетный") => ({
+    id: 7,
+    display_name: name,
+    config_uri: null,
+    updated_at: updatedAt,
+  });
+  const display = (updatedAt) => ({
+    display_name: "Переименованный",
+    config_uri: "vless://labelled",
+    updated_at: updatedAt,
+  });
+
+  assert.equal(
+    applyAccessKeyDisplay(
+      key("2026-09-21T10:00:00Z"),
+      display("2026-09-21T10:00:00.000001Z"),
+    ).display_name,
+    "Переименованный",
+    "a microsecond PATCH is newer than the exact second",
+  );
+  assert.equal(
+    applyAccessKeyDisplay(
+      key("2026-09-21T10:00:00.000001Z"),
+      display("2026-09-21T10:00:00Z"),
+    ).display_name,
+    "Авторитетный",
+    "an exact-second PATCH is older than the microsecond GET",
+  );
+  assert.equal(
+    applyAccessKeyDisplay(
+      key("2026-09-21T10:00:00.000999Z"),
+      display("2026-09-21T10:00:00.000123Z"),
+    ).display_name,
+    "Авторитетный",
+    "microseconds within one millisecond remain ordered",
+  );
+  assert.equal(
+    applyAccessKeyDisplay(
+      key("2026-09-21T10:00:00.901Z"),
+      display("2026-09-21T10:00:00.900Z"),
+    ).display_name,
+    "Авторитетный",
+    "ordinary milliseconds remain ordered",
+  );
+  assert.equal(
+    applyAccessKeyDisplay(
+      key("2026-09-21T10:00:00Z"),
+      display("2026-09-21T12:00:00+02:00"),
+    ).display_name,
+    "Переименованный",
+    "equivalent timezone encodings are not treated as newer",
+  );
+});
+
+test("completion of one profile rename preserves another profile editor", () => {
+  assert.equal(nextAccessKeyEditorAfterRename(8, 7), 8);
+  assert.equal(nextAccessKeyEditorAfterRename(7, 7), null);
+});
+
+test("a newer external rename replaces the optimistic admin override", () => {
+  const current = new Map([[7, {
+    display_name: "Имя из админки",
+    config_uri: "vless://admin-labelled",
+    updated_at: "2026-09-21T10:01:00.900123Z",
+  }]]);
+  const externallyRenamed = [{
+    id: 7,
+    display_name: "Имя из кабинета",
+    config_uri: "vless://cabinet-labelled",
+    updated_at: "2026-09-21T10:02:00.000001Z",
+  }];
+
+  const reconciled = reconcileAccessKeyDisplayOverrides(current, externallyRenamed);
+
+  assert.notEqual(reconciled, current);
+  assert.equal(reconciled.has(7), false);
+});
+
+test("a newer revoked profile clears an optimistic non-null URI", () => {
+  const current = new Map([[7, {
+    display_name: "Имя из админки",
+    config_uri: "vless://must-not-survive-revoke",
+    updated_at: "2026-09-21T10:01:00.900123Z",
+  }]]);
+  const revoked = [{
+    id: 7,
+    display_name: "Имя из админки",
+    config_uri: null,
+    updated_at: "2026-09-21T10:03:00.000001Z",
+  }];
+
+  const reconciled = reconcileAccessKeyDisplayOverrides(current, revoked);
+
+  assert.equal(reconciled.has(7), false);
+});
+
+test("admin profile UI uses display names and exposes inline rename controls", async () => {
+  const source = await readFile(
+    new URL("../src/VpnCustomerWorkspacePanel.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal(source.includes("accessKey.public_name"), false);
+  assert.match(source, /display_name: accessKeyForm\.displayName\.trim\(\)/);
+  assert.match(source, /api\.renameVpnAccessKey/);
+  assert.match(source, /maxLength=\{64\}/);
+  assert.match(source, />\s*Изменить название\s*</);
+  assert.match(source, />\s*Отмена\s*</);
+  assert.match(source, /const renameBusy = pendingAccessKeyRenameIds\.has\(accessKey\.id\)/);
+  assert.match(source, /renameBusy \? \(\s*<p className="muted">Обновляем подпись ссылки…<\/p>/);
+  assert.match(source, /nextAccessKeyEditorAfterRename\(current, accessKey\.id\)/);
+  assert.doesNotMatch(source, /setBusyAction\(`key-rename-/);
+});
+
+test("workspace reload opts into load error propagation without changing other callers", async () => {
+  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+
+  assert.match(
+    source,
+    /async function loadAll\(options\?: \{ silent\?: boolean; throwOnError\?: boolean \}\)/,
+  );
+  assert.match(source, /if \(options\?\.throwOnError\) \{\s*throw error;\s*\}/);
+  assert.match(source, /reload=\{\(\) => loadAll\(\{ throwOnError: true \}\)\}/);
+  assert.match(source, /shouldApplyLoadGeneration\(generation, lastAppliedLoadGenerationRef\.current\)/);
+  assert.doesNotMatch(source, /lastAppliedLoadResultRef/);
+});
+
+test("long profile names and rename controls wrap with visible spacing", async () => {
+  const [source, appSource] = await Promise.all([
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/App.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(appSource, /<section className="stack vpn-stack">/);
+  assert.match(
+    source,
+    /\.vpn-stack \{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*min-width: 0;/s,
+  );
+  assert.match(
+    source,
+    /\.vpn-stack > \.card \{[^}]*min-width: 0;[^}]*max-width: 100%;/s,
+  );
+  assert.match(
+    source,
+    /\.vpn-customer-workspace \{[^}]*min-width: 0;[^}]*max-width: 100%;/s,
+  );
+  assert.match(
+    source,
+    /\.vpn-workspace-stack,[^}]*\.vpn-key-section \{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*min-width: 0;/s,
+  );
+  assert.match(
+    source,
+    /\.vpn-workspace-section-head > div \{[^}]*min-width: 0;[^}]*max-width: 100%;/s,
+  );
+
+  assert.match(
+    source,
+    /\.vpn-key-title-row,\s*\.vpn-key-rename-form \{[^}]*display: flex;[^}]*flex-wrap: wrap;[^}]*gap: 10px;/s,
+  );
+  assert.match(
+    source,
+    /\.vpn-key-title-row strong \{[^}]*flex: 1 1 12rem;[^}]*min-width: 0;[^}]*overflow-wrap: anywhere;/s,
+  );
+  assert.match(
+    source,
+    /\.vpn-key-rename-form input \{[^}]*flex: 1 1 16rem;[^}]*min-width: 0;/s,
+  );
 });

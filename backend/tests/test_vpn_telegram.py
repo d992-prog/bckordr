@@ -26,7 +26,13 @@ from app.db.models import (
 )
 from app.db.session import get_db
 from app.services import vpn_telegram as vpn_telegram_service
-from app.services.vpn_telegram import process_telegram_update
+from app.services.vpn_telegram import process_telegram_update, telegram_keyboard
+
+
+VALID_VLESS_URI = (
+    "vless://11111111-1111-4111-8111-111111111111@vpn.example:443"
+    "?type=tcp&security=tls#internal"
+)
 
 
 def telegram_message(update_id: int, user_id: int | str, text: str) -> dict:
@@ -111,15 +117,19 @@ async def seed_subscription(
     key_status: str | None = None,
     config_uri: str | None = None,
     worker_id: int | None = None,
+    display_name: str | None = "Телефон",
+    subscription_status: str = "active",
+    starts_at=None,
+    expires_at=None,
 ) -> tuple[VpnCustomer, VpnSubscription, VpnAccessKey | None]:
     customer = VpnCustomer(telegram_user_id=telegram_user_id, status=customer_status)
     session.add(customer)
     await session.flush()
     subscription = VpnSubscription(
         customer_id=customer.id,
-        status="active",
-        starts_at=utcnow() - timedelta(days=1),
-        expires_at=utcnow() + timedelta(days=30),
+        status=subscription_status,
+        starts_at=starts_at if starts_at is not None else utcnow() - timedelta(days=1),
+        expires_at=expires_at if expires_at is not None else utcnow() + timedelta(days=30),
         max_devices=3,
     )
     session.add(subscription)
@@ -130,12 +140,75 @@ async def seed_subscription(
             subscription_id=subscription.id,
             worker_id=worker_id,
             public_name="Телефон",
+            display_name=display_name,
             status=key_status,
             config_uri=config_uri,
         )
         session.add(key)
     await session.commit()
     return customer, subscription, key
+
+
+def test_telegram_keyboard_adds_cabinet_only_for_allowed_private_identity():
+    settings = Settings(
+        VPN_TELEGRAM_BOT_TOKEN="bot-token",
+        VPN_PORTAL_ENABLED=True,
+        VPN_PORTAL_PUBLIC_ORIGIN="https://portal.example",
+        VPN_PORTAL_ALLOWED_TELEGRAM_IDS="12345",
+    )
+
+    allowed = telegram_keyboard(settings, "12345")
+    disallowed = telegram_keyboard(settings, "54321")
+    group = telegram_keyboard(settings, "-10012345")
+
+    assert allowed["keyboard"][-1] == [
+        {
+            "text": "Личный кабинет",
+            "web_app": {"url": "https://portal.example/cabinet/"},
+        }
+    ]
+    assert all("web_app" not in button for row in disallowed["keyboard"] for button in row)
+    assert all("web_app" not in button for row in group["keyboard"] for button in row)
+
+
+@pytest.mark.parametrize("chat_id", ["0", "000", "not-a-chat", "12.5", ""])
+def test_telegram_keyboard_never_adds_web_app_for_zero_or_malformed_identity(chat_id):
+    settings = Settings(
+        VPN_TELEGRAM_BOT_TOKEN="bot-token",
+        VPN_PORTAL_ENABLED=True,
+        VPN_PORTAL_PUBLIC_ORIGIN="https://portal.example",
+        VPN_PORTAL_ALLOWED_TELEGRAM_IDS="12345",
+    )
+
+    keyboard = telegram_keyboard(settings, chat_id)
+
+    assert all("web_app" not in button for row in keyboard["keyboard"] for button in row)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        Settings(
+            VPN_TELEGRAM_BOT_TOKEN="bot-token",
+            VPN_PORTAL_ENABLED=False,
+            VPN_PORTAL_PUBLIC_ORIGIN="https://portal.example",
+            VPN_PORTAL_ALLOWED_TELEGRAM_IDS="12345",
+        ),
+        Settings(
+            VPN_TELEGRAM_BOT_TOKEN="bot-token",
+            VPN_PORTAL_ENABLED=True,
+            VPN_PORTAL_PUBLIC_ORIGIN="not-an-origin",
+            VPN_PORTAL_ALLOWED_TELEGRAM_IDS="12345",
+        ),
+    ],
+)
+def test_telegram_keyboard_falls_back_to_commands_when_portal_is_unavailable(settings):
+    keyboard = telegram_keyboard(settings, "12345")
+
+    assert keyboard["keyboard"] == [
+        [{"text": "Моя подписка"}, {"text": "Мои профили"}],
+        [{"text": "Помощь"}],
+    ]
 
 
 @pytest.mark.asyncio
@@ -183,8 +256,11 @@ async def test_start_returns_current_subscription_status(telegram_app):
     )
     assert response.status_code == 200
     text = telegram_app.delivered[-1]["text"]
-    assert "VPN-бот готов" in text
-    assert f"#{subscription.id}" in text
+    assert "VeltrixVPN" in text
+    assert "Статус: активна" in text
+    assert "Действует до:" in text
+    assert f"Подписка #{subscription.id}" not in text
+    assert "active" not in text
 
 
 @pytest.mark.asyncio
@@ -195,7 +271,10 @@ async def test_status_without_subscription_points_to_support(telegram_app):
         json=telegram_message(12, 21002, "/status"),
     )
     assert response.status_code == 200
-    assert "Активной VPN-подписки нет" in telegram_app.delivered[-1]["text"]
+    text = telegram_app.delivered[-1]["text"]
+    assert "Активной VPN-подписки нет" in text
+    assert "«Помощь»" in text
+    assert "«Поддержка»" not in text
 
 
 @pytest.mark.asyncio
@@ -205,14 +284,14 @@ async def test_keys_returns_only_active_keys_for_valid_subscription(telegram_app
             session,
             telegram_user_id="21003",
             key_status="active",
-            config_uri="vless://active",
+            config_uri=VALID_VLESS_URI,
         )
         session.add(
             VpnAccessKey(
                 subscription_id=subscription.id,
                 public_name="Старый",
                 status="revoked",
-                config_uri="vless://revoked",
+                config_uri=VALID_VLESS_URI.replace("#internal", "#revoked"),
             )
         )
         await session.commit()
@@ -223,8 +302,170 @@ async def test_keys_returns_only_active_keys_for_valid_subscription(telegram_app
         json=telegram_message(13, customer.telegram_user_id, "/keys"),
     )
     assert response.status_code == 200
-    assert "vless://active" in telegram_app.delivered[-1]["text"]
-    assert "vless://revoked" not in telegram_app.delivered[-1]["text"]
+    text = telegram_app.delivered[-1]["text"]
+    assert "Телефон" in text
+    assert "Veltrix%20VPN%20%C2%B7%20%D0%A2%D0%B5%D0%BB%D0%B5%D1%84%D0%BE%D0%BD" in text
+    assert "#internal" not in text
+    assert "#revoked" not in text
+
+
+@pytest.mark.asyncio
+async def test_keys_never_include_another_customers_profile(telegram_app):
+    foreign_uri = VALID_VLESS_URI.replace(
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    )
+    async with telegram_app.session_factory() as session:
+        customer, _, _ = await seed_subscription(
+            session,
+            telegram_user_id="21014",
+            key_status="active",
+            config_uri=VALID_VLESS_URI,
+            display_name="Личный",
+        )
+        await seed_subscription(
+            session,
+            telegram_user_id="21015",
+            key_status="active",
+            config_uri=foreign_uri,
+            display_name="Чужой профиль",
+        )
+
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=telegram_message(26, customer.telegram_user_id, "/keys"),
+    )
+
+    assert response.status_code == 200
+    text = telegram_app.delivered[-1]["text"]
+    assert "Личный" in text
+    assert "Чужой профиль" not in text
+    assert "22222222-2222-4222-8222-222222222222" not in text
+
+
+@pytest.mark.asyncio
+async def test_keys_reject_expired_future_disabled_and_malformed_connections(telegram_app):
+    now = utcnow()
+    async with telegram_app.session_factory() as session:
+        customer, valid_subscription, valid_key = await seed_subscription(
+            session,
+            telegram_user_id="21013",
+            key_status="active",
+            config_uri=VALID_VLESS_URI,
+            display_name="Ноутбук",
+        )
+        assert valid_key is not None
+        valid_key.expires_at = now - timedelta(seconds=1)
+        for status, starts_at, expires_at in (
+            ("active", now + timedelta(days=1), now + timedelta(days=2)),
+            ("expired", now - timedelta(days=2), now - timedelta(days=1)),
+            ("disabled", now - timedelta(days=1), now + timedelta(days=2)),
+        ):
+            subscription = VpnSubscription(
+                customer_id=customer.id,
+                status=status,
+                starts_at=starts_at,
+                expires_at=expires_at,
+                max_devices=1,
+            )
+            session.add(subscription)
+            await session.flush()
+            session.add(
+                VpnAccessKey(
+                    subscription_id=subscription.id,
+                    display_name=f"Недоступен {status}",
+                    status="active",
+                    config_uri=VALID_VLESS_URI,
+                )
+            )
+        malformed = VpnAccessKey(
+            subscription_id=valid_subscription.id,
+            display_name="Повреждённый",
+            status="active",
+            config_uri="vless://not-a-valid-profile",
+        )
+        session.add(malformed)
+        await session.commit()
+
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=telegram_message(23, customer.telegram_user_id, "Мои профили"),
+    )
+
+    assert response.status_code == 200
+    text = telegram_app.delivered[-1]["text"]
+    assert text == "Сейчас нет доступных профилей VeltrixVPN."
+    assert "vless://" not in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("Моя подписка", "Активной VPN-подписки нет"),
+        ("Мои профили", "нет доступных профилей"),
+        ("Помощь", "Напишите администратору"),
+    ],
+)
+async def test_friendly_button_aliases_work(telegram_app, command, expected):
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=telegram_message(24 + len(command), 22000 + len(command), command),
+    )
+
+    assert response.status_code == 200
+    assert expected in telegram_app.delivered[-1]["text"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("Статус", "Активной VPN-подписки нет"),
+        ("Ключи", "нет доступных профилей"),
+        ("Поддержка", "Напишите администратору"),
+    ],
+)
+async def test_legacy_russian_aliases_work(telegram_app, command, expected):
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=telegram_message(80 + len(command), 24000 + len(command), command),
+    )
+
+    assert response.status_code == 200
+    assert expected in telegram_app.delivered[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_bot_metadata_is_normalized_before_customer_storage(telegram_app):
+    payload = telegram_message(91, 24091, "/start")
+    payload["message"]["from"] = {
+        "id": "00024091",
+        "username": "u" * 140,
+        "first_name": "И" * 140,
+        "last_name": "",
+    }
+    payload["message"]["chat"]["id"] = "00024091"
+
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    async with telegram_app.session_factory() as session:
+        customer = await session.scalar(
+            select(VpnCustomer).where(VpnCustomer.telegram_user_id == "24091")
+        )
+        assert customer is not None
+        assert customer.telegram_username == "u" * 128
+        assert customer.first_name == "И" * 128
+        assert customer.last_name is None
 
 
 @pytest.mark.asyncio
@@ -234,7 +475,7 @@ async def test_keys_are_never_sent_to_a_group_chat(telegram_app):
             session,
             telegram_user_id="21008",
             key_status="active",
-            config_uri="vless://private-only",
+            config_uri=VALID_VLESS_URI,
         )
 
     payload = telegram_message(19, customer.telegram_user_id, "/keys")
@@ -246,7 +487,7 @@ async def test_keys_are_never_sent_to_a_group_chat(telegram_app):
     )
     assert response.status_code == 200
     assert "только в личном чате" in telegram_app.delivered[-1]["text"]
-    assert "vless://private-only" not in telegram_app.delivered[-1]["text"]
+    assert "vless://" not in telegram_app.delivered[-1]["text"]
 
 
 @pytest.mark.asyncio
@@ -257,7 +498,7 @@ async def test_disabled_customer_cannot_receive_keys(telegram_app):
             telegram_user_id="21004",
             customer_status="disabled",
             key_status="active",
-            config_uri="vless://disabled-customer",
+            config_uri=VALID_VLESS_URI,
         )
 
     response = await telegram_app.client.post(
@@ -268,7 +509,62 @@ async def test_disabled_customer_cannot_receive_keys(telegram_app):
     assert response.status_code == 200
     text = telegram_app.delivered[-1]["text"]
     assert "VPN-профиль отключён" in text
-    assert "vless://disabled-customer" not in text
+    assert "«Помощь»" in text
+    assert "«Поддержка»" not in text
+    assert "vless://" not in text
+    async with telegram_app.session_factory() as session:
+        stored = await session.get(VpnCustomer, customer.id)
+        assert stored is not None and stored.status == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_malformed_telegram_identity_is_acknowledged_without_credentials(telegram_app):
+    payload = telegram_message(25, 23001, "/keys")
+    payload["message"]["from"]["id"] = -23001
+
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=payload,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "processed": False, "duplicate": False}
+    assert telegram_app.delivered == []
+    async with telegram_app.session_factory() as session:
+        update = await session.scalar(
+            select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "25")
+        )
+        assert update is not None and update.error_message == "invalid_identity"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        [{}],
+        {"from": [{}], "chat": {"id": 23002, "type": "private"}},
+        {"from": {"id": 23002}, "chat": [{}]},
+        {
+            "from": {"id": 23002},
+            "chat": {"id": 99999, "type": "private"},
+            "text": "/keys",
+        },
+    ],
+)
+async def test_malformed_private_message_shape_is_acknowledged_without_send(
+    telegram_app, message
+):
+    update_id = 30 + len(str(message))
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json={"update_id": update_id, "message": message},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "processed": False, "duplicate": False}
+    assert telegram_app.delivered == []
 
 
 @pytest.mark.asyncio

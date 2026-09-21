@@ -92,7 +92,8 @@ def subscription_state(
     return subscription.status
 
 
-def _profile_name(access_key: _AccessKeyLike) -> str:
+def profile_display_name(access_key: _AccessKeyLike) -> str:
+    """Return the validated customer-facing name shared by all VPN surfaces."""
     try:
         if access_key.display_name is not None:
             return validate_display_name(access_key.display_name)
@@ -126,7 +127,7 @@ def may_read_connection(
         return False
 
     try:
-        display_uri(key.config_uri, _profile_name(key))
+        display_uri(key.config_uri, profile_display_name(key))
     except InvalidVpnDisplay:
         return False
     return True
@@ -167,7 +168,7 @@ def _portal_profile(
     return PortalProfile(
         id=access_key.id,
         subscription_id=subscription.id,
-        display_name=_profile_name(access_key),
+        display_name=profile_display_name(access_key),
         state=_profile_state(access_key),
         can_connect=may_read_connection(customer, subscription, access_key, now),
     )
@@ -266,7 +267,7 @@ async def customer_connection(
         raise UnavailableCustomerConnection()
 
     try:
-        uri = display_uri(access_key.config_uri, _profile_name(access_key))
+        uri = display_uri(access_key.config_uri, profile_display_name(access_key))
     except InvalidVpnDisplay:
         raise UnavailableCustomerConnection() from None
     return PortalConnection(uri=uri)

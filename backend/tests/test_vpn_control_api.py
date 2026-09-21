@@ -6,14 +6,39 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.api.deps import require_admin
 from app.api.routes.control import router as control_router
 from app.db.base import Base
-from app.db.models import AttackRun, DropDomain, VpnAccessKey, VpnSubscription, WorkerNode, WorkerTask
+from app.db.models import (
+    AdminAuditLog,
+    AttackRun,
+    DropDomain,
+    VpnAccessKey,
+    VpnSubscription,
+    WorkerNode,
+    WorkerTask,
+)
 from app.db.session import get_db
+from app.schemas.control import VpnAccessKeyDisplayNameUpdateRequest
+
+
+def test_vpn_access_key_display_name_request_is_name_only_and_safe():
+    assert VpnAccessKeyDisplayNameUpdateRequest(
+        display_name="  Личный ноутбук  "
+    ).display_name == "Личный ноутбук"
+    for payload in (
+        {"display_name": ""},
+        {"display_name": "x" * 65},
+        {"display_name": "bad\x00name"},
+        {"display_name": "Phone", "config_uri": "vless://must-not-be-accepted"},
+    ):
+        with pytest.raises(ValidationError):
+            VpnAccessKeyDisplayNameUpdateRequest(**payload)
 
 
 @pytest.mark.asyncio
@@ -66,7 +91,10 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key(monkey
         del db, subscription
         access_key.worker_id = worker.id
         access_key.status = "active"
-        access_key.config_uri = f"vless://test-{access_key.id}"
+        access_key.config_uri = (
+            f"vless://{access_key.external_uuid}@vpn.example:443"
+            "?type=tcp&security=tls#internal"
+        )
         return access_key
 
     async def fake_revoke(db, access_key, *, worker=None):
@@ -116,24 +144,95 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key(monkey
 
         key_response = await client.post(
             "/control/vpn/access-keys",
-            json={"subscription_id": subscription_id, "worker_id": 1, "public_name": "phone"},
+            json={
+                "subscription_id": subscription_id,
+                "worker_id": 1,
+                "public_name": "legacy-node-name",
+                "display_name": "Рабочий ноутбук",
+            },
         )
         assert key_response.status_code == 201
         key_payload = key_response.json()
         assert key_payload["status"] == "active"
         assert key_payload["external_uuid"]
         assert key_payload["worker_id"] == 1
+        assert key_payload["display_name"] == "Рабочий ноутбук"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%A0%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%B9" in key_payload["config_uri"]
+        assert "#internal" not in key_payload["config_uri"]
         key_id = key_payload["id"]
+
+        rename_response = await client.patch(
+            f"/control/vpn/access-keys/{key_id}/display-name",
+            json={"display_name": "  Личный ноутбук  "},
+        )
+        assert rename_response.status_code == 200
+        assert rename_response.json()["display_name"] == "Личный ноутбук"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%9B%D0%B8%D1%87%D0%BD%D1%8B%D0%B9" in rename_response.json()["config_uri"]
+
+        for invalid_payload in (
+            {"display_name": ""},
+            {"display_name": "x" * 65},
+            {"display_name": "Phone", "status": "revoked"},
+        ):
+            invalid = await client.patch(
+                f"/control/vpn/access-keys/{key_id}/display-name",
+                json=invalid_payload,
+            )
+            assert invalid.status_code == 422
+        missing = await client.patch(
+            "/control/vpn/access-keys/999999/display-name",
+            json={"display_name": "Missing"},
+        )
+        assert missing.status_code == 404
+
+        revoke_key_response = await client.post(f"/control/vpn/access-keys/{key_id}/revoke")
+        assert revoke_key_response.status_code == 200
+        assert revoke_key_response.json()["display_name"] == "Личный ноутбук"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%9B%D0%B8%D1%87%D0%BD%D1%8B%D0%B9" in revoke_key_response.json()["config_uri"]
 
         delete_key_response = await client.delete(f"/control/vpn/access-keys/{key_id}")
         assert delete_key_response.status_code == 200
         assert delete_key_response.json()["id"] == key_id
         assert delete_key_response.json()["status"] == "revoked"
+        assert delete_key_response.json()["display_name"] == "Личный ноутбук"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%9B%D0%B8%D1%87%D0%BD%D1%8B%D0%B9" in delete_key_response.json()["config_uri"]
+
+        async with session_factory() as session:
+            raw_key = await session.get(VpnAccessKey, key_id)
+            assert raw_key is not None
+            assert raw_key.public_name == "legacy-node-name"
+            assert raw_key.config_uri is not None and raw_key.config_uri.endswith("#internal")
+            assert raw_key.external_uuid == key_payload["external_uuid"]
+            rename_audit = await session.scalar(
+                select(AdminAuditLog).where(
+                    AdminAuditLog.action == "vpn_access_key_display_name_update"
+                )
+            )
+            assert rename_audit is not None
+            assert rename_audit.details == f"access_key_id={key_id}"
+            assert "Личный" not in (rename_audit.details or "")
+            malformed_key = VpnAccessKey(
+                subscription_id=subscription_id,
+                display_name="Повреждённый",
+                status="revoked",
+                config_uri="vless://not-valid",
+            )
+            session.add(malformed_key)
+            await session.commit()
+            malformed_key_id = malformed_key.id
 
         keys_after_delete_response = await client.get("/control/vpn/access-keys")
         assert keys_after_delete_response.status_code == 200
-        assert [item["id"] for item in keys_after_delete_response.json()] == [key_id]
-        assert keys_after_delete_response.json()[0]["status"] == "revoked"
+        by_id = {item["id"]: item for item in keys_after_delete_response.json()}
+        assert by_id[key_id]["status"] == "revoked"
+        assert by_id[key_id]["display_name"] == "Личный ноутбук"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%9B%D0%B8%D1%87%D0%BD%D1%8B%D0%B9" in by_id[key_id]["config_uri"]
+        assert by_id[malformed_key_id]["display_name"] == "Повреждённый"
+        assert by_id[malformed_key_id]["config_uri"] is None
+
+        async with session_factory() as session:
+            malformed_raw = await session.get(VpnAccessKey, malformed_key_id)
+            assert malformed_raw is not None and malformed_raw.config_uri == "vless://not-valid"
 
         overview_response = await client.get("/control/vpn/overview")
 
@@ -235,7 +334,10 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
         del db, subscription
         access_key.worker_id = worker.id
         access_key.status = "active"
-        access_key.config_uri = f"vless://test-{access_key.id}"
+        access_key.config_uri = (
+            f"vless://{access_key.external_uuid}@vpn.example:443"
+            "?type=tcp&security=tls#internal"
+        )
         return access_key
 
     revoke_attempts: list[int] = []
@@ -375,6 +477,8 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
         assert retry.status_code == 200
         assert retry.json()["worker_id"] == free_worker_id
         assert retry.json()["status"] == "active"
+        assert retry.json()["display_name"] == "waiting"
+        assert "Veltrix%20VPN%20%C2%B7%20waiting" in retry.json()["config_uri"]
 
     await engine.dispose()
 
@@ -429,7 +533,10 @@ async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending
         del db, subscription
         access_key.worker_id = worker.id
         access_key.status = "active"
-        access_key.config_uri = f"vless://test-{access_key.id}"
+        access_key.config_uri = (
+            f"vless://{access_key.external_uuid}@vpn.example:443"
+            "?type=tcp&security=tls#internal"
+        )
         return access_key
 
     async def fake_suspend(db, access_key, *, worker=None):

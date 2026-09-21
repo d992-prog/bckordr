@@ -2,6 +2,16 @@
 
 ## Veltrix customer product direction (2026-09-20)
 
+- Task 11 is complete with specification and quality re-review approval. Bot and
+  admin share safe profile names and entitlement rules; admin rename changes only
+  display_name/updated_at and preserves VPN identity. Inline rename, full copy,
+  independent per-profile pending state and authoritative response ordering were
+  verified against the actual built admin UI, including external revoke and delayed
+  PATCH/GET cases. Timestamp comparison preserves backend microseconds. Parent full
+  backend run: 634 passed in 140.45 seconds with real PostgreSQL and no skips;
+  subsequent two bot-copy changes passed all 37 Telegram tests. Final frontend:
+  52 tests, TypeScript/Vite build and 390px browser regression passed; full Ruff clean.
+  Private pilot keyboard is implemented but not enabled on production yet.
 - Task 10 is implemented and independently reviewed: separate `/cabinet/` entry,
   five real hash tabs, subscription/profile presentation, full selectable links,
   rename/copy flows and Telegram-aware authentication states. Parent verification:
@@ -15,17 +25,34 @@
   approved; parent repeated the expanded browser suite after the final changes.
 - Latest unchanged-backend rerun: 611 passed in 157.40 seconds with real PostgreSQL
   and no skips; full Ruff clean. Production public health returned 200/ok while the
-  separately approved server-local snapshot rehearsal was restoring. Snapshot
-  migration/cleanup results are not yet claimed; no app restart or node changes.
+  separately approved server-local snapshot rehearsal was restoring. The first full
+  restore hit its 900-second deadline before migration. Automatic cleanup removed
+  the private dump and cluster; an independent read-only check confirmed absence
+  and 27.7 GiB free disk. No app restart or node changes.
 - The user separately approved a temporary copy of the real production database on
   the same managing server for migration verification. The dump stays on that host;
   the disposable cluster has a private Unix socket, peer authentication and no TCP
-  listener. Its exact directory must be stopped/removed after the probe, in addition
-  to cleaning up the separate synthetic PostgreSQL test cluster when work finishes.
+  listener. Any retry must likewise stop/remove its exact directory after the probe,
+  in addition to cleaning up the separate synthetic PostgreSQL test cluster when
+  work finishes. The bounded 2700-second retry completed successfully: two migration
+  passes preserved legacy VPN/node fields, identities and limits; display names and
+  second-pass timestamps stayed stable; the previous ORM could read/write with rollback.
+  The probe did not start application lifespan or perform node operations. Its dump
+  and exact temporary cluster were removed; an independent read-only check confirmed
+  absence, 28.2 GiB free disk and normal load. This is real-snapshot migration evidence,
+  not live authentication proof or a retained deployment backup. A fresh validated
+  backup is still required before deployment. Production access remained read-only.
 - Browser OIDC credentials are still absent from the private server environment.
   The user has not yet configured BotFather Login Widget / Allowed URLs. Client
   Secret must be entered privately, not sent in chat. This blocks live browser-login
   verification, not the implementation or synthetic tests.
+- Read-only deployment inspection: production remains at `2f288c0`, service active,
+  Nginx configuration valid, and PyJWT is not installed (cryptography is 49.0.0).
+  Six RSA/JWK success and negative-claim checks using the locally tested PyJWT 2.14.0
+  public sources passed in server memory on Python 3.11.0rc1. No package, server file,
+  database or service changed; this is compatibility evidence, not an installation
+  or live OIDC proof. Install the verified dependency explicitly during rollout;
+  do not bypass the project's stable-Python requirement or upgrade runtime implicitly.
 - Closed-pilot ownership confirmed on 2026-09-21 Moscow: the user identified their
   Telegram account as Elo with no username, then sent a fresh one-time challenge to
   the existing bot's private chat. A read-only production query matched the processed

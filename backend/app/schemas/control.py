@@ -681,6 +681,7 @@ class VpnAccessKeyResponse(BaseModel):
     worker_id: int | None
     protocol: str
     public_name: str | None
+    display_name: str
     external_uuid: str | None
     config_uri: str | None
     status: str
@@ -693,6 +694,17 @@ class VpnAccessKeyResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class VpnAccessKeyDisplayNameUpdateRequest(BaseModel):
+    display_name: str
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_required_display_name(cls, value: str) -> str:
+        return validate_display_name(value)
 
 
 class VpnNodeEventResponse(BaseModel):

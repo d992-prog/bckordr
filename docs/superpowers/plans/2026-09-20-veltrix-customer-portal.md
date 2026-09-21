@@ -1276,6 +1276,12 @@ export default defineConfig({
 `backend/app/api/routes/control.py`, `backend/app/schemas/control.py`,
 `frontend/src/api.ts`, `frontend/src/VpnCustomerWorkspacePanel.tsx`;
 extend Telegram/control/frontend tests.
+Small shared display-helper extraction in `vpn_display.py` / `vpn_customer_view.py`
+is permitted if needed to keep bot, portal and admin labels consistent; regression
+test it without changing entitlement semantics or adding packages.
+A small `App.tsx` integration change is also in scope: workspace reload must be able
+to report failure to the rename flow. Preserve the default error handling of other
+`loadAll` callers; do not refactor the administrative application.
 
 - [ ] Replace bot's lookup/create fragment with resolve_telegram_customer, keeping
   durable update claiming and outgoing-message idempotency. Do not move network
@@ -1459,7 +1465,8 @@ the test runtime is available, not that the not-yet-built cabinet has passed QA.
 | 8 | Complete | Both reviews approved. Parent full backend 611 passed in 140.61s with real PG/no skips; final API 17 passed in 7.70s after test-only review amendments; full Ruff clean. Scoped CORS/no-store/pre-parse guards, real admin/customer isolation and shared OIDC lifespan; late-response exception sanitization remains Task 12 |
 | 9 | Complete | Both reviews approved; parent 22 frontend tests and TypeScript/Vite build passed; reviewer 10 focused tests. Independent DTOs/client, static HTTP/network/parser errors and total Russian state/date helpers |
 | 10 | Complete | Both reviews approved after auth, safe-area and request-race amendments. Parent 37 frontend tests, TypeScript/Vite build, full HTTP-mocked browser QA at 320/390/768/1280 in light/dark, official SDK synthetic cache spot-check and real FastAPI static probe passed. Live Telegram pilot remains pending |
-| 11–13 | Pending | No application changes for these tasks yet |
+| 11 | Complete | Both re-reviews approved; parent backend634 passed140.45s with real PG/no skips, final Telegram37/frontend52/build/Ruff passed. Actual admin bundle browser QA verified rename/cancel/copy/selection/390px and held GET/PATCH/external revoke/per-key pending races; microsecond timestamp regression covered |
+| 12–13 | Pending | Logging/deployment work not implemented. Approved real production snapshot passed two migrations/backfills, legacy field/identity/limit preservation and previous ORM rollback compatibility. Both timed-out first copy and successful bounded retry were removed; final absence independently confirmed. No production app changes; fresh deployment backup still required |
 
 Verification repair: the old partial-cycle durability test raced a 0.1-second
 effective timeout against initial SQLite work (configured 0.05 is clamped). A

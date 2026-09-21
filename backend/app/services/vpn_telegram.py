@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Awaitable, Callable
 
 import httpx
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,20 @@ from app.db.models import (
     VpnNodeEvent,
     VpnSubscription,
     VpnTelegramUpdate,
+)
+from app.services.vpn_customer_view import (
+    UnavailableCustomerConnection,
+    customer_connection,
+    list_customer_profiles,
+    list_customer_subscriptions,
+)
+from app.services.vpn_portal_auth import identity_allowed, public_origin
+from app.services.vpn_portal_http import portal_capabilities
+from app.services.vpn_telegram_identity import (
+    TelegramIdentity,
+    identity_from_user,
+    resolve_telegram_customer,
+    telegram_user_id,
 )
 
 TelegramSender = Callable[[Settings, str, str], Awaitable[None]]
@@ -39,23 +54,67 @@ class TelegramMessage:
     last_name: str | None
     text: str
 
+    @property
+    def identity(self) -> TelegramIdentity:
+        return TelegramIdentity(
+            user_id=self.user_id,
+            username=self.username,
+            first_name=self.first_name,
+            last_name=self.last_name,
+        )
+
 
 def parse_telegram_message(payload: dict) -> TelegramMessage:
-    message = payload.get("message") or {}
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        raise ValueError("Telegram update does not contain a message identity")
     sender = message.get("from") or {}
     chat = message.get("chat") or {}
+    if not isinstance(sender, dict) or not isinstance(chat, dict):
+        raise ValueError("Telegram update does not contain a message identity")
     if payload.get("update_id") is None or sender.get("id") is None or chat.get("id") is None:
         raise ValueError("Telegram update does not contain a message identity")
+    identity = identity_from_user(sender)
+    chat_id = str(chat["id"])
+    chat_type = chat.get("type") if isinstance(chat.get("type"), str) else None
+    if chat_type == "private" and telegram_user_id(chat.get("id")) != identity.user_id:
+        raise ValueError("invalid_identity")
     return TelegramMessage(
         update_id=str(payload["update_id"]),
-        chat_id=str(chat["id"]),
-        chat_type=chat.get("type"),
-        user_id=str(sender["id"]),
-        username=sender.get("username"),
-        first_name=sender.get("first_name"),
-        last_name=sender.get("last_name"),
+        chat_id=chat_id,
+        chat_type=chat_type,
+        user_id=identity.user_id,
+        username=identity.username,
+        first_name=identity.first_name,
+        last_name=identity.last_name,
         text=str(message.get("text") or "").strip(),
     )
+
+
+def telegram_keyboard(settings: Settings, chat_id: str) -> dict:
+    """Return a command keyboard with a safely gated Mini App entry point."""
+    keyboard: list[list[dict[str, object]]] = [
+        [{"text": "Моя подписка"}, {"text": "Мои профили"}],
+        [{"text": "Помощь"}],
+    ]
+    try:
+        private_chat_id = int(chat_id)
+    except (TypeError, ValueError):
+        private_chat_id = 0
+    if (
+        private_chat_id > 0
+        and portal_capabilities(settings)["mini_app_enabled"]
+        and identity_allowed(settings, chat_id)
+    ):
+        keyboard.append(
+            [
+                {
+                    "text": "Личный кабинет",
+                    "web_app": {"url": public_origin(settings) + "/cabinet/"},
+                }
+            ]
+        )
+    return {"keyboard": keyboard, "resize_keyboard": True}
 
 
 async def send_telegram_message(settings: Settings, chat_id: str, text: str) -> None:
@@ -65,13 +124,7 @@ async def send_telegram_message(settings: Settings, chat_id: str, text: str) -> 
             payload = {
                 "chat_id": chat_id,
                 "text": chunk,
-                "reply_markup": {
-                    "keyboard": [
-                        [{"text": "Статус"}, {"text": "Ключи"}],
-                        [{"text": "Поддержка"}],
-                    ],
-                    "resize_keyboard": True,
-                },
+                "reply_markup": telegram_keyboard(settings, chat_id),
             }
             response = await client.post(url, json=payload)
             response.raise_for_status()
@@ -103,7 +156,42 @@ COMMANDS = {
     "ключи": "keys",
     "/support": "support",
     "поддержка": "support",
+    "моя подписка": "status",
+    "мои профили": "keys",
+    "помощь": "support",
 }
+
+
+_SUBSCRIPTION_LABELS = {
+    "active": "активна",
+    "trial": "пробная",
+    "scheduled": "ещё не началась",
+    "expired": "истекла",
+    "disabled": "приостановлена",
+    "cancelled": "отменена",
+    "unavailable": "недоступна",
+}
+_MONTHS = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+
+def _friendly_date(value: datetime | None) -> str:
+    if value is None:
+        return "без ограничения по сроку"
+    current = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return f"{current.day} {_MONTHS[current.month - 1]} {current.year}, {current:%H:%M} UTC"
 
 
 async def render_customer_response(
@@ -115,62 +203,40 @@ async def render_customer_response(
     if command == "support":
         return settings.vpn_support_text
     if customer.status != "active":
-        return "VPN-профиль отключён. Выберите «Поддержка» для связи с администратором."
+        return "VPN-профиль отключён. Выберите «Помощь» для связи с администратором."
 
-    now = utcnow()
-    valid_filter = (
-        VpnSubscription.customer_id == customer.id,
-        VpnSubscription.status.in_(("active", "trial")),
-        or_(VpnSubscription.starts_at.is_(None), VpnSubscription.starts_at <= now),
-        or_(VpnSubscription.expires_at.is_(None), VpnSubscription.expires_at > now),
-    )
-    subscriptions = (
-        (
-            await session.execute(
-                select(VpnSubscription)
-                .where(*valid_filter)
-                .order_by(VpnSubscription.expires_at.asc(), VpnSubscription.id.asc())
-            )
-        )
-        .scalars()
-        .all()
-    )
+    subscriptions = await list_customer_subscriptions(session, customer.id)
 
     if command in {"start", "status"}:
-        intro = "VPN-бот готов. Оплата пока не подключена.\n" if command == "start" else ""
         if not subscriptions:
-            return intro + (
-                "Активной VPN-подписки нет. "
-                "Выберите «Поддержка» для связи с администратором."
+            return (
+                "VeltrixVPN\nАктивной VPN-подписки нет. "
+                "Выберите «Помощь» для связи с администратором."
             )
-        lines = [intro + "Ваши активные VPN-подписки:"]
+        lines = ["VeltrixVPN"]
         for subscription in subscriptions:
-            expires = subscription.expires_at.isoformat() if subscription.expires_at else "без срока"
-            lines.append(f"#{subscription.id}: {subscription.status}, до {expires}")
+            lines.extend(
+                [
+                    f"Статус: {_SUBSCRIPTION_LABELS.get(subscription.state, 'недоступна')}",
+                    f"Действует до: {_friendly_date(subscription.expires_at)}",
+                ]
+            )
         return "\n".join(lines)
 
     if command == "keys":
-        keys = (
-            (
-                await session.execute(
-                    select(VpnAccessKey)
-                    .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
-                    .where(
-                        *valid_filter,
-                        VpnAccessKey.status == "active",
-                        VpnAccessKey.config_uri.is_not(None),
-                    )
-                    .order_by(VpnAccessKey.id.asc())
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if not keys:
-            return "Активных VPN-ключей нет."
-        return "Ваши VPN-ключи:\n" + "\n".join(
-            f"{key.public_name or f'Ключ #{key.id}'}\n{key.config_uri}" for key in keys
-        )
+        profiles = await list_customer_profiles(session, customer)
+        connections: list[str] = []
+        for profile in profiles:
+            if not profile.can_connect:
+                continue
+            try:
+                connection = await customer_connection(session, customer, profile.id)
+            except UnavailableCustomerConnection:
+                continue
+            connections.append(f"{profile.display_name}\n{connection.uri}")
+        if not connections:
+            return "Сейчас нет доступных профилей VeltrixVPN."
+        return "Ваши профили VeltrixVPN:\n\n" + "\n\n".join(connections)
 
     return "Доступны команды: /status, /keys, /support."
 
@@ -224,16 +290,7 @@ async def process_telegram_update(
         update.error_message = None
         return {"processed": True, "duplicate": False}
 
-    customer = await session.scalar(
-        select(VpnCustomer).where(VpnCustomer.telegram_user_id == message.user_id)
-    )
-    if customer is None:
-        customer = VpnCustomer(telegram_user_id=message.user_id, status="active")
-        session.add(customer)
-    customer.telegram_username = message.username
-    customer.first_name = message.first_name
-    customer.last_name = message.last_name
-    await session.flush()
+    customer = await resolve_telegram_customer(session, message.identity)
     update.customer_id = customer.id
 
     command = COMMANDS.get(message.text.casefold(), "start")

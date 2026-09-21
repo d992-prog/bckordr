@@ -623,6 +623,11 @@ async def test_independent_customer_jars_hide_foreign_profiles_and_admin_boundar
 
         control = await bob.get("/api/control/vpn/customers")
         assert control.status_code == 401
+        forbidden_rename = await bob.patch(
+            f"/api/control/vpn/access-keys/{portal_app.ids.own_profile}/display-name",
+            json={"display_name": "Customer must not rename admin profile"},
+        )
+        assert forbidden_rename.status_code == 401
         admin_only.cookies.set("frdm_session", "not-a-customer-session")
         assert (await admin_only.get("/api/vpn-portal/me")).status_code == 401
 
@@ -677,6 +682,14 @@ async def test_real_admin_session_coexists_and_survives_customer_logout(
         before = await client.get("/api/control/vpn/customers")
         assert before.status_code == 200
         assert (await client.get("/api/vpn-portal/me")).status_code == 200
+
+        renamed = await client.patch(
+            f"/api/control/vpn/access-keys/{portal_app.ids.own_profile}/display-name",
+            json={"display_name": "Личный iPhone"},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["display_name"] == "Личный iPhone"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%9B%D0%B8%D1%87%D0%BD%D1%8B%D0%B9%20iPhone" in renamed.json()["config_uri"]
 
         logout = await client.post(
             "/api/vpn-portal/logout",

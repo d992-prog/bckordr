@@ -92,6 +92,7 @@ from app.schemas.control import (
     RegistrarAccountUpdateRequest,
     RegistrarAccountValidateResponse,
     VpnAccessKeyCreateRequest,
+    VpnAccessKeyDisplayNameUpdateRequest,
     VpnAccessKeyResponse,
     VpnCustomerCreateRequest,
     VpnCustomerArchiveResponse,
@@ -160,6 +161,8 @@ from app.services.vpn_profile_names import (
     initial_display_name,
     initialize_customer_names,
 )
+from app.services.vpn_customer_view import profile_display_name
+from app.services.vpn_display import InvalidVpnDisplay, display_uri
 from app.services.vpn_subscription_sync import (
     SubscriptionPolicyConflict,
     SubscriptionPolicyError,
@@ -3155,7 +3158,23 @@ async def list_vpn_access_keys(
 ) -> list[VpnAccessKeyResponse]:
     del admin
     result = await db.execute(select(VpnAccessKey).order_by(VpnAccessKey.id.desc()).limit(1000))
-    return [VpnAccessKeyResponse.model_validate(access_key) for access_key in result.scalars().all()]
+    return [_vpn_access_key_response(access_key) for access_key in result.scalars().all()]
+
+
+def _vpn_access_key_response(access_key: VpnAccessKey) -> VpnAccessKeyResponse:
+    display_name = profile_display_name(access_key)
+    labelled_uri = None
+    if access_key.config_uri:
+        try:
+            labelled_uri = display_uri(access_key.config_uri, display_name)
+        except InvalidVpnDisplay:
+            pass
+    payload = {
+        field_name: getattr(access_key, field_name)
+        for field_name in VpnAccessKeyResponse.model_fields
+    }
+    payload.update(display_name=display_name, config_uri=labelled_uri)
+    return VpnAccessKeyResponse.model_validate(payload)
 
 
 async def _validate_vpn_key_issue(
@@ -3285,7 +3304,39 @@ async def create_vpn_access_key(
     )
     await db.commit()
     await db.refresh(access_key)
-    return VpnAccessKeyResponse.model_validate(access_key)
+    return _vpn_access_key_response(access_key)
+
+
+@router.patch(
+    "/vpn/access-keys/{access_key_id}/display-name",
+    response_model=VpnAccessKeyResponse,
+)
+async def update_vpn_access_key_display_name(
+    access_key_id: int,
+    payload: VpnAccessKeyDisplayNameUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnAccessKeyResponse:
+    access_key = await db.scalar(
+        select(VpnAccessKey)
+        .where(VpnAccessKey.id == access_key_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if access_key is None:
+        raise HTTPException(status_code=404, detail="VPN access key not found")
+    access_key.display_name = payload.display_name
+    access_key.updated_at = utcnow()
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_access_key_display_name_update",
+        details=f"access_key_id={access_key_id}",
+    )
+    await db.commit()
+    await db.refresh(access_key)
+    return _vpn_access_key_response(access_key)
 
 
 @router.post("/vpn/access-keys/{access_key_id}/provision", response_model=VpnAccessKeyResponse, dependencies=[Depends(serialize_vpn_mutation)])
@@ -3321,7 +3372,7 @@ async def provision_existing_vpn_access_key(
     )
     await db.commit()
     await db.refresh(access_key)
-    return VpnAccessKeyResponse.model_validate(access_key)
+    return _vpn_access_key_response(access_key)
 
 
 @router.post("/vpn/access-keys/{access_key_id}/revoke", response_model=VpnAccessKeyResponse, dependencies=[Depends(serialize_vpn_mutation)])
@@ -3345,7 +3396,7 @@ async def revoke_existing_vpn_access_key(
     )
     await db.commit()
     await db.refresh(access_key)
-    return VpnAccessKeyResponse.model_validate(access_key)
+    return _vpn_access_key_response(access_key)
 
 
 @router.get("/vpn/lifecycle/status", response_model=VpnLifecycleStatusResponse)
@@ -3399,7 +3450,7 @@ async def delete_vpn_access_key(
     )
     await db.commit()
     await db.refresh(access_key)
-    return VpnAccessKeyResponse.model_validate(access_key)
+    return _vpn_access_key_response(access_key)
 
 
 @router.get("/vpn/node-events", response_model=list[VpnNodeEventResponse])

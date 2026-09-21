@@ -1,5 +1,11 @@
 import type { VpnCustomer, VpnSubscription } from "./api";
 
+export type AccessKeyDisplay = {
+  display_name: string;
+  config_uri: string | null;
+  updated_at: string;
+};
+
 export type VpnCustomerFilter = "all" | "active" | "expiring" | "suspended" | "archived";
 export type VpnCustomerOperationalStatus = Exclude<VpnCustomerFilter, "all">;
 
@@ -41,6 +47,109 @@ export async function saveSubscriptionAndRequestSync(
     refreshed = false;
   }
   return { syncRequested, refreshed };
+}
+
+export function applyAccessKeyDisplay<T extends AccessKeyDisplay>(
+  accessKey: T,
+  display: AccessKeyDisplay,
+): T {
+  if (isNewerAccessKeyVersion(accessKey.updated_at, display.updated_at)) {
+    return accessKey;
+  }
+  return {
+    ...accessKey,
+    display_name: display.display_name,
+    config_uri: display.config_uri,
+    updated_at: display.updated_at,
+  };
+}
+
+const BACKEND_TIMESTAMP_PATTERN =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})?$/;
+
+function backendTimestampParts(value: string) {
+  const match = BACKEND_TIMESTAMP_PATTERN.exec(value);
+  if (!match) {
+    return null;
+  }
+  const epochMillis = Date.parse(`${match[1]}${match[3] ?? "Z"}`);
+  if (!Number.isFinite(epochMillis)) {
+    return null;
+  }
+  return {
+    epochMillis,
+    fraction: (match[2] ?? "").padEnd(9, "0"),
+  };
+}
+
+function isNewerAccessKeyVersion(incoming: string, current: string) {
+  const incomingParts = backendTimestampParts(incoming);
+  const currentParts = backendTimestampParts(current);
+  if (incomingParts && currentParts) {
+    if (incomingParts.epochMillis !== currentParts.epochMillis) {
+      return incomingParts.epochMillis > currentParts.epochMillis;
+    }
+    return incomingParts.fraction > currentParts.fraction;
+  }
+  const incomingMillis = Date.parse(incoming);
+  const currentMillis = Date.parse(current);
+  if (
+    Number.isFinite(incomingMillis) &&
+    Number.isFinite(currentMillis) &&
+    incomingMillis !== currentMillis
+  ) {
+    return incomingMillis > currentMillis;
+  }
+  return incoming > current;
+}
+
+export function reconcileAccessKeyDisplayOverrides(
+  current: Map<number, AccessKeyDisplay>,
+  accessKeys: Array<AccessKeyDisplay & { id: number }>,
+) {
+  const next = new Map(current);
+  for (const accessKey of accessKeys) {
+    const display = next.get(accessKey.id);
+    if (
+      display &&
+      ((display.display_name === accessKey.display_name &&
+        display.config_uri === accessKey.config_uri) ||
+        isNewerAccessKeyVersion(accessKey.updated_at, display.updated_at))
+    ) {
+      next.delete(accessKey.id);
+    }
+  }
+  return next.size === current.size ? current : next;
+}
+
+export function shouldApplyLoadGeneration(
+  incomingGeneration: number,
+  lastAppliedGeneration: number,
+) {
+  return incomingGeneration >= lastAppliedGeneration;
+}
+
+export function nextAccessKeyEditorAfterRename(
+  currentAccessKeyId: number | null,
+  completedAccessKeyId: number,
+) {
+  return currentAccessKeyId === completedAccessKeyId ? null : currentAccessKeyId;
+}
+
+export async function saveAccessKeyDisplayName<T extends AccessKeyDisplay>(
+  rename: () => Promise<T>,
+  reload: () => Promise<void>,
+  publish?: (accessKey: T) => void,
+) {
+  const accessKey = await rename();
+  publish?.(accessKey);
+  let refreshed = true;
+  try {
+    await reload();
+  } catch {
+    refreshed = false;
+  }
+  return { accessKey, refreshed };
 }
 
 export function customerStatusOptions(currentStatus: string | null | undefined) {

@@ -1,4 +1,4 @@
-﻿import { FormEvent, useEffect, useMemo, useState } from "react";
+﻿import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   api,
@@ -42,6 +42,7 @@ import {
 } from "./api";
 import { isVpnConfigurationActionDisabled } from "./vpnMaintenance";
 import { VpnCustomerWorkspace } from "./VpnCustomerWorkspacePanel";
+import { shouldApplyLoadGeneration } from "./vpnCustomerWorkspace";
 
 type Toast = { type: "success" | "error"; text: string } | null;
 type Tab =
@@ -1057,6 +1058,8 @@ export default function App() {
   const [vpnCustomers, setVpnCustomers] = useState<VpnCustomer[]>([]);
   const [vpnSubscriptions, setVpnSubscriptions] = useState<VpnSubscription[]>([]);
   const [vpnAccessKeys, setVpnAccessKeys] = useState<VpnAccessKey[]>([]);
+  const loadAllGenerationRef = useRef(0);
+  const lastAppliedLoadGenerationRef = useRef(0);
   const [vpnNodeEvents, setVpnNodeEvents] = useState<VpnNodeEvent[]>([]);
   const [vpnLifecycleStatus, setVpnLifecycleStatus] = useState<VpnLifecycleStatus | null>(null);
   const [vpnNodeEligibility, setVpnNodeEligibility] = useState<Record<number, VpnNodeEligibility>>({});
@@ -1376,7 +1379,8 @@ export default function App() {
     void loadDomainOverrideDetails(selectedOverrideDomainId, previewDate);
   }, [previewDate, selectedOverrideDomainId, session?.user.id]);
 
-  async function loadAll(options?: { silent?: boolean }) {
+  async function loadAll(options?: { silent?: boolean; throwOnError?: boolean }) {
+    const generation = ++loadAllGenerationRef.current;
     try {
       const [
         overviewData,
@@ -1433,6 +1437,10 @@ export default function App() {
         api.getVpnTelegramUpdates(),
         api.getDiagnosticTelegram(),
       ]);
+      if (!shouldApplyLoadGeneration(generation, lastAppliedLoadGenerationRef.current)) {
+        return;
+      }
+      lastAppliedLoadGenerationRef.current = generation;
       setOverview(overviewData);
       setStrategies(strategiesData);
       setDomains(domainsData);
@@ -1463,8 +1471,12 @@ export default function App() {
       setVpnTelegramUpdates(vpnTelegramUpdatesData);
       setDiagnosticTelegram(diagnosticData);
     } catch (error) {
-      if (!options?.silent) {
+      const stale = generation < lastAppliedLoadGenerationRef.current;
+      if (!options?.silent && !stale) {
         setToast({ type: "error", text: error instanceof Error ? error.message : "Не удалось загрузить данные control-панели" });
+      }
+      if (options?.throwOnError) {
+        throw error;
       }
     }
   }
@@ -4340,7 +4352,7 @@ export default function App() {
 
   function renderVpn() {
     return (
-      <section className="stack">
+      <section className="stack vpn-stack">
         <div className="card full-span">
           <div className="card-head">
             <div>
@@ -4414,7 +4426,7 @@ export default function App() {
             accessKeys={vpnAccessKeys}
             plans={vpnPlans}
             workers={vpnNodes}
-            reload={() => loadAll()}
+            reload={() => loadAll({ throwOnError: true })}
             notify={(type: "success" | "error", text: string) => setToast({ type, text })}
           />
         </div>
