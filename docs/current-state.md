@@ -1,26 +1,74 @@
 # Current State
 
+## Mini App launch correction (2026-09-21, supersedes release revision below)
+
+- Production now runs `e635f0b078cb4ee91f9b4d1dd5e6ce54fd7ea1b2`. Owner reports
+  browser sign-in completed, but has not yet confirmed subscription/profile rendering.
+  Real iPhone Mini App screenshot exposed an empty-initData launch from the bot's
+  reply keyboard. Telegram documents that this launch type provides no WebAppInitData.
+- Fixed only bot entry delivery: command reply keyboard remains, old WebApp row is
+  replaced on the next reply, and one separately gated inline cabinet button follows
+  all response chunks. Authentication validation and closed single-owner access remain
+  unchanged. Owner must close the old window, send `/start`, and use the new button
+  below the bot message. Real Mini App sign-in after correction remains pending.
+- Regression evidence: 2 launch tests failed before correction; final bot suite 50
+  passed, including partial-delivery failure without replaying a delivered key.
+  Broader portal/customer/bot checks before the last added test: 267 passed, 5 optional
+  PostgreSQL concurrency checks skipped. Frontend 52 passed; backend Ruff clean.
+  Independent source and deployment reviews completed. Backup-loop absent-file and
+  active `verifying` job regressions passed (2 tests).
+- Deployment backup: `/opt/backups/veltrix-miniapp-VsJUzooa`, including old source and
+  explicit absence markers for newly added files. Fixed-base bundle fast-forward;
+  only control restarted. Environment/unit/Nginx/frontend/buildcache hashes and
+  metadata preserved; no database migration, node restart or unsolicited bot message.
+  Post-restart public health, closed capabilities, anonymous rejection, PKCE redirect
+  and cancellation of the probe's own attempt passed. VPN identity hashes unchanged;
+  existing test1 passed certificate-valid HTTPS200 and UDP DNS after the restart.
+- Fresh public Chromium check at 390px rendered the login link with no page errors
+  or overflow. Cabinet assets, Telegram SDK and config returned 200, anonymous `/me`
+  returned 401. Unrelated Cloudflare analytics DNS failure did not block rendering.
+  This is deployment/UI evidence, not a completed user Mini App login.
+
 ## Current release checkpoint (2026-09-21)
 
+- Post-release setup: user switched BotFather from legacy Login Widget to OIDC,
+  then reported saving callback under Redirect URIs and origin under Trusted Origins.
+  Hidden-entry helper staged at `/root/veltrix-portal-setup/portal_oidc_setup.py`:
+  reviewed, 13 synthetic tests passed on server including POSIX permissions. Owner
+  completed private entry; fresh inspection confirmed both OIDC settings present
+  without printing values. Real Telegram authentication remains unverified.
+- Closed pilot is now enabled for exactly the previously challenge-verified owner.
+  `VPN_PORTAL_ENABLED=true`, `VPN_PORTAL_PUBLIC_ACCESS=false`; numeric identity stays
+  private. Fresh read-only checks matched the historical private-chat challenge to
+  the existing active customer owning key8. No ownership or VPN credentials changed.
+  Config-only backup: `/opt/backups/veltrix-pilot-da5nmqms/env.before-pilot` (private,
+  includes saved OIDC credentials). Shared config lock, atomic write, metadata checks
+  and disabled-state rollback were reviewed. Only control restarted; no Nginx/node changes.
+- Pilot checks passed: public health, all login capabilities available, unauthenticated
+  `/me` rejected, Telegram redirect/callback URL + PKCE + secure binding cookie and
+  cancellation of only the probe's own attempt. All prior VPN identities stayed
+  unchanged; certificate-validated HTTPS200 and UDP DNS through test1 passed again
+  after restart. No Telegram account was impersonated or session manufactured.
+  Activation guard now includes domain attacks in `verifying` as well as planned/running;
+  its focused regression, 6 config tests and synthetic actual-app access/keyboard checks pass.
 - Production control at `/opt/domain-drop-catcher` now runs reviewed revision
   `46caa1010e452dc94d606dc2b7b2a59f18816ac7`. Tasks 1–12 are implemented and reviewed.
-  Task 13's disabled deployment and post-release checks passed; real Telegram pilot
+  Task 13's deployment and closed-pilot activation checks passed; real Telegram login
   and final integration remain pending. Work continues on `codex/veltrix-customer-portal`
   in `.worktrees/veltrix-customer-portal`; main checkout remains unchanged.
-- Both `VPN_PORTAL_ENABLED` and `VPN_PORTAL_PUBLIC_ACCESS` remain false. The live
-  `/cabinet/` entry loads, but customer login is intentionally unavailable until
-  the Telegram configuration and actual browser/iPhone checks are completed.
+- Login is available at `/cabinet/` for the verified pilot only. Next: owner performs
+  real browser and iPhone Mini App sign-in, then checks their subscription/profile.
   Do not treat mock SDK/browser tests as live Telegram evidence. Payments remain deferred.
 - Final pre-release verification: `python -m pytest` — 664 passed in 139.42 seconds
   with real PostgreSQL and no skips; `python -m ruff check app tests` clean;
   `npm test` — 52 passed; `npm run build` passed. Independent auth, specification,
   quality and operational safety reviews approved their respective scopes.
-- Server-side post-release probe passed all 20 checks: additive schema and names,
+- Initial disabled-release server probe passed all 20 checks: additive schema and names,
   all pre-existing VPN identity hashes unchanged, no-store/no-referrer, public health,
   disabled customer login, existing admin login/profile reads, admin/customer cookie
   isolation and logout of the probe's own admin session. Existing key8/test1 still
   transports certificate-validated HTTPS (200) and UDP DNS. No URI or credential printed.
-- A fresh browser check of the actual public `/cabinet/` at 390px loaded its assets
+- Before pilot activation, a browser check of the actual public `/cabinet/` at 390px loaded its assets
   and showed the disabled-login state, without page errors or horizontal overflow.
   This is live deployment/UI evidence, not a real Telegram login or iPhone-client test.
 - PyJWT 2.14.0 was installed without unrelated runtime upgrades. Only the control
@@ -31,7 +79,7 @@
   hashes and release marker. Do not restore the entire old DB over newer business data.
   Synthetic PostgreSQL `/tmp/veltrix-portal-test-h8t_gmwt` was stopped and removed;
   both real-snapshot rehearsal copies and isolated Nginx instances were already removed.
-- Operational steps and remaining BotFather/client checks:
+- Operational steps and remaining real-client checks:
   `docs/vpn-customer-portal-runbook.md`. No public launch or true end-to-end Telegram
   authentication claim is made. The production runtime's Python 3.11.0rc1 and VPN
   transport hardening remain separate pre-public-launch tasks.

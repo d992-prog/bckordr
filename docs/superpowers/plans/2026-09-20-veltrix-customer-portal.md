@@ -1400,8 +1400,17 @@ VPN_PORTAL_PUBLIC_ACCESS=false
 - [x] Deploy feature disabled, migrate, build, control-only restart and verify
   local/public health and existing admin login. No VPN-node restart, transport change,
   credential regeneration, payment settings or unrelated generated-file overwrite.
-- [ ] Enable only confirmed pilot IDs, perform two-user ownership checks plus
-  browser and iPhone Mini App login. Verify original VPN link still transports
+- [x] Enable only confirmed pilot IDs. One-owner pilot is active with public access false;
+  backup `/opt/backups/veltrix-pilot-da5nmqms`, control-only restart, OIDC redirect/cancel
+  and unchanged VPN identity checks passed; existing link still transports HTTPS/DNS.
+- [ ] Complete real browser and iPhone Mini App login and live ownership checks.
+  Owner reports browser authorization completed; profile/subscription rendering is
+  not yet confirmed. iPhone exposed missing initData from reply-keyboard launch.
+  Correction `e635f0b` deployed: preserved command keyboard plus gated inline entry;
+  50 bot tests, 52 frontend tests, broader 267 passed/5 optional PG checks skipped,
+  independent reviews, source backup `/opt/backups/veltrix-miniapp-VsJUzooa`.
+  Fresh `/start` and new inline-button launch on iPhone remain required.
+  Verify original VPN link still transports
   certificate-valid HTTPS and DNS, and renamed export has unchanged credential/host.
 - [x] If live identity/config requires user action, report the exact outstanding
   step and keep public access false. Do not mark the whole feature production-verified
@@ -1468,7 +1477,7 @@ the test runtime is available, not that the not-yet-built cabinet has passed QA.
 | 10 | Complete | Both reviews approved after auth, safe-area and request-race amendments. Parent 37 frontend tests, TypeScript/Vite build, full HTTP-mocked browser QA at 320/390/768/1280 in light/dark, official SDK synthetic cache spot-check and real FastAPI static probe passed. Live Telegram pilot remains pending |
 | 11 | Complete | Both re-reviews approved; parent backend634 passed140.45s with real PG/no skips, final Telegram37/frontend52/build/Ruff passed. Actual admin bundle browser QA verified rename/cancel/copy/selection/390px and held GET/PATCH/external revoke/per-key pending races; microsecond timestamp regression covered |
 | 12 | Complete | Specification and quality re-reviews approved. Parent final backend: 664 passed in 139.42s with real PG/no skips; full Ruff clean; frontend52/build passed. 30 logging regressions include structured headers, exception causes/contexts/notes/groups, SQL parameters and late ASGI failures. Actual isolated Nginx 1.18 passed 200/400/413/429/502, cookie flags, scoped no-store/no-referrer and secret-free logs; temporary instance removed |
-| 13 | Deployed disabled; live Telegram pending | Production updated to `46caa1010e452dc94d606dc2b7b2a59f18816ac7` with control-only restart and Nginx reload. All 20 post-release checks passed: schema/names, all prior VPN identity hashes, HTTPS admin login/profile reads/session isolation/logout, disabled portal and no-store/no-referrer, certificate-valid HTTPS200 and UDP DNS through key8/test1. Real-snapshot two-pass migration/old-ORM rehearsal passed; all disposable PG/Nginx instances removed. Validated full backup retained at `/opt/backups/veltrix-cabinet-20260921-003811`. Public and pilot login remain disabled; live Telegram browser/iPhone verification and final branch integration still pending. Rollback reviewed, not forced on healthy production |
+| 13 | Closed pilot active; live Telegram pending | Production revision `46caa1010e452dc94d606dc2b7b2a59f18816ac7`. Initial disabled release passed all 20 server checks and real-snapshot migration/old-ORM rehearsal; temporary PG/Nginx instances removed. Full backup retained at `/opt/backups/veltrix-cabinet-20260921-003811`. Owner configured BotFather and privately entered OIDC credentials. Closed pilot enabled for exactly the previously verified owner, public=false; config backup `/opt/backups/veltrix-pilot-da5nmqms`, control-only restart. Owner proof, capabilities, anonymous rejection, PKCE redirect/binding cookie/own cancellation, unchanged VPN identities and certificate-valid HTTPS200/UDP DNS through test1 passed. Real Telegram browser/iPhone login and final branch integration pending. Rollback reviewed, not forced on healthy production |
 
 Verification repair: the old partial-cycle durability test raced a 0.1-second
 effective timeout against initial SQLite work (configured 0.05 is clamped). A
