@@ -22,6 +22,9 @@ MAX_KNOWN_HOSTS_BYTES = 64 * 1024
 MAX_PRIVATE_KEY_BYTES = 64 * 1024
 MAX_STDOUT_BYTES = 64 * 1024
 MAX_STDERR_BYTES = 64 * 1024
+CONNECT_TIMEOUT = 10.0
+LOGIN_TIMEOUT = 10.0
+REMOTE_OPERATION_TIMEOUT = 30.0
 
 _RECEIPTS = frozenset(
     {
@@ -57,7 +60,7 @@ class VpnNodeTransportSnapshot:
     host: str
     port: int
     username: str
-    known_hosts: object = field(repr=False)
+    known_hosts: bytes = field(repr=False)
     password: str | None = field(default=None, repr=False)
     client_key: object | None = field(default=None, repr=False)
 
@@ -175,7 +178,13 @@ def _parse_known_hosts(raw: bytes, host: str, port: int):
         return asyncssh.import_known_hosts(text)
     except VpnNodeTransportError:
         raise
-    except (UnicodeDecodeError, ValueError, TypeError, asyncssh.KeyImportError):
+    except (
+        AttributeError,
+        UnicodeDecodeError,
+        ValueError,
+        TypeError,
+        asyncssh.KeyImportError,
+    ):
         _fail()
 
 
@@ -203,10 +212,10 @@ def load_transport_snapshot(worker, known_hosts_path: Path) -> VpnNodeTransportS
     known_hosts_raw = _read_private_file(
         Path(known_hosts_path), limit=MAX_KNOWN_HOSTS_BYTES, owner_uid=owner_uid
     )
-    known_hosts = _parse_known_hosts(known_hosts_raw, host, port)
+    _parse_known_hosts(known_hosts_raw, host, port)
     if password_mode:
         return VpnNodeTransportSnapshot(
-            host, port, username, known_hosts, password=password
+            host, port, username, known_hosts_raw, password=password
         )
     assert type(key_value) is str
     key_path = Path(key_value)
@@ -218,7 +227,7 @@ def load_transport_snapshot(worker, known_hosts_path: Path) -> VpnNodeTransportS
     except (asyncssh.KeyImportError, ValueError, TypeError):
         _fail()
     return VpnNodeTransportSnapshot(
-        host, port, username, known_hosts, client_key=client_key
+        host, port, username, known_hosts_raw, client_key=client_key
     )
 
 
@@ -306,6 +315,21 @@ async def _bounded_read(reader, limit: int) -> bytes:
             _fail("mutation")
 
 
+async def _read_process_output(process) -> tuple[bytes, bytes]:
+    tasks = (
+        asyncio.create_task(_bounded_read(process.stdout, MAX_STDOUT_BYTES)),
+        asyncio.create_task(_bounded_read(process.stderr, MAX_STDERR_BYTES)),
+    )
+    try:
+        stdout, stderr = await asyncio.gather(*tasks)
+        return stdout, stderr
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def execute_vpn_node_request(
     snapshot: VpnNodeTransportSnapshot,
     request: bytes,
@@ -318,17 +342,23 @@ async def execute_vpn_node_request(
     """Execute exactly once. The caller, not this function, owns durable retry policy."""
     phase: Literal["preflight", "mutation"] = "preflight"
     observer = phase_observer or (lambda _phase, _receipt: None)
+    password_mode = type(snapshot.password) is str and bool(snapshot.password)
+    key_mode = isinstance(snapshot.client_key, asyncssh.SSHKey)
     if (
-        snapshot.username != "root"
+        type(snapshot.host) is not str
+        or not snapshot.host
+        or type(snapshot.port) is not int
+        or not 1 <= snapshot.port <= 65535
+        or snapshot.username != "root"
         or type(request) is not bytes
         or not request
-        or (snapshot.password is None) == (snapshot.client_key is None)
+        or password_mode == key_mode
     ):
         _fail()
-    password_mode = snapshot.password is not None
+    known_hosts = _parse_known_hosts(snapshot.known_hosts, snapshot.host, snapshot.port)
     options = {
         "config": None,
-        "known_hosts": snapshot.known_hosts,
+        "known_hosts": known_hosts,
         "client_keys": None if password_mode else [snapshot.client_key],
         "password": snapshot.password if password_mode else None,
         "preferred_auth": ["password"] if password_mode else ["publickey"],
@@ -343,39 +373,37 @@ async def execute_vpn_node_request(
         "public_key_auth": not password_mode,
         "password_auth": password_mode,
         "disable_trivial_auth": True,
+        "connect_timeout": CONNECT_TIMEOUT,
+        "login_timeout": LOGIN_TIMEOUT,
     }
     try:
-        connection = await connector(
-            snapshot.host,
-            snapshot.port,
-            username=snapshot.username,
-            **options,
-        )
-        async with connection:
-            process = await connection.create_process(
-                FIXED_NODE_COMMAND,
-                term_type=None,
-                encoding=None,
+        async with asyncio.timeout(CONNECT_TIMEOUT + LOGIN_TIMEOUT):
+            connection = await connector(
+                snapshot.host,
+                snapshot.port,
+                username=snapshot.username,
+                **options,
             )
-            observer("prewrite", None)
-            phase = "mutation"
-            observer("stdin_write_attempted", None)
-            process.stdin.write(request)
-            await process.stdin.drain()
-            process.stdin.write_eof()
-            stdout_task = asyncio.create_task(
-                _bounded_read(process.stdout, MAX_STDOUT_BYTES)
-            )
-            stderr_task = asyncio.create_task(
-                _bounded_read(process.stderr, MAX_STDERR_BYTES)
-            )
-            stdout, stderr = await asyncio.gather(stdout_task, stderr_task)
-            await process.wait()
-            if process.exit_status != 0 or stderr:
-                _fail("mutation")
-            receipt = _parse_exact_receipt(stdout, operation_id, request_digest)
-            observer("receipt_validated", receipt)
-            return receipt
+        async with asyncio.timeout(REMOTE_OPERATION_TIMEOUT):
+            async with connection:
+                process = await connection.create_process(
+                    FIXED_NODE_COMMAND,
+                    term_type=None,
+                    encoding=None,
+                )
+                observer("prewrite", None)
+                phase = "mutation"
+                observer("stdin_write_attempted", None)
+                process.stdin.write(request)
+                await process.stdin.drain()
+                process.stdin.write_eof()
+                stdout, stderr = await _read_process_output(process)
+                await process.wait()
+                if process.exit_status != 0 or stderr:
+                    _fail("mutation")
+                receipt = _parse_exact_receipt(stdout, operation_id, request_digest)
+                observer("receipt_validated", receipt)
+                return receipt
     except asyncio.CancelledError:
         raise
     except VpnNodeTransportError:

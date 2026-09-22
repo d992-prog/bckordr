@@ -23,6 +23,20 @@ from app.services.vpn_node_transport import (
 
 
 DEFAULT_FINALIZE_TIMEOUT = 15.0
+FINALIZE_CANCEL_GRACE = 0.05
+FINALIZE_CANCEL_ATTEMPTS = 3
+
+
+class _FinalizeGate:
+    def __init__(self) -> None:
+        self._allowed = True
+
+    @property
+    def allowed(self) -> bool:
+        return self._allowed
+
+    def revoke(self) -> None:
+        self._allowed = False
 
 
 async def _resolve(value):
@@ -43,7 +57,8 @@ async def _finalize_once(
     claim_token: UUID,
     receipt: NodeControlReceipt,
     now: Callable[[], object] | None,
-) -> None:
+    gate: _FinalizeGate,
+) -> bool:
     async with session_factory() as db:
         try:
             kwargs = {
@@ -53,10 +68,49 @@ async def _finalize_once(
             if now is not None:
                 kwargs["now"] = now()
             await _resolve(finalize(db, operation_id, claim_token, **kwargs))
+            if not gate.allowed:
+                await _rollback(db)
+                return False
             await db.commit()
+            return True
         except BaseException:
             await _rollback(db)
             raise
+
+
+def _consume_task(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except BaseException:
+        pass
+
+
+async def _cancel_and_collect(task: asyncio.Task, gate: _FinalizeGate) -> None:
+    gate.revoke()
+    for _ in range(FINALIZE_CANCEL_ATTEMPTS):
+        if task.done():
+            _consume_task(task)
+            return
+        task.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                FINALIZE_CANCEL_GRACE,
+            )
+        except asyncio.CancelledError:
+            if task.done():
+                _consume_task(task)
+                return
+        except TimeoutError:
+            continue
+        except BaseException:
+            _consume_task(task)
+            return
+    task.cancel()
+    if task.done():
+        _consume_task(task)
+    else:
+        task.add_done_callback(_consume_task)
 
 
 async def _bounded_finalize(
@@ -68,6 +122,7 @@ async def _bounded_finalize(
     timeout: float,
     now: Callable[[], object] | None,
 ) -> bool:
+    gate = _FinalizeGate()
     task = asyncio.create_task(
         _finalize_once(
             session_factory,
@@ -76,21 +131,40 @@ async def _bounded_finalize(
             claim_token,
             receipt,
             now,
+            gate,
         )
     )
-    try:
-        await asyncio.wait_for(asyncio.shield(task), timeout)
-        return True
-    except asyncio.CancelledError:
+    deadline = asyncio.get_running_loop().time() + timeout
+    cancellation = None
+    while True:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            await _cancel_and_collect(task, gate)
+            if cancellation is not None:
+                raise cancellation
+            return False
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout)
-        except BaseException:
-            pass
-        raise
-    except Exception:
-        if not task.done():
-            task.cancel()
-        return False
+            completed = await asyncio.wait_for(asyncio.shield(task), remaining)
+        except asyncio.CancelledError as error:
+            if task.done():
+                _consume_task(task)
+                if cancellation is not None:
+                    raise cancellation
+                return False
+            cancellation = cancellation or error
+            continue
+        except TimeoutError:
+            await _cancel_and_collect(task, gate)
+            if cancellation is not None:
+                raise cancellation
+            return False
+        except Exception:
+            if cancellation is not None:
+                raise cancellation
+            return False
+        if cancellation is not None:
+            raise cancellation
+        return completed
 
 
 def _failure_receipt(phase: str) -> NodeControlReceipt:
@@ -232,9 +306,9 @@ async def dispatch_next_vpn_control_operation(
             pass
         raise
     except VpnNodeTransportError as error:
-        receipt = _failure_receipt(error.phase)
+        receipt = validated_receipt or _failure_receipt(error.phase)
     except Exception:
-        receipt = _failure_receipt(phase)
+        receipt = validated_receipt or _failure_receipt(phase)
 
     await _bounded_finalize(
         session_factory,
