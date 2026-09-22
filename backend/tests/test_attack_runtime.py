@@ -2,14 +2,57 @@ from datetime import date, datetime, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from app.services.attack_runtime import (
     allocate_domain_target_rps,
     allocate_worker_rps,
     build_domain_runtime_snapshots,
     domain_window_bounds,
+    load_attack_available_workers,
     plan_worker_assignments,
     refresh_domain_task_targets,
 )
+
+
+@pytest.mark.asyncio
+async def test_worker_loader_locks_by_id_rechecks_reservations_then_business_sorts(monkeypatch):
+    low_priority = make_worker(id=1, name="a", target_rps=1.0, max_rps=1.0)
+    high_priority = make_worker(id=2, name="z", target_rps=100.0, max_rps=100.0)
+    statements = []
+
+    class Scalars:
+        def all(self):
+            return [low_priority, high_priority]
+
+    class Result:
+        def scalars(self):
+            return Scalars()
+
+    class Session:
+        async def execute(self, statement):
+            statements.append(statement)
+            return Result()
+
+    calls = 0
+
+    async def reservations(_session):
+        nonlocal calls
+        calls += 1
+        return set() if calls == 1 else {high_priority.id}
+
+    monkeypatch.setattr(
+        "app.services.attack_runtime.active_vpn_mutation_worker_ids",
+        reservations,
+    )
+    workers = await load_attack_available_workers(Session(), worker_ids=[2, 1])
+
+    assert calls == 2
+    assert [worker.id for worker in workers] == [low_priority.id]
+    statement = statements[0]
+    assert statement._for_update_arg is not None
+    assert statement._for_update_arg.skip_locked is False
+    assert "ORDER BY worker_nodes.id ASC" in str(statement)
 
 
 def make_domain(**overrides):

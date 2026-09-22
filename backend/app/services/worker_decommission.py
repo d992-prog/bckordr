@@ -14,6 +14,7 @@ from app.db.models import (
     WorkerNode,
 )
 from app.services.vpn_policy import DEVICE_SLOT_STATUSES, active_attack_worker_ids
+from app.services.vpn_control_intents import active_vpn_control_worker_ids
 
 
 class WorkerDecommissionNotFoundError(ValueError):
@@ -44,6 +45,9 @@ async def decommission_worker(
     )
     if worker is None:
         raise WorkerDecommissionNotFoundError("Worker not found")
+
+    if worker_id in await active_vpn_control_worker_ids(session):
+        raise WorkerDecommissionConflictError("Worker has an active VPN control operation")
 
     bound_profile_id = await session.scalar(
         select(VpnAccessKey.id)

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -15,12 +18,16 @@ from sqlalchemy.ext.asyncio import (
 
 from app.db.base import Base
 from app.db.models import (
+    AttackRun,
+    DropDomain,
     VpnAccessKey,
     VpnControlOperation,
     VpnCustomer,
     VpnEndpoint,
     VpnSubscription,
     WorkerNode,
+    WorkerMaintenanceJob,
+    WorkerTask,
 )
 from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
 from app.services.vpn_control_intents import (
@@ -30,6 +37,18 @@ from app.services.vpn_control_intents import (
     finalize_vpn_control_operation,
     stage_vpn_control_operation,
 )
+from app.services import attack_runtime
+from app.services.attack_runtime import load_attack_available_workers
+from app.services.worker_decommission import (
+    WorkerDecommissionConflictError,
+    decommission_worker,
+)
+from app.api.routes.control import (
+    _start_worker_maintenance_job,
+    start_all_vpn_node_updates,
+    update_worker,
+)
+from app.schemas.control import WorkerNodeUpdateRequest
 from test_vpn_endpoint_migrations import (
     PostgresSchema,
     postgres_schema as postgres_schema,
@@ -685,3 +704,263 @@ async def test_migration_is_idempotent_with_queue_claim_and_history(postgres_con
         )
     assert before == after
     assert {"queued", "claimed", "succeeded"} <= states
+
+
+@pytest.mark.asyncio
+async def test_attack_rechecks_reservation_after_waiting_for_staging_worker_lock(
+    postgres_control,
+    monkeypatch,
+):
+    await _seed(postgres_control)
+    first_read = asyncio.Event()
+    release_first_read = asyncio.Event()
+    real_reservations = attack_runtime.active_vpn_mutation_worker_ids
+
+    async with postgres_control.sessions() as attacker, postgres_control.sessions() as stager:
+        attacker_pid = await attacker.scalar(text("SELECT pg_backend_pid()"))
+        stager_pid = await stager.scalar(text("SELECT pg_backend_pid()"))
+        assert attacker_pid != stager_pid
+        first_call = True
+
+        async def controlled_reservations(session):
+            nonlocal first_call
+            result = await real_reservations(session)
+            if session is attacker and first_call:
+                first_call = False
+                first_read.set()
+                await release_first_read.wait()
+            return result
+
+        monkeypatch.setattr(
+            attack_runtime,
+            "active_vpn_mutation_worker_ids",
+            controlled_reservations,
+        )
+        attack_task = asyncio.create_task(
+            load_attack_available_workers(attacker, worker_ids=[2])
+        )
+        await asyncio.wait_for(first_read.wait(), timeout=1)
+        operation = await stage_vpn_control_operation(stager, 7, "provision", now=NOW)
+        assert operation.state == "queued"
+        release_first_read.set()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(attack_task), timeout=0.05)
+
+        await stager.commit()
+        assert await asyncio.wait_for(attack_task, timeout=1) == []
+        await attacker.rollback()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflict", ["attack", "maintenance"])
+async def test_committed_cross_system_work_blocks_waiting_stage_after_worker_lock(
+    postgres_control,
+    conflict,
+):
+    await _seed(postgres_control)
+    async with postgres_control.sessions() as holder, postgres_control.sessions() as stager:
+        worker = await holder.scalar(
+            select(WorkerNode).where(WorkerNode.id == 2).with_for_update()
+        )
+        assert worker is not None
+        if conflict == "attack":
+            domain = DropDomain(fqdn="race.example", zone="example", drop_date=NOW.date())
+            holder.add(domain)
+            await holder.flush()
+            run = AttackRun(
+                domain_id=domain.id,
+                status="running",
+                planned_start_at=NOW,
+                planned_end_at=NOW + timedelta(minutes=1),
+            )
+            holder.add(run)
+            await holder.flush()
+            holder.add(
+                WorkerTask(
+                    attack_run_id=run.id,
+                    domain_id=domain.id,
+                    worker_id=2,
+                    status="running",
+                )
+            )
+        else:
+            holder.add(
+                WorkerMaintenanceJob(worker_id=2, action="vpn_update", status="queued")
+            )
+        await holder.flush()
+
+        stage_task = asyncio.create_task(
+            stage_vpn_control_operation(stager, 7, "provision", now=NOW)
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(stage_task), timeout=0.05)
+        await holder.commit()
+        with pytest.raises(VpnControlIntentError) as caught:
+            await asyncio.wait_for(stage_task, timeout=1)
+        assert caught.value.code == "vpn_control_worker_busy"
+        await stager.rollback()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflict", ["attack", "maintenance"])
+async def test_claim_skips_worker_after_cross_system_work_commits(
+    postgres_control,
+    conflict,
+):
+    await _seed(postgres_control)
+    operation_id = await _stage(postgres_control, 7)
+    async with postgres_control.sessions() as session:
+        if conflict == "attack":
+            domain = DropDomain(fqdn="claim-race.example", zone="example", drop_date=NOW.date())
+            session.add(domain)
+            await session.flush()
+            run = AttackRun(
+                domain_id=domain.id,
+                status="running",
+                planned_start_at=NOW,
+                planned_end_at=NOW + timedelta(minutes=1),
+            )
+            session.add(run)
+            await session.flush()
+            session.add(
+                WorkerTask(
+                    attack_run_id=run.id,
+                    domain_id=domain.id,
+                    worker_id=2,
+                    status="running",
+                )
+            )
+        else:
+            session.add(
+                WorkerMaintenanceJob(worker_id=2, action="vpn_restart", status="running")
+            )
+        await session.commit()
+
+    async with postgres_control.sessions() as claimer:
+        assert await claim_next_vpn_control_operation(
+            claimer,
+            claim_token=uuid4(),
+            now=NOW + timedelta(seconds=1),
+        ) is None
+        operation = await claimer.get(VpnControlOperation, str(operation_id))
+        assert operation is not None and operation.state == "queued"
+
+
+@pytest.mark.asyncio
+async def test_control_reservation_blocks_maintenance_update_and_decommission(
+    postgres_control,
+    monkeypatch,
+):
+    await _seed(postgres_control)
+    await _stage(postgres_control, 7)
+    background = BackgroundTasks()
+    admin = SimpleNamespace(id=1)
+
+    async def forbidden_sync(*_args, **_kwargs):
+        raise AssertionError("losing worker update must not sync runtime state")
+
+    monkeypatch.setattr("app.api.routes.control.sync_worker_runtime_allowlist", forbidden_sync)
+    async with postgres_control.sessions() as session:
+        worker = await session.get(WorkerNode, 2)
+        assert worker is not None
+        worker.ssh_username = "root"
+        worker.ssh_password = "synthetic-secret"
+        await session.commit()
+
+    async with postgres_control.sessions() as session:
+        with pytest.raises(HTTPException) as maintenance_error:
+            await _start_worker_maintenance_job(
+                worker_id=2,
+                action="vpn_update",
+                background_tasks=background,
+                db=session,
+                admin=admin,
+            )
+        assert maintenance_error.value.status_code == 409
+        assert not background.tasks
+
+    async with postgres_control.sessions() as session:
+        with pytest.raises(HTTPException) as update_error:
+            await update_worker(
+                2,
+                WorkerNodeUpdateRequest(ssh_password=None),
+                session,
+                admin,
+            )
+        assert update_error.value.status_code == 409
+        await session.rollback()
+        worker = await session.get(WorkerNode, 2)
+        assert worker is not None and worker.ssh_password == "synthetic-secret"
+
+    async with postgres_control.sessions() as session:
+        with pytest.raises(WorkerDecommissionConflictError, match="VPN control operation"):
+            await decommission_worker(session, 2)
+        await session.rollback()
+        worker = await session.get(WorkerNode, 2)
+        assert worker is not None
+        assert worker.archived_at is None
+        assert worker.ssh_password == "synthetic-secret"
+
+
+@pytest.mark.asyncio
+async def test_bulk_vpn_maintenance_skips_reserved_worker_and_schedules_no_callback_for_it(
+    postgres_control,
+):
+    await _seed(postgres_control)
+    await _stage(postgres_control, 7)
+    async with postgres_control.sessions() as session:
+        workers = (await session.scalars(select(WorkerNode).order_by(WorkerNode.id))).all()
+        for worker in workers:
+            worker.ssh_username = "root"
+            worker.ssh_password = f"synthetic-{worker.id}"
+            worker.vpn_role = "vpn_node"
+            worker.vpn_enabled = True
+        await session.commit()
+
+    background = BackgroundTasks()
+    async with postgres_control.sessions() as session:
+        response = await start_all_vpn_node_updates(
+            background_tasks=background,
+            db=session,
+            admin=SimpleNamespace(id=None),
+        )
+
+    assert response.skipped_worker_ids == [2]
+    assert [job.worker_id for job in response.jobs] == [3]
+    assert len(background.tasks) == 1
+
+
+@pytest.mark.asyncio
+async def test_attack_batch_lock_order_is_compatible_with_ascending_bulk_maintenance(
+    postgres_control,
+):
+    await _seed(postgres_control)
+    async with postgres_control.sessions() as session:
+        first = await session.get(WorkerNode, 2)
+        second = await session.get(WorkerNode, 3)
+        assert first is not None and second is not None
+        first.target_rps = 1
+        second.target_rps = 100
+        await session.commit()
+
+    async with postgres_control.sessions() as maintenance, postgres_control.sessions() as attacker:
+        await maintenance.scalar(
+            select(WorkerNode).where(WorkerNode.id == 2).with_for_update()
+        )
+        attack_task = asyncio.create_task(
+            load_attack_available_workers(attacker, worker_ids=[3, 2])
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(attack_task), timeout=0.05)
+
+        second = await asyncio.wait_for(
+            maintenance.scalar(
+                select(WorkerNode).where(WorkerNode.id == 3).with_for_update()
+            ),
+            timeout=1,
+        )
+        assert second is not None
+        await maintenance.commit()
+        workers = await asyncio.wait_for(attack_task, timeout=1)
+        assert [worker.id for worker in workers] == [3, 2]
+        await attacker.rollback()

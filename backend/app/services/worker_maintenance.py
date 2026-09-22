@@ -9,6 +9,7 @@ from app.db.models import VpnNodeEvent, WorkerMaintenanceJob, WorkerNode
 from app.db.session import AsyncSessionLocal
 from app.services.app_settings import DiscoveryRuntimeSettings, get_discovery_runtime_settings
 from app.services.vpn_policy import VPN_MUTATION_ACTIONS, active_attack_worker_ids, lock_vpn_worker
+from app.services.vpn_control_intents import active_vpn_control_worker_ids
 
 VPN_MAINTENANCE_ACTIONS = {
     "vpn_check",
@@ -1036,8 +1037,14 @@ async def run_worker_maintenance_job(job_id: int) -> None:
                 job.updated_at = utcnow()
                 await session.commit()
                 return
-            if worker.id in await active_attack_worker_ids(session):
-                reason = "Worker is assigned to an active domain attack"
+            async def block_mutation_if_reserved() -> bool:
+                reason = None
+                if worker.id in await active_attack_worker_ids(session):
+                    reason = "Worker is assigned to an active domain attack"
+                elif worker.id in await active_vpn_control_worker_ids(session):
+                    reason = "Worker has an active VPN control operation"
+                if reason is None:
+                    return False
                 job.status = "failed"
                 job.error_message = reason
                 job.finished_at = utcnow()
@@ -1052,6 +1059,9 @@ async def run_worker_maintenance_job(job_id: int) -> None:
                     )
                 )
                 await session.commit()
+                return True
+
+            if await block_mutation_if_reserved():
                 return
 
         if job.action in VPN_MAINTENANCE_ACTIONS:
@@ -1066,6 +1076,8 @@ async def run_worker_maintenance_job(job_id: int) -> None:
                 worker=worker,
                 discovery_settings=discovery_settings,
             )
+            if job.action in VPN_MUTATION_ACTIONS and await block_mutation_if_reserved():
+                return
             log = await execute_worker_ssh_commands(worker, commands)
         except Exception as exc:  # pragma: no cover - exact SSH errors depend on environment
             job.status = "failed"

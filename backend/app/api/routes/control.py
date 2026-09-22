@@ -156,6 +156,7 @@ from app.services.discovery import (
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
+from app.services.vpn_control_intents import active_vpn_control_worker_ids
 from app.services.vpn_mutations import serialize_vpn_mutation
 from app.services.vpn_profile_names import (
     initial_display_name,
@@ -218,6 +219,30 @@ from app.core.config import get_settings
 
 router = APIRouter(prefix="/control", tags=["control"])
 ONLINE_WORKER_MAX_AGE_SECONDS = 120
+VPN_CONTROL_SENSITIVE_WORKER_FIELDS = {
+    "control_token",
+    "status",
+    "is_enabled",
+    "ip_address",
+    "ssh_host",
+    "ssh_port",
+    "ssh_username",
+    "ssh_password",
+    "ssh_key_path",
+    "vpn_role",
+    "vpn_enabled",
+    "vpn_runtime_status",
+    "vpn_public_host",
+    "vpn_panel_url",
+    "vpn_panel_username",
+    "vpn_panel_password",
+    "vpn_inbound_id",
+    "vpn_inbound_port",
+    "vpn_inbound_protocol",
+    "vpn_inbound_transport",
+    "vpn_inbound_security",
+    "vpn_listener_status",
+}
 
 
 def _worker_is_online(worker: WorkerNode, now: datetime) -> bool:
@@ -2479,6 +2504,7 @@ async def start_all_worker_updates(
             select(WorkerNode)
             .where(WorkerNode.is_enabled.is_(True))
             .order_by(WorkerNode.id.asc())
+            .with_for_update()
         )
     ).scalars().all()
     active_job_worker_ids = set(
@@ -2541,6 +2567,7 @@ async def start_all_vpn_node_updates(
                 WorkerNode.vpn_role != "none",
             )
             .order_by(WorkerNode.id.asc())
+            .with_for_update()
         )
     ).scalars().all()
     active_job_worker_ids = set(
@@ -2553,6 +2580,7 @@ async def start_all_vpn_node_updates(
         ).scalars().all()
     )
     busy_worker_ids = await active_attack_worker_ids(db)
+    control_worker_ids = await active_vpn_control_worker_ids(db)
 
     jobs: list[WorkerMaintenanceJob] = []
     skipped_worker_ids: list[int] = []
@@ -2561,6 +2589,7 @@ async def start_all_vpn_node_updates(
             not worker.ssh_access_configured
             or worker.id in active_job_worker_ids
             or worker.id in busy_worker_ids
+            or worker.id in control_worker_ids
         ):
             skipped_worker_ids.append(worker.id)
             continue
@@ -2608,6 +2637,7 @@ async def start_all_vpn_node_autoconfigs(
                 WorkerNode.vpn_role != "none",
             )
             .order_by(WorkerNode.id.asc())
+            .with_for_update()
         )
     ).scalars().all()
     active_job_worker_ids = set(
@@ -2620,6 +2650,7 @@ async def start_all_vpn_node_autoconfigs(
         ).scalars().all()
     )
     busy_worker_ids = await active_attack_worker_ids(db)
+    control_worker_ids = await active_vpn_control_worker_ids(db)
 
     jobs: list[WorkerMaintenanceJob] = []
     skipped_worker_ids: list[int] = []
@@ -2628,6 +2659,7 @@ async def start_all_vpn_node_autoconfigs(
             not worker.ssh_access_configured
             or worker.id in active_job_worker_ids
             or worker.id in busy_worker_ids
+            or worker.id in control_worker_ids
         ):
             skipped_worker_ids.append(worker.id)
             continue
@@ -2692,6 +2724,11 @@ async def _start_worker_maintenance_job(
     if action.startswith("vpn_") and (not worker.vpn_enabled or worker.vpn_role == "none"):
         raise HTTPException(status_code=400, detail="Worker is not configured as a VPN node")
     if action in VPN_MUTATION_ACTIONS:
+        if worker.id in await active_vpn_control_worker_ids(db):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Worker has an active VPN control operation",
+            )
         eligibility = await evaluate_vpn_node(db, worker)
         active_attack_reason = next(
             (reason for reason in eligibility.reasons if "active domain attack" in reason),
@@ -2773,7 +2810,16 @@ async def update_worker(
     worker = await lock_vpn_worker(db, worker_id)
     if worker is None or worker.archived_at is not None:
         raise HTTPException(status_code=404, detail="Worker not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if (
+        changes.keys() & VPN_CONTROL_SENSITIVE_WORKER_FIELDS
+        and worker.id in await active_vpn_control_worker_ids(db)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Worker has an active VPN control operation",
+        )
+    for field, value in changes.items():
         setattr(worker, field, value)
     worker.updated_at = utcnow()
     await add_audit_log(

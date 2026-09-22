@@ -1218,12 +1218,12 @@ async def load_attack_available_workers(
         query = query.where(WorkerNode.id.in_(worker_ids))
     if mutation_worker_ids:
         query = query.where(WorkerNode.id.not_in(mutation_worker_ids))
-    result = await session.execute(
-        query
-        .order_by(WorkerNode.target_rps.desc(), WorkerNode.max_rps.desc(), WorkerNode.name.asc())
-        .with_for_update(skip_locked=True)
-    )
-    return list(result.scalars().all())
+    result = await session.execute(query.order_by(WorkerNode.id.asc()).with_for_update())
+    workers = list(result.scalars().all())
+    reserved_after_lock = await active_vpn_mutation_worker_ids(session)
+    workers = [worker for worker in workers if worker.id not in reserved_after_lock]
+    workers.sort(key=lambda worker: (-worker.target_rps, -worker.max_rps, worker.name))
+    return workers
 
 
 async def plan_attack_runs(

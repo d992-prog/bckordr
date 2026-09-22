@@ -107,6 +107,13 @@ async def lock_vpn_worker(
 
 
 async def active_vpn_mutation_worker_ids(session: AsyncSession) -> set[int]:
+    from app.services.vpn_control_intents import active_vpn_control_worker_ids
+
+    maintenance_ids = await active_vpn_maintenance_worker_ids(session)
+    return maintenance_ids | await active_vpn_control_worker_ids(session)
+
+
+async def active_vpn_maintenance_worker_ids(session: AsyncSession) -> set[int]:
     result = await session.execute(
         select(WorkerMaintenanceJob.worker_id)
         .where(

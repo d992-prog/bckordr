@@ -29,6 +29,10 @@ from app.services.vpn_node_request import (
     serialize_node_request,
 )
 from app.services.vpn_subscription_sync import subscription_key_action
+from app.services.vpn_policy import (
+    active_attack_worker_ids,
+    active_vpn_maintenance_worker_ids,
+)
 
 
 _MAX_INTEGER = 2**63 - 1
@@ -330,6 +334,11 @@ async def stage_vpn_control_operation(
         )
         if worker is None or worker.archived_at is not None:
             _fail("vpn_control_worker_unavailable")
+        if (
+            worker.id in await active_attack_worker_ids(db)
+            or worker.id in await active_vpn_maintenance_worker_ids(db)
+        ):
+            _fail("vpn_control_worker_busy")
 
         endpoint = await db.scalar(
             _locked(select(VpnEndpoint).where(VpnEndpoint.id == access_key.endpoint_id))
@@ -530,6 +539,7 @@ async def _lock_context(
     worker_id: int,
     endpoint_id: int,
     skip_locked: bool = False,
+    reject_cross_system_conflicts: bool = False,
 ) -> tuple[VpnCustomer, VpnSubscription, VpnAccessKey, WorkerNode, VpnEndpoint] | None:
     customer_id = await db.scalar(
         select(VpnSubscription.customer_id)
@@ -612,6 +622,11 @@ async def _lock_context(
     )
     if worker is None and skip_locked:
         return None
+    if worker is not None and reject_cross_system_conflicts and (
+        worker.id in await active_attack_worker_ids(db)
+        or worker.id in await active_vpn_maintenance_worker_ids(db)
+    ):
+        raise _CandidateBusy
     endpoint = await db.scalar(
         _locked(
             select(VpnEndpoint).where(VpnEndpoint.id == endpoint_id),
@@ -675,6 +690,7 @@ async def claim_next_vpn_control_operation(
             worker_id=candidate.worker_id,
             endpoint_id=candidate.endpoint_id,
             skip_locked=True,
+            reject_cross_system_conflicts=True,
         )
         if context is None:
             raise _CandidateBusy

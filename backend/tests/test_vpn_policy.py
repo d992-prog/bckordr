@@ -11,6 +11,7 @@ from app.db.models import (
     DropDomain,
     VpnAccessKey,
     VpnCustomer,
+    VpnControlOperation,
     VpnSubscription,
     WorkerMaintenanceJob,
     WorkerNode,
@@ -123,6 +124,43 @@ async def test_active_vpn_mutation_worker_ids_uses_queued_and_running_jobs(sessi
         await session.commit()
 
         assert await active_vpn_mutation_worker_ids(session) == {queued.id, running.id}
+
+
+@pytest.mark.asyncio
+async def test_active_vpn_mutation_worker_ids_includes_control_reservations(session_factory):
+    async with session_factory() as session:
+        workers = [_vpn_worker(state) for state in ("queued", "claimed", "uncertain", "done")]
+        session.add_all(workers)
+        await session.flush()
+        for index, (worker, state) in enumerate(
+            zip(workers, ("queued", "claimed", "uncertain", "succeeded")),
+            1,
+        ):
+            session.add(
+                VpnControlOperation(
+                    id=f"40000000-0000-4000-8000-{index:012d}",
+                    access_key_id=index,
+                    worker_id=worker.id,
+                    endpoint_id=index,
+                    generation=1,
+                    action="provision",
+                    request_snapshot={},
+                    request_digest=f"{index:064x}",
+                    state=state,
+                    claim_token=(
+                        f"50000000-0000-4000-8000-{index:012d}"
+                        if state in {"claimed", "uncertain"}
+                        else None
+                    ),
+                )
+            )
+        await session.commit()
+
+        assert await active_vpn_mutation_worker_ids(session) == {
+            workers[0].id,
+            workers[1].id,
+            workers[2].id,
+        }
 
 
 @pytest.mark.asyncio

@@ -12,12 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.db.base import Base
 from app.db.models import (
+    AttackRun,
+    DropDomain,
     VpnAccessKey,
     VpnControlOperation,
     VpnCustomer,
     VpnEndpoint,
     VpnSubscription,
+    WorkerMaintenanceJob,
     WorkerNode,
+    WorkerTask,
 )
 from app.services.vpn_node_request import (
     node_request_digest,
@@ -590,14 +594,19 @@ async def test_stage_locks_canonical_rows_flushes_without_commit_and_stores_deta
             frozenset({"vpn_subscriptions"}),
             frozenset({"vpn_access_keys"}),
             frozenset({"worker_nodes"}),
+            frozenset({"worker_tasks", "attack_runs"}),
+            frozenset({"worker_maintenance_jobs"}),
             frozenset({"vpn_endpoints"}),
             frozenset({"vpn_control_operations"}),
         ]
-        assert recording.statements[0]._for_update_arg is None
-        for statement in recording.statements[1:]:
+        unlocked = [0, 5, 6]
+        locked = [1, 2, 3, 4, 7, 8]
+        assert all(recording.statements[index]._for_update_arg is None for index in unlocked)
+        for index in locked:
+            statement = recording.statements[index]
             assert statement._for_update_arg is not None
             assert statement.get_execution_options()["populate_existing"] is True
-        for statement in (recording.statements[2], recording.statements[3], recording.statements[6]):
+        for statement in (recording.statements[2], recording.statements[3], recording.statements[8]):
             assert statement._order_by_clauses
 
 
@@ -704,6 +713,74 @@ async def test_stage_rejects_worker_endpoint_mismatch_after_authoritative_locks(
             await api.stage_vpn_control_operation(recording, 7, "provision", now=NOW)
         assert caught.value.code == "vpn_control_binding_invalid"
         assert recording.flushes == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflict", ["attack", "maintenance"])
+async def test_stage_rejects_cross_system_worker_conflicts_after_worker_lock(
+    session_factory,
+    conflict,
+):
+    api = _api()
+    async with session_factory() as session:
+        if conflict == "attack":
+            domain = DropDomain(fqdn="busy.example", zone="example", drop_date=NOW.date())
+            session.add(domain)
+            await session.flush()
+            run = AttackRun(
+                domain_id=domain.id,
+                status="running",
+                planned_start_at=NOW,
+                planned_end_at=NOW + timedelta(minutes=1),
+            )
+            session.add(run)
+            await session.flush()
+            session.add(
+                WorkerTask(
+                    attack_run_id=run.id,
+                    domain_id=domain.id,
+                    worker_id=2,
+                    status="running",
+                )
+            )
+        else:
+            session.add(
+                WorkerMaintenanceJob(worker_id=2, action="vpn_update", status="queued")
+            )
+        await session.commit()
+
+        with pytest.raises(api.VpnControlIntentError) as caught:
+            await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+
+        assert caught.value.code == "vpn_control_worker_busy"
+        assert not (await session.scalars(select(VpnControlOperation))).all()
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None
+        assert key.operation_generation == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["queued", "running"])
+async def test_claim_skips_worker_with_mutating_maintenance_after_worker_lock(
+    session_factory,
+    status,
+):
+    api = _api()
+    async with session_factory() as session:
+        operation = await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+        await session.commit()
+        session.add(WorkerMaintenanceJob(worker_id=2, action="vpn_restart", status=status))
+        await session.commit()
+
+        claimed = await api.claim_next_vpn_control_operation(
+            session,
+            claim_token=uuid4(),
+            now=NOW + timedelta(seconds=1),
+        )
+
+        assert claimed is None
+        await session.refresh(operation)
+        assert operation.state == "queued"
 
 
 @pytest.mark.asyncio
@@ -1121,12 +1198,14 @@ async def test_claim_locks_authoritative_rows_in_canonical_order_and_operation_l
             frozenset({"vpn_access_keys"}),
             frozenset({"vpn_access_keys"}),
             frozenset({"worker_nodes"}),
+            frozenset({"worker_tasks", "attack_runs"}),
+            frozenset({"worker_maintenance_jobs"}),
             frozenset({"vpn_endpoints"}),
             frozenset({"vpn_control_operations"}),
             frozenset({"vpn_control_operations"}),
         ]
-        unlocked = [0, 1, 2, 4, 6, 10]
-        locked = [3, 5, 7, 8, 9, 11]
+        unlocked = [0, 1, 2, 4, 6, 9, 10, 12]
+        locked = [3, 5, 7, 8, 11, 13]
         assert all(recording.statements[index]._for_update_arg is None for index in unlocked)
         assert all(
             recording.statements[index]._for_update_arg.skip_locked is True
