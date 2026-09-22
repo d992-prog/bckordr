@@ -98,6 +98,8 @@ from app.schemas.control import (
     VpnCustomerArchiveResponse,
     VpnCustomerResponse,
     VpnCustomerUpdateRequest,
+    VpnFriendInvitationIssuedResponse,
+    VpnFriendInvitationResponse,
     VpnLifecycleStatusResponse,
     VpnNodeEventResponse,
     VpnNodeEligibilityResponse,
@@ -157,6 +159,14 @@ from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_r
 from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
 from app.services.vpn_control_intents import active_vpn_control_worker_ids
+from app.services.vpn_friend_invitations import (
+    FriendInvitationConflict,
+    FriendInvitationUnavailable,
+    FriendInvitationView,
+    issue_friend_invitation,
+    list_friend_invitations,
+    rotate_friend_invitation,
+)
 from app.services.vpn_mutations import serialize_vpn_mutation
 from app.services.vpn_profile_names import (
     initial_display_name,
@@ -2857,6 +2867,115 @@ async def delete_worker(
     await db.commit()
     await sync_worker_runtime_allowlist(db, get_settings())
     return MessageResponse(detail="Worker decommissioned")
+
+
+def _friend_invitation_response(
+    invitation: FriendInvitationView,
+) -> VpnFriendInvitationResponse:
+    return VpnFriendInvitationResponse.model_validate(
+        invitation,
+        from_attributes=True,
+    )
+
+
+def _friend_invitation_http_error(
+    error: FriendInvitationConflict | FriendInvitationUnavailable,
+) -> HTTPException:
+    if isinstance(error, FriendInvitationConflict):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Friend invitation cannot be changed",
+            headers={"Cache-Control": "no-store"},
+        )
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Friend invitations are temporarily unavailable",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    "/vpn/friend-invitations",
+    response_model=list[VpnFriendInvitationResponse],
+)
+async def get_vpn_friend_invitations(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnFriendInvitationResponse]:
+    del admin
+    invitations = await list_friend_invitations(db, utcnow())
+    return [_friend_invitation_response(invitation) for invitation in invitations]
+
+
+@router.post(
+    "/vpn/friend-invitations",
+    response_model=VpnFriendInvitationIssuedResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(serialize_vpn_mutation)],
+)
+async def create_vpn_friend_invitation(
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnFriendInvitationIssuedResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        issued = await issue_friend_invitation(
+            db,
+            get_settings(),
+            admin.id,
+            utcnow(),
+        )
+    except (FriendInvitationConflict, FriendInvitationUnavailable) as error:
+        raise _friend_invitation_http_error(error) from None
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_friend_invitation_issue",
+        details=f"slot={issued.view.slot}",
+    )
+    await db.commit()
+    return VpnFriendInvitationIssuedResponse(
+        invitation=_friend_invitation_response(issued.view),
+        invite_link=issued.link,
+    )
+
+
+@router.post(
+    "/vpn/friend-invitations/{slot}/rotate",
+    response_model=VpnFriendInvitationIssuedResponse,
+    dependencies=[Depends(serialize_vpn_mutation)],
+)
+async def rotate_vpn_friend_invitation(
+    slot: int,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnFriendInvitationIssuedResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        issued = await rotate_friend_invitation(
+            db,
+            get_settings(),
+            slot,
+            admin.id,
+            utcnow(),
+        )
+    except (FriendInvitationConflict, FriendInvitationUnavailable) as error:
+        raise _friend_invitation_http_error(error) from None
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_friend_invitation_rotate",
+        details=f"slot={slot}",
+    )
+    await db.commit()
+    return VpnFriendInvitationIssuedResponse(
+        invitation=_friend_invitation_response(issued.view),
+        invite_link=issued.link,
+    )
 
 
 @router.get("/vpn/overview", response_model=VpnOverviewResponse)

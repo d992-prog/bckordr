@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -750,6 +751,32 @@ class VpnTelegramUpdateResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class VpnFriendInvitationResponse(BaseModel):
+    slot: int
+    invite_state: Literal[
+        "unused",
+        "preparing",
+        "active",
+        "failed",
+        "needs_verification",
+        "expired",
+        "disabled",
+    ]
+    telegram_user_id: str | None
+    telegram_username: str | None
+    display_name: str | None
+    subscription_expires_at: datetime | None
+    provisioning_error_code: str | None
+    can_rotate: bool
+    can_retry: bool
+    can_disable: bool
+
+
+class VpnFriendInvitationIssuedResponse(BaseModel):
+    invitation: VpnFriendInvitationResponse
+    invite_link: str
 
 
 class DiscoveryRuntimeSettingsResponse(BaseModel):
