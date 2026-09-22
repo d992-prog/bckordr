@@ -458,6 +458,31 @@ export type VpnOverview = {
   active_keys: number;
 };
 
+export type VpnFriendInvitation = {
+  slot: number;
+  invite_state:
+    | "unused"
+    | "preparing"
+    | "active"
+    | "failed"
+    | "needs_verification"
+    | "expired"
+    | "disabled";
+  telegram_user_id: string | null;
+  telegram_username: string | null;
+  display_name: string | null;
+  subscription_expires_at: string | null;
+  provisioning_error_code: string | null;
+  can_rotate: boolean;
+  can_retry: boolean;
+  can_disable: boolean;
+};
+
+export type VpnFriendInvitationIssued = {
+  invitation: VpnFriendInvitation;
+  invite_link: string;
+};
+
 export type VpnPlan = {
   id: number;
   slug: string;
@@ -997,6 +1022,26 @@ export const api = {
   deleteWorker: (id: number) => request<{ detail: string }>(`/control/workers/${id}`, { method: "DELETE" }),
 
   getVpnOverview: () => request<VpnOverview>("/control/vpn/overview"),
+  getVpnFriendInvitations: () =>
+    request<VpnFriendInvitation[]>("/control/vpn/friend-invitations"),
+  issueVpnFriendInvitation: () =>
+    request<VpnFriendInvitationIssued>("/control/vpn/friend-invitations", {
+      method: "POST",
+      cache: "no-store",
+    }),
+  rotateVpnFriendInvitation: (slot: number) =>
+    request<VpnFriendInvitationIssued>(`/control/vpn/friend-invitations/${slot}/rotate`, {
+      method: "POST",
+      cache: "no-store",
+    }),
+  retryVpnFriendInvitation: (slot: number) =>
+    request<VpnFriendInvitation>(`/control/vpn/friend-invitations/${slot}/retry`, {
+      method: "POST",
+    }),
+  disableVpnFriendInvitation: (slot: number) =>
+    request<VpnFriendInvitation>(`/control/vpn/friend-invitations/${slot}/disable`, {
+      method: "POST",
+    }),
   getVpnPlans: () => request<VpnPlan[]>("/control/vpn/plans"),
   createVpnPlan: (payload: Record<string, unknown>) =>
     request<VpnPlan>("/control/vpn/plans", {

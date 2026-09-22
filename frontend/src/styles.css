@@ -1115,6 +1115,12 @@ button:disabled {
   padding: 16px;
 }
 
+.vpn-customer-detail {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
 .vpn-customer-list,
 .vpn-workspace-stack {
   display: grid;
@@ -1198,6 +1204,61 @@ button:disabled {
 .vpn-workspace-section h3,
 .vpn-workspace-section p {
   margin-top: 0;
+}
+
+.vpn-friend-invitation-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.vpn-friend-invitation-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: rgba(255, 250, 242, 0.58);
+}
+
+.vpn-friend-invitation-slot {
+  color: var(--accent-strong);
+}
+
+.vpn-friend-invitation-main {
+  min-width: 0;
+}
+
+.vpn-friend-invitation-main > strong,
+.vpn-friend-invitation-main > span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.vpn-friend-invitation-controls {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.vpn-friend-invitation-link-block {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+  min-width: 0;
+}
+
+.vpn-friend-invitation-link {
+  display: block;
+  min-width: 0;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+  border-radius: 12px;
+  background: rgba(48, 83, 66, 0.08);
+  font-family: "Courier New", monospace;
 }
 
 .vpn-subscription-list,
@@ -1372,6 +1433,14 @@ button:disabled {
 
   .actions {
     flex-direction: column;
+  }
+
+  .vpn-friend-invitation-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vpn-friend-invitation-controls {
+    justify-items: start;
   }
 
   .pagination-bar {

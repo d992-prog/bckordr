@@ -23,6 +23,7 @@ import {
   StrategyPreview,
   VpnAccessKey,
   VpnCustomer,
+  VpnFriendInvitation,
   VpnLifecycleStatus,
   VpnNodeEvent,
   VpnNodeEligibility,
@@ -1058,6 +1059,7 @@ export default function App() {
   const [vpnCustomers, setVpnCustomers] = useState<VpnCustomer[]>([]);
   const [vpnSubscriptions, setVpnSubscriptions] = useState<VpnSubscription[]>([]);
   const [vpnAccessKeys, setVpnAccessKeys] = useState<VpnAccessKey[]>([]);
+  const [vpnFriendInvitations, setVpnFriendInvitations] = useState<VpnFriendInvitation[]>([]);
   const loadAllGenerationRef = useRef(0);
   const lastAppliedLoadGenerationRef = useRef(0);
   const [vpnNodeEvents, setVpnNodeEvents] = useState<VpnNodeEvent[]>([]);
@@ -1404,6 +1406,7 @@ export default function App() {
         vpnCustomersData,
         vpnSubscriptionsData,
         vpnAccessKeysData,
+        vpnFriendInvitationsData,
         vpnNodeEventsData,
         vpnLifecycleStatusData,
         vpnNodeEligibilityData,
@@ -1431,6 +1434,7 @@ export default function App() {
         api.getVpnCustomers(),
         api.getVpnSubscriptions(),
         api.getVpnAccessKeys(),
+        api.getVpnFriendInvitations(),
         api.getVpnNodeEvents(),
         api.getVpnLifecycleStatus(),
         api.getVpnNodeEligibility(),
@@ -1463,6 +1467,7 @@ export default function App() {
       setVpnCustomers(vpnCustomersData);
       setVpnSubscriptions(vpnSubscriptionsData);
       setVpnAccessKeys(vpnAccessKeysData);
+      setVpnFriendInvitations(vpnFriendInvitationsData);
       setVpnNodeEvents(vpnNodeEventsData);
       setVpnLifecycleStatus(vpnLifecycleStatusData);
       setVpnNodeEligibility(Object.fromEntries(
@@ -1602,6 +1607,7 @@ export default function App() {
     setVpnCustomers([]);
     setVpnSubscriptions([]);
     setVpnAccessKeys([]);
+    setVpnFriendInvitations([]);
     setVpnNodeEvents([]);
   }
 
@@ -4424,6 +4430,7 @@ export default function App() {
             customers={vpnCustomers}
             subscriptions={vpnSubscriptions}
             accessKeys={vpnAccessKeys}
+            friendInvitations={vpnFriendInvitations}
             plans={vpnPlans}
             workers={vpnNodes}
             reload={() => loadAll({ throwOnError: true })}
