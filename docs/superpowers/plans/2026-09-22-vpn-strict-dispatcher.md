@@ -74,8 +74,10 @@ correct exact literal host/port pin succeeds and missing/wrong/changed/wildcard/
 hashed/CA pins fail before stdin or runner invocation. Assert secure ancestors,
 effective-UID-owned `0600` trust, `config=None`, and no agent/PKCS11/default-key/
 GSS/hostbased/kbd-interactive/trivial-auth fallback using hostile HOME, `.ssh`
-and `SSH_AUTH_SOCK`. Require username root, fixed command, no PTY, binary stdin,
-no request in argv/env/logs and no retry.
+and `SSH_AUTH_SOCK`. Disable X.509 trusted certificates/paths explicitly and
+offer only the raw `ssh-ed25519` server host-key algorithm; hostile user CA and
+certificate paths must never be read. Require username root, fixed command, no
+PTY, binary stdin, no request in argv/env/logs and no retry.
 Read stdout/stderr concurrently with limits and reject wrong ID/digest, duplicate/
 extra/trailing JSON, nonzero exit and any ambiguous output.
 
@@ -103,8 +105,14 @@ cancellation during claim commit, post-commit/pre-write, post-write/pre-receipt
 and post-receipt/pre-finalize.
 Post-commit cancellation uses a separately created, bounded, shielded finalize
 task with failed or uncertain according to phase; exact validated receipts keep
-their state. Re-raise cancellation after cleanup; process loss leaves durable
-claimed/uncertain reservation with no lease.
+their state. Re-raise cancellation after cleanup; process loss before finalize
+COMMIT leaves a durable claimed/uncertain reservation with no lease. Treat
+`finalize_timeout` only as the pre-COMMIT gate deadline: timeout may revoke
+before COMMIT and must await
+rollback/session close. Once the atomic gate enters `COMMITTING`, wait for the
+definitive driver outcome and session close even beyond that deadline. A lost
+COMMIT response may leave the row finalized or claimed, but never permits an
+automatic resend.
 
 - [ ] **Step 4: Add actual PostgreSQL dispatcher races**
 
@@ -116,7 +124,9 @@ process/session loss, and ambiguous execution cannot be reclaimed by time.
 
 Keep the dispatcher callable but not wired to application runtime. Run transport,
 dispatcher, node protocol and control-intent suites with actual PostgreSQL, Ruff
-and diff check; commit only Task 2.
+and diff check; commit only Task 2. Runtime/deployment scheduling remains blocked
+until PostgreSQL `statement_timeout`, a driver command timeout and explicit
+commit-ambiguity reconciliation are separately configured and tested.
 
 ## Task 3: Cross-system worker reservations
 
@@ -203,3 +213,6 @@ and atomically replace a fixed regular active zipapp, preserve config/token/
 journal byte-for-byte, support code-only rollback, create node config safely and
 initialize a new empty journal only when absent. It must rehearse control DB
 migrations on a closed copy and deploy with no runtime scheduling or enqueue.
+Before any later scheduler is enabled, it must also prove PostgreSQL
+`statement_timeout`, the driver command timeout and reconciliation of an
+ambiguous COMMIT response without automatic resend.

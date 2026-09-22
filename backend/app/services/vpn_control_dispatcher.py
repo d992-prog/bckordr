@@ -108,9 +108,10 @@ async def _bounded_finalize(
     operation_id: UUID,
     claim_token: UUID,
     receipt: NodeControlReceipt,
-    timeout: float,
+    precommit_timeout: float,
     now: Callable[[], object] | None,
 ) -> bool:
+    """Revoke before COMMIT by the deadline; never detach after COMMIT begins."""
     gate = _FinalizeGate()
     task = asyncio.create_task(
         _finalize_once(
@@ -123,7 +124,7 @@ async def _bounded_finalize(
             gate,
         )
     )
-    deadline = asyncio.get_running_loop().time() + timeout
+    deadline = asyncio.get_running_loop().time() + precommit_timeout
     cancellation: asyncio.CancelledError | None = None
     while not task.done():
         remaining = deadline - asyncio.get_running_loop().time()
@@ -173,7 +174,7 @@ async def dispatch_next_vpn_control_operation(
     finalize_timeout: float = DEFAULT_FINALIZE_TIMEOUT,
     now: Callable[[], object] | None = None,
 ) -> bool:
-    """Claim, commit, execute once, and finalize in a fresh transaction."""
+    """Claim, execute once, and finalize; timeout only bounds pre-COMMIT revoke."""
     claim_token = claim_token_factory()
     operation_id = None
     request_digest = None

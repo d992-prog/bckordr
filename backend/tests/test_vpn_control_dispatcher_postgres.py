@@ -88,9 +88,9 @@ async def test_two_dispatchers_use_independent_backends_and_execute_once(
         second = asyncio.create_task(
             dispatch_next_vpn_control_operation(second_sessions, **kwargs)
         )
-        await asyncio.sleep(0.05)
+        assert await asyncio.wait_for(second, 2) is False
         release.set()
-        assert sorted(await asyncio.gather(first, second)) == [False, True]
+        assert await first is True
     assert len(calls) == 1
     assert len(set(claim_pids)) == 2
     async with postgres_control.sessions() as session:

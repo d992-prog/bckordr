@@ -51,12 +51,15 @@ exposed through the application UI.
 
 The exact validated bytes are passed to AsyncSSH; `None`, default files, user SSH
 config, agent, PKCS11, GSS key exchange/auth, host-based, keyboard-interactive
-and trivial/none authentication are forbidden. Exactly one explicit credential
-mode is accepted. Password mode sets password-only authentication and disables
-client keys. Key mode opens one absolute private-key file without symlinks,
-verifies effective-UID ownership, `0600`, secure ancestors and bounded size,
-imports those bytes before network I/O and disables password fallback. Hostile
-`HOME`, `.ssh` and `SSH_AUTH_SOCK` state must be irrelevant.
+and trivial/none authentication are forbidden. AsyncSSH X.509 trust is disabled
+with no trusted certificates or certificate paths, and the offered server host
+key algorithms contain only raw `ssh-ed25519`; certificate/CA algorithms are not
+eligible. Exactly one explicit credential mode is accepted. Password mode sets
+password-only authentication and disables client keys. Key mode opens one
+absolute private-key file without symlinks, verifies effective-UID ownership,
+`0600`, secure ancestors and bounded size, imports those bytes before network
+I/O and disables password fallback. Hostile `HOME`, `.ssh`, X.509 CA/certificate
+paths and `SSH_AUTH_SOCK` state must be irrelevant.
 
 The remote command is a code constant, not configuration assembled from database
 values. It starts a versioned zipapp with the node Python in isolated/no-site
@@ -134,15 +137,26 @@ uses a separately created, bounded and shielded finalize task for
 attempted stdin write until a validated receipt, failure/cancellation uses the
 same mechanism for `uncertain/vpn_node_mutation_uncertain`. After a validated
 receipt but before finalize commit, cancellation shields finalization of that
-exact receipt, never substitutes another state, then re-raises. If any bounded
-finalize attempt fails or times out, the row remains claimed and reserved; no
-path resends automatically. Sessions always rollback/close on failed finalization.
+exact receipt, never substitutes another state, then re-raises.
 
-If the control process dies after claim commit, the row remains claimed and the
-worker remains reserved; it is never reclaimed by time. If a valid receipt is
-received but finalize commit fails, the dispatcher does not resend. Existing
-generation/policy comparison turns a late observed receipt into superseded rather
-than changing a newer key. Reconciliation remains a later explicit workflow.
+`finalize_timeout` is only the pre-COMMIT decision deadline. Before COMMIT, an
+atomic finalize gate may still be revoked; timeout then cancels the child and
+waits for rollback and session close before returning false. Once that gate has
+atomically entered `COMMITTING`, the dispatcher must not detach the task or claim
+a safe hard client timeout: it waits for the database driver's definitive result
+and session close, and only then returns or re-raises a saved caller cancellation.
+This deliberate wait can exceed `finalize_timeout`. If the database connection
+is lost after COMMIT was sent but before its response, the durable row may already
+be finalized or may remain claimed. That ambiguity is never treated as permission
+to resend automatically.
+
+If the control process dies after claim commit but before finalize COMMIT begins,
+the row remains claimed and the worker remains reserved; it is never reclaimed
+by time. Loss during finalize COMMIT has the finalized-or-claimed ambiguity above.
+If a valid receipt is received but finalize commit fails, the dispatcher does not
+resend. Existing generation/policy comparison turns a late observed receipt into
+superseded rather than changing a newer key. Reconciliation remains a later
+explicit workflow.
 
 ## Cross-system worker exclusion
 
@@ -172,6 +186,13 @@ This increment does not modify the control orchestrator and has no interval,
 startup hook or background task. Startup therefore cannot contact SSH or create
 trust/config/journal files. Runtime scheduling is YAGNI until a controlled
 end-to-end operation has been reviewed.
+
+No future runtime or deployment may schedule this dispatcher until PostgreSQL
+`statement_timeout`, the database driver's command timeout, and an explicit
+commit-ambiguity reconciliation workflow have been configured and tested. These
+server/driver controls are intentionally not speculated into the current local
+callable. Reconciliation must handle either a finalized row or a still-claimed
+row without automatic resend.
 
 The next plan must define and test a bounded one-shot strict-pinned deployer or
 equivalent reviewed runbook. It must back up/rehearse the database migration,

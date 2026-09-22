@@ -194,6 +194,24 @@ def test_exact_receipt_rejects_ambiguous_output():
             _parse_exact_receipt(raw, OPERATION_ID, DIGEST)
 
 
+def test_exact_receipt_rejects_wrong_operation_id():
+    raw = (
+        json.dumps(
+            {
+                "version": 1,
+                "operation_id": "11111111-2222-4333-8444-555555555555",
+                "request_digest": DIGEST,
+                "state": "observed",
+                "error_code": None,
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+    with pytest.raises(VpnNodeTransportError):
+        _parse_exact_receipt(raw, OPERATION_ID, DIGEST)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("password_mode", [True, False])
 async def test_connect_options_disable_every_ambient_auth_source(password_mode):
@@ -226,6 +244,9 @@ async def test_connect_options_disable_every_ambient_auth_source(password_mode):
     assert kwargs["config"] is None
     assert kwargs["agent_path"] is None
     assert kwargs["pkcs11_provider"] is None
+    assert kwargs["x509_trusted_certs"] is None
+    assert kwargs["x509_trusted_cert_paths"] == []
+    assert kwargs["server_host_key_algs"] == ["ssh-ed25519"]
     assert kwargs["gss_host"] is None
     assert kwargs["gss_kex"] is kwargs["gss_auth"] is False
     assert kwargs["host_based_auth"] is False
@@ -503,6 +524,81 @@ async def test_transport_drains_stdout_and_stderr_concurrently():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exit_status", "stderr"),
+    [(1, b""), (0, b"synthetic-stderr")],
+)
+async def test_transport_rejects_nonzero_exit_and_nonempty_stderr(exit_status, stderr):
+    valid = (
+        json.dumps(
+            {
+                "version": 1,
+                "operation_id": str(OPERATION_ID),
+                "request_digest": DIGEST,
+                "state": "observed",
+                "error_code": None,
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+
+    class Reader:
+        def __init__(self, value):
+            self.value = value
+
+        async def read(self, _size):
+            value, self.value = self.value, b""
+            return value
+
+    class Stdin:
+        def write(self, _value):
+            pass
+
+        async def drain(self):
+            pass
+
+        def write_eof(self):
+            pass
+
+    class Process:
+        stdin = Stdin()
+        stdout = Reader(valid)
+
+        def __init__(self):
+            self.stderr = Reader(stderr)
+            self.exit_status = exit_status
+
+        async def wait(self):
+            pass
+
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def create_process(self, *_args, **_kwargs):
+            return Process()
+
+    async def connector(*_args, **_kwargs):
+        return Connection()
+
+    with pytest.raises(VpnNodeTransportError) as caught:
+        await execute_vpn_node_request(
+            VpnNodeTransportSnapshot(
+                "host", 22, "root", VALID_HOST_PIN, password=PASSWORD
+            ),
+            b"{}\n",
+            operation_id=OPERATION_ID,
+            request_digest=DIGEST,
+            connector=connector,
+        )
+    assert caught.value.phase == "mutation"
+
+
+@pytest.mark.asyncio
 async def test_real_loopback_rejects_forged_and_ambient_host_pins(
     monkeypatch, tmp_path
 ):
@@ -635,14 +731,6 @@ async def test_real_loopback_key_auth_never_falls_back_to_hostile_home(
     accepted_public = ambient_key.export_public_key("openssh")
     invoked = 0
 
-    hostile_home = tmp_path / "hostile-home"
-    hostile_ssh = hostile_home / ".ssh"
-    hostile_ssh.mkdir(parents=True)
-    (hostile_ssh / "id_ed25519").write_bytes(ambient_key.export_private_key("openssh"))
-    monkeypatch.setenv("HOME", str(hostile_home))
-    monkeypatch.setenv("USERPROFILE", str(hostile_home))
-    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "hostile-agent.sock"))
-
     class AmbientOnlyServer(asyncssh.SSHServer):
         def begin_auth(self, username):
             return True
@@ -669,6 +757,38 @@ async def test_real_loopback_key_auth_never_falls_back_to_hostile_home(
         encoding=None,
     )
     try:
+        hostile_home = tmp_path / "hostile-home"
+        hostile_ssh = hostile_home / ".ssh"
+        hostile_ssh.mkdir(parents=True)
+        ambient_ca = hostile_ssh / "ca-bundle.crt"
+        ambient_cert_path = hostile_ssh / "crt"
+        ambient_ca.write_bytes(b"hostile-x509-ca")
+        ambient_cert_path.mkdir()
+        (hostile_ssh / "id_ed25519").write_bytes(
+            ambient_key.export_private_key("openssh")
+        )
+        monkeypatch.setenv("HOME", str(hostile_home))
+        monkeypatch.setenv("USERPROFILE", str(hostile_home))
+        monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "hostile-agent.sock"))
+        ambient_x509_accesses = []
+        real_is_dir = Path.is_dir
+        real_load_certificates = asyncssh.connection.load_certificates
+
+        def guarded_is_dir(path):
+            if path == ambient_cert_path:
+                ambient_x509_accesses.append(path)
+            return real_is_dir(path)
+
+        def guarded_load_certificates(value):
+            if isinstance(value, (str, os.PathLike)) and Path(value) == ambient_ca:
+                ambient_x509_accesses.append(ambient_ca)
+                return []
+            return real_load_certificates(value)
+
+        monkeypatch.setattr(Path, "is_dir", guarded_is_dir)
+        monkeypatch.setattr(
+            asyncssh.connection, "load_certificates", guarded_load_certificates
+        )
         port = server.get_port()
         snapshot = VpnNodeTransportSnapshot(
             "127.0.0.1",
@@ -686,6 +806,7 @@ async def test_real_loopback_key_auth_never_falls_back_to_hostile_home(
             )
         assert caught.value.phase == "preflight"
         assert invoked == 0
+        assert ambient_x509_accesses == []
     finally:
         server.close()
         await server.wait_closed()
@@ -923,6 +1044,24 @@ def test_snapshot_requires_root_and_exactly_one_auth_mode(
         ssh_username=username,
         ssh_password=password,
         ssh_key_path=key_path,
+    )
+    with pytest.raises(VpnNodeTransportError):
+        load_transport_snapshot(worker, tmp_path / "known_hosts")
+
+
+def test_snapshot_rejects_explicit_zero_ssh_port(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.vpn_node_transport._effective_uid", lambda: 1000)
+    monkeypatch.setattr(
+        "app.services.vpn_node_transport._read_private_file",
+        lambda *_args, **_kwargs: pytest.fail("trust file read"),
+    )
+    worker = SimpleNamespace(
+        ssh_host="host",
+        ip_address=None,
+        ssh_port=0,
+        ssh_username="root",
+        ssh_password=PASSWORD,
+        ssh_key_path=None,
     )
     with pytest.raises(VpnNodeTransportError):
         load_transport_snapshot(worker, tmp_path / "known_hosts")

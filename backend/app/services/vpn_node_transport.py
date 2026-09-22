@@ -191,7 +191,7 @@ def _parse_known_hosts(raw: bytes, host: str, port: int):
 def load_transport_snapshot(worker, known_hosts_path: Path) -> VpnNodeTransportSnapshot:
     """Read and import the one allowed credential while the worker row is locked."""
     host = worker.ssh_host or worker.ip_address
-    port = worker.ssh_port or 22
+    port = 22 if worker.ssh_port is None else worker.ssh_port
     username = worker.ssh_username
     password = worker.ssh_password
     key_value = worker.ssh_key_path
@@ -365,6 +365,9 @@ async def execute_vpn_node_request(
         "agent_path": None,
         "agent_forwarding": False,
         "pkcs11_provider": None,
+        "x509_trusted_certs": None,
+        "x509_trusted_cert_paths": [],
+        "server_host_key_algs": ["ssh-ed25519"],
         "gss_host": None,
         "gss_kex": False,
         "gss_auth": False,
