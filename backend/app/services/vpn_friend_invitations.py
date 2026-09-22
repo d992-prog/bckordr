@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import secrets
 from typing import Literal
+from uuid import uuid4
 
 from sqlalchemy import and_, func, select, true, update
 from sqlalchemy.exc import IntegrityError
@@ -27,12 +28,22 @@ from app.services.vpn_node_transport import (
     VpnNodeTransportError,
     load_transport_snapshot,
 )
+from app.services.vpn_control_intents import (
+    VpnControlIntentError,
+    stage_vpn_control_operation,
+)
+from app.services.vpn_telegram_identity import (
+    TelegramIdentity,
+    resolve_telegram_customer,
+    telegram_user_id,
+)
 
 
 INVITE_LIFETIME = timedelta(days=7)
 TRIAL_LIFETIME = timedelta(days=7)
 TOKEN_PREFIX = "veltrix-friend-invite-v1\0"
 BOT_USERNAME = re.compile(r"[A-Za-z0-9_]{5,32}")
+INVITE_TOKEN = re.compile(r"[A-Za-z0-9_-]{43}", re.ASCII)
 
 _VPN_FRIEND_BETA_READINESS_KEY = "vpn_friend_beta_release_ready_v1"
 _RELEASE_ID = re.compile(r"[0-9a-f]{64}")
@@ -83,6 +94,16 @@ class IssuedFriendInvitation:
     link: str = field(repr=False)
 
 
+@dataclass(frozen=True)
+class RedeemedFriendInvitation:
+    customer_id: int
+    subscription_id: int
+    access_key_id: int
+    external_uuid: str = field(repr=False)
+    starts_at: datetime
+    expires_at: datetime
+
+
 def digest_invite_token(token: str) -> str:
     return hashlib.sha256((TOKEN_PREFIX + token).encode("ascii")).hexdigest()
 
@@ -103,6 +124,10 @@ def _current_time(value: datetime) -> datetime:
 
 def _unavailable() -> None:
     raise FriendInvitationUnavailable("friend_beta_unavailable") from None
+
+
+def _rejected() -> None:
+    raise FriendInvitationConflict("friend_invitation_rejected") from None
 
 
 def _bot_username(settings: Settings) -> str:
@@ -478,3 +503,139 @@ async def rotate_friend_invitation(
 
     await db.refresh(invitation)
     return _issued(invitation, username, token, current)
+
+
+def _redemption_result(
+    customer: VpnCustomer,
+    subscription: VpnSubscription,
+    access_key: VpnAccessKey,
+) -> RedeemedFriendInvitation:
+    starts_at = _as_utc(subscription.starts_at)
+    expires_at = _as_utc(subscription.expires_at)
+    if (
+        access_key.external_uuid is None
+        or starts_at is None
+        or expires_at is None
+    ):
+        _rejected()
+    return RedeemedFriendInvitation(
+        customer_id=customer.id,
+        subscription_id=subscription.id,
+        access_key_id=access_key.id,
+        external_uuid=access_key.external_uuid,
+        starts_at=starts_at,
+        expires_at=expires_at,
+    )
+
+
+async def _replay_redemption(
+    db: AsyncSession,
+    invitation: VpnFriendInvitation,
+    normalized_user_id: str,
+) -> RedeemedFriendInvitation:
+    row = (
+        await db.execute(
+            select(VpnAccessKey, VpnSubscription, VpnCustomer)
+            .join(
+                VpnSubscription,
+                VpnSubscription.id == VpnAccessKey.subscription_id,
+            )
+            .join(VpnCustomer, VpnCustomer.id == VpnSubscription.customer_id)
+            .where(VpnAccessKey.id == invitation.access_key_id)
+            .execution_options(populate_existing=True)
+        )
+    ).first()
+    if row is None:
+        _rejected()
+    access_key, subscription, customer = row
+    if (
+        invitation.revoked_at is not None
+        or invitation.telegram_user_id != normalized_user_id
+        or not _has_exact_chain(invitation, access_key, subscription, customer)
+    ):
+        _rejected()
+    return _redemption_result(customer, subscription, access_key)
+
+
+async def redeem_friend_invitation(
+    db: AsyncSession,
+    settings: Settings,
+    token: str,
+    identity: TelegramIdentity,
+    now: datetime,
+) -> RedeemedFriendInvitation:
+    if type(token) is not str or INVITE_TOKEN.fullmatch(token) is None:
+        _rejected()
+    try:
+        normalized_user_id = telegram_user_id(identity.user_id)
+    except ValueError:
+        _rejected()
+    digest = digest_invite_token(token)
+    current = _current_time(now)
+
+    try:
+        async with db.begin_nested():
+            invitation = await db.scalar(
+                select(VpnFriendInvitation)
+                .where(VpnFriendInvitation.token_digest == digest)
+                .with_for_update(of=VpnFriendInvitation)
+                .execution_options(populate_existing=True)
+            )
+            if invitation is None:
+                _rejected()
+            if invitation.redeemed_at is not None:
+                return await _replay_redemption(
+                    db,
+                    invitation,
+                    normalized_user_id,
+                )
+            redeem_expires_at = _as_utc(invitation.redeem_expires_at)
+            if (
+                invitation.revoked_at is not None
+                or redeem_expires_at is None
+                or redeem_expires_at <= current
+            ):
+                _rejected()
+
+            endpoint = await require_friend_invitation_readiness(db, settings)
+            customer = await resolve_telegram_customer(db, identity)
+            subscription = VpnSubscription(
+                customer_id=customer.id,
+                status="trial",
+                starts_at=current,
+                expires_at=current + TRIAL_LIFETIME,
+                max_devices=1,
+            )
+            db.add(subscription)
+            await db.flush()
+            access_key = VpnAccessKey(
+                subscription_id=subscription.id,
+                worker_id=endpoint.worker_id,
+                endpoint_id=endpoint.id,
+                protocol="vless",
+                external_uuid=str(uuid4()),
+                verified_client_email=f"veltrix-beta-{invitation.slot}",
+                panel_sub_id=uuid4().hex,
+                display_name="Veltrix VPN",
+                config_uri=None,
+                status="pending_sync",
+                issued_at=current,
+                expires_at=subscription.expires_at,
+            )
+            db.add(access_key)
+            await db.flush()
+            await stage_vpn_control_operation(
+                db,
+                access_key.id,
+                "provision",
+                now=current,
+            )
+            invitation.redeemed_at = current
+            invitation.telegram_user_id = normalized_user_id
+            invitation.access_key_id = access_key.id
+            await db.flush()
+            return _redemption_result(customer, subscription, access_key)
+    except (FriendInvitationUnavailable, FriendInvitationConflict):
+        raise
+    except VpnControlIntentError:
+        _unavailable()

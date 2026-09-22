@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, event, select, text
+from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -36,9 +36,12 @@ from app.services.vpn_friend_invitations import (
     digest_invite_token,
     issue_friend_invitation,
     list_friend_invitations,
+    redeem_friend_invitation,
     rotate_friend_invitation,
 )
+from app.services.vpn_node_request import parse_node_request
 from app.services.vpn_node_transport import VpnNodeTransportError
+from app.services.vpn_telegram_identity import TelegramIdentity
 
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
@@ -763,3 +766,279 @@ async def test_deleting_the_only_ready_endpoint_fails_closed(
 
     assert str(error.value) == "friend_beta_unavailable"
     assert transport_calls == []
+
+
+async def _count(db: AsyncSession, model: type[object]) -> int:
+    return int(await db.scalar(select(func.count()).select_from(model)) or 0)
+
+
+@pytest.mark.asyncio
+async def test_redeem_creates_one_stable_trial_chain_and_durable_intent(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+) -> None:
+    db, settings, transport_calls = ready_session
+    issued = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+    token = _token_from_link(issued.link)
+    identity = TelegramIdentity("700001", "friend_one", "Friend", "One")
+
+    redeemed = await redeem_friend_invitation(db, settings, token, identity, NOW)
+
+    invitation = await db.get(VpnFriendInvitation, issued.view.slot)
+    customer = await db.get(VpnCustomer, redeemed.customer_id)
+    subscription = await db.get(VpnSubscription, redeemed.subscription_id)
+    access_key = await db.get(VpnAccessKey, redeemed.access_key_id)
+    operation = await db.scalar(
+        select(VpnControlOperation).where(
+            VpnControlOperation.access_key_id == redeemed.access_key_id
+        )
+    )
+    assert invitation is not None
+    assert customer is not None
+    assert subscription is not None
+    assert access_key is not None
+    assert operation is not None
+    request = parse_node_request(operation.request_snapshot)
+
+    assert invitation.telegram_user_id == identity.user_id
+    assert invitation.access_key_id == access_key.id
+    assert _utc(invitation.redeemed_at) == NOW
+    assert customer.telegram_user_id == identity.user_id
+    assert customer.telegram_username == identity.username
+    assert subscription.status == "trial"
+    assert subscription.max_devices == 1
+    assert _utc(subscription.starts_at) == NOW
+    assert _utc(subscription.expires_at) == NOW + timedelta(days=7)
+    assert access_key.worker_id == 1
+    assert access_key.endpoint_id == 1
+    assert access_key.protocol == "vless"
+    assert access_key.external_uuid == redeemed.external_uuid
+    assert redeemed.external_uuid not in repr(redeemed)
+    assert access_key.verified_client_email == "veltrix-beta-1"
+    assert access_key.panel_sub_id is not None and len(access_key.panel_sub_id) == 32
+    assert access_key.display_name == "Veltrix VPN"
+    assert access_key.config_uri is None
+    assert access_key.status == "pending_sync"
+    assert _utc(access_key.issued_at) == NOW
+    assert _utc(access_key.expires_at) == NOW + timedelta(days=7)
+    assert operation.action == "provision"
+    assert operation.state == "queued"
+    assert request.client_uuid == UUID(redeemed.external_uuid)
+    assert request.client_email == access_key.verified_client_email
+    assert request.sub_id == access_key.panel_sub_id
+    assert request.target.endpoint_id == access_key.endpoint_id
+    assert request.target.worker_id == access_key.worker_id
+    assert redeemed.starts_at == NOW
+    assert redeemed.expires_at == NOW + timedelta(days=7)
+    assert await _count(db, VpnCustomer) == 1
+    assert await _count(db, VpnSubscription) == 1
+    assert await _count(db, VpnAccessKey) == 1
+    assert await _count(db, VpnControlOperation) == 1
+    assert transport_calls == [
+        (1, Path(settings.vpn_control_known_hosts_path)),
+        (1, Path(settings.vpn_control_known_hosts_path)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_redeem_same_user_replays_exact_chain_without_resetting_trial(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+) -> None:
+    db, settings, transport_calls = ready_session
+    issued = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+    token = _token_from_link(issued.link)
+    identity = TelegramIdentity("700002", "original", "First", "Friend")
+    first = await redeem_friend_invitation(db, settings, token, identity, NOW)
+    settings.vpn_friend_beta_enabled = False
+
+    replay = await redeem_friend_invitation(
+        db,
+        settings,
+        token,
+        TelegramIdentity("000700002", "changed", "Changed", "Name"),
+        NOW + timedelta(days=2),
+    )
+
+    customer = await db.get(VpnCustomer, first.customer_id)
+    assert customer is not None
+    assert first.customer_id == replay.customer_id
+    assert first.subscription_id == replay.subscription_id
+    assert first.access_key_id == replay.access_key_id
+    assert first.external_uuid == replay.external_uuid
+    assert first.starts_at == replay.starts_at == NOW
+    assert first.expires_at == replay.expires_at == NOW + timedelta(days=7)
+    assert customer.telegram_username == "original"
+    assert await _count(db, VpnSubscription) == 1
+    assert await _count(db, VpnAccessKey) == 1
+    assert await _count(db, VpnControlOperation) == 1
+    assert len(transport_calls) == 2
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "",
+        "A" * 42,
+        "A" * 44,
+        "A" * 42 + "=",
+        "A" * 42 + ".",
+        "Z" * 43,
+        "А" * 43,
+        None,
+    ],
+)
+@pytest.mark.asyncio
+async def test_redeem_rejects_invalid_tokens_with_one_generic_error(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+    token: object,
+) -> None:
+    db, settings, _ = ready_session
+
+    with pytest.raises(FriendInvitationConflict) as error:
+        await redeem_friend_invitation(
+            db,
+            settings,
+            token,  # type: ignore[arg-type]
+            TelegramIdentity("700003"),
+            NOW,
+        )
+
+    assert str(error.value) == "friend_invitation_rejected"
+    if isinstance(token, str) and token:
+        assert token not in repr(error.value)
+    assert await _count(db, VpnCustomer) == 0
+
+
+@pytest.mark.asyncio
+async def test_redeem_rejects_wrong_user_expired_and_revoked_with_same_error(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+) -> None:
+    db, settings, _ = ready_session
+    first = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+    first_token = _token_from_link(first.link)
+    await redeem_friend_invitation(
+        db,
+        settings,
+        first_token,
+        TelegramIdentity("700004"),
+        NOW,
+    )
+    expired = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+    expired_row = await db.get(VpnFriendInvitation, expired.view.slot)
+    assert expired_row is not None
+    expired_row.redeem_expires_at = NOW
+    revoked = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+    revoked_row = await db.get(VpnFriendInvitation, revoked.view.slot)
+    assert revoked_row is not None
+    revoked_row.revoked_at = NOW
+    await db.flush()
+
+    cases = [
+        (first_token, TelegramIdentity("700005")),
+        (_token_from_link(expired.link), TelegramIdentity("700006")),
+        (_token_from_link(revoked.link), TelegramIdentity("700007")),
+    ]
+    for token, identity in cases:
+        with pytest.raises(FriendInvitationConflict) as error:
+            await redeem_friend_invitation(db, settings, token, identity, NOW)
+        assert str(error.value) == "friend_invitation_rejected"
+
+    assert await _count(db, VpnCustomer) == 1
+    assert await _count(db, VpnSubscription) == 1
+    assert await _count(db, VpnAccessKey) == 1
+    assert await _count(db, VpnControlOperation) == 1
+
+    first_row = await db.get(VpnFriendInvitation, first.view.slot)
+    assert first_row is not None
+    first_row.revoked_at = NOW
+    await db.flush()
+    with pytest.raises(FriendInvitationConflict) as error:
+        await redeem_friend_invitation(
+            db,
+            settings,
+            first_token,
+            TelegramIdentity("700004"),
+            NOW,
+        )
+    assert str(error.value) == "friend_invitation_rejected"
+
+
+@pytest.mark.asyncio
+async def test_redeem_rechecks_readiness_and_leaves_token_unbound_on_failure(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+) -> None:
+    db, settings, _ = ready_session
+    issued = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+    token = _token_from_link(issued.link)
+    settings.vpn_control_dispatch_enabled = False
+
+    with pytest.raises(FriendInvitationUnavailable) as error:
+        await redeem_friend_invitation(
+            db,
+            settings,
+            token,
+            TelegramIdentity("700009"),
+            NOW,
+        )
+
+    invitation = await db.get(VpnFriendInvitation, issued.view.slot)
+    assert str(error.value) == "friend_beta_unavailable"
+    assert invitation is not None
+    assert invitation.redeemed_at is None
+    assert invitation.telegram_user_id is None
+    assert invitation.access_key_id is None
+    assert await _count(db, VpnCustomer) == 0
+    assert await _count(db, VpnSubscription) == 0
+    assert await _count(db, VpnAccessKey) == 0
+    assert await _count(db, VpnControlOperation) == 0
+
+
+@pytest.mark.asyncio
+async def test_redeem_rolls_back_every_created_row_when_endpoint_changes_before_staging(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, settings, _ = ready_session
+    issued = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+    token = _token_from_link(issued.link)
+    original_stage = invitations.stage_vpn_control_operation
+
+    async def change_endpoint_then_stage(
+        session: AsyncSession,
+        access_key_id: int,
+        action: str,
+        *,
+        now: datetime,
+    ) -> VpnControlOperation:
+        endpoint = await session.get(VpnEndpoint, 1)
+        assert endpoint is not None
+        endpoint.status = "disabled"
+        await session.flush()
+        return await original_stage(session, access_key_id, action, now=now)
+
+    monkeypatch.setattr(
+        invitations,
+        "stage_vpn_control_operation",
+        change_endpoint_then_stage,
+    )
+
+    with pytest.raises(FriendInvitationUnavailable) as error:
+        await redeem_friend_invitation(
+            db,
+            settings,
+            token,
+            TelegramIdentity("700008"),
+            NOW,
+        )
+
+    invitation = await db.get(VpnFriendInvitation, issued.view.slot)
+    endpoint = await db.get(VpnEndpoint, 1)
+    assert str(error.value) == "friend_beta_unavailable"
+    assert invitation is not None
+    assert invitation.redeemed_at is None
+    assert invitation.telegram_user_id is None
+    assert invitation.access_key_id is None
+    assert endpoint is not None and endpoint.status == "ready"
+    assert await _count(db, VpnCustomer) == 0
+    assert await _count(db, VpnSubscription) == 0
+    assert await _count(db, VpnAccessKey) == 0
+    assert await _count(db, VpnControlOperation) == 0
