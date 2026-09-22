@@ -105,7 +105,14 @@ async def telegram_app(monkeypatch):
     async def fake_admin():
         return SimpleNamespace(id=1, role="owner")
 
-    async def fake_sender(_settings, chat_id: str, text: str) -> None:
+    async def fake_sender(
+        _settings,
+        chat_id: str,
+        text: str,
+        *,
+        cabinet_allowed: bool = False,
+    ) -> None:
+        del cabinet_allowed
         delivered.append({"chat_id": chat_id, "text": text})
 
     monkeypatch.setattr("app.api.routes.vpn_telegram.get_settings", lambda: settings)
@@ -363,7 +370,12 @@ async def test_bot_sends_one_inline_cabinet_entry_after_all_response_chunks(bot_
     )
     text = "Подписка\n" + "x" * 8500
 
-    await vpn_telegram_service.send_telegram_message(settings, "12345", text)
+    await vpn_telegram_service.send_telegram_message(
+        settings,
+        "12345",
+        text,
+        cabinet_allowed=True,
+    )
 
     chunks = vpn_telegram_service.split_telegram_text(text)
     assert len(bot_api_requests) == len(chunks) + 1
@@ -381,6 +393,98 @@ async def test_bot_sends_one_inline_cabinet_entry_after_all_response_chunks(bot_
         }]],
     }
     assert "keyboard" not in entry["reply_markup"]
+
+
+@pytest.mark.asyncio
+async def test_bot_cabinet_button_uses_explicit_database_admission(bot_api_requests):
+    settings = Settings(
+        VPN_TELEGRAM_BOT_TOKEN="bot-token",
+        VPN_PORTAL_ENABLED=True,
+        VPN_PORTAL_PUBLIC_ORIGIN="https://portal.example",
+        VPN_PORTAL_ALLOWED_TELEGRAM_IDS="99999",
+    )
+
+    await vpn_telegram_service.send_telegram_message(
+        settings,
+        "12345",
+        "Ответ",
+        cabinet_allowed=True,
+    )
+
+    assert len(bot_api_requests) == 2
+    assert "inline_keyboard" in bot_api_requests[-1]["reply_markup"]
+
+
+@pytest.mark.asyncio
+async def test_process_update_passes_friend_admission_only_to_production_sender(
+    telegram_app,
+    monkeypatch,
+):
+    now = utcnow()
+    async with telegram_app.session_factory() as session:
+        customer, subscription, key = await seed_subscription(
+            session,
+            telegram_user_id="60606",
+            key_status="pending",
+        )
+        session.add(
+            VpnFriendInvitation(
+                slot=1,
+                token_digest="b" * 64,
+                created_at=now,
+                redeem_expires_at=now + timedelta(days=7),
+                redeemed_at=now,
+                telegram_user_id=customer.telegram_user_id,
+                access_key_id=key.id,
+            )
+        )
+        await session.commit()
+
+    settings = telegram_app.settings.model_copy(
+        update={
+            "vpn_portal_enabled": True,
+            "vpn_portal_public_origin": "https://portal.example",
+            "vpn_portal_allowed_telegram_ids": "12345",
+        }
+    )
+    production_calls = []
+
+    async def production_sender(
+        _settings,
+        chat_id: str,
+        text: str,
+        *,
+        cabinet_allowed: bool = False,
+    ) -> None:
+        production_calls.append((chat_id, text, cabinet_allowed))
+
+    monkeypatch.setattr(vpn_telegram_service, "send_telegram_message", production_sender)
+    async with telegram_app.session_factory() as session:
+        await process_telegram_update(
+            session,
+            telegram_message(4040, 60606, "/status"),
+            settings,
+        )
+        await session.commit()
+
+    assert production_calls[-1][0] == "60606"
+    assert production_calls[-1][2] is True
+
+    injected_calls = []
+
+    async def injected_sender(_settings, chat_id: str, text: str) -> None:
+        injected_calls.append((chat_id, text))
+
+    async with telegram_app.session_factory() as session:
+        await process_telegram_update(
+            session,
+            telegram_message(4041, 60606, "/status"),
+            settings,
+            sender=injected_sender,
+        )
+        await session.commit()
+
+    assert injected_calls and len(injected_calls[-1]) == 2
 
 
 @pytest.mark.asyncio
@@ -446,12 +550,17 @@ async def test_inline_delivery_failure_does_not_replay_delivered_key(telegram_ap
         vpn_telegram_service.httpx, "AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs),
     )
+    monkeypatch.setattr(
+        vpn_telegram_service,
+        "send_telegram_message",
+        send_telegram_message,
+    )
     payload = telegram_message(123, 12345, "/keys")
     async with telegram_app.session_factory() as session:
-        first = await process_telegram_update(session, payload, settings, sender=send_telegram_message)
+        first = await process_telegram_update(session, payload, settings)
         await session.commit()
     async with telegram_app.session_factory() as session:
-        second = await process_telegram_update(session, payload, settings, sender=send_telegram_message)
+        second = await process_telegram_update(session, payload, settings)
         update = await session.scalar(
             select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "123")
         )

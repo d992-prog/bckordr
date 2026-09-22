@@ -15,6 +15,7 @@ import pytest
 import pytest_asyncio
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
+from starlette.requests import Request
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -25,14 +26,17 @@ from app.db.models import (
     VpnAccessKey,
     VpnCustomer,
     VpnCustomerSession,
+    VpnFriendInvitation,
     VpnSubscription,
     User,
     UserSession,
 )
 from app.db.session import get_db
+from app.api.routes.vpn_portal import telegram_callback
 from app.services.vpn_portal_auth import (
     BINDING_COOKIE,
     SESSION_COOKIE,
+    create_login_attempt,
     csrf_token,
     digest_token,
     issue_session,
@@ -45,6 +49,7 @@ from app.services.vpn_portal_telegram import (
     TelegramJWKSProvider,
 )
 from app.services.security import hash_session_token
+from app.services.vpn_telegram_identity import TelegramIdentity
 
 
 PORTAL_ORIGIN = "https://portal.example"
@@ -63,6 +68,46 @@ def mini_app_data(user_id: int, bot_token: str, *, auth_date: int | None = None)
     secret = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
     fields["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
     return urlencode(fields)
+
+
+async def seed_invited_api_identity(
+    session: AsyncSession,
+    user_id: str,
+    *,
+    slot: int = 1,
+) -> VpnFriendInvitation:
+    now = utcnow()
+    customer = VpnCustomer(
+        telegram_user_id=user_id,
+        first_name=f"Friend {user_id}",
+        status="active",
+    )
+    session.add(customer)
+    await session.flush()
+    subscription = VpnSubscription(
+        customer_id=customer.id,
+        status="trial",
+        starts_at=now - timedelta(minutes=1),
+        expires_at=now + timedelta(days=7),
+        max_devices=1,
+    )
+    session.add(subscription)
+    await session.flush()
+    key = VpnAccessKey(subscription_id=subscription.id, status="pending")
+    session.add(key)
+    await session.flush()
+    invitation = VpnFriendInvitation(
+        slot=slot,
+        token_digest=f"{slot:064x}",
+        created_at=now,
+        redeem_expires_at=now + timedelta(days=7),
+        redeemed_at=now,
+        telegram_user_id=user_id,
+        access_key_id=key.id,
+    )
+    session.add(invitation)
+    await session.commit()
+    return invitation
 
 
 class ChunkedBody(httpx.AsyncByteStream):
@@ -934,6 +979,88 @@ async def test_mini_app_preparse_guards_atomic_replay_and_account_conflict(porta
 
     async with portal_app.factory() as session:
         assert await session.scalar(select(func.count(VpnSubscription.id))) == 2
+
+
+@pytest.mark.asyncio
+async def test_invited_friend_can_exchange_mini_app_and_existing_session_fails_closed(
+    portal_app,
+) -> None:
+    async with portal_app.factory() as session:
+        invitation = await seed_invited_api_identity(session, "300")
+
+    friend = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=portal_app.app),
+        base_url=PORTAL_ORIGIN,
+    )
+    try:
+        login = await friend.post(
+            "/api/vpn-portal/auth/mini-app",
+            headers={"Origin": PORTAL_ORIGIN},
+            json={"init_data": mini_app_data(300, portal_app.settings.vpn_telegram_bot_token)},
+        )
+        assert login.status_code == 200
+        assert (await friend.get("/api/vpn-portal/me")).status_code == 200
+
+        async with portal_app.factory() as session:
+            stored = await session.get(VpnFriendInvitation, invitation.slot)
+            stored.revoked_at = utcnow()
+            await session.commit()
+
+        assert (await friend.get("/api/vpn-portal/me")).status_code == 401
+    finally:
+        await friend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_invited_friend_can_complete_oidc_callback_until_revoked(
+    portal_app,
+    monkeypatch,
+) -> None:
+    async with portal_app.factory() as session:
+        invitation = await seed_invited_api_identity(session, "300")
+
+    async def invited_identity(*args, **kwargs) -> TelegramIdentity:
+        del args, kwargs
+        return TelegramIdentity(user_id="300", first_name="Invited")
+
+    monkeypatch.setattr(
+        "app.api.routes.vpn_portal.exchange_authorization_code",
+        invited_identity,
+    )
+    portal_app.app.state.vpn_portal_http_client = None
+    portal_app.app.state.vpn_portal_jwks_provider = None
+
+    async def callback(db: AsyncSession):
+        state, binding, _verifier = await create_login_attempt(db)
+        await db.commit()
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/vpn-portal/auth/telegram/callback",
+                "query_string": urlencode(
+                    {"state": state, "code": "provider-code"}
+                ).encode(),
+                "headers": [
+                    (b"cookie", f"{BINDING_COOKIE}={binding}".encode())
+                ],
+                "app": portal_app.app,
+            }
+        )
+        return await telegram_callback(request, db)
+
+    async with portal_app.factory() as session:
+        success = await callback(session)
+    assert success.headers["location"] == "/cabinet/"
+
+    async with portal_app.factory() as session:
+        stored = await session.get(VpnFriendInvitation, invitation.slot)
+        stored.revoked_at = utcnow()
+        await session.commit()
+
+    async with portal_app.factory() as session:
+        denied = await callback(session)
+    assert denied.headers["location"] == "/cabinet/#login=failed"
 
 
 @pytest.mark.asyncio

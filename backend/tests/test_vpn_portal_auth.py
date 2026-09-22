@@ -19,10 +19,13 @@ from starlette.responses import Response
 from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import (
+    VpnAccessKey,
     VpnCustomer,
     VpnCustomerSession,
+    VpnFriendInvitation,
     VpnPortalLoginAttempt,
     VpnPortalMiniAppExchange,
+    VpnSubscription,
 )
 from app.services.vpn_portal_auth import (
     BINDING_COOKIE,
@@ -37,6 +40,7 @@ from app.services.vpn_portal_auth import (
     delete_session_cookie,
     digest_token,
     exchange_mini_app_session,
+    identity_admitted,
     identity_allowed,
     issue_session,
     lookup_session,
@@ -45,6 +49,7 @@ from app.services.vpn_portal_auth import (
     set_binding_cookie,
     set_session_cookie,
     valid_mutation,
+    _lock_current_principal,
 )
 
 
@@ -73,6 +78,41 @@ def signed_init_data(user_id: str, timestamp: int, *, query_id: str = "test") ->
     secret = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
     fields["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
     return urlencode(fields)
+
+
+async def seed_invited_portal_identity(
+    db: AsyncSession,
+    user_id: str = "789",
+    *,
+    now: datetime = NOW,
+) -> tuple[VpnCustomer, VpnSubscription, VpnAccessKey, VpnFriendInvitation]:
+    customer = VpnCustomer(telegram_user_id=user_id, status="active")
+    db.add(customer)
+    await db.flush()
+    subscription = VpnSubscription(
+        customer_id=customer.id,
+        status="trial",
+        starts_at=now,
+        expires_at=now + timedelta(days=7),
+        max_devices=1,
+    )
+    db.add(subscription)
+    await db.flush()
+    key = VpnAccessKey(subscription_id=subscription.id, status="pending")
+    db.add(key)
+    await db.flush()
+    invitation = VpnFriendInvitation(
+        slot=1,
+        token_digest="a" * 64,
+        created_at=now,
+        redeem_expires_at=now + timedelta(days=7),
+        redeemed_at=now,
+        telegram_user_id=user_id,
+        access_key_id=key.id,
+    )
+    db.add(invitation)
+    await db.flush()
+    return customer, subscription, key, invitation
 
 
 @pytest_asyncio.fixture
@@ -183,6 +223,135 @@ def test_identity_allowlist_is_feature_gated_and_canonical():
     assert identity_allowed(portal_settings(VPN_PORTAL_ENABLED=False), "123") is False
     assert identity_allowed(portal_settings(VPN_PORTAL_PUBLIC_ACCESS=True), "999") is True
     assert identity_allowed(portal_settings(VPN_PORTAL_PUBLIC_ACCESS=True), "invalid") is False
+
+
+@pytest.mark.asyncio
+async def test_friend_admission_requires_the_exact_active_invitation_chain(session_factory):
+    settings = portal_settings(
+        VPN_PORTAL_ALLOWED_TELEGRAM_IDS="123",
+        VPN_PORTAL_PUBLIC_ACCESS=False,
+    )
+    async with session_factory() as db:
+        customer, subscription, key, invitation = await seed_invited_portal_identity(db)
+        decoy = VpnCustomer(telegram_user_id="999", status="active")
+        db.add(decoy)
+        await db.flush()
+        decoy_subscription = VpnSubscription(
+            customer_id=decoy.id,
+            status="trial",
+            starts_at=NOW,
+            expires_at=NOW + timedelta(days=7),
+            max_devices=1,
+        )
+        db.add(decoy_subscription)
+        await db.flush()
+        decoy_key = VpnAccessKey(subscription_id=decoy_subscription.id, status="pending")
+        db.add(decoy_key)
+        await db.commit()
+
+        assert await identity_admitted(db, settings, "000789", now=NOW)
+        assert await identity_admitted(db, settings, "123", now=NOW)
+        assert not await identity_admitted(db, settings, "invalid", now=NOW)
+        assert not await identity_admitted(
+            db,
+            portal_settings(VPN_PORTAL_ENABLED=False),
+            "789",
+            now=NOW,
+        )
+
+        invitation.access_key_id = decoy_key.id
+        await db.flush()
+        assert not await identity_admitted(db, settings, "789", now=NOW)
+        invitation.access_key_id = key.id
+
+        key.subscription_id = decoy_subscription.id
+        await db.flush()
+        assert not await identity_admitted(db, settings, "789", now=NOW)
+        key.subscription_id = subscription.id
+
+        subscription.customer_id = decoy.id
+        await db.flush()
+        assert not await identity_admitted(db, settings, "789", now=NOW)
+        subscription.customer_id = customer.id
+
+        invitation.telegram_user_id = "999"
+        await db.flush()
+        assert not await identity_admitted(db, settings, "789", now=NOW)
+        invitation.telegram_user_id = "789"
+
+        invitation.revoked_at = NOW
+        await db.flush()
+        assert not await identity_admitted(db, settings, "789", now=NOW)
+        invitation.revoked_at = None
+
+        customer.status = "archived"
+        await db.flush()
+        assert not await identity_admitted(db, settings, "789", now=NOW)
+        customer.status = "active"
+
+        for status in ("scheduled", "disabled", "expired", "cancelled"):
+            subscription.status = status
+            await db.flush()
+            assert not await identity_admitted(db, settings, "789", now=NOW)
+        subscription.status = "active"
+
+        subscription.starts_at = NOW + timedelta(microseconds=1)
+        await db.flush()
+        assert not await identity_admitted(db, settings, "789", now=NOW)
+        subscription.starts_at = NOW
+        subscription.expires_at = NOW
+        await db.flush()
+        assert not await identity_admitted(db, settings, "789", now=NOW)
+        subscription.expires_at = NOW + timedelta(microseconds=1)
+        await db.flush()
+        assert await identity_admitted(db, settings, "789", now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_invited_identity_survives_session_and_locked_recheck_until_revoked(
+    session_factory,
+):
+    settings = portal_settings(VPN_PORTAL_ALLOWED_TELEGRAM_IDS="123")
+    async with session_factory() as db:
+        customer, _subscription, _key, invitation = await seed_invited_portal_identity(db)
+        raw_session = await issue_session(db, customer.id, "789", now=NOW)
+        await db.commit()
+
+        principal = await lookup_session(db, raw_session, settings, now=NOW)
+        assert principal is not None
+        assert await _lock_current_principal(db, principal, settings, NOW) is not None
+
+        invitation.revoked_at = NOW
+        await db.commit()
+        assert await lookup_session(db, raw_session, settings, now=NOW) is None
+        assert await _lock_current_principal(db, principal, settings, NOW) is None
+
+
+@pytest.mark.asyncio
+async def test_invited_identity_can_exchange_mini_app_until_admission_is_revoked(
+    session_factory,
+):
+    settings = portal_settings(VPN_PORTAL_ALLOWED_TELEGRAM_IDS="123")
+    async with session_factory() as db:
+        _customer, _subscription, _key, invitation = await seed_invited_portal_identity(db)
+        first = await exchange_mini_app_session(
+            db,
+            signed_init_data("789", int(NOW.timestamp()), query_id="invited"),
+            settings,
+            now=NOW,
+        )
+        assert first.raw_session is not None
+        await db.commit()
+
+        invitation.revoked_at = NOW
+        await db.commit()
+        with pytest.raises(PortalAuthenticationError):
+            await exchange_mini_app_session(
+                db,
+                signed_init_data("789", int(NOW.timestamp()), query_id="revoked"),
+                settings,
+                now=NOW,
+            )
 
 
 def test_cookie_helpers_use_separate_secure_host_only_namespaces():

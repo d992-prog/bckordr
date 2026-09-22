@@ -17,10 +17,13 @@ from starlette.responses import Response
 from app.core.config import Settings
 from app.db.base import utcnow
 from app.db.models import (
+    VpnAccessKey,
     VpnCustomer,
     VpnCustomerSession,
+    VpnFriendInvitation,
     VpnPortalLoginAttempt,
     VpnPortalMiniAppExchange,
+    VpnSubscription,
 )
 from app.services.vpn_portal_telegram import (
     TelegramAuthenticationError,
@@ -150,6 +153,45 @@ def identity_allowed(settings: Settings, user_id: object) -> bool:
     return canonical in allowed
 
 
+def friend_admission_query(user_id: str, now: datetime):
+    return (
+        select(VpnFriendInvitation.slot)
+        .select_from(VpnFriendInvitation)
+        .join(VpnAccessKey, VpnAccessKey.id == VpnFriendInvitation.access_key_id)
+        .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
+        .join(VpnCustomer, VpnCustomer.id == VpnSubscription.customer_id)
+        .where(
+            VpnFriendInvitation.telegram_user_id == user_id,
+            VpnCustomer.telegram_user_id == user_id,
+            VpnFriendInvitation.revoked_at.is_(None),
+            VpnCustomer.status == "active",
+            VpnSubscription.status.in_(("active", "trial")),
+            VpnSubscription.starts_at <= now,
+            VpnSubscription.expires_at > now,
+        )
+        .limit(1)
+    )
+
+
+async def identity_admitted(
+    db: AsyncSession,
+    settings: Settings,
+    user_id: object,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if not settings.vpn_portal_enabled:
+        return False
+    try:
+        normalized = telegram_user_id(user_id)
+    except ValueError:
+        return False
+    if identity_allowed(settings, normalized):
+        return True
+    current = as_utc(now or utcnow())
+    return bool(await db.scalar(friend_admission_query(normalized, current)))
+
+
 def _valid_opaque_token(value: object) -> bool:
     return (
         isinstance(value, str)
@@ -221,7 +263,12 @@ async def lookup_session(
         or as_utc(session.expires_at) <= current_time
         or customer.status != "active"
         or customer.telegram_user_id != session.telegram_user_id
-        or not identity_allowed(settings, session.telegram_user_id)
+        or not await identity_admitted(
+            db,
+            settings,
+            session.telegram_user_id,
+            now=current_time,
+        )
     ):
         return None
     return PortalPrincipal(customer=customer, session=session, csrf=csrf_token(raw_session))
@@ -259,7 +306,12 @@ async def _lock_current_principal(
         or as_utc(session.expires_at) <= current_time
         or customer.status != "active"
         or customer.telegram_user_id != session.telegram_user_id
-        or not identity_allowed(settings, session.telegram_user_id)
+        or not await identity_admitted(
+            db,
+            settings,
+            session.telegram_user_id,
+            now=current_time,
+        )
     ):
         return None
     return PortalPrincipal(customer=customer, session=session, csrf=principal.csrf)
@@ -416,7 +468,7 @@ async def exchange_mini_app_session(
         )
     except TelegramAuthenticationError:
         raise PortalAuthenticationError() from None
-    if not identity_allowed(settings, identity.user_id):
+    if not await identity_admitted(db, settings, identity.user_id, now=current_time):
         raise PortalAuthenticationError()
 
     principal = await lookup_session(db, raw_session, settings, now=current_time)

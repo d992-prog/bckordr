@@ -34,7 +34,7 @@ from app.services.vpn_portal_auth import (
     delete_binding_cookie,
     delete_session_cookie,
     exchange_mini_app_session,
-    identity_allowed,
+    identity_admitted,
     issue_session,
     lookup_session,
     public_origin,
@@ -222,7 +222,7 @@ async def telegram_callback(
             http_client=request.app.state.vpn_portal_http_client,
             jwks_provider=request.app.state.vpn_portal_jwks_provider,
         )
-        if not identity_allowed(settings, identity.user_id):
+        if not await identity_admitted(db, settings, identity.user_id):
             raise TelegramAuthenticationError("telegram_authentication_failed")
         customer = await resolve_telegram_customer(db, identity)
         if customer.status != "active":

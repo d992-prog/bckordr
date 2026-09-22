@@ -32,7 +32,7 @@ from app.services.vpn_friend_invitations import (
     FriendInvitationUnavailable,
     redeem_friend_invitation,
 )
-from app.services.vpn_portal_auth import identity_allowed, public_origin
+from app.services.vpn_portal_auth import identity_admitted, public_origin
 from app.services.vpn_portal_http import portal_capabilities
 from app.services.vpn_telegram_identity import (
     TelegramIdentity,
@@ -228,7 +228,12 @@ def telegram_keyboard(settings: Settings, chat_id: str) -> dict:
     }
 
 
-def telegram_cabinet_keyboard(settings: Settings, chat_id: str) -> dict | None:
+def telegram_cabinet_keyboard(
+    settings: Settings,
+    chat_id: str,
+    *,
+    cabinet_allowed: bool = False,
+) -> dict | None:
     """Use an inline launch: reply-keyboard WebApps receive no signed initData."""
     try:
         private_chat_id = int(chat_id)
@@ -237,7 +242,7 @@ def telegram_cabinet_keyboard(settings: Settings, chat_id: str) -> dict | None:
     if (
         private_chat_id > 0
         and portal_capabilities(settings)["mini_app_enabled"]
-        and identity_allowed(settings, chat_id)
+        and cabinet_allowed
     ):
         return {
             "inline_keyboard": [
@@ -250,7 +255,13 @@ def telegram_cabinet_keyboard(settings: Settings, chat_id: str) -> dict | None:
     return None
 
 
-async def send_telegram_message(settings: Settings, chat_id: str, text: str) -> None:
+async def send_telegram_message(
+    settings: Settings,
+    chat_id: str,
+    text: str,
+    *,
+    cabinet_allowed: bool = False,
+) -> None:
     url = f"https://api.telegram.org/bot{settings.vpn_telegram_bot_token}/sendMessage"
     async with httpx.AsyncClient(timeout=settings.request_timeout) as client:
         for chunk in split_telegram_text(text):
@@ -261,7 +272,11 @@ async def send_telegram_message(settings: Settings, chat_id: str, text: str) -> 
             }
             response = await client.post(url, json=payload)
             response.raise_for_status()
-        cabinet_keyboard = telegram_cabinet_keyboard(settings, chat_id)
+        cabinet_keyboard = telegram_cabinet_keyboard(
+            settings,
+            chat_id,
+            cabinet_allowed=cabinet_allowed,
+        )
         if cabinet_keyboard is not None:
             # Telegram permits only one reply_markup type per message. Keep the
             # command keyboard above and add exactly one authenticated launch.
@@ -495,6 +510,29 @@ async def _record_delivery_failure(
         )
 
 
+async def _send_response(
+    session: AsyncSession,
+    settings: Settings,
+    message: TelegramMessage,
+    text: str,
+    sender: TelegramSender | None,
+) -> None:
+    cabinet_allowed = message.chat_type == "private" and await identity_admitted(
+        session,
+        settings,
+        message.user_id,
+    )
+    if sender is None:
+        await send_telegram_message(
+            settings,
+            message.chat_id,
+            text,
+            cabinet_allowed=cabinet_allowed,
+        )
+        return
+    await sender(settings, message.chat_id, text)
+
+
 async def process_telegram_update(
     session: AsyncSession,
     payload: dict,
@@ -506,7 +544,6 @@ async def process_telegram_update(
     if canonical_update_id is None:
         return {"processed": False, "duplicate": False}
     update_id = str(canonical_update_id)
-    active_sender = sender or send_telegram_message
     existing = await session.scalar(
         select(VpnTelegramUpdate)
         .where(VpnTelegramUpdate.update_id == update_id)
@@ -523,7 +560,13 @@ async def process_telegram_update(
                 return {"processed": False, "duplicate": True}
             response_text = await _invitation_response(session, existing, message)
             try:
-                await active_sender(settings, message.chat_id, response_text)
+                await _send_response(
+                    session,
+                    settings,
+                    message,
+                    response_text,
+                    sender,
+                )
             except Exception:
                 await _record_delivery_failure(session, existing)
                 return {"processed": False, "duplicate": True}
@@ -590,7 +633,13 @@ async def process_telegram_update(
         await session.commit()
         response_text = await _invitation_response(session, update, message)
         try:
-            await active_sender(settings, message.chat_id, response_text)
+            await _send_response(
+                session,
+                settings,
+                message,
+                response_text,
+                sender,
+            )
         except Exception:
             await _record_delivery_failure(session, update)
             return {"processed": False, "duplicate": False}
@@ -602,10 +651,12 @@ async def process_telegram_update(
     await session.commit()
     if message.chat_type != "private":
         try:
-            await active_sender(
+            await _send_response(
+                session,
                 settings,
-                message.chat_id,
+                message,
                 "VPN-ключи и данные подписки доступны только в личном чате с ботом.",
+                sender,
             )
         except Exception:
             await _record_delivery_failure(session, update)
@@ -620,7 +671,13 @@ async def process_telegram_update(
     command = COMMANDS.get(message.text.strip().casefold(), "start")
     response_text = await render_customer_response(session, customer, command, settings)
     try:
-        await active_sender(settings, message.chat_id, response_text)
+        await _send_response(
+            session,
+            settings,
+            message,
+            response_text,
+            sender,
+        )
     except Exception:  # Telegram retries are prevented by the HTTP 200 acknowledgement.
         await _record_delivery_failure(session, update)
         return {"processed": False, "duplicate": False}
