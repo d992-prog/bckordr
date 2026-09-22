@@ -171,6 +171,7 @@ async def require_friend_invitation_readiness(
                 VpnEndpoint.status == "ready",
                 VpnEndpoint.security == "reality",
                 VpnEndpoint.verified_at.is_not(None),
+                WorkerNode.archived_at.is_(None),
             )
             .order_by(VpnEndpoint.id.asc())
             .limit(1)

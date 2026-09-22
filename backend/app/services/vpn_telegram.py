@@ -466,6 +466,15 @@ async def _record_delivery_failure(
     session: AsyncSession,
     update: VpnTelegramUpdate,
 ) -> None:
+    locked_update = await session.scalar(
+        select(VpnTelegramUpdate)
+        .where(VpnTelegramUpdate.id == update.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if locked_update is None or locked_update.processed_at is not None:
+        return
+    update = locked_update
     update.error_message = "telegram_delivery_failed"
     if update.customer_id is None:
         return
@@ -533,6 +542,37 @@ async def _send_response(
     await sender(settings, message.chat_id, text)
 
 
+async def _replay_existing_update(
+    session: AsyncSession,
+    existing: VpnTelegramUpdate,
+    settings: Settings,
+    sender: TelegramSender | None,
+) -> dict[str, bool]:
+    if existing.processed_at is not None:
+        return {"processed": True, "duplicate": True}
+    if _stored_invite_update(existing):
+        try:
+            message = parse_telegram_message(existing.payload or {})
+        except ValueError:
+            return {"processed": False, "duplicate": True}
+        response_text = await _invitation_response(session, existing, message)
+        try:
+            await _send_response(
+                session,
+                settings,
+                message,
+                response_text,
+                sender,
+            )
+        except Exception:
+            await _record_delivery_failure(session, existing)
+            return {"processed": False, "duplicate": True}
+        existing.processed_at = utcnow()
+        existing.error_message = None
+        return {"processed": True, "duplicate": True}
+    return {"processed": existing.processed_at is not None, "duplicate": True}
+
+
 async def process_telegram_update(
     session: AsyncSession,
     payload: dict,
@@ -551,29 +591,7 @@ async def process_telegram_update(
         .execution_options(populate_existing=True)
     )
     if existing is not None:
-        if existing.processed_at is not None:
-            return {"processed": True, "duplicate": True}
-        if _stored_invite_update(existing):
-            try:
-                message = parse_telegram_message(existing.payload or {})
-            except ValueError:
-                return {"processed": False, "duplicate": True}
-            response_text = await _invitation_response(session, existing, message)
-            try:
-                await _send_response(
-                    session,
-                    settings,
-                    message,
-                    response_text,
-                    sender,
-                )
-            except Exception:
-                await _record_delivery_failure(session, existing)
-                return {"processed": False, "duplicate": True}
-            existing.processed_at = utcnow()
-            existing.error_message = None
-            return {"processed": True, "duplicate": True}
-        return {"processed": existing.processed_at is not None, "duplicate": True}
+        return await _replay_existing_update(session, existing, settings, sender)
 
     text = _raw_message_text(payload)
     sanitized_payload = sanitized_telegram_payload(payload, text)
@@ -594,7 +612,15 @@ async def process_telegram_update(
         await session.flush()
     except IntegrityError:
         await session.rollback()
-        return {"processed": False, "duplicate": True}
+        existing = await session.scalar(
+            select(VpnTelegramUpdate)
+            .where(VpnTelegramUpdate.update_id == update_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if existing is None:
+            return {"processed": False, "duplicate": True}
+        return await _replay_existing_update(session, existing, settings, sender)
     if message is None:
         await session.commit()
         return {"processed": False, "duplicate": False}

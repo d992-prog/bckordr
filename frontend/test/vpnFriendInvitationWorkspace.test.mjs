@@ -91,6 +91,15 @@ test("one-time links remain component-local and are published before reload", as
   );
 });
 
+test("one-time links disappear after the server reports a non-usable slot", async () => {
+  const [, panelSource] = await sources();
+
+  assert.match(
+    panelSource,
+    /useEffect\(\(\) => \{[\s\S]*?friendInvitations[\s\S]*?invite_state === "unused"[\s\S]*?can_rotate[\s\S]*?setInvitationLinks[\s\S]*?\}, \[friendInvitations\]\)/,
+  );
+});
+
 test("disable requires confirmation before the mutation", async () => {
   const [, panelSource] = await sources();
   const action = panelSource.indexOf("async function disableFriendInvitation");

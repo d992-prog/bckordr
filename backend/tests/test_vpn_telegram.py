@@ -2188,3 +2188,140 @@ async def test_postgres_concurrent_invitation_replays_send_exactly_once(
     assert second_result == {"processed": True, "duplicate": True}
     assert sends == ["first"]
     assert stored is not None and stored.processed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_postgres_losing_initial_claim_replays_committed_invitation(
+    postgres_schema: PostgresSchema,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with postgres_schema.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    settings = Settings(
+        _env_file=None,
+        VPN_TELEGRAM_BOT_TOKEN="bot-token",
+        VPN_TELEGRAM_BOT_USERNAME="veltrix_vpn_official_bot",
+        VPN_FRIEND_BETA_ENABLED=True,
+        VPN_FRIEND_BETA_RELEASE_ID=FRIEND_RELEASE_ID,
+        VPN_CONTROL_DISPATCH_ENABLED=True,
+        VPN_CONTROL_KNOWN_HOSTS_PATH="C:/veltrix/known_hosts",
+        VPN_PORTAL_PUBLIC_ACCESS=False,
+    )
+    monkeypatch.setattr(
+        "app.services.vpn_friend_invitations.load_transport_snapshot",
+        lambda _worker, _path: object(),
+    )
+    sessions = async_sessionmaker(
+        postgres_schema.engine,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    async with sessions() as session:
+        await seed_friend_invitation(session)
+
+    first_select_finished = asyncio.Event()
+    second_select_finished = asyncio.Event()
+    first_sender_entered = asyncio.Event()
+    replay_committed = asyncio.Event()
+    original_record_failure = vpn_telegram_service._record_delivery_failure
+
+    async def record_failure_after_replay(session, update) -> None:
+        await asyncio.wait_for(replay_committed.wait(), timeout=15)
+        await original_record_failure(session, update)
+
+    monkeypatch.setattr(
+        vpn_telegram_service,
+        "_record_delivery_failure",
+        record_failure_after_replay,
+    )
+
+    class FirstClaimSession(AsyncSession):
+        async def scalar(self, statement, *args, **kwargs):
+            result = await super().scalar(statement, *args, **kwargs)
+            if (
+                not getattr(self, "_initial_claim_seen", False)
+                and "vpn_telegram_updates" in str(statement)
+            ):
+                self._initial_claim_seen = True
+                first_select_finished.set()
+                await asyncio.wait_for(second_select_finished.wait(), timeout=15)
+            return result
+
+    class LosingClaimSession(AsyncSession):
+        async def scalar(self, statement, *args, **kwargs):
+            result = await super().scalar(statement, *args, **kwargs)
+            if (
+                not getattr(self, "_initial_claim_seen", False)
+                and "vpn_telegram_updates" in str(statement)
+            ):
+                self._initial_claim_seen = True
+                second_select_finished.set()
+            return result
+
+        async def flush(self, objects=None):
+            if (
+                not getattr(self, "_initial_claim_flushed", False)
+                and any(isinstance(item, VpnTelegramUpdate) for item in self.new)
+            ):
+                self._initial_claim_flushed = True
+                await asyncio.wait_for(first_sender_entered.wait(), timeout=15)
+            return await super().flush(objects)
+
+    payload = telegram_message(525, 50525, FRIEND_START)
+    delivered: list[str] = []
+
+    async def fail_first_delivery(_settings, _chat_id: str, _text: str) -> None:
+        first_sender_entered.set()
+        raise RuntimeError("delivery failed")
+
+    async def capture_replay(_settings, _chat_id: str, text: str) -> None:
+        delivered.append(text)
+
+    async def winning_claim() -> dict[str, bool]:
+        async with FirstClaimSession(
+            bind=postgres_schema.engine,
+            expire_on_commit=False,
+        ) as session:
+            result = await process_telegram_update(
+                session,
+                payload,
+                settings,
+                sender=fail_first_delivery,
+            )
+            await session.commit()
+            return result
+
+    async def losing_claim() -> dict[str, bool]:
+        async with LosingClaimSession(
+            bind=postgres_schema.engine,
+            expire_on_commit=False,
+        ) as session:
+            result = await process_telegram_update(
+                session,
+                payload,
+                settings,
+                sender=capture_replay,
+            )
+            await session.commit()
+            replay_committed.set()
+            return result
+
+    first_task = asyncio.create_task(winning_claim())
+    await asyncio.wait_for(first_select_finished.wait(), timeout=15)
+    second_task = asyncio.create_task(losing_claim())
+    first_result, second_result = await asyncio.wait_for(
+        asyncio.gather(first_task, second_task),
+        timeout=30,
+    )
+    async with sessions() as session:
+        stored = await session.scalar(
+            select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "525")
+        )
+        state = await friend_business_state(session)
+
+    assert first_result == {"processed": False, "duplicate": False}
+    assert second_result == {"processed": True, "duplicate": True}
+    assert delivered == [vpn_telegram_service.INVITATION_PREPARING_TEXT]
+    assert stored is not None and stored.processed_at is not None
+    assert stored.error_message is None
+    assert state[-1] == 1

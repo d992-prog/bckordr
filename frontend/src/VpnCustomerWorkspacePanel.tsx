@@ -356,6 +356,25 @@ export function VpnCustomerWorkspace({
     );
   }, [accessKeys]);
 
+  useEffect(() => {
+    const usableSlots = new Set(
+      friendInvitations
+        .filter(
+          (invitation) =>
+            invitation.invite_state === "unused" && invitation.can_rotate,
+        )
+        .map((invitation) => invitation.slot),
+    );
+    setInvitationLinks((current) => {
+      const retained = Object.fromEntries(
+        Object.entries(current).filter(([slot]) => usableSlots.has(Number(slot))),
+      );
+      return Object.keys(retained).length === Object.keys(current).length
+        ? current
+        : retained;
+    });
+  }, [friendInvitations]);
+
   async function reloadAfterSavedInvitation(failureMessage?: string) {
     try {
       await reload();

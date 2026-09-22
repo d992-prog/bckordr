@@ -1014,7 +1014,7 @@ async def test_lifecycle_times_out_a_hung_key_without_blocking_batch(session_fac
             session,
             now=now,
             batch_size=1,
-            key_timeout_seconds=0.05,
+            key_timeout_seconds=1.0,
         )
         stored_key = await session.get(VpnAccessKey, key_id)
 

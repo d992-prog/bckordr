@@ -377,6 +377,23 @@ async def test_issue_requires_a_ready_verified_reality_endpoint(
 
 
 @pytest.mark.asyncio
+async def test_archived_worker_never_satisfies_friend_readiness(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+) -> None:
+    db, settings, transport_calls = ready_session
+    worker = await db.get(WorkerNode, 1)
+    assert worker is not None
+    worker.archived_at = NOW
+    await db.flush()
+
+    with pytest.raises(FriendInvitationUnavailable) as error:
+        await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+
+    assert str(error.value) == "friend_beta_unavailable"
+    assert transport_calls == []
+
+
+@pytest.mark.asyncio
 async def test_issue_maps_invalid_strict_transport_to_the_same_bounded_error(
     ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
     monkeypatch: pytest.MonkeyPatch,
