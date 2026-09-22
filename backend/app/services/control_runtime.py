@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import logging
+import math
+from pathlib import Path
+import re
 
+from sqlalchemy import select, true
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy import select
 
 from app.core.config import Settings
 from app.db.base import utcnow
-from app.db.models import ZoneScanJob
-from app.services.app_settings import get_diagnostic_telegram_settings, get_discovery_runtime_settings
+from app.db.models import AppSetting, VpnEndpoint, WorkerNode, ZoneScanJob
+from app.db.session import VpnControlDatabase, create_vpn_control_database
+from app.services.app_settings import (
+    _VPN_FRIEND_BETA_RELEASE_READY_KEY,
+    get_diagnostic_telegram_settings,
+    get_discovery_runtime_settings,
+)
 from app.services.attack_runtime import (
     autoplan_due_attack_runs,
     finalize_expired_attack_runs,
@@ -26,12 +35,15 @@ from app.services.discovery_worker_runtime import (
     load_eligible_discovery_workers,
 )
 from app.services.notifier import TelegramNotifier
+from app.services.vpn_control_dispatcher import dispatch_next_vpn_control_operation
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
+from app.services.vpn_node_transport import VpnNodeTransportError, load_transport_snapshot
 from app.services.vpn_portal_auth import cleanup_expired_portal_auth
 from app.services.zone_scanner import run_zone_scan_job
 
 logger = logging.getLogger(__name__)
 PORTAL_AUTH_CLEANUP_TIMEOUT_SECONDS = 5.0
+_VPN_CONTROL_RELEASE_ID = re.compile(r"[0-9a-f]{64}")
 
 
 class ControlRuntimeOrchestrator:
@@ -43,6 +55,15 @@ class ControlRuntimeOrchestrator:
         worker_supervisor_interval_seconds: float = 15.0,
         worker_stall_threshold_seconds: int = 45,
         settings: Settings | None = None,
+        vpn_control_database_factory: Callable[
+            [Settings], VpnControlDatabase
+        ] = create_vpn_control_database,
+        vpn_control_dispatcher: Callable[..., Awaitable[bool]] = (
+            dispatch_next_vpn_control_operation
+        ),
+        vpn_control_snapshot_loader: Callable[[WorkerNode, Path], object] = (
+            load_transport_snapshot
+        ),
     ) -> None:
         self._session_factory = session_factory
         self._interval_seconds = max(interval_seconds, 0.25)
@@ -74,13 +95,19 @@ class ControlRuntimeOrchestrator:
             max(settings.vpn_lifecycle_cycle_timeout_seconds, 0.1) if settings else 300.0
         )
         self._notifier = TelegramNotifier(settings) if settings else None
+        self._vpn_control_database_factory = vpn_control_database_factory
+        self._vpn_control_dispatcher = vpn_control_dispatcher
+        self._vpn_control_snapshot_loader = vpn_control_snapshot_loader
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._zone_scan_tasks: dict[int, asyncio.Task[None]] = {}
         self._vpn_lifecycle_task: asyncio.Task[None] | None = None
+        self._vpn_control_database: VpnControlDatabase | None = None
+        self._vpn_control_dispatch_task: asyncio.Task[None] | None = None
         self._last_worker_supervision_at = None
         self._last_discovery_at = None
         self._last_vpn_lifecycle_at = None
+        self._last_vpn_control_dispatch_at = None
 
     async def bootstrap(self) -> None:
         if self._task is not None and not self._task.done():
@@ -106,6 +133,18 @@ class ControlRuntimeOrchestrator:
             except asyncio.CancelledError:
                 pass
         self._vpn_lifecycle_task = None
+        dispatch_task = self._vpn_control_dispatch_task
+        if dispatch_task is not None and not dispatch_task.done():
+            dispatch_task.cancel()
+            try:
+                await dispatch_task
+            except asyncio.CancelledError:
+                pass
+        self._vpn_control_dispatch_task = None
+        database = self._vpn_control_database
+        if database is not None:
+            await database.engine.dispose()
+        self._vpn_control_database = None
 
     async def ensure_domain(self, domain_id: int) -> None:
         del domain_id
@@ -120,6 +159,7 @@ class ControlRuntimeOrchestrator:
 
     async def run_cycle(self) -> None:
         start_vpn_lifecycle = False
+        start_vpn_control_dispatch = False
         lifecycle_now = None
         async with self._session_factory() as session:
             now = utcnow()
@@ -231,13 +271,116 @@ class ControlRuntimeOrchestrator:
                 self._last_vpn_lifecycle_at = now
                 lifecycle_now = now
                 start_vpn_lifecycle = True
+            if self._vpn_control_dispatch_due(now):
+                worker = await self._load_vpn_control_worker(session)
+                if worker is not None:
+                    try:
+                        self._vpn_control_snapshot_loader(
+                            worker,
+                            Path(self._settings.vpn_control_known_hosts_path),
+                        )
+                    except VpnNodeTransportError:
+                        pass
+                    else:
+                        start_vpn_control_dispatch = True
             await session.commit()
         if start_vpn_lifecycle:
             self._vpn_lifecycle_task = asyncio.create_task(
                 self._run_vpn_lifecycle(lifecycle_now),
                 name="vpn-lifecycle-maintenance",
             )
+        if start_vpn_control_dispatch:
+            self._start_vpn_control_dispatch(now)
         await self._start_zone_scan_jobs_if_needed()
+
+    def _vpn_control_dispatch_due(self, now) -> bool:
+        settings = self._settings
+        if settings is None:
+            return False
+        command_timeout = settings.vpn_control_db_command_timeout_seconds
+        statement_timeout = settings.vpn_control_db_statement_timeout_ms
+        dispatch_interval = settings.vpn_control_dispatch_interval_seconds
+        finalize_timeout = settings.vpn_control_finalize_timeout_seconds
+        if (
+            not settings.vpn_friend_beta_enabled
+            or not settings.vpn_control_dispatch_enabled
+            or settings.vpn_portal_public_access
+            or _VPN_CONTROL_RELEASE_ID.fullmatch(
+                settings.vpn_friend_beta_release_id
+            )
+            is None
+            or not settings.vpn_control_known_hosts_path.strip()
+            or not math.isfinite(command_timeout)
+            or command_timeout <= 0
+            or statement_timeout <= 0
+            or not math.isfinite(dispatch_interval)
+            or dispatch_interval <= 0
+            or not math.isfinite(finalize_timeout)
+            or finalize_timeout <= 0
+        ):
+            return False
+        task = self._vpn_control_dispatch_task
+        if task is not None and not task.done():
+            return False
+        return (
+            self._last_vpn_control_dispatch_at is None
+            or (now - self._last_vpn_control_dispatch_at).total_seconds()
+            >= settings.vpn_control_dispatch_interval_seconds
+        )
+
+    async def _load_vpn_control_worker(
+        self,
+        session: AsyncSession,
+    ) -> WorkerNode | None:
+        assert self._settings is not None
+        row = (
+            await session.execute(
+                select(AppSetting.value, VpnEndpoint, WorkerNode)
+                .select_from(AppSetting)
+                .join(VpnEndpoint, true())
+                .join(WorkerNode, WorkerNode.id == VpnEndpoint.worker_id)
+                .where(
+                    AppSetting.key == _VPN_FRIEND_BETA_RELEASE_READY_KEY,
+                    VpnEndpoint.status == "ready",
+                    VpnEndpoint.security == "reality",
+                    VpnEndpoint.verified_at.is_not(None),
+                    WorkerNode.archived_at.is_(None),
+                )
+                .order_by(VpnEndpoint.id.asc())
+                .limit(1)
+            )
+        ).first()
+        if row is None or row[0] != self._settings.vpn_friend_beta_release_id:
+            return None
+        return row[2]
+
+    def _start_vpn_control_dispatch(self, now) -> None:
+        settings = self._settings
+        assert settings is not None
+        if not self._vpn_control_dispatch_due(now):
+            return
+        if self._vpn_control_database is None:
+            self._vpn_control_database = self._vpn_control_database_factory(settings)
+        self._last_vpn_control_dispatch_at = now
+        self._vpn_control_dispatch_task = asyncio.create_task(
+            self._run_vpn_control_dispatch(),
+            name="vpn-control-dispatch",
+        )
+
+    async def _run_vpn_control_dispatch(self) -> None:
+        settings = self._settings
+        database = self._vpn_control_database
+        assert settings is not None and database is not None
+        try:
+            await self._vpn_control_dispatcher(
+                database.session_factory,
+                Path(settings.vpn_control_known_hosts_path),
+                finalize_timeout=settings.vpn_control_finalize_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("VPN control dispatch failed")
 
     async def _run_vpn_lifecycle(self, now) -> None:
         async with self._session_factory() as session:
