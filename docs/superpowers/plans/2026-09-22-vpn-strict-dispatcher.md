@@ -197,35 +197,47 @@ VPN node, runtime, deployment, TCP 443 setting, invitation or payment was change
 
 ## Task 4: Independent final review and local evidence
 
-- [ ] **Step 1: Independent spec review**
+- [x] **Step 1: Independent spec review**
 
 Reject hidden legacy SSH use, trust-on-first-use, command/payload interpolation,
 secret/raw-output logging, network inside database transactions, clock reclaim,
 implicit journal creation, API/lifecycle cutover or production mutation.
 
-- [ ] **Step 2: Independent quality review**
+- [x] **Step 2: Independent quality review**
 
 Inspect AsyncSSH cancellation/output/auth handling, literal pin parsing, receipt
 parsing, zipapp manifest, filesystem ownership/modes, SQLAlchemy transaction
 boundaries, PostgreSQL race proof and all reservation call sites. Fix important
 findings and rerun reviews.
 
-- [ ] **Step 3: Full verification**
+- [x] **Step 3: Full verification**
 
 Run the complete backend suite with fresh isolated PostgreSQL, whole-backend Ruff,
 zipapp Python 3.11 execution and `git diff --check`. Record exact counts and delete
 only the exact temporary cluster.
 
+Evidence: independent final specification and quality reviews both approved the
+complete `4f2cc83..343986c` implementation with no significant findings. The
+first complete server run exposed one FastAPI 0.138.2 test-only assumption about
+the private `router.routes` representation; `11cd172` changed the assertion to
+the public OpenAPI result. The final fresh isolated PostgreSQL 14.24 rerun on
+loopback port 56680 under Python 3.11.0rc1 passed `1892` tests with `2` expected
+skips and `12` deprecation warnings in `482.20s`. Whole-backend Ruff passed, and
+the separate Linux zipapp/entrypoint run passed `51` tests in `3.09s`.
+`git diff --check` passed. The exact temporary directory
+`/tmp/veltrix-task4-11cd172-16f2d13e`, archive, script and database were removed,
+the listener closed, and `domain-drop-control.service` remained active.
+
 ## Task 5: Record the undeployed boundary and next runbook
 
-- [ ] **Step 1: Update current-state evidence**
+- [x] **Step 1: Update current-state evidence**
 
 State that the callable dispatcher and bundle are locally verified but have no
 runtime caller and are not deployed. Production remains on the legacy path; TCP
 443, REALITY, owner identity/link, invitations, public access and payments are
 unchanged.
 
-- [ ] **Step 2: Write the next deployment-plan prerequisites**
+- [x] **Step 2: Write the next deployment-plan prerequisites**
 
 Require a separately reviewed one-shot strict-pinned deployer/runbook. It must
 upload a new regular file, verify hash and exact interpreter import probe, fsync
@@ -236,3 +248,10 @@ migrations on a closed copy and deploy with no runtime scheduling or enqueue.
 Before any later scheduler is enabled, it must also prove PostgreSQL
 `statement_timeout`, the driver command timeout and reconciliation of an
 ambiguous COMMIT response without automatic resend.
+
+Evidence: `docs/current-state.md` and `docs/veltrix-endpoint-api-findings.md`
+record the undeployed boundary and final acceptance evidence. The reviewed next
+stage is specified in
+`docs/superpowers/plans/2026-09-22-vpn-strict-node-deployment.md`; it contains no
+runtime scheduler, enqueue, API/lifecycle cutover, protected inbound, invitation
+or payment work.

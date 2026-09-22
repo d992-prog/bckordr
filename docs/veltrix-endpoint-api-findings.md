@@ -362,3 +362,28 @@ The next implementation stage must add the strict host-key-pinned dispatcher and
 deploy/verify the node-local modules before any production path is allowed to
 enqueue or execute these operations. API/lifecycle cutover, protected endpoint
 creation, connection acceptance and invitation release stay behind later gates.
+
+## Strict dispatcher and reservation final checkpoint (2026-09-22)
+
+The strict control-to-node path is now implemented as a callable local component:
+an exact stdlib zipapp and root-only node entrypoint, literal Ed25519-pinned
+AsyncSSH transport with ambient trust/auth disabled, transaction-separated
+claim/network/finalize dispatch, and cross-system worker reservations covering
+attacks, maintenance, sensitive edits and decommission. It has no application
+runtime, startup, API or lifecycle caller.
+
+Independent final specification and quality reviews approved the complete change.
+After a FastAPI 0.138.2 test-compatibility correction in `11cd172`, a fresh
+isolated PostgreSQL 14.24 cluster on the control server passed the complete backend
+suite: `1892 passed, 2 skipped`. Whole-backend Ruff passed, and the server's
+Python 3.11.0rc1 separately passed all `51` zipapp/entrypoint tests. The temporary
+cluster, source and script were deleted, its listener closed, and the production
+service remained active.
+
+This is still not a production cutover. The control database was not migrated,
+the node bundle/trust/config/journal were not installed, and no request can be
+scheduled through the new dispatcher. TCP 443, protected REALITY inbound creation,
+the owner UUID/link, invitations, public access and payments remain unchanged.
+The next stage is limited to the reviewed one-shot deployment plan in
+`docs/superpowers/plans/2026-09-22-vpn-strict-node-deployment.md`; runtime remains
+blocked on tested database/server timeouts and ambiguous-COMMIT reconciliation.

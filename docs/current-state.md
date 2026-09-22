@@ -1,13 +1,74 @@
 # Current State
 
+## Strict VPN dispatcher and reservation checkpoint (2026-09-22, local only)
+
+This is the newest checkpoint. Continue in
+`.worktrees/veltrix-customer-portal`, branch `codex/veltrix-customer-portal`.
+The strict dispatcher is callable and fully tested, but it has no runtime,
+startup, API or lifecycle caller and is **not deployed**. Do not enable enqueue
+or scheduling from this branch.
+
+### Implemented and verified locally
+
+- A deterministic stdlib zipapp now contains the exact node-runner manifest.
+  Its bounded entrypoint requires UID 0, strict private root-owned config/token/
+  x-ui database/journal paths, exact JSON input and an exact receipt. It never
+  initializes or replaces the durable journal implicitly.
+- The control transport requires a literal raw Ed25519 pin from a private
+  `known_hosts` snapshot. SSH config, agents, default keys, X.509 trust, PKCS11,
+  GSS, host-based and keyboard-interactive fallbacks are disabled. The command
+  is fixed, the request travels only on stdin, output is bounded concurrently,
+  and failures never include raw remote output or secrets.
+- The dispatcher commits the claim before SSH, closes that database session,
+  performs network I/O without a transaction, then finalizes in a fresh
+  transaction. Its current `finalize_timeout` bounds only the pre-COMMIT gate;
+  once COMMIT starts, the dispatcher waits for the driver outcome and session
+  close. Cancellation and a lost COMMIT response never trigger an automatic
+  resend: the row may already be finalized or may remain claimed, so either
+  result requires explicit reconciliation.
+- Cross-system reservations now serialize VPN control against domain attacks,
+  VPN maintenance, sensitive worker edits and decommission. PostgreSQL worker
+  locks are acquired in ascending ID order and all losing paths recheck after
+  the lock, including immediately before the legacy SSH callback.
+- Independent final specification and quality reviews both approved the complete
+  Tasks1-3 implementation with no significant findings. Ponytail review found
+  no new dependency or speculative runtime abstraction.
+
+### Final evidence and production boundary
+
+- Commit `11cd172` made the router assertion use FastAPI's public OpenAPI result,
+  after the first full server run exposed an internal-router compatibility change
+  in FastAPI 0.138.2. The corrected test passed locally and in the full rerun.
+- A fresh isolated PostgreSQL 14.24 cluster on loopback port 56680 and the control
+  server's Python 3.11.0rc1 ran the complete backend suite: **1892 passed, 2
+  skipped, 12 deprecation warnings in 482.20s**. Whole-backend Ruff passed. A
+  separate Linux zipapp/entrypoint run passed **51 tests in 3.09s**. Local and
+  commit-range whitespace checks passed.
+- The exact temporary source archive, script, cluster and directory
+  `/tmp/veltrix-task4-11cd172-16f2d13e` were removed; port 56680 closed and
+  `domain-drop-control.service` remained active. The production database and VPN
+  node were not used by the tests.
+- Nothing from this strict-dispatcher checkpoint is deployed. No control database
+  migration, node zipapp, trust/config file or new journal was installed. The
+  current production runtime remains on its existing legacy path. Public TCP 443
+  for the new path remains unopened, no protected REALITY inbound was created,
+  and the owner's UUID, 8443 endpoint and working link are unchanged. Friend
+  invitations, public admission and payments remain disabled.
+- The next reviewed plan is
+  `docs/superpowers/plans/2026-09-22-vpn-strict-node-deployment.md`. It permits
+  only a one-shot strict-pinned code/config deployment and closed-copy migration
+  rehearsal. Runtime scheduling remains blocked until PostgreSQL
+  `statement_timeout`, the driver's command timeout and explicit ambiguous-COMMIT
+  reconciliation have separate tests.
+
 ## Node-local API, journal and approved live repair (2026-09-21 continuation)
 
-This is the newest checkpoint; sections below are historical. Continue in
-`.worktrees/veltrix-customer-portal`, branch `codex/veltrix-customer-portal`.
-The friend beta is **not ready**: no protected inbound, invitation activation,
-complete mutation executor, durable control queue or reconciliation workflow yet.
-Payments and public cabinet admission remain disabled. Do not deploy this local
-intermediate branch or remove the bound-profile mutation barriers.
+This section is a historical predecessor to the strict-dispatcher checkpoint
+above. Its production observations remain relevant, but its list of missing local
+components is superseded. The friend beta is still **not ready**: there is no
+protected inbound, deployed strict path, invitation activation or reconciliation
+workflow. Payments and public cabinet admission remain disabled. Do not remove
+the bound-profile mutation barriers.
 
 ### Implemented locally
 
