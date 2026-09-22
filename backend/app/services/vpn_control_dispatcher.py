@@ -23,20 +23,23 @@ from app.services.vpn_node_transport import (
 
 
 DEFAULT_FINALIZE_TIMEOUT = 15.0
-FINALIZE_CANCEL_GRACE = 0.05
-FINALIZE_CANCEL_ATTEMPTS = 3
 
 
 class _FinalizeGate:
     def __init__(self) -> None:
-        self._allowed = True
+        self._state = "before_commit"
 
-    @property
-    def allowed(self) -> bool:
-        return self._allowed
+    def begin_commit(self) -> bool:
+        if self._state != "before_commit":
+            return False
+        self._state = "committing"
+        return True
 
-    def revoke(self) -> None:
-        self._allowed = False
+    def revoke(self) -> bool:
+        if self._state != "before_commit":
+            return False
+        self._state = "revoked"
+        return True
 
 
 async def _resolve(value):
@@ -68,7 +71,7 @@ async def _finalize_once(
             if now is not None:
                 kwargs["now"] = now()
             await _resolve(finalize(db, operation_id, claim_token, **kwargs))
-            if not gate.allowed:
+            if not gate.begin_commit():
                 await _rollback(db)
                 return False
             await db.commit()
@@ -78,39 +81,25 @@ async def _finalize_once(
             raise
 
 
-def _consume_task(task: asyncio.Task) -> None:
+def _task_outcome(task: asyncio.Task) -> bool:
     try:
-        task.result()
-    except BaseException:
-        pass
+        return task.result()
+    except asyncio.CancelledError:
+        return False
+    except Exception:
+        return False
 
 
-async def _cancel_and_collect(task: asyncio.Task, gate: _FinalizeGate) -> None:
-    gate.revoke()
-    for _ in range(FINALIZE_CANCEL_ATTEMPTS):
-        if task.done():
-            _consume_task(task)
-            return
-        task.cancel()
+async def _await_definitive(
+    task: asyncio.Task, cancellation: asyncio.CancelledError | None
+) -> asyncio.CancelledError | None:
+    while not task.done():
         try:
-            await asyncio.wait_for(
-                asyncio.shield(task),
-                FINALIZE_CANCEL_GRACE,
-            )
-        except asyncio.CancelledError:
-            if task.done():
-                _consume_task(task)
-                return
-        except TimeoutError:
+            await asyncio.wait({task})
+        except asyncio.CancelledError as error:
+            cancellation = cancellation or error
             continue
-        except BaseException:
-            _consume_task(task)
-            return
-    task.cancel()
-    if task.done():
-        _consume_task(task)
-    else:
-        task.add_done_callback(_consume_task)
+    return cancellation
 
 
 async def _bounded_finalize(
@@ -135,36 +124,35 @@ async def _bounded_finalize(
         )
     )
     deadline = asyncio.get_running_loop().time() + timeout
-    cancellation = None
-    while True:
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
-            await _cancel_and_collect(task, gate)
-            if cancellation is not None:
-                raise cancellation
-            return False
+            break
         try:
-            completed = await asyncio.wait_for(asyncio.shield(task), remaining)
+            done, _pending = await asyncio.wait({task}, timeout=remaining)
         except asyncio.CancelledError as error:
-            if task.done():
-                _consume_task(task)
-                if cancellation is not None:
-                    raise cancellation
-                return False
             cancellation = cancellation or error
             continue
-        except TimeoutError:
-            await _cancel_and_collect(task, gate)
-            if cancellation is not None:
-                raise cancellation
-            return False
-        except Exception:
-            if cancellation is not None:
-                raise cancellation
-            return False
+        if task in done:
+            break
+        break
+
+    if not task.done():
+        if gate.revoke():
+            task.cancel()
+        # Once commit has started, cancellation cannot safely classify its outcome.
+        # Wait for the database operation and session close instead of detaching it.
+        cancellation = await _await_definitive(task, cancellation)
+    try:
+        outcome = _task_outcome(task)
+    except BaseException:
         if cancellation is not None:
-            raise cancellation
-        return completed
+            raise cancellation from None
+        raise
+    if cancellation is not None:
+        raise cancellation from None
+    return outcome
 
 
 def _failure_receipt(phase: str) -> NodeControlReceipt:

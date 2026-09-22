@@ -12,6 +12,7 @@ import pytest
 from app.services import vpn_node_transport
 from app.services.vpn_control_dispatcher import (
     _FinalizeGate,
+    _bounded_finalize,
     _finalize_once,
     dispatch_next_vpn_control_operation,
 )
@@ -506,11 +507,13 @@ async def test_finalize_timeout_cancels_collects_and_cannot_commit_later(tmp_pat
         )
     )
     await started.wait()
+    await asyncio.sleep(0.05)
+    assert not dispatch.done()
+    release.set()
     assert await asyncio.wait_for(dispatch, 0.5)
     assert finalize_session.closed
     assert events.count("commit") == 1
     assert "rollback" in events
-    release.set()
     await asyncio.sleep(0.05)
     assert events.count("commit") == 1
 
@@ -541,12 +544,13 @@ async def test_repeated_cancellation_keeps_exact_receipt_shielded(tmp_path):
         )
     )
     await started.wait()
-    dispatch.cancel()
+    dispatch.cancel("first")
     await asyncio.sleep(0)
-    dispatch.cancel()
+    dispatch.cancel("second")
     release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(asyncio.shield(dispatch), 0.5)
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await dispatch
+    assert caught.value.args == ("first",)
     assert {"receipt_state": "observed", "error_code": None} in events
     assert events.count("commit") == 2
     assert events.count("session-close") == 2
@@ -582,3 +586,122 @@ async def test_revoked_finalize_gate_rolls_back_before_commit():
     assert "rollback" in events
     assert "commit" not in events
     assert session.closed
+
+
+@pytest.mark.asyncio
+async def test_timeout_during_commit_waits_for_definitive_commit_and_close(tmp_path):
+    events = []
+    commit_started = asyncio.Event()
+    release = asyncio.Event()
+    suppressed_cancellations = 0
+
+    class SuppressingCommitSession(Session):
+        async def commit(self):
+            nonlocal suppressed_cancellations
+            commit_started.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    suppressed_cancellations += 1
+            events.append("commit")
+
+    finalize_session = SuppressingCommitSession(events)
+    sessions = [Session(events, operation()), finalize_session]
+    dispatch = asyncio.create_task(
+        dispatch_next_vpn_control_operation(
+            lambda: sessions.pop(0),
+            tmp_path / "known_hosts",
+            claim=lambda *_args, **_kwargs: operation(),
+            finalize=lambda *_args, **_kwargs: None,
+            snapshot_loader=lambda *_args: SimpleNamespace(password="secret"),
+            transport=lambda *_args, **_kwargs: asyncio.sleep(
+                0, result=NodeControlReceipt("observed", None)
+            ),
+            finalize_timeout=0.02,
+        )
+    )
+    await commit_started.wait()
+    await asyncio.sleep(0.25)
+    returned_before_release = dispatch.done()
+    closed_before_release = finalize_session.closed
+    release.set()
+    assert await asyncio.wait_for(dispatch, 0.5)
+    await asyncio.sleep(0.05)
+    assert not returned_before_release
+    assert not closed_before_release
+    assert suppressed_cancellations == 0
+    assert finalize_session.closed
+    assert events.count("commit") == 2
+    after_return = list(events)
+    await asyncio.sleep(0.05)
+    assert events == after_return
+
+
+@pytest.mark.asyncio
+async def test_first_cancellation_is_reraised_when_finalize_child_is_already_done():
+    events = []
+    parent = {}
+
+    class CancelParentAfterCommitSession(Session):
+        async def commit(self):
+            await super().commit()
+            asyncio.get_running_loop().call_soon(parent["task"].cancel, "first")
+
+    session = CancelParentAfterCommitSession(events)
+    task = asyncio.create_task(
+        _bounded_finalize(
+            lambda: session,
+            lambda *_args, **_kwargs: None,
+            OPERATION_ID,
+            TOKEN,
+            NodeControlReceipt("observed", None),
+            1,
+            None,
+        )
+    )
+    parent["task"] = task
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    assert caught.value.args == ("first",)
+    assert session.closed
+    assert events.count("commit") == 1
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_timeout_cleanup_is_reraised_after_close():
+    events = []
+    session = Session(events)
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def finalize(*_args, **_kwargs):
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cleanup_started.set()
+
+    task = asyncio.create_task(
+        _bounded_finalize(
+            lambda: session,
+            finalize,
+            OPERATION_ID,
+            TOKEN,
+            NodeControlReceipt("observed", None),
+            0.02,
+            None,
+        )
+    )
+    await started.wait()
+    await cleanup_started.wait()
+    task.cancel("cleanup-cancel")
+    release.set()
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    assert caught.value.args == ("cleanup-cancel",)
+    assert session.closed
+    assert "rollback" in events
+    assert "commit" not in events

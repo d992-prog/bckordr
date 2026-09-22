@@ -626,6 +626,72 @@ async def test_real_loopback_key_auth_uses_only_imported_key():
 
 
 @pytest.mark.asyncio
+async def test_real_loopback_key_auth_never_falls_back_to_hostile_home(
+    monkeypatch, tmp_path
+):
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    ambient_key = asyncssh.generate_private_key("ssh-ed25519")
+    explicit_wrong_key = asyncssh.generate_private_key("ssh-ed25519")
+    accepted_public = ambient_key.export_public_key("openssh")
+    invoked = 0
+
+    hostile_home = tmp_path / "hostile-home"
+    hostile_ssh = hostile_home / ".ssh"
+    hostile_ssh.mkdir(parents=True)
+    (hostile_ssh / "id_ed25519").write_bytes(ambient_key.export_private_key("openssh"))
+    monkeypatch.setenv("HOME", str(hostile_home))
+    monkeypatch.setenv("USERPROFILE", str(hostile_home))
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "hostile-agent.sock"))
+
+    class AmbientOnlyServer(asyncssh.SSHServer):
+        def begin_auth(self, username):
+            return True
+
+        def public_key_auth_supported(self):
+            return True
+
+        def validate_public_key(self, username, key):
+            return username == "root" and key.export_public_key("openssh") == (
+                accepted_public
+            )
+
+    async def process_factory(process):
+        nonlocal invoked
+        invoked += 1
+        process.exit(0)
+
+    server = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_factory=AmbientOnlyServer,
+        server_host_keys=[host_key],
+        process_factory=process_factory,
+        encoding=None,
+    )
+    try:
+        port = server.get_port()
+        snapshot = VpnNodeTransportSnapshot(
+            "127.0.0.1",
+            port,
+            "root",
+            f"[127.0.0.1]:{port} ".encode() + host_key.export_public_key("openssh"),
+            client_key=explicit_wrong_key,
+        )
+        with pytest.raises(VpnNodeTransportError) as caught:
+            await execute_vpn_node_request(
+                snapshot,
+                b"{}\n",
+                operation_id=OPERATION_ID,
+                request_digest=DIGEST,
+            )
+        assert caught.value.phase == "preflight"
+        assert invoked == 0
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("stall", "expected_phase"),
     [("connect", "preflight"), ("create", "preflight"), ("drain", "mutation")],
