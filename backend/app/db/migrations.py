@@ -520,7 +520,28 @@ MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_zone ON zone_scan_candidates(zone)",
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_lifecycle_stage ON zone_scan_candidates(lifecycle_stage)",
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_discovery_domain_id ON zone_scan_candidates(discovery_domain_id)",
-) + VPN_ENDPOINT_MIGRATIONS
+) + VPN_ENDPOINT_MIGRATIONS + (
+    """
+    CREATE TABLE IF NOT EXISTS vpn_friend_invitations (
+        slot SMALLINT PRIMARY KEY,
+        token_digest VARCHAR(64) NOT NULL,
+        created_by_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        redeem_expires_at TIMESTAMPTZ NOT NULL,
+        redeemed_at TIMESTAMPTZ NULL,
+        telegram_user_id VARCHAR(64) NULL,
+        access_key_id INTEGER NULL REFERENCES vpn_access_keys(id) ON DELETE RESTRICT,
+        revoked_at TIMESTAMPTZ NULL,
+        CONSTRAINT ck_vpn_friend_invitation_slot CHECK (slot BETWEEN 1 AND 10),
+        CONSTRAINT ck_vpn_friend_invitation_redemption CHECK (
+            (redeemed_at IS NULL AND telegram_user_id IS NULL AND access_key_id IS NULL) OR
+            (redeemed_at IS NOT NULL AND telegram_user_id IS NOT NULL AND access_key_id IS NOT NULL)
+        ),
+        UNIQUE (token_digest),
+        CONSTRAINT uq_vpn_friend_invitation_access_key UNIQUE (access_key_id)
+    )
+    """,
+)
 
 
 async def run_startup_migrations(engine: AsyncEngine) -> None:

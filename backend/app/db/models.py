@@ -13,6 +13,7 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -875,6 +876,35 @@ class VpnAccessKey(Base):
 
     subscription: Mapped[VpnSubscription] = relationship(back_populates="access_keys")
     worker: Mapped[WorkerNode | None] = relationship(back_populates="vpn_access_keys")
+
+
+class VpnFriendInvitation(Base):
+    __tablename__ = "vpn_friend_invitations"
+    __table_args__ = (
+        CheckConstraint("slot BETWEEN 1 AND 10", name="ck_vpn_friend_invitation_slot"),
+        CheckConstraint(
+            "(redeemed_at IS NULL AND telegram_user_id IS NULL AND access_key_id IS NULL) OR "
+            "(redeemed_at IS NOT NULL AND telegram_user_id IS NOT NULL AND access_key_id IS NOT NULL)",
+            name="ck_vpn_friend_invitation_redemption",
+        ),
+        UniqueConstraint("access_key_id", name="uq_vpn_friend_invitation_access_key"),
+    )
+
+    slot: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, server_default=func.now()
+    )
+    redeem_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    telegram_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    access_key_id: Mapped[int | None] = mapped_column(
+        ForeignKey("vpn_access_keys.id", ondelete="RESTRICT"), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class VpnControlOperation(Base):

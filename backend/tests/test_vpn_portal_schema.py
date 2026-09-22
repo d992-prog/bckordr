@@ -263,6 +263,15 @@ async def test_customer_deletion_cascades_portal_customer_records():
 
 def test_portal_settings_default_disabled_and_accept_explicit_aliases(monkeypatch):
     aliases = {
+        "VPN_FRIEND_BETA_ENABLED": "true",
+        "VPN_FRIEND_BETA_RELEASE_ID": "a" * 64,
+        "VPN_TELEGRAM_BOT_USERNAME": "veltrix_vpn_official_bot",
+        "VPN_CONTROL_DISPATCH_ENABLED": "true",
+        "VPN_CONTROL_KNOWN_HOSTS_PATH": "/etc/veltrix/known_hosts",
+        "VPN_CONTROL_DISPATCH_INTERVAL_SECONDS": "2.5",
+        "VPN_CONTROL_FINALIZE_TIMEOUT_SECONDS": "20.0",
+        "VPN_CONTROL_DB_COMMAND_TIMEOUT_SECONDS": "40.0",
+        "VPN_CONTROL_DB_STATEMENT_TIMEOUT_MS": "40000",
         "VPN_PORTAL_ENABLED": "true",
         "VPN_PORTAL_PUBLIC_ORIGIN": "https://portal.example.test",
         "VPN_PORTAL_ALLOW_LOCAL_HTTP": "true",
@@ -277,6 +286,15 @@ def test_portal_settings_default_disabled_and_accept_explicit_aliases(monkeypatc
     defaults = Settings(_env_file=None)
     configured = Settings(_env_file=None, **aliases)
 
+    assert defaults.vpn_friend_beta_enabled is False
+    assert defaults.vpn_friend_beta_release_id == ""
+    assert defaults.vpn_telegram_bot_username == ""
+    assert defaults.vpn_control_dispatch_enabled is False
+    assert defaults.vpn_control_known_hosts_path == ""
+    assert defaults.vpn_control_dispatch_interval_seconds == 1.0
+    assert defaults.vpn_control_finalize_timeout_seconds == 15.0
+    assert defaults.vpn_control_db_command_timeout_seconds == 30.0
+    assert defaults.vpn_control_db_statement_timeout_ms == 30_000
     assert defaults.vpn_portal_enabled is False
     assert defaults.vpn_portal_public_origin == ""
     assert defaults.vpn_portal_allow_local_http is False
@@ -284,6 +302,15 @@ def test_portal_settings_default_disabled_and_accept_explicit_aliases(monkeypatc
     assert defaults.vpn_portal_allowed_telegram_ids == ""
     assert defaults.vpn_portal_oidc_client_id == ""
     assert defaults.vpn_portal_oidc_client_secret == ""
+    assert configured.vpn_friend_beta_enabled is True
+    assert configured.vpn_friend_beta_release_id == "a" * 64
+    assert configured.vpn_telegram_bot_username == "veltrix_vpn_official_bot"
+    assert configured.vpn_control_dispatch_enabled is True
+    assert configured.vpn_control_known_hosts_path == "/etc/veltrix/known_hosts"
+    assert configured.vpn_control_dispatch_interval_seconds == 2.5
+    assert configured.vpn_control_finalize_timeout_seconds == 20.0
+    assert configured.vpn_control_db_command_timeout_seconds == 40.0
+    assert configured.vpn_control_db_statement_timeout_ms == 40_000
     assert configured.vpn_portal_enabled is True
     assert configured.vpn_portal_public_origin == "https://portal.example.test"
     assert configured.vpn_portal_allow_local_http is True

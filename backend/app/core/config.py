@@ -54,9 +54,26 @@ class Settings(BaseSettings):
         default=300.0,
         alias="VPN_LIFECYCLE_CYCLE_TIMEOUT_SECONDS",
     )
+    vpn_friend_beta_enabled: bool = Field(default=False, alias="VPN_FRIEND_BETA_ENABLED")
+    vpn_friend_beta_release_id: str = Field(default="", alias="VPN_FRIEND_BETA_RELEASE_ID")
     vpn_telegram_bot_token: str = Field(default="", alias="VPN_TELEGRAM_BOT_TOKEN")
+    vpn_telegram_bot_username: str = Field(default="", alias="VPN_TELEGRAM_BOT_USERNAME")
     vpn_telegram_webhook_secret: str = Field(default="", alias="VPN_TELEGRAM_WEBHOOK_SECRET")
     vpn_telegram_secret_token: str = Field(default="", alias="VPN_TELEGRAM_SECRET_TOKEN")
+    vpn_control_dispatch_enabled: bool = Field(default=False, alias="VPN_CONTROL_DISPATCH_ENABLED")
+    vpn_control_known_hosts_path: str = Field(default="", alias="VPN_CONTROL_KNOWN_HOSTS_PATH")
+    vpn_control_dispatch_interval_seconds: float = Field(
+        default=1.0, alias="VPN_CONTROL_DISPATCH_INTERVAL_SECONDS"
+    )
+    vpn_control_finalize_timeout_seconds: float = Field(
+        default=15.0, alias="VPN_CONTROL_FINALIZE_TIMEOUT_SECONDS"
+    )
+    vpn_control_db_command_timeout_seconds: float = Field(
+        default=30.0, alias="VPN_CONTROL_DB_COMMAND_TIMEOUT_SECONDS"
+    )
+    vpn_control_db_statement_timeout_ms: int = Field(
+        default=30_000, alias="VPN_CONTROL_DB_STATEMENT_TIMEOUT_MS"
+    )
     vpn_portal_enabled: bool = Field(default=False, alias="VPN_PORTAL_ENABLED")
     vpn_portal_public_origin: str = Field(default="", alias="VPN_PORTAL_PUBLIC_ORIGIN")
     vpn_portal_allow_local_http: bool = Field(default=False, alias="VPN_PORTAL_ALLOW_LOCAL_HTTP")
