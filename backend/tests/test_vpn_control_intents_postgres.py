@@ -1052,10 +1052,10 @@ async def test_claim_does_not_cross_uncommitted_real_worker_mutation(
 ):
     await _seed(postgres_control)
     await _configure_workers(postgres_control)
-    operation_id = await _stage(postgres_control, 7)
     release_maintenance = asyncio.Event()
     maintenance_locked = asyncio.Event()
     background = BackgroundTasks()
+    operation_id = "bbbbbbbb-0000-4000-8000-000000000099"
 
     async with postgres_control.sessions() as holder, postgres_control.sessions() as claimer:
         if conflict == "attack":
@@ -1083,19 +1083,11 @@ async def test_claim_does_not_cross_uncommitted_real_worker_mutation(
             await holder.flush()
             maintenance_task = None
         else:
-            real_reservations = control_routes.active_vpn_control_worker_ids
+            async def pause_before_commit(*_args, **_kwargs):
+                maintenance_locked.set()
+                await release_maintenance.wait()
 
-            async def pause_after_lock(session):
-                if session is holder and not maintenance_locked.is_set():
-                    maintenance_locked.set()
-                    await release_maintenance.wait()
-                return await real_reservations(session)
-
-            monkeypatch.setattr(
-                control_routes,
-                "active_vpn_control_worker_ids",
-                pause_after_lock,
-            )
+            monkeypatch.setattr(control_routes, "add_audit_log", pause_before_commit)
             maintenance_task = asyncio.create_task(
                 _start_worker_maintenance_job(
                     worker_id=2,
@@ -1106,6 +1098,22 @@ async def test_claim_does_not_cross_uncommitted_real_worker_mutation(
                 )
             )
             await asyncio.wait_for(maintenance_locked.wait(), timeout=1)
+
+        async with postgres_control.sessions() as inserter:
+            inserter.add(
+                VpnControlOperation(
+                    id=operation_id,
+                    access_key_id=7,
+                    worker_id=2,
+                    endpoint_id=5,
+                    generation=1,
+                    action="provision",
+                    request_snapshot={},
+                    request_digest="8" * 64,
+                    state="queued",
+                )
+            )
+            await inserter.commit()
 
         claimed = await claim_next_vpn_control_operation(
             claimer,
@@ -1122,7 +1130,12 @@ async def test_claim_does_not_cross_uncommitted_real_worker_mutation(
             await asyncio.wait_for(maintenance_task, timeout=1)
 
     async with postgres_control.sessions() as session:
-        operation = await session.get(VpnControlOperation, str(operation_id))
+        assert await claim_next_vpn_control_operation(
+            session,
+            claim_token=uuid4(),
+            now=NOW + timedelta(seconds=2),
+        ) is None
+        operation = await session.get(VpnControlOperation, operation_id)
         assert operation is not None and operation.state == "queued"
 
 
