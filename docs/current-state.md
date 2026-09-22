@@ -1,5 +1,70 @@
 # Current State
 
+## Friend invitation closed-beta application checkpoint (2026-09-23, local only)
+
+This is the newest checkpoint. Continue in
+`.worktrees/veltrix-customer-portal`, branch `codex/veltrix-customer-portal`.
+The approved design is `64a3972`, the execution plan is `1255aed`, and the
+application implementation is the commit range `ebebebc..1899ef7`.
+
+### Implemented and verified locally
+
+- The admin can manage ten durable invitation slots. A raw Telegram link is
+  returned only by create/rotate, held only in the immediate component state,
+  and never returned by list. Redeemed and disabled slots are not reused.
+- Telegram activation validates and redacts the payload before persistence,
+  atomically creates one seven-day trial, one stable endpoint-bound key and one
+  durable control operation, and safely reuses the same records on replay.
+- Friend Mini App/OIDC/session admission now rechecks the exact invitation ->
+  key -> subscription -> customer chain. Expiry, disable and customer archive
+  close admission; an approved extension can restore only a subscription-suspended
+  key, never an explicitly revoked key.
+- The strict dispatcher has a lazy dedicated PostgreSQL pool, bounded database
+  timeouts and one sequential runtime task. It runs only when every application
+  and database-visible readiness gate is exact; uncertain mutation outcomes are
+  never resent automatically.
+- The Russian admin panel exposes slot state, identity, expiry, provisioning
+  status, one-time copy, guarded retry and confirmed disable without retaining
+  raw invitation links in the application root state.
+
+### Final local evidence
+
+- The focused invitation/Telegram/portal/lifecycle/control acceptance set passed
+  **502 tests with zero skips in 246.75s** against a fresh isolated PostgreSQL
+  14.23 cluster on `127.0.0.1:62747`.
+- The complete backend passed **2095 tests with 5 skips in 462.66s** against the
+  same cluster. The five skips are Windows-only journal limitations: four symlink
+  cases and one POSIX owner/mode case; the isolated journal confirmation was **83
+  passed, 5 skipped in 4.65s**. No required PostgreSQL case was skipped.
+- Whole-backend Ruff passed. The frontend passed **61 tests with zero skips**,
+  and its TypeScript/Vite production build succeeded. Whitespace checks passed.
+- Full verification exposed and fixed two test-only assumptions: endpoint
+  migrations must remain contiguous rather than forever be the final migrations,
+  and invitation-link parsing must preserve a valid token containing internal
+  `i_`. The PostgreSQL race now forces that token shape deterministically.
+- Fresh independent specification and quality/security reviews approved the
+  complete range. Review follow-up added an initial-claim PostgreSQL race which
+  proves the loser replays a committed activation after winner delivery failure,
+  prevented a late failure write from overwriting successful replay, rejected
+  archived workers during readiness, and removed stale copied links from the UI.
+
+### Production boundary and next gates
+
+- This checkpoint is **not deployed**. No production schema or setting changed,
+  no real invitation exists, and no friend was admitted. The owner's UUID,
+  working 8443 link, Xray generation and payment state are unchanged.
+- `VPN_FRIEND_BETA_ENABLED=false`, `VPN_CONTROL_DISPATCH_ENABLED=false` and
+  `VPN_PORTAL_PUBLIC_ACCESS=false` remain the required defaults. The application
+  therefore fails closed even if this code is deployed without rollout data.
+- Before the first real link: deploy and verify the strict node zipapp/trust/config
+  and journal; rehearse the migration on a closed production copy; complete the
+  timeout and ambiguous-COMMIT reconciliation gates; create and externally accept
+  the protected REALITY endpoint on TCP 443; then perform one controlled friend
+  connection and individual revoke. Only after that proof may the remaining beta
+  slots be used.
+- Payments remain intentionally postponed until the VPN product is working and
+  the closed beta has been accepted.
+
 ## Strict VPN dispatcher and reservation checkpoint (2026-09-22, local only)
 
 This is the newest checkpoint. Continue in

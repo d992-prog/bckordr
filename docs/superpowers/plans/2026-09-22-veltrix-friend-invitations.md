@@ -59,7 +59,7 @@ No task may change the owner's existing UUID, 8443 link, Xray generation, paymen
 - Create: `backend/tests/test_vpn_friend_invitation_schema.py`
 - Modify: `backend/tests/test_vpn_portal_schema.py`
 
-- [ ] **Step 1: Write failing ORM and settings tests**
+- [x] **Step 1: Write failing ORM and settings tests**
 
 Create tests which assert the exact table contract and disabled defaults:
 
@@ -101,13 +101,13 @@ def test_friend_beta_and_dispatcher_default_off() -> None:
     assert settings.vpn_control_known_hosts_path == ""
 ```
 
-- [ ] **Step 2: Run the focused tests and observe the missing model/settings failure**
+- [x] **Step 2: Run the focused tests and observe the missing model/settings failure**
 
 Run: `cd backend && .venv/Scripts/python.exe -m pytest tests/test_vpn_friend_invitation_schema.py -q`
 
 Expected: collection fails because `VpnFriendInvitation` and the new settings do not exist.
 
-- [ ] **Step 3: Add the minimal model and settings**
+- [x] **Step 3: Add the minimal model and settings**
 
 Add this model after `VpnAccessKey` so the terminal foreign key is explicit:
 
@@ -166,11 +166,11 @@ vpn_control_db_statement_timeout_ms: int = Field(
 )
 ```
 
-- [ ] **Step 4: Add idempotent migration DDL and migration assertions**
+- [x] **Step 4: Add idempotent migration DDL and migration assertions**
 
 Append one `CREATE TABLE IF NOT EXISTS` statement after the access-key/endpoint DDL and assert its exact constraints in `test_vpn_friend_invitation_schema.py`. Following the existing endpoint-migration harness, build a real pre-invitation PostgreSQL schema from the exact preceding migration slice, insert representative customer/subscription/key rows, run only the new migration, verify old rows byte-for-byte, then run the migration again. Add a separate fresh-schema test. Do not use `Base.metadata.create_all()` to stand in for the upgrade path. The SQL must use `SMALLINT PRIMARY KEY`, `CHECK (slot BETWEEN 1 AND 10)`, the all-null/all-non-null redemption check, `UNIQUE (token_digest)`, `UNIQUE (access_key_id)`, `ON DELETE SET NULL` for the actor and `ON DELETE RESTRICT` for the key.
 
-- [ ] **Step 5: Run schema/config tests and commit**
+- [x] **Step 5: Run schema/config tests and commit**
 
 Run:
 
@@ -192,7 +192,7 @@ Commit: `git commit -m "feat(vpn): add friend invitation schema"`
 - Create: `backend/app/services/vpn_friend_invitations.py`
 - Create: `backend/tests/test_vpn_friend_invitations.py`
 
-- [ ] **Step 1: Write failing token, readiness, cap and rotation tests**
+- [x] **Step 1: Write failing token, readiness, cap and rotation tests**
 
 The tests must prove:
 
@@ -208,13 +208,13 @@ assert not hasattr(view, "token")
 
 Also assert invalid bot usernames, a disabled flag, disabled dispatcher, `VPN_PORTAL_PUBLIC_ACCESS=true`, absent/mismatched release-readiness marker, invalid strict transport snapshot and absence of a `ready`/verified/`reality` endpoint all raise the same bounded `FriendInvitationUnavailable("friend_beta_unavailable")`. Issue eleven invitations sequentially and assert the eleventh raises `FriendInvitationConflict("friend_invitation_cohort_full")`. Rotation must keep the slot, replace the digest, reset the seven-day invite window and reject redeemed/revoked rows. Losing a raw link is tested as rotation; no read/list call may recover it.
 
-- [ ] **Step 2: Run the focused test and observe the missing-service failure**
+- [x] **Step 2: Run the focused test and observe the missing-service failure**
 
 Run: `cd backend && .venv/Scripts/python.exe -m pytest tests/test_vpn_friend_invitations.py -q`
 
 Expected: collection fails because `vpn_friend_invitations` does not exist.
 
-- [ ] **Step 3: Implement the minimal service surface**
+- [x] **Step 3: Implement the minimal service surface**
 
 Use only stdlib `hashlib`, `re`, `secrets`, dataclasses and existing SQLAlchemy models. Define:
 
@@ -294,11 +294,11 @@ else:
 Regenerate the raw token if its digest conflicts. Rotation must lock its exact
 row with `FOR UPDATE` before replacing only digest and issue/expiry timestamps.
 
-- [ ] **Step 4: Derive display state through the exact ownership chain**
+- [x] **Step 4: Derive display state through the exact ownership chain**
 
 List rows using one joined query from invitation to access key to subscription to customer and latest control operation. Reject a broken chain by returning `failed`; never infer ownership from Telegram ID alone. Derive exactly `unused`, `preparing`, `active`, `failed`, `needs_verification`, `expired`, or `disabled`, and never include raw link/token in the view dataclass.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 Run: `cd backend && .venv/Scripts/python.exe -m pytest tests/test_vpn_friend_invitations.py -q`
 
@@ -313,7 +313,7 @@ Commit: `git commit -m "feat(vpn): add friend invitation policy"`
 - Modify: `backend/app/api/routes/control.py`
 - Create: `backend/tests/test_vpn_friend_invitation_api.py`
 
-- [ ] **Step 1: Write failing API contract tests**
+- [x] **Step 1: Write failing API contract tests**
 
 Test `GET /api/control/vpn/friend-invitations`, `POST /api/control/vpn/friend-invitations`, and `POST /api/control/vpn/friend-invitations/{slot}/rotate`. Assert admin auth, mutation serialization, status 201 for issue, status 200 for rotation, and:
 
@@ -325,13 +325,13 @@ assert "invite_link" not in client.get(list_url, headers=admin_headers).text
 assert raw_token not in audit.details
 ```
 
-- [ ] **Step 2: Run the route tests and observe 404 failures**
+- [x] **Step 2: Run the route tests and observe 404 failures**
 
 Run: `cd backend && .venv/Scripts/python.exe -m pytest tests/test_vpn_friend_invitation_api.py -q`
 
 Expected: the new routes return 404.
 
-- [ ] **Step 3: Add exact schemas and route mappings**
+- [x] **Step 3: Add exact schemas and route mappings**
 
 Add response models with no extra fields:
 
@@ -359,7 +359,7 @@ class VpnFriendInvitationIssuedResponse(BaseModel):
 
 Map service exceptions to bounded 409/503 details, add `Cache-Control: no-store` on create/rotate, and write audit details only as `details=f"slot={slot}"`. Never pass service exception strings containing user data to HTTP responses.
 
-- [ ] **Step 4: Run API tests and commit**
+- [x] **Step 4: Run API tests and commit**
 
 Run: `cd backend && .venv/Scripts/python.exe -m pytest tests/test_vpn_friend_invitation_api.py -q`
 
@@ -375,7 +375,7 @@ Commit: `git commit -m "feat(api): manage friend invitations"`
 - Modify: `backend/tests/test_vpn_friend_invitations.py`
 - Create: `backend/tests/test_vpn_friend_invitations_postgres.py`
 
-- [ ] **Step 1: Write failing redemption and PostgreSQL race tests**
+- [x] **Step 1: Write failing redemption and PostgreSQL race tests**
 
 Cover one successful redemption, same-user replay, different-user rejection, expired/revoked token, endpoint disappearing at the lock recheck, and two real PostgreSQL races:
 
@@ -393,13 +393,13 @@ assert await scalar_count(VpnControlOperation) == 1
 
 Eleven concurrent issue transactions must persist exactly ten slots. Two Telegram identities racing one raw token must yield one bound row and one generic rejection.
 
-- [ ] **Step 2: Run focused tests and observe missing redemption failure**
+- [x] **Step 2: Run focused tests and observe missing redemption failure**
 
 Run: `cd backend && .venv/Scripts/python.exe -m pytest tests/test_vpn_friend_invitations.py -k redeem -q`
 
 Expected: failure because `redeem_friend_invitation` is absent.
 
-- [ ] **Step 3: Implement lock-first redemption**
+- [x] **Step 3: Implement lock-first redemption**
 
 Define `redeem_friend_invitation(db, settings, token, identity, now)` with this exact order:
 
@@ -425,7 +425,7 @@ Define `redeem_friend_invitation(db, settings, token, identity, now)` with this 
 
 Catch policy/readiness failures outside the nested transaction so the token remains unbound and its seven days do not start. Tests must assert the immutable worker/endpoint/email/sub-ID fields appear unchanged in the staged request. Add a PostgreSQL race in which the selected candidate endpoint changes before staging: the locked recheck must fail and roll back the entire redemption instead of persisting an invalid binding. Do not call legacy provisioning, perform network I/O or commit inside this service.
 
-- [ ] **Step 4: Run SQLite policy tests and opt-in PostgreSQL races**
+- [x] **Step 4: Run SQLite policy tests and opt-in PostgreSQL races**
 
 Run:
 
@@ -440,7 +440,7 @@ separately approved isolated PostgreSQL using the repository's existing test-DB
 harness and set `VPN_PORTAL_TEST_PG_URL` to that harness output. A skip does not
 complete the task. Never point this variable at production.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit: `git commit -m "feat(vpn): redeem friend invitations atomically"`
 
@@ -450,7 +450,7 @@ Commit: `git commit -m "feat(vpn): redeem friend invitations atomically"`
 - Modify: `backend/app/services/vpn_telegram.py`
 - Modify: `backend/tests/test_vpn_telegram.py`
 
-- [ ] **Step 1: Write failing parser, redaction and crash/replay tests**
+- [x] **Step 1: Write failing parser, redaction and crash/replay tests**
 
 Add tests accepting only the ASCII form matched by `/start i_([A-Za-z0-9_-]{43})` in a private sender-matching chat. Assert every persisted `/start` payload stores `"text": "<redacted-start-payload>"`. Persist only the exact known commands `/start`, `/status`, `/keys`, `/support`, `статус`, `ключи`, `поддержка`, `моя подписка`, `мои профили` and `помощь`; every other text becomes the static `"<redacted-message>"`. Capture DB rows, logs, audit and errors and prove neither the raw token nor full link occurs.
 
@@ -469,13 +469,13 @@ INVITATION_REJECTED_TEXT = (
 
 Add a sender which fails after activation commit. On the duplicate update ID, assert no business row changes, the already committed status is sent, and `processed_at` becomes non-null. A new update ID with the same token must return the same IDs and dates.
 
-- [ ] **Step 2: Run the Telegram tests and observe the secret-persistence/replay failures**
+- [x] **Step 2: Run the Telegram tests and observe the secret-persistence/replay failures**
 
 Run: `cd backend && .venv/Scripts/python.exe -m pytest tests/test_vpn_telegram.py -k "invite or redaction or duplicate" -q`
 
 Expected: raw `/start` text is currently persisted and the duplicate is currently returned without delivery.
 
-- [ ] **Step 3: Add strict parsing and sanitized persistence before any insert**
+- [x] **Step 3: Add strict parsing and sanitized persistence before any insert**
 
 Add pure helpers:
 
@@ -514,7 +514,7 @@ reply/forward objects, media and unknown future Telegram fields are never
 persisted. The sanitized object, never `payload`, is passed to
 `VpnTelegramUpdate`.
 
-- [ ] **Step 4: Commit activation before outbound delivery and recover duplicates**
+- [x] **Step 4: Commit activation before outbound delivery and recover duplicates**
 
 For an invitation update, insert/claim the update, redeem and bind its `customer_id` in one transaction, then `commit()` before invoking the sender. On an existing unprocessed update, load the exact customer/invitation chain, render `Access is being prepared` unless the profile is active, send that derived status without business mutation, mark `processed_at`, and let the route commit. Preserve current generic command behavior and private-chat protection.
 
@@ -524,7 +524,7 @@ through text, HTTP status/body, logs or audit details. Tests assert all four pat
 have identical outward behavior and leave invitation, customer, subscription,
 key and control-operation counts unchanged.
 
-- [ ] **Step 5: Run Telegram tests and commit**
+- [x] **Step 5: Run Telegram tests and commit**
 
 Run: `cd backend && .venv/Scripts/python.exe -m pytest tests/test_vpn_telegram.py -q`
 
@@ -542,11 +542,11 @@ Commit: `git commit -m "feat(bot): activate friend invitations safely"`
 - Modify: `backend/tests/test_vpn_portal_api.py`
 - Modify: `backend/tests/test_vpn_telegram.py`
 
-- [ ] **Step 1: Write failing admission tests at every boundary**
+- [x] **Step 1: Write failing admission tests at every boundary**
 
 Create an invited chain and prove the friend can exchange Mini App initData and OIDC code, look up a cookie, survive the locked CSRF/session recheck and receive the cabinet button. Break each join, revoke the invitation, archive the customer and expire the subscription; every case must fail closed. Keep the configured owner allowlist working and public access false.
 
-- [ ] **Step 2: Run the focused tests and observe allowlist-only failures**
+- [x] **Step 2: Run the focused tests and observe allowlist-only failures**
 
 Run:
 
@@ -557,7 +557,7 @@ cd backend
 
 Expected: invited users are rejected because `identity_allowed()` is settings-only.
 
-- [ ] **Step 3: Add one async admission helper and use it everywhere**
+- [x] **Step 3: Add one async admission helper and use it everywhere**
 
 Keep `identity_allowed()` for static owners. Add:
 
@@ -591,7 +591,7 @@ and passes the result for the real sender; injected three-argument test senders
 continue through a tiny adapter which sends text only. Thus DB eligibility
 actually controls the button while a URL alone remains non-credential.
 
-- [ ] **Step 4: Run all portal and Telegram auth tests and commit**
+- [x] **Step 4: Run all portal and Telegram auth tests and commit**
 
 Run:
 
@@ -617,7 +617,7 @@ Commit: `git commit -m "feat(portal): admit invited VPN customers"`
 - Modify: `backend/tests/test_vpn_control_intents_postgres.py`
 - Modify: `backend/tests/test_vpn_lifecycle.py`
 
-- [ ] **Step 1: Write failing retry/expiry/disable tests**
+- [x] **Step 1: Write failing retry/expiry/disable tests**
 
 Prove:
 
@@ -637,13 +637,13 @@ Prove:
   complete without a deadlock and leave exactly one authoritative operation at
   the current generation.
 
-- [ ] **Step 2: Run focused tests and observe missing actions**
+- [x] **Step 2: Run focused tests and observe missing actions**
 
 Run: `cd backend && .venv/Scripts/python.exe -m pytest tests/test_vpn_friend_invitations.py tests/test_vpn_control_intents.py tests/test_vpn_lifecycle.py -k "retry or expire or disable or pending_guard" -q`
 
 Expected: retry/disable service functions and routes are absent.
 
-- [ ] **Step 3: Add one guarded, explicitly retryable staging primitive**
+- [x] **Step 3: Add one guarded, explicitly retryable staging primitive**
 
 Extend `stage_vpn_control_operation(..., retry_failed=False)` without changing
 the canonical customer → subscriptions → keys → worker → endpoint → operations
@@ -673,7 +673,7 @@ uncertain operations cannot retry. Also prove a genuine `provision → suspend`,
 `suspend → provision` or `* → revoke` policy transition creates one newer row,
 then remains idempotent on the next lifecycle pass.
 
-- [ ] **Step 4: Implement retry/disable without lock inversion**
+- [x] **Step 4: Implement retry/disable without lock inversion**
 
 Add `retry_friend_invitation(db, slot, now)` and
 `disable_friend_invitation(db, slot, now)`. Discover the bound access-key ID with
@@ -711,7 +711,7 @@ retry/reconciliation-required results without resending. Only the unbound branch
 uses `lock_vpn_subscription()` and the existing legacy helpers. Tests patch all
 three legacy helpers to raise if an invited endpoint-bound key reaches them.
 
-- [ ] **Step 5: Expose bounded admin actions**
+- [x] **Step 5: Expose bounded admin actions**
 
 Add:
 
@@ -722,7 +722,7 @@ POST /api/control/vpn/friend-invitations/{slot}/disable
 
 Both use the existing admin dependency, mutation serialization and slot-only audit details. Disable returns the updated invitation view. Retry returns 409 for uncertain state and never leaks remote error text.
 
-- [ ] **Step 6: Run lifecycle/API tests and commit**
+- [x] **Step 6: Run lifecycle/API tests and commit**
 
 Run:
 
@@ -744,7 +744,7 @@ Commit: `git commit -m "feat(vpn): manage friend invitation lifecycle"`
 - Modify: `backend/app/main.py`
 - Create: `backend/tests/test_vpn_control_runtime.py`
 
-- [ ] **Step 1: Write failing timeout, readiness and runtime scheduling tests**
+- [x] **Step 1: Write failing timeout, readiness and runtime scheduling tests**
 
 Capture dedicated-dispatcher `create_async_engine()` arguments and assert
 PostgreSQL receives a finite positive asyncpg `command_timeout` plus a
@@ -767,13 +767,13 @@ finalize timeout are passed, cancellation is awaited before its engine is
 disposed on shutdown, and exceptions produce a static log message without
 request/credential data.
 
-- [ ] **Step 2: Run the tests and observe zero dispatcher calls**
+- [x] **Step 2: Run the tests and observe zero dispatcher calls**
 
 Run: `cd backend && .venv/Scripts/python.exe -m pytest tests/test_vpn_control_runtime.py -k vpn_control_dispatch -q`
 
 Expected: the enabled case fails because the runtime does not call the dispatcher.
 
-- [ ] **Step 3: Add a lazy dedicated dispatcher session factory**
+- [x] **Step 3: Add a lazy dedicated dispatcher session factory**
 
 Leave the ordinary application engine and `AsyncSessionLocal` exactly as they
 are. Add a separate factory used only by the strict dispatcher:
@@ -823,7 +823,7 @@ Do not call `create_vpn_control_database()` at import time, application startup,
 or merely because the env flag is true. The cancellation integration test is
 mandatory before the DB readiness marker can be set in any environment.
 
-- [ ] **Step 4: Add one fully gated task, not a new daemon**
+- [x] **Step 4: Add one fully gated task, not a new daemon**
 
 Reuse `dispatch_next_vpn_control_operation()` inside
 `ControlRuntimeOrchestrator`. Before any dedicated-engine construction, validate
@@ -847,7 +847,7 @@ the dedicated engine; `main.py` must continue awaiting `monitoring.shutdown()`
 before disposing the ordinary engine. Feature-off and missing/mismatched-marker
 startup therefore leave global database behavior completely unchanged.
 
-- [ ] **Step 5: Run runtime plus dispatcher tests and commit**
+- [x] **Step 5: Run runtime plus dispatcher tests and commit**
 
 Run:
 
@@ -871,17 +871,17 @@ Commit: `git commit -m "feat(vpn): schedule strict control dispatch"`
 - Create: `frontend/test/vpnFriendInvitationApi.test.mjs`
 - Create: `frontend/test/vpnFriendInvitationWorkspace.test.mjs`
 
-- [ ] **Step 1: Write failing API and workspace tests**
+- [x] **Step 1: Write failing API and workspace tests**
 
 Using the existing source-inspection and import helpers, assert typed methods call the exact five endpoints, the list type cannot contain `invite_link`, and only create/rotate responses expose it. UI tests must assert ten durable slots, Russian user-facing labels, copy action only from transient component state, rotation only when `can_rotate`, retry only when `can_retry`, and `window.confirm` before disable.
 
-- [ ] **Step 2: Run frontend tests and observe missing types/actions**
+- [x] **Step 2: Run frontend tests and observe missing types/actions**
 
 Run: `cd frontend && npm test`
 
 Expected: the two new test files fail because invitation APIs/UI do not exist.
 
-- [ ] **Step 3: Add typed API contracts and load invitations**
+- [x] **Step 3: Add typed API contracts and load invitations**
 
 Define:
 
@@ -908,11 +908,11 @@ export type VpnFriendInvitationIssued = {
 
 Add list/issue/rotate/retry/disable methods. Load only list views in `App.loadAll()` and pass them to the workspace; never save `invite_link` in app-wide state, storage, URL or logs.
 
-- [ ] **Step 4: Implement the compact panel**
+- [x] **Step 4: Implement the compact panel**
 
 At the top of the customer workspace detail column, render `Тестовые приглашения · ${usedCount}/10`, ten rows and state badges. Hold the one-time link in local component state keyed by slot, copy with `navigator.clipboard.writeText()`, and delete it from state after rotation or navigation away. Use existing button classes and confirmation pattern. Display `Требует проверки` for uncertain state with no automatic retry.
 
-- [ ] **Step 5: Run tests/build and commit**
+- [x] **Step 5: Run tests/build and commit**
 
 Run:
 
@@ -932,7 +932,7 @@ Commit: `git commit -m "feat(ui): manage friend beta invitations"`
 - Modify: `docs/current-state.md`
 - Modify: `docs/superpowers/plans/2026-09-22-veltrix-friend-invitations.md`
 
-- [ ] **Step 1: Run the focused backend acceptance set**
+- [x] **Step 1: Run the focused backend acceptance set**
 
 Run:
 
@@ -946,7 +946,7 @@ for invitation migration/race, control-intent no-resend/deadlock,
 timeout/cancellation and dispatcher cases. Any skip in those required groups
 leaves verification incomplete.
 
-- [ ] **Step 2: Run whole-project verification**
+- [x] **Step 2: Run whole-project verification**
 
 Run:
 
@@ -964,14 +964,14 @@ git status --short
 
 Expected: zero test/lint/build failures; status contains only intended commits plus the pre-existing user-owned `frontend/tsconfig.tsbuildinfo` modification.
 
-- [ ] **Step 3: Independently review specification compliance and code quality**
+- [x] **Step 3: Independently review specification compliance and code quality**
 
 Dispatch a fresh specification reviewer against `docs/superpowers/specs/2026-09-22-veltrix-friend-invitations-design.md`, then a separate code-quality/security reviewer against the complete implementation range. Fix every Critical or Important finding, rerun affected tests, and request re-review until both approve.
 
-- [ ] **Step 4: Update current state without claiming production readiness**
+- [x] **Step 4: Update current state without claiming production readiness**
 
 Record exact test counts/commands, commit range and disabled settings. State explicitly that no production invitation exists and that node deployment, migration rehearsal, timeout/reconciliation gates, protected REALITY endpoint, TCP 443 acceptance and controlled first-friend connection/revoke remain pending approved production work.
 
-- [ ] **Step 5: Commit documentation**
+- [x] **Step 5: Commit documentation**
 
 Commit: `git commit -m "docs(vpn): record friend beta verification"`
