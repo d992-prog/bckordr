@@ -29,7 +29,7 @@ change, invitation, public access or payment.
 - Create `backend/tests/test_vpn_node_entrypoint.py`
 - Create `backend/tests/test_vpn_node_bundle.py`
 
-- [ ] **Step 1: Write RED protocol and trust tests**
+- [x] **Step 1: Write RED protocol and trust tests**
 
 Test one bounded strict UTF-8 JSON document, duplicate/nonfinite/trailing/unknown
 input rejection, exact request parsing and exact versioned receipt. Verify config,
@@ -38,7 +38,7 @@ entrypoint requires effective UID zero, there are no symlinks or oversized reads
 and invalid input performs no config/auth/journal I/O. Synthetic secrets must not
 occur in repr, stdout, stderr or formatted errors.
 
-- [ ] **Step 2: Implement the minimal entrypoint**
+- [x] **Step 2: Implement the minimal entrypoint**
 
 Reuse `parse_node_request`, `node_request_digest`, `NodePanelSession` token mode
 and `execute_node_client_operation`. Keep token/config paths fixed, support
@@ -46,14 +46,14 @@ dependency injection only at the Python function boundary for tests, and output
 no raw exception. Executor receipts preserve the existing allowlisted state/code
 pairs; unexpected post-parse failures are never reported as observed.
 
-- [ ] **Step 3: Add the zipapp manifest and executable proof**
+- [x] **Step 3: Add the zipapp manifest and executable proof**
 
 Build one archive containing only package initializers, entrypoint and the eight
 reviewed stdlib node modules. Test the manifest, artifact hash, no third-party
 imports and an actual `python -I -S bundle.pyz` invocation. A failed build/import
 must not replace an existing target artifact.
 
-- [ ] **Step 4: Run focused GREEN, Ruff and commit**
+- [x] **Step 4: Run focused GREEN, Ruff and commit**
 
 Run entrypoint plus all node request/journal/HTTP/observation/identity/runtime/
 executor tests and commit only Task 1.
