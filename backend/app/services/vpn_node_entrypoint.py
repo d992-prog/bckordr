@@ -28,6 +28,7 @@ MAX_CONFIG_BYTES = 64 * 1024
 MAX_TOKEN_BYTES = 4096
 EXIT_FAILURE = 1
 EXIT_INVALID_REQUEST = 2
+EXIT_INTERRUPTED = 3
 
 _RECEIPTS = frozenset(
     {
@@ -252,6 +253,8 @@ def run_node_entrypoint(
 ) -> int:
     try:
         request = parse_node_request(_json_object(_bounded_read(stdin, MAX_REQUEST_BYTES)))
+    except (KeyboardInterrupt, SystemExit):
+        return EXIT_INTERRUPTED
     except Exception:
         return EXIT_INVALID_REQUEST
     try:
@@ -305,7 +308,7 @@ def run_node_entrypoint(
         stdout.flush()
         return 0
     except (KeyboardInterrupt, SystemExit):
-        raise
+        return EXIT_INTERRUPTED
     except Exception:
         return EXIT_FAILURE
 

@@ -46,6 +46,22 @@ def test_bundle_executes_under_isolated_python_without_site_packages(tmp_path):
     assert result.stdout == result.stderr == b""
 
 
+def test_bundle_import_probe_emits_unambiguous_sentinel(tmp_path):
+    from app.services.vpn_node_bundle import IMPORT_PROBE_SENTINEL
+
+    bundle = tmp_path / "node.pyz"
+    build_node_bundle(BACKEND, bundle)
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(bundle), "--import-probe"],
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout == IMPORT_PROBE_SENTINEL
+    assert result.stderr == b""
+
+
 def test_bundle_modules_use_only_stdlib_and_bundled_imports():
     bundled = {
         member[:-3].replace("/", ".")
@@ -94,6 +110,23 @@ def test_failed_import_probe_does_not_replace_existing_bundle(tmp_path):
     target.write_bytes(b"existing-bundle")
     entrypoint = source / "app/services/vpn_node_entrypoint.py"
     entrypoint.write_text("import module_which_does_not_exist\n", encoding="utf-8")
+
+    with pytest.raises(Exception):
+        build_node_bundle(source, target)
+    assert target.read_bytes() == b"existing-bundle"
+    assert not list(tmp_path.glob(".node.pyz.*.tmp"))
+
+
+def test_system_exit_during_import_does_not_replace_existing_bundle(tmp_path):
+    source = tmp_path / "backend"
+    for member in BUNDLE_MEMBERS:
+        destination = source / member
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((BACKEND / member).read_bytes())
+    target = tmp_path / "node.pyz"
+    target.write_bytes(b"existing-bundle")
+    endpoint_types = source / "app/services/vpn_endpoint_types.py"
+    endpoint_types.write_text("raise SystemExit(2)\n", encoding="utf-8")
 
     with pytest.raises(Exception):
         build_node_bundle(source, target)

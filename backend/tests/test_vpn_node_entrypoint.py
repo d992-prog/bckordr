@@ -4,13 +4,21 @@ import base64
 import io
 import json
 import os
+import sqlite3
 import stat
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
-from app.services.vpn_node_journal import NodeOperationReceipt
+from app.services.vpn_node_journal import (
+    NodeOperationReceipt,
+    initialize_node_journal,
+)
 from app.services.vpn_node_request import node_request_digest, parse_node_request
+from app.services.vpn_xray_runtime import XrayRuntimeObservation
+from app.services.vpn_xui_node_executor import execute_node_client_operation
 
 
 OPERATION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
@@ -52,8 +60,8 @@ def request_value() -> dict:
     }
 
 
-def encoded_request() -> bytes:
-    return json.dumps(request_value(), separators=(",", ":")).encode()
+def encoded_request(value=None) -> bytes:
+    return json.dumps(value or request_value(), separators=(",", ":")).encode()
 
 
 @pytest.fixture
@@ -364,6 +372,291 @@ def test_arbitrary_failure_is_secret_free(monkeypatch, entrypoint, tmp_path):
     assert stdout == stderr == b""
     error = entrypoint.NodeEntrypointError()
     assert SECRET not in repr(error) and SECRET not in str(error)
+
+
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+def test_process_interruptions_are_contained_and_secret_free(
+    monkeypatch, entrypoint, tmp_path, interruption, capsys
+):
+    config, token, _database, journal, _checked = install_trusted_inputs(
+        monkeypatch, entrypoint, tmp_path
+    )
+
+    def interrupt(*_args, **_kwargs):
+        raise interruption(SECRET + json.dumps(request_value()))
+
+    code, stdout, stderr = run(
+        entrypoint,
+        encoded_request(),
+        config=config,
+        token=token,
+        journal=journal,
+        executor=interrupt,
+    )
+    captured = capsys.readouterr()
+    assert code == entrypoint.EXIT_INTERRUPTED
+    assert stdout == stderr == b""
+    assert captured.out == captured.err == ""
+
+
+def integrated_record():
+    return {
+        "id": 19,
+        "uuid": CLIENT_ID,
+        "email": "client-7@veltrix.test",
+        "subId": "stable-sub-id",
+        "password": SECRET,
+        "auth": "",
+        "flow": "xtls-rprx-vision",
+        "security": "auto",
+        "reverse": None,
+        "privateKey": "",
+        "publicKey": "",
+        "allowedIPs": "",
+        "preSharedKey": "",
+        "keepAlive": 0,
+        "forwardedPorts": "",
+        "secret": "",
+        "adTag": "",
+        "limitIp": 1,
+        "limitHwid": 0,
+        "totalGB": 1000,
+        "expiryTime": 0,
+        "enable": True,
+        "tgId": 0,
+        "group": "",
+        "comment": SECRET,
+        "reset": 0,
+        "resetDay": 0,
+        "resetMax": 0,
+        "trafficReset": "never",
+        "trafficResetDay": 1,
+        "createdAt": 1234,
+        "updatedAt": 0,
+        "inboundIds": [3],
+    }
+
+
+@pytest.fixture
+def integrated_node(tmp_path):
+    journal = tmp_path / "journal"
+    journal.mkdir(mode=0o700)
+    initialize_node_journal(journal)
+    database = tmp_path / "x-ui.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE inbounds (id)")
+        connection.execute("INSERT INTO inbounds VALUES (3)")
+        connection.execute(
+            "CREATE TABLE client_traffics (id,email,up,down,reset_count)"
+        )
+        connection.execute(
+            "INSERT INTO client_traffics VALUES (90,'client-7@veltrix.test',10,20,2)"
+        )
+    state = {
+        "record": integrated_record(),
+        "process": 100,
+        "writes": [],
+        "mark_checks": [],
+        "interrupt_after_mutation": False,
+    }
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def respond(self, obj):
+            encoded = json.dumps({"success": True, "obj": obj}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def do_GET(self):
+            assert self.headers["Authorization"] == "Bearer " + SECRET
+            record = state["record"]
+            if self.path.endswith("/status"):
+                obj = {
+                    "panelVersion": "3.8.5",
+                    "xray": {"state": "running", "errorMsg": ""},
+                }
+            elif self.path.endswith("/inbounds/list"):
+                obj = [
+                    {
+                        "id": 3,
+                        "protocol": "vless",
+                        "enable": True,
+                        "port": 443,
+                        "trafficReset": "never",
+                        "settings": {
+                            "decryption": "none",
+                            "clients": [
+                                {
+                                    "id": record["uuid"],
+                                    "email": record["email"],
+                                    "enable": record["enable"],
+                                    "flow": record["flow"],
+                                }
+                            ],
+                        },
+                        "streamSettings": {
+                            "network": "raw",
+                            "security": "reality",
+                            "realitySettings": {
+                                "serverNames": ["example.test"],
+                                "shortIds": ["abcd"],
+                                "privateKey": SECRET,
+                                "settings": {
+                                    "publicKey": PUBLIC_KEY,
+                                    "fingerprint": "chrome",
+                                    "serverName": "",
+                                },
+                            },
+                        },
+                    }
+                ]
+            elif self.path.endswith("/clients/list"):
+                obj = [dict(record)]
+            else:
+                obj = {
+                    "client": {
+                        key: value
+                        for key, value in record.items()
+                        if key != "inboundIds"
+                    },
+                    "inboundIds": record["inboundIds"],
+                    "externalLinks": [],
+                    "usedTraffic": 0,
+                    "tunnelAllowedIPs": {},
+                }
+            self.respond(obj)
+
+        def do_POST(self):
+            assert self.headers["Authorization"] == "Bearer " + SECRET
+            raw = self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.loads(raw)
+            state["writes"].append((self.path, body))
+            with sqlite3.connect(journal / "operations.sqlite3") as connection:
+                state["mark_checks"].append(
+                    connection.execute(
+                        "SELECT phase FROM operations WHERE operation_id=?",
+                        (OPERATION_ID,),
+                    ).fetchone()
+                    == ("mutating",)
+                )
+            assert self.path.endswith("/clients/bulkDisable")
+            assert body == {"emails": ["client-7@veltrix.test"]}
+            state["record"]["enable"] = False
+            state["process"] += 1
+            self.respond({"changed": 1})
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.01},
+    )
+    thread.start()
+    state.update(
+        journal=journal,
+        database=database,
+        panel_url=f"http://127.0.0.1:{server.server_port}/secret-base/",
+    )
+    try:
+        yield state
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def run_integrated(monkeypatch, entrypoint, integrated_node):
+    request = request_value()
+    request.update(
+        action="suspend",
+        allow_create=False,
+        allow_shared_restart=True,
+    )
+    config = Path("node.json")
+    token = Path("api-token")
+    values = {
+        config: json.dumps(
+            {
+                "version": 1,
+                "panel_url": integrated_node["panel_url"],
+                "database_path": str(integrated_node["database"]),
+            },
+            separators=(",", ":"),
+        ).encode(),
+        token: SECRET.encode(),
+    }
+    monkeypatch.setattr(
+        entrypoint,
+        "_read_private_file",
+        lambda path, *, limit: values[path],
+    )
+    monkeypatch.setattr(
+        entrypoint, "_validate_private_regular_file", lambda _path: None
+    )
+    monkeypatch.setattr(entrypoint, "_validate_journal", lambda _path: None)
+
+    def runtime_reader(**_kwargs):
+        if integrated_node["writes"] and integrated_node["interrupt_after_mutation"]:
+            raise KeyboardInterrupt(SECRET)
+        return XrayRuntimeObservation(
+            "matched" if integrated_node["record"]["enable"] else "not_observed",
+            integrated_node["process"],
+            123,
+        )
+
+    def real_executor(parsed, **kwargs):
+        return execute_node_client_operation(
+            parsed,
+            **kwargs,
+            runtime_reader=runtime_reader,
+        )
+
+    return run(
+        entrypoint,
+        encoded_request(request),
+        config=config,
+        token=token,
+        journal=integrated_node["journal"],
+        executor=real_executor,
+    )
+
+
+def test_real_entrypoint_executor_panel_database_and_journal_integration(
+    monkeypatch, entrypoint, integrated_node
+):
+    code, stdout, stderr = run_integrated(monkeypatch, entrypoint, integrated_node)
+    assert code == 0 and stderr == b""
+    assert json.loads(stdout)["state"] == "observed"
+    assert len(integrated_node["writes"]) == 1
+    assert integrated_node["mark_checks"] == [True]
+    with sqlite3.connect(
+        integrated_node["journal"] / "operations.sqlite3"
+    ) as connection:
+        assert connection.execute(
+            "SELECT phase,error_code FROM operations WHERE operation_id=?",
+            (OPERATION_ID,),
+        ).fetchone() == ("observed", None)
+
+
+def test_real_entrypoint_contains_interruption_after_mutation_and_journals_uncertain(
+    monkeypatch, entrypoint, integrated_node
+):
+    integrated_node["interrupt_after_mutation"] = True
+    code, stdout, stderr = run_integrated(monkeypatch, entrypoint, integrated_node)
+    assert code == entrypoint.EXIT_INTERRUPTED
+    assert stdout == stderr == b""
+    assert len(integrated_node["writes"]) == 1
+    assert integrated_node["mark_checks"] == [True]
+    with sqlite3.connect(
+        integrated_node["journal"] / "operations.sqlite3"
+    ) as connection:
+        assert connection.execute(
+            "SELECT phase,error_code FROM operations WHERE operation_id=?",
+            (OPERATION_ID,),
+        ).fetchone() == ("uncertain", "vpn_node_mutation_uncertain")
 
 
 def metadata(mode, *, uid=0, dev=1, ino=1, size=1, attributes=0):

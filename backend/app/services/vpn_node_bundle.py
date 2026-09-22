@@ -24,8 +24,21 @@ BUNDLE_MEMBERS = (
     "app/services/vpn_xui_node_executor.py",
     "app/services/vpn_node_entrypoint.py",
 )
+IMPORT_PROBE_SENTINEL = b"veltrix-vpn-node-import-ok-v1\n"
 _MAIN = (
+    b"import sys\n"
+    b"import app.services.vpn_endpoint_types\n"
+    b"import app.services.vpn_node_request\n"
+    b"import app.services.vpn_node_journal\n"
+    b"import app.services.vpn_xui_node_http\n"
+    b"import app.services.vpn_xui_node_observation\n"
+    b"import app.services.vpn_xui_identity\n"
+    b"import app.services.vpn_xray_runtime\n"
+    b"import app.services.vpn_xui_node_executor\n"
     b"from app.services.vpn_node_entrypoint import main\n"
+    b"if sys.argv[1:] == ['--import-probe']:\n"
+    b"    sys.stdout.buffer.write(" + repr(IMPORT_PROBE_SENTINEL).encode("ascii") + b")\n"
+    b"    raise SystemExit(0)\n"
     b"raise SystemExit(main())\n"
 )
 _TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -69,13 +82,17 @@ def build_node_bundle(source_root: Path, target: Path) -> str:
             for member, raw in sources:
                 archive.writestr(_entry(member), raw)
         result = subprocess.run(
-            [sys.executable, "-I", "-S", str(temporary)],
+            [sys.executable, "-I", "-S", str(temporary), "--import-probe"],
             input=b"",
             capture_output=True,
             timeout=10,
             check=False,
         )
-        if result.returncode != 2 or result.stdout or result.stderr:
+        if (
+            result.returncode != 0
+            or result.stdout != IMPORT_PROBE_SENTINEL
+            or result.stderr
+        ):
             raise NodeBundleError from None
         raw_bundle = temporary.read_bytes()
         digest = hashlib.sha256(raw_bundle).hexdigest()
