@@ -27,6 +27,10 @@ PUBLIC_KEY = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
 SECRET = "synthetic-node-token-must-not-leak"
 
 
+class SyntheticProcessInterruption(BaseException):
+    pass
+
+
 def request_value() -> dict:
     return {
         "version": 1,
@@ -384,6 +388,74 @@ def test_process_interruptions_are_contained_and_secret_free(
 
     def interrupt(*_args, **_kwargs):
         raise interruption(SECRET + json.dumps(request_value()))
+
+    code, stdout, stderr = run(
+        entrypoint,
+        encoded_request(),
+        config=config,
+        token=token,
+        journal=journal,
+        executor=interrupt,
+    )
+    captured = capsys.readouterr()
+    assert code == entrypoint.EXIT_INTERRUPTED
+    assert stdout == stderr == b""
+    assert captured.out == captured.err == ""
+
+
+def process_interruptions():
+    return [
+        SyntheticProcessInterruption(SECRET),
+        BaseExceptionGroup(
+            SECRET,
+            [RuntimeError(SECRET), SyntheticProcessInterruption(SECRET)],
+        ),
+    ]
+
+
+@pytest.mark.parametrize("interruption", process_interruptions())
+def test_preparse_base_interruptions_are_contained_without_io(
+    monkeypatch, entrypoint, tmp_path, interruption, capsys
+):
+    class InterruptedInput:
+        def read(self, _size):
+            raise interruption
+
+    touched = []
+    monkeypatch.setattr(
+        entrypoint,
+        "_read_private_file",
+        lambda *args, **kwargs: touched.append((args, kwargs)),
+    )
+    stdout = io.BytesIO()
+    stderr = io.BytesIO()
+    code = entrypoint.run_node_entrypoint(
+        InterruptedInput(),
+        stdout,
+        stderr,
+        config_path=tmp_path / "node.json",
+        token_path=tmp_path / "token",
+        journal_directory=tmp_path / "journal",
+        effective_uid=lambda: 0,
+        executor=lambda *_args, **_kwargs: pytest.fail("executor called"),
+    )
+    captured = capsys.readouterr()
+    assert code == entrypoint.EXIT_INTERRUPTED
+    assert stdout.getvalue() == stderr.getvalue() == b""
+    assert captured.out == captured.err == ""
+    assert touched == []
+
+
+@pytest.mark.parametrize("interruption", process_interruptions())
+def test_postparse_base_interruptions_are_contained_and_secret_free(
+    monkeypatch, entrypoint, tmp_path, interruption, capsys
+):
+    config, token, _database, journal, _checked = install_trusted_inputs(
+        monkeypatch, entrypoint, tmp_path
+    )
+
+    def interrupt(*_args, **_kwargs):
+        raise interruption
 
     code, stdout, stderr = run(
         entrypoint,

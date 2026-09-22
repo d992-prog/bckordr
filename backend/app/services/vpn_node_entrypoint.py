@@ -253,10 +253,8 @@ def run_node_entrypoint(
 ) -> int:
     try:
         request = parse_node_request(_json_object(_bounded_read(stdin, MAX_REQUEST_BYTES)))
-    except (KeyboardInterrupt, SystemExit):
-        return EXIT_INTERRUPTED
-    except Exception:
-        return EXIT_INVALID_REQUEST
+    except BaseException as error:
+        return EXIT_INVALID_REQUEST if isinstance(error, Exception) else EXIT_INTERRUPTED
     try:
         if effective_uid() != 0:
             _fail()
@@ -307,10 +305,8 @@ def run_node_entrypoint(
             _fail()
         stdout.flush()
         return 0
-    except (KeyboardInterrupt, SystemExit):
-        return EXIT_INTERRUPTED
-    except Exception:
-        return EXIT_FAILURE
+    except BaseException as error:
+        return EXIT_FAILURE if isinstance(error, Exception) else EXIT_INTERRUPTED
 
 
 def main() -> int:
