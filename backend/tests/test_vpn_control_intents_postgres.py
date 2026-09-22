@@ -23,7 +23,9 @@ from app.db.models import (
     VpnAccessKey,
     VpnControlOperation,
     VpnCustomer,
+    VpnCustomerSession,
     VpnEndpoint,
+    VpnFriendInvitation,
     VpnSubscription,
     WorkerNode,
     WorkerMaintenanceJob,
@@ -37,6 +39,9 @@ from app.services.vpn_control_intents import (
     finalize_vpn_control_operation,
     stage_vpn_control_operation,
 )
+from app.services.vpn_friend_invitations import disable_friend_invitation
+from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
+from app.services import vpn_friend_invitations, vpn_lifecycle
 from app.services import attack_runtime
 from app.services import worker_maintenance
 from app.services.attack_runtime import load_attack_available_workers
@@ -252,6 +257,129 @@ async def _configure_workers(control: PostgresControl) -> None:
             worker.vpn_role = "vpn_node"
             worker.vpn_enabled = True
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_disable_and_lifecycle_race_has_one_authoritative_revoke_without_deadlock(
+    postgres_control: PostgresControl,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await _seed(postgres_control)
+    async with postgres_control.sessions() as session:
+        customer = await session.get(VpnCustomer, 1)
+        subscription = await session.get(VpnSubscription, 3)
+        key = await session.get(VpnAccessKey, 7)
+        assert customer is not None and subscription is not None and key is not None
+        customer.telegram_user_id = "700001"
+        await session.flush()
+        operation = await stage_vpn_control_operation(
+            session,
+            key.id,
+            "provision",
+            now=NOW - timedelta(minutes=2),
+        )
+        operation.state = "succeeded"
+        operation.finished_at = NOW - timedelta(minutes=1)
+        key.status = "active"
+        key.config_uri = "vless://stable-invited-key"
+        subscription.status = "trial"
+        subscription.expires_at = NOW - timedelta(seconds=1)
+        session.add_all(
+            [
+                VpnFriendInvitation(
+                    slot=1,
+                    token_digest="a" * 64,
+                    created_at=NOW - timedelta(days=1),
+                    redeem_expires_at=NOW + timedelta(days=6),
+                    redeemed_at=NOW - timedelta(days=1),
+                    telegram_user_id="700001",
+                    access_key_id=key.id,
+                ),
+                VpnCustomerSession(
+                    token_hash="b" * 64,
+                    customer_id=customer.id,
+                    telegram_user_id="700001",
+                    created_at=NOW - timedelta(hours=1),
+                    expires_at=NOW + timedelta(days=1),
+                ),
+            ]
+        )
+        await session.commit()
+
+    barrier = asyncio.Barrier(2)
+    staging_paths: set[str] = set()
+    real_stage = stage_vpn_control_operation
+
+    async def rendezvous(path: str, *args, **kwargs):
+        if args[1] != 7:
+            return await real_stage(*args, **kwargs)
+        staging_paths.add(path)
+        try:
+            await asyncio.wait_for(barrier.wait(), timeout=5)
+        except TimeoutError as error:
+            raise AssertionError(
+                f"only these staging paths reached the race barrier: {staging_paths}"
+            ) from error
+        return await real_stage(*args, **kwargs)
+
+    async def disable_stage(*args, **kwargs):
+        return await rendezvous("disable", *args, **kwargs)
+
+    async def lifecycle_stage(*args, **kwargs):
+        return await rendezvous("lifecycle", *args, **kwargs)
+
+    monkeypatch.setattr(
+        vpn_friend_invitations,
+        "stage_vpn_control_operation",
+        disable_stage,
+    )
+    monkeypatch.setattr(
+        vpn_lifecycle,
+        "stage_vpn_control_operation",
+        lifecycle_stage,
+    )
+
+    async def disable() -> None:
+        async with postgres_control.sessions() as session:
+            await disable_friend_invitation(session, 1, NOW)
+            await session.commit()
+
+    async def lifecycle() -> None:
+        async with postgres_control.sessions() as session:
+            await run_vpn_lifecycle_maintenance(session, now=NOW)
+
+    await asyncio.wait_for(asyncio.gather(disable(), lifecycle()), timeout=10)
+
+    async with postgres_control.sessions() as session:
+        invitation = await session.get(VpnFriendInvitation, 1)
+        portal_session = await session.get(VpnCustomerSession, "b" * 64)
+        key = await session.get(VpnAccessKey, 7)
+        subscription = await session.get(VpnSubscription, 3)
+        customer = await session.get(VpnCustomer, 1)
+        operations = (
+            await session.scalars(
+                select(VpnControlOperation)
+                .where(VpnControlOperation.access_key_id == 7)
+                .order_by(VpnControlOperation.generation)
+            )
+        ).all()
+
+    assert staging_paths == {"disable", "lifecycle"}
+    assert invitation is not None and invitation.access_key_id == 7
+    assert key is not None and key.subscription_id == 3
+    assert subscription is not None and subscription.customer_id == 1
+    assert customer is not None
+    assert invitation.telegram_user_id == customer.telegram_user_id == "700001"
+    assert invitation.revoked_at is not None
+    assert portal_session is not None and portal_session.revoked_at is not None
+    assert portal_session.customer_id == customer.id
+    assert portal_session.telegram_user_id == customer.telegram_user_id
+    assert key.revoke_requested_at is not None
+    assert key.status == "pending_revoke"
+    current = [item for item in operations if item.generation == key.operation_generation]
+    assert len(current) == 1
+    assert (current[0].action, current[0].state) == ("revoke", "queued")
+    assert sum(item.action == "revoke" for item in operations) == 1
 
 
 async def _assert_blocked(task: asyncio.Task) -> None:

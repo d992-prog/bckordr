@@ -19,6 +19,7 @@ from app.db.models import (
     VpnAccessKey,
     VpnControlOperation,
     VpnCustomer,
+    VpnCustomerSession,
     VpnEndpoint,
     VpnFriendInvitation,
     VpnSubscription,
@@ -102,6 +103,15 @@ class RedeemedFriendInvitation:
     external_uuid: str = field(repr=False)
     starts_at: datetime
     expires_at: datetime
+
+
+@dataclass(frozen=True)
+class _FriendBinding:
+    access_key_id: int
+    subscription_id: int
+    customer_id: int
+    telegram_user_id: str
+    revoked_at: datetime | None
 
 
 def digest_invite_token(token: str) -> str:
@@ -389,6 +399,217 @@ async def list_friend_invitations(
         for invitation, access_key, subscription, customer, operation in rows
     }
     return [issued.get(slot, _empty_view(slot)) for slot in range(1, 11)]
+
+
+async def _discover_friend_binding(
+    db: AsyncSession,
+    slot: int,
+) -> _FriendBinding:
+    row = (
+        await db.execute(
+            select(
+                VpnFriendInvitation.access_key_id,
+                VpnAccessKey.subscription_id,
+                VpnSubscription.customer_id,
+                VpnFriendInvitation.telegram_user_id,
+                VpnFriendInvitation.revoked_at,
+            )
+            .select_from(VpnFriendInvitation)
+            .join(VpnAccessKey, VpnAccessKey.id == VpnFriendInvitation.access_key_id)
+            .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
+            .join(VpnCustomer, VpnCustomer.id == VpnSubscription.customer_id)
+            .where(
+                VpnFriendInvitation.slot == slot,
+                VpnFriendInvitation.redeemed_at.is_not(None),
+                VpnFriendInvitation.telegram_user_id == VpnCustomer.telegram_user_id,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        raise FriendInvitationConflict("friend_invitation_not_actionable") from None
+    return _FriendBinding(*row)
+
+
+async def _locked_friend_chain(
+    db: AsyncSession,
+    slot: int,
+    binding: _FriendBinding,
+) -> tuple[VpnFriendInvitation, VpnAccessKey, VpnSubscription, VpnCustomer]:
+    row = (
+        await db.execute(
+            select(VpnFriendInvitation, VpnAccessKey, VpnSubscription, VpnCustomer)
+            .join(VpnAccessKey, VpnAccessKey.id == VpnFriendInvitation.access_key_id)
+            .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
+            .join(VpnCustomer, VpnCustomer.id == VpnSubscription.customer_id)
+            .where(
+                VpnFriendInvitation.slot == slot,
+                VpnFriendInvitation.access_key_id == binding.access_key_id,
+                VpnAccessKey.subscription_id == binding.subscription_id,
+                VpnSubscription.customer_id == binding.customer_id,
+                VpnFriendInvitation.telegram_user_id == binding.telegram_user_id,
+                VpnCustomer.telegram_user_id == binding.telegram_user_id,
+            )
+            .with_for_update(of=VpnFriendInvitation)
+            .execution_options(populate_existing=True)
+        )
+    ).one_or_none()
+    if row is None:
+        raise FriendInvitationConflict("friend_invitation_not_actionable") from None
+    return row
+
+
+async def _friend_operation(
+    db: AsyncSession,
+    access_key: VpnAccessKey,
+) -> VpnControlOperation | None:
+    return await db.scalar(
+        select(VpnControlOperation).where(
+            VpnControlOperation.access_key_id == access_key.id,
+            VpnControlOperation.generation == access_key.operation_generation,
+        )
+    )
+
+
+def _friend_control_error(error: VpnControlIntentError) -> None:
+    code = {
+        "vpn_control_reconciliation_required": "friend_invitation_reconciliation_required",
+        "vpn_control_retry_required": "friend_invitation_retry_required",
+    }.get(error.code, "friend_invitation_not_actionable")
+    raise FriendInvitationConflict(code) from None
+
+
+async def retry_friend_invitation(
+    db: AsyncSession,
+    slot: int,
+    now: datetime,
+) -> FriendInvitationView:
+    current = _current_time(now)
+    async with db.begin_nested():
+        binding = await _discover_friend_binding(db, slot)
+        if binding.revoked_at is not None:
+            raise FriendInvitationConflict("friend_invitation_not_actionable") from None
+        access_key = await db.get(VpnAccessKey, binding.access_key_id)
+        if access_key is None:
+            raise FriendInvitationConflict("friend_invitation_not_actionable") from None
+        prior = await _friend_operation(db, access_key)
+        if not (
+            prior is not None
+            and prior.action == "provision"
+            and prior.state == "failed"
+            and prior.error_code in _RETRYABLE_ERRORS
+        ):
+            if prior is not None and prior.state == "uncertain":
+                raise FriendInvitationConflict(
+                    "friend_invitation_reconciliation_required"
+                ) from None
+            raise FriendInvitationConflict("friend_invitation_retry_required") from None
+        try:
+            operation = await stage_vpn_control_operation(
+                db,
+                binding.access_key_id,
+                "provision",
+                now=current,
+                retry_failed=True,
+            )
+        except VpnControlIntentError as error:
+            _friend_control_error(error)
+        invitation, access_key, subscription, customer = await _locked_friend_chain(
+            db,
+            slot,
+            binding,
+        )
+        if operation.generation != prior.generation + 1:
+            raise FriendInvitationConflict("friend_invitation_retry_required") from None
+        return _view(
+            invitation,
+            access_key,
+            subscription,
+            customer,
+            operation,
+            current,
+        )
+
+
+async def disable_friend_invitation(
+    db: AsyncSession,
+    slot: int,
+    now: datetime,
+) -> FriendInvitationView:
+    current = _current_time(now)
+    savepoint = await db.begin_nested()
+    try:
+        binding = await _discover_friend_binding(db, slot)
+        if binding.revoked_at is not None:
+            invitation, access_key, subscription, customer = await _locked_friend_chain(
+                db,
+                slot,
+                binding,
+            )
+            operation = await _friend_operation(db, access_key)
+            await savepoint.commit()
+            return _view(
+                invitation,
+                access_key,
+                subscription,
+                customer,
+                operation,
+                current,
+            )
+        try:
+            operation = await stage_vpn_control_operation(
+                db,
+                binding.access_key_id,
+                "revoke",
+                now=current,
+            )
+        except VpnControlIntentError as error:
+            _friend_control_error(error)
+        invitation, access_key, subscription, customer = await _locked_friend_chain(
+            db,
+            slot,
+            binding,
+        )
+        if invitation.revoked_at is not None:
+            await savepoint.rollback()
+            fresh = await _discover_friend_binding(db, slot)
+            invitation, access_key, subscription, customer = await _locked_friend_chain(
+                db,
+                slot,
+                fresh,
+            )
+            operation = await _friend_operation(db, access_key)
+            return _view(
+                invitation,
+                access_key,
+                subscription,
+                customer,
+                operation,
+                current,
+            )
+        invitation.revoked_at = current
+        await db.execute(
+            update(VpnCustomerSession)
+            .where(
+                VpnCustomerSession.customer_id == customer.id,
+                VpnCustomerSession.revoked_at.is_(None),
+            )
+            .values(revoked_at=current)
+        )
+        await db.flush()
+        view = _view(
+            invitation,
+            access_key,
+            subscription,
+            customer,
+            operation,
+            current,
+        )
+        await savepoint.commit()
+        return view
+    except BaseException:
+        if savepoint.is_active:
+            await savepoint.rollback()
+        raise
 
 
 def _new_token() -> tuple[str, str]:

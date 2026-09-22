@@ -82,9 +82,11 @@ async def test_friend_invitation_routes_require_admin_authentication():
             await client.get(LIST_URL),
             await client.post(LIST_URL),
             await client.post(f"{LIST_URL}/1/rotate"),
+            await client.post(f"{LIST_URL}/1/retry"),
+            await client.post(f"{LIST_URL}/1/disable"),
         )
 
-    assert [response.status_code for response in responses] == [401, 401, 401]
+    assert [response.status_code for response in responses] == [401, 401, 401, 401, 401]
     await engine.dispose()
 
 
@@ -121,10 +123,24 @@ async def test_friend_invitation_admin_contract_serializes_mutations_and_redacts
         assert now.tzinfo is not None
         return IssuedFriendInvitation(view=_view(1), link=invite_link)
 
+    async def fake_retry(db, slot, now):
+        del db
+        assert slot == 1
+        assert now.tzinfo is not None
+        return _view(1, state="preparing")
+
+    async def fake_disable(db, slot, now):
+        del db
+        assert slot == 1
+        assert now.tzinfo is not None
+        return _view(1, state="disabled")
+
     app.dependency_overrides[serialize_vpn_mutation] = serialized_mutation
     monkeypatch.setattr(control_routes, "list_friend_invitations", fake_list)
     monkeypatch.setattr(control_routes, "issue_friend_invitation", fake_issue)
     monkeypatch.setattr(control_routes, "rotate_friend_invitation", fake_rotate)
+    monkeypatch.setattr(control_routes, "retry_friend_invitation", fake_retry)
+    monkeypatch.setattr(control_routes, "disable_friend_invitation", fake_disable)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -133,13 +149,15 @@ async def test_friend_invitation_admin_contract_serializes_mutations_and_redacts
         listed = await client.get(LIST_URL)
         created = await client.post(LIST_URL)
         rotated = await client.post(f"{LIST_URL}/1/rotate")
+        retried = await client.post(f"{LIST_URL}/1/retry")
+        disabled = await client.post(f"{LIST_URL}/1/disable")
         listed_again = await client.get(LIST_URL)
 
     assert listed.status_code == 200
     assert len(listed.json()) == 10
     assert "invite_link" not in listed.text
     assert "invite_link" not in listed_again.text
-    assert serialized == ["enter", "exit", "enter", "exit"]
+    assert serialized == ["enter", "exit"] * 4
 
     expected_fields = {
         "slot",
@@ -160,6 +178,10 @@ async def test_friend_invitation_admin_contract_serializes_mutations_and_redacts
         assert set(payload) == {"invitation", "invite_link"}
         assert set(payload["invitation"]) == expected_fields
         assert payload["invite_link"] == invite_link
+    assert retried.status_code == 200
+    assert retried.json()["invite_state"] == "preparing"
+    assert disabled.status_code == 200
+    assert disabled.json()["invite_state"] == "disabled"
 
     async with session_factory() as session:
         audit_rows = (
@@ -168,6 +190,8 @@ async def test_friend_invitation_admin_contract_serializes_mutations_and_redacts
     assert [(row.action, row.details) for row in audit_rows] == [
         ("vpn_friend_invitation_issue", "slot=1"),
         ("vpn_friend_invitation_rotate", "slot=1"),
+        ("vpn_friend_invitation_retry", "slot=1"),
+        ("vpn_friend_invitation_disable", "slot=1"),
     ]
     assert all(raw_token not in (row.details or "") for row in audit_rows)
     assert all(invite_link not in (row.details or "") for row in audit_rows)
@@ -202,6 +226,18 @@ async def test_friend_invitation_admin_contract_serializes_mutations_and_redacts
             503,
             "Friend invitations are temporarily unavailable",
         ),
+        (
+            f"{LIST_URL}/1/retry",
+            FriendInvitationConflict("friend_invitation_reconciliation_required"),
+            409,
+            "Friend invitation cannot be changed",
+        ),
+        (
+            f"{LIST_URL}/1/disable",
+            FriendInvitationConflict("secret-token-conflict"),
+            409,
+            "Friend invitation cannot be changed",
+        ),
     ],
 )
 async def test_friend_invitation_errors_are_bounded_and_not_cached(
@@ -218,10 +254,11 @@ async def test_friend_invitation_errors_are_bounded_and_not_cached(
         del args, kwargs
         raise service_error
 
-    service_name = (
-        "rotate_friend_invitation" if path.endswith("/rotate")
-        else "issue_friend_invitation"
-    )
+    service_name = {
+        "rotate": "rotate_friend_invitation",
+        "retry": "retry_friend_invitation",
+        "disable": "disable_friend_invitation",
+    }.get(path.rsplit("/", 1)[-1], "issue_friend_invitation")
     monkeypatch.setattr(control_routes, service_name, fail_invitation)
 
     async with httpx.AsyncClient(
@@ -250,6 +287,16 @@ async def test_friend_invitation_errors_are_bounded_and_not_cached(
             "rotate_vpn_friend_invitation",
             {"slot": 1},
             "rotate_friend_invitation",
+        ),
+        (
+            "retry_vpn_friend_invitation",
+            {"slot": 1},
+            "retry_friend_invitation",
+        ),
+        (
+            "disable_vpn_friend_invitation",
+            {"slot": 1},
+            "disable_friend_invitation",
         ),
     ],
 )

@@ -43,6 +43,10 @@ _PENDING_STATUS = {
     "suspend": "pending_suspend",
     "revoke": "pending_revoke",
 }
+_RETRYABLE_FAILURES = {
+    "vpn_node_preflight_failed",
+    "vpn_node_interrupted_before_mutation",
+}
 _RECEIPTS = {
     ("observed", None),
     ("failed", "vpn_node_preflight_failed"),
@@ -270,6 +274,7 @@ async def stage_vpn_control_operation(
     action: EndpointOperation,
     *,
     now: datetime | None = None,
+    retry_failed: bool = False,
 ) -> VpnControlOperation:
     """Lock authoritative policy rows and flush one immutable queued intent."""
     if type(access_key_id) is not int or access_key_id <= 0:
@@ -382,6 +387,24 @@ async def stage_vpn_control_operation(
                 "revoke": "vpn_control_policy_requires_revoke",
             }[desired]
         )
+
+    current_operation = next(
+        (
+            operation
+            for operation in reversed(prior_operations)
+            if operation.generation == access_key.operation_generation
+        ),
+        None,
+    )
+    if current_operation is not None and current_operation.action == action:
+        if current_operation.state in {"queued", "claimed"}:
+            return current_operation
+        if current_operation.state == "uncertain":
+            _fail("vpn_control_reconciliation_required")
+        if current_operation.state == "failed" and not (
+            retry_failed and current_operation.error_code in _RETRYABLE_FAILURES
+        ):
+            _fail("vpn_control_retry_required")
 
     allow_create = _validate_endpoint_policy(access_key, endpoint, action)
     if (

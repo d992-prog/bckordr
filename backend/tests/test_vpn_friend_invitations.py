@@ -24,6 +24,7 @@ from app.db.models import (
     VpnAccessKey,
     VpnControlOperation,
     VpnCustomer,
+    VpnCustomerSession,
     VpnEndpoint,
     VpnFriendInvitation,
     VpnSubscription,
@@ -40,8 +41,10 @@ from app.services.vpn_friend_invitations import (
     rotate_friend_invitation,
 )
 from app.services.vpn_node_request import parse_node_request
+from app.services.vpn_control_intents import claim_next_vpn_control_operation
 from app.services.vpn_node_transport import VpnNodeTransportError
 from app.services.vpn_telegram_identity import TelegramIdentity
+from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
 
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
@@ -770,6 +773,300 @@ async def test_deleting_the_only_ready_endpoint_fails_closed(
 
 async def _count(db: AsyncSession, model: type[object]) -> int:
     return int(await db.scalar(select(func.count()).select_from(model)) or 0)
+
+
+async def _redeemed_invitation(
+    db: AsyncSession,
+    settings: Settings,
+    *,
+    slot_user_id: str = "700001",
+) -> tuple[VpnFriendInvitation, VpnAccessKey, VpnSubscription, VpnControlOperation]:
+    issued = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+    redeemed = await redeem_friend_invitation(
+        db,
+        settings,
+        _token_from_link(issued.link),
+        TelegramIdentity(slot_user_id, "friend_one", "Friend", "One"),
+        NOW,
+    )
+    await db.commit()
+    invitation = await db.get(VpnFriendInvitation, issued.view.slot)
+    access_key = await db.get(VpnAccessKey, redeemed.access_key_id)
+    subscription = await db.get(VpnSubscription, redeemed.subscription_id)
+    operation = await db.scalar(
+        select(VpnControlOperation).where(
+            VpnControlOperation.access_key_id == redeemed.access_key_id,
+            VpnControlOperation.generation == 1,
+        )
+    )
+    assert invitation is not None
+    assert access_key is not None
+    assert subscription is not None
+    assert operation is not None
+    return invitation, access_key, subscription, operation
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_code",
+    ["vpn_node_preflight_failed", "vpn_node_interrupted_before_mutation"],
+)
+async def test_retry_friend_invitation_stages_one_safe_generation(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+    error_code: str,
+) -> None:
+    db, settings, _ = ready_session
+    invitation, access_key, _subscription, operation = await _redeemed_invitation(
+        db,
+        settings,
+    )
+    stable_identity = (access_key.external_uuid, access_key.config_uri)
+    operation.state = "failed"
+    operation.error_code = error_code
+    await db.commit()
+
+    view = await invitations.retry_friend_invitation(
+        db,
+        invitation.slot,
+        NOW + timedelta(minutes=1),
+    )
+    await db.commit()
+    operations = (
+        await db.scalars(
+            select(VpnControlOperation)
+            .where(VpnControlOperation.access_key_id == access_key.id)
+            .order_by(VpnControlOperation.generation)
+        )
+    ).all()
+
+    assert view.invite_state == "preparing"
+    assert [(item.generation, item.state) for item in operations] == [
+        (1, "failed"),
+        (2, "queued"),
+    ]
+    assert (access_key.external_uuid, access_key.config_uri) == stable_identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation_state", "error_code", "expected_code"),
+    [
+        ("uncertain", "vpn_node_mutation_uncertain", "friend_invitation_reconciliation_required"),
+        ("failed", "vpn_node_secret_remote_error", "friend_invitation_retry_required"),
+    ],
+)
+async def test_retry_friend_invitation_rejects_uncertain_or_unsafe_failure(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+    operation_state: str,
+    error_code: str,
+    expected_code: str,
+) -> None:
+    db, settings, _ = ready_session
+    invitation, access_key, _subscription, operation = await _redeemed_invitation(
+        db,
+        settings,
+    )
+    operation.state = operation_state
+    operation.error_code = error_code
+    if operation_state == "uncertain":
+        operation.claim_token = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        operation.claimed_at = NOW
+    await db.commit()
+
+    with pytest.raises(FriendInvitationConflict) as caught:
+        await invitations.retry_friend_invitation(
+            db,
+            invitation.slot,
+            NOW + timedelta(minutes=1),
+        )
+
+    assert str(caught.value) == expected_code
+    assert access_key.operation_generation == 1
+    assert await _count(db, VpnControlOperation) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_state", ["queued", "failed", "uncertain"])
+async def test_disable_friend_invitation_is_sticky_atomic_and_idempotent(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+    prior_state: str,
+) -> None:
+    db, settings, _ = ready_session
+    invitation, access_key, subscription, operation = await _redeemed_invitation(
+        db,
+        settings,
+    )
+    operation.state = prior_state
+    operation.error_code = {
+        "queued": None,
+        "failed": "vpn_node_preflight_failed",
+        "uncertain": "vpn_node_mutation_uncertain",
+    }[prior_state]
+    if prior_state == "uncertain":
+        operation.claim_token = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        operation.claimed_at = NOW
+    portal_session = VpnCustomerSession(
+        token_hash="a" * 64,
+        customer_id=subscription.customer_id,
+        telegram_user_id=invitation.telegram_user_id or "",
+        created_at=NOW,
+        expires_at=NOW + timedelta(days=1),
+    )
+    unrelated = VpnAccessKey(
+        subscription_id=subscription.id,
+        worker_id=access_key.worker_id,
+        endpoint_id=access_key.endpoint_id,
+        verified_client_email="unrelated-key",
+        panel_sub_id="unrelated-sub-id",
+        protocol="vless",
+        external_uuid="22222222-3333-4444-8555-666666666666",
+        config_uri="vless://unrelated",
+        status="active",
+        issued_at=NOW,
+    )
+    db.add_all([portal_session, unrelated])
+    await db.commit()
+
+    disabled = await invitations.disable_friend_invitation(
+        db,
+        invitation.slot,
+        NOW + timedelta(minutes=1),
+    )
+    await db.commit()
+    repeated = await invitations.disable_friend_invitation(
+        db,
+        invitation.slot,
+        NOW + timedelta(minutes=2),
+    )
+    await db.commit()
+    await db.refresh(portal_session)
+    operations = (
+        await db.scalars(
+            select(VpnControlOperation)
+            .where(VpnControlOperation.access_key_id == access_key.id)
+            .order_by(VpnControlOperation.generation)
+        )
+    ).all()
+
+    assert disabled.invite_state == repeated.invite_state == "disabled"
+    assert _utc(invitation.revoked_at) == NOW + timedelta(minutes=1)
+    assert _utc(portal_session.revoked_at) == NOW + timedelta(minutes=1)
+    assert access_key.revoke_requested_at is not None
+    assert access_key.status == "pending_revoke"
+    assert unrelated.status == "active"
+    assert unrelated.revoke_requested_at is None
+    assert [(item.generation, item.action, item.state) for item in operations] == [
+        (1, "provision", "superseded" if prior_state == "queued" else prior_state),
+        (2, "revoke", "queued"),
+    ]
+    if prior_state == "uncertain":
+        assert await claim_next_vpn_control_operation(
+            db,
+            claim_token=UUID(int=9999),
+            now=NOW + timedelta(minutes=3),
+        ) is None
+
+
+@pytest.mark.asyncio
+async def test_disabled_friend_is_not_restored_after_subscription_extension(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, settings, _ = ready_session
+    invitation, access_key, subscription, operation = await _redeemed_invitation(
+        db,
+        settings,
+    )
+    operation.state = "succeeded"
+    operation.finished_at = NOW
+    access_key.status = "active"
+    await db.commit()
+
+    async def forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("disabled endpoint-bound friend used a legacy helper")
+
+    for name in (
+        "provision_vpn_access_key",
+        "suspend_vpn_access_key",
+        "revoke_vpn_access_key",
+    ):
+        monkeypatch.setattr(f"app.services.vpn_lifecycle.{name}", forbidden)
+
+    await invitations.disable_friend_invitation(
+        db,
+        invitation.slot,
+        NOW + timedelta(minutes=1),
+    )
+    await db.commit()
+    subscription.status = "active"
+    subscription.expires_at = NOW + timedelta(days=30)
+    await db.commit()
+
+    result = await run_vpn_lifecycle_maintenance(
+        db,
+        now=NOW + timedelta(minutes=2),
+    )
+    operations = (
+        await db.scalars(
+            select(VpnControlOperation)
+            .where(VpnControlOperation.access_key_id == access_key.id)
+            .order_by(VpnControlOperation.generation)
+        )
+    ).all()
+
+    assert result["pending_revoke_keys"] == 1
+    assert invitation.revoked_at is not None
+    assert access_key.revoke_requested_at is not None
+    assert access_key.status == "pending_revoke"
+    assert access_key.operation_generation == 2
+    assert [(item.generation, item.action) for item in operations] == [
+        (1, "provision"),
+        (2, "revoke"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_disable_friend_invitation_rolls_back_staging_when_binding_recheck_fails(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, settings, _ = ready_session
+    invitation, access_key, subscription, _operation = await _redeemed_invitation(
+        db,
+        settings,
+    )
+    portal_session = VpnCustomerSession(
+        token_hash="b" * 64,
+        customer_id=subscription.customer_id,
+        telegram_user_id=invitation.telegram_user_id or "",
+        created_at=NOW,
+        expires_at=NOW + timedelta(days=1),
+    )
+    db.add(portal_session)
+    await db.commit()
+
+    async def broken_recheck(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("binding changed")
+
+    monkeypatch.setattr(invitations, "_locked_friend_chain", broken_recheck)
+    with pytest.raises(RuntimeError, match="binding changed"):
+        await invitations.disable_friend_invitation(
+            db,
+            invitation.slot,
+            NOW + timedelta(minutes=1),
+        )
+
+    await db.refresh(invitation)
+    await db.refresh(access_key)
+    await db.refresh(portal_session)
+    assert invitation.revoked_at is None
+    assert access_key.revoke_requested_at is None
+    assert access_key.operation_generation == 1
+    assert access_key.status == "pending_sync"
+    assert portal_session.revoked_at is None
+    assert await _count(db, VpnControlOperation) == 1
 
 
 @pytest.mark.asyncio

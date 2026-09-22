@@ -163,8 +163,10 @@ from app.services.vpn_friend_invitations import (
     FriendInvitationConflict,
     FriendInvitationUnavailable,
     FriendInvitationView,
+    disable_friend_invitation,
     issue_friend_invitation,
     list_friend_invitations,
+    retry_friend_invitation,
     rotate_friend_invitation,
 )
 from app.services.vpn_mutations import serialize_vpn_mutation
@@ -2976,6 +2978,60 @@ async def rotate_vpn_friend_invitation(
         invitation=_friend_invitation_response(issued.view),
         invite_link=issued.link,
     )
+
+
+@router.post(
+    "/vpn/friend-invitations/{slot}/retry",
+    response_model=VpnFriendInvitationResponse,
+    dependencies=[Depends(serialize_vpn_mutation)],
+)
+async def retry_vpn_friend_invitation(
+    slot: int,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnFriendInvitationResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        invitation = await retry_friend_invitation(db, slot, utcnow())
+    except (FriendInvitationConflict, FriendInvitationUnavailable) as error:
+        raise _friend_invitation_http_error(error) from None
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_friend_invitation_retry",
+        details=f"slot={slot}",
+    )
+    await db.commit()
+    return _friend_invitation_response(invitation)
+
+
+@router.post(
+    "/vpn/friend-invitations/{slot}/disable",
+    response_model=VpnFriendInvitationResponse,
+    dependencies=[Depends(serialize_vpn_mutation)],
+)
+async def disable_vpn_friend_invitation(
+    slot: int,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnFriendInvitationResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        invitation = await disable_friend_invitation(db, slot, utcnow())
+    except (FriendInvitationConflict, FriendInvitationUnavailable) as error:
+        raise _friend_invitation_http_error(error) from None
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_friend_invitation_disable",
+        details=f"slot={slot}",
+    )
+    await db.commit()
+    return _friend_invitation_response(invitation)
 
 
 @router.get("/vpn/overview", response_model=VpnOverviewResponse)

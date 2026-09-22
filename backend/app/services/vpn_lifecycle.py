@@ -24,6 +24,10 @@ from app.services.vpn_provisioning import (
     sanitize_vpn_error,
     suspend_vpn_access_key,
 )
+from app.services.vpn_control_intents import (
+    VpnControlIntentError,
+    stage_vpn_control_operation,
+)
 from app.services.vpn_mutations import vpn_mutation_lock
 from app.services.vpn_subscription_sync import RESTORABLE_KEY_STATUSES, subscription_key_action
 
@@ -243,6 +247,10 @@ async def _run_vpn_lifecycle_maintenance(
         subscription.updated_at = current_time
         result["expired_subscriptions"] += 1
     await db.flush()
+    if expired_subscription_ids:
+        # Release subscription locks before endpoint-bound staging acquires the
+        # canonical customer -> subscription -> key lock order.
+        await db.commit()
 
     permanent_policy = or_(VpnSubscription.status == "cancelled", VpnCustomer.status == "archived")
     suspend_policy = or_(
@@ -302,6 +310,42 @@ async def _run_vpn_lifecycle_maintenance(
     rows = [*revoke_rows, *provision_rows]
 
     for access_key, subscription in rows:
+        if access_key.endpoint_id is not None:
+            customer = await db.get(VpnCustomer, subscription.customer_id)
+            policy_action = (
+                "revoke" if access_key.status == "pending_revoke"
+                else subscription_key_action(subscription, customer, current_time)
+            )
+            action = "provision" if policy_action == "sync" else policy_action
+            result["checked_keys"] += 1
+            try:
+                await stage_vpn_control_operation(
+                    db,
+                    access_key.id,
+                    action,
+                    now=current_time,
+                )
+            except VpnControlIntentError as exc:
+                if exc.code not in {
+                    "vpn_control_retry_required",
+                    "vpn_control_reconciliation_required",
+                }:
+                    result["failed_keys"] += 1
+            result[
+                {
+                    "provision": "pending_sync_keys",
+                    "suspend": "pending_suspend_keys",
+                    "revoke": "pending_revoke_keys",
+                }[action]
+            ] += 1
+            await set_app_setting(
+                db,
+                VPN_LIFECYCLE_LAST_RESULT_KEY,
+                json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+            )
+            await db.commit()
+            continue
+
         subscription = await lock_vpn_subscription(db, subscription.id)
         await db.refresh(access_key)
         if subscription is None or access_key.status == "revoked":

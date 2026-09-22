@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.base import Base
@@ -611,6 +611,109 @@ async def test_stage_locks_canonical_rows_flushes_without_commit_and_stores_deta
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["queued", "claimed"])
+async def test_stage_reuses_same_action_pending_operation(session_factory, state):
+    api = _api()
+    async with session_factory() as session:
+        first = await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+        await session.commit()
+        if state == "claimed":
+            first.state = "claimed"
+            first.claim_token = str(uuid4())
+            first.claimed_at = NOW
+            await session.commit()
+
+        repeated = await api.stage_vpn_control_operation(
+            session,
+            7,
+            "provision",
+            now=NOW + timedelta(minutes=1),
+        )
+
+        assert repeated.id == first.id
+        assert repeated.generation == 1
+        assert await session.scalar(select(func.count()).select_from(VpnControlOperation)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "error_code", "retry_failed", "expected_code"),
+    [
+        ("uncertain", "vpn_node_mutation_uncertain", False, "vpn_control_reconciliation_required"),
+        ("uncertain", "vpn_node_mutation_uncertain", True, "vpn_control_reconciliation_required"),
+        ("failed", "vpn_node_preflight_failed", False, "vpn_control_retry_required"),
+        ("failed", "vpn_node_remote_secret", True, "vpn_control_retry_required"),
+    ],
+)
+async def test_stage_refuses_automatic_or_unsafe_same_action_retry(
+    session_factory,
+    state,
+    error_code,
+    retry_failed,
+    expected_code,
+):
+    api = _api()
+    async with session_factory() as session:
+        first = await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+        first.state = state
+        first.error_code = error_code
+        if state == "uncertain":
+            first.claim_token = str(uuid4())
+            first.claimed_at = NOW
+        await session.commit()
+
+        with pytest.raises(api.VpnControlIntentError) as caught:
+            await api.stage_vpn_control_operation(
+                session,
+                7,
+                "provision",
+                now=NOW + timedelta(minutes=1),
+                retry_failed=retry_failed,
+            )
+
+        assert caught.value.code == expected_code
+        key = await session.get(VpnAccessKey, 7)
+        assert key is not None and key.operation_generation == 1
+        assert await session.scalar(select(func.count()).select_from(VpnControlOperation)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_code",
+    ["vpn_node_preflight_failed", "vpn_node_interrupted_before_mutation"],
+)
+async def test_stage_explicitly_retries_only_known_pre_mutation_failures(
+    session_factory,
+    error_code,
+):
+    api = _api()
+    async with session_factory() as session:
+        first = await api.stage_vpn_control_operation(session, 7, "provision", now=NOW)
+        first.state = "failed"
+        first.error_code = error_code
+        await session.commit()
+
+        retried = await api.stage_vpn_control_operation(
+            session,
+            7,
+            "provision",
+            now=NOW + timedelta(minutes=1),
+            retry_failed=True,
+        )
+        repeated = await api.stage_vpn_control_operation(
+            session,
+            7,
+            "provision",
+            now=NOW + timedelta(minutes=2),
+        )
+
+        assert retried.generation == 2
+        assert repeated.id == retried.id
+        assert first.state == "failed"
+        assert await session.scalar(select(func.count()).select_from(VpnControlOperation)) == 2
+
+
+@pytest.mark.asyncio
 async def test_stage_revalidates_discovery_after_locking_without_mutating_rows(session_factory):
     api = _api()
 
@@ -867,13 +970,14 @@ async def test_stage_revoke_is_sticky_and_later_provision_cannot_clear_or_advanc
         assert key.revoke_requested_at is not None and _utc(key.revoke_requested_at) == NOW
         assert (key.operation_generation, key.status) == (1, "pending_revoke")
 
-        newer = await api.stage_vpn_control_operation(
+        repeated = await api.stage_vpn_control_operation(
             session,
             7,
             "revoke",
             now=NOW + timedelta(minutes=2),
         )
-        assert newer.generation == 2
+        assert repeated.id == operation.id
+        assert repeated.generation == 1
         assert key.revoke_requested_at is not None and _utc(key.revoke_requested_at) == NOW
 
 
