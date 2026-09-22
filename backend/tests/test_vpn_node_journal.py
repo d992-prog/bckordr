@@ -43,6 +43,14 @@ def run(journal, directory, op, callback=lambda mark: mark(), **kwargs):
     return journal.execute_node_operation(directory, op, callback, **kwargs)
 
 
+def lookup(journal, directory, op):
+    return journal.lookup_node_operation_receipt(
+        directory,
+        operation_id=op.operation_id,
+        request_digest=op.request_digest,
+    )
+
+
 def assert_error(journal, code, callback):
     with pytest.raises(journal.NodeJournalError) as error:
         callback()
@@ -73,6 +81,46 @@ def test_observed_replay_and_historical_replay_never_repeat_callback(
         op.generation = 2
     assert not hasattr(op, "__dict__")
     assert not hasattr(receipt, "__dict__")
+
+
+def test_exact_read_only_lookup_returns_receipt_without_changing_journal(
+    monkeypatch, journal, directory
+):
+    op = operation(journal)
+    receipt = run(journal, directory, op)
+    before = {
+        path.name: path.read_bytes() for path in directory.iterdir() if path.is_file()
+    }
+    uris = []
+    real_connect = sqlite3.connect
+
+    def connect(database, *args, **kwargs):
+        uris.append(str(database))
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(journal.sqlite3, "connect", connect)
+    assert lookup(journal, directory, op) == receipt
+    assert uris and all(uri.endswith("?mode=ro") for uri in uris)
+    assert {
+        path.name: path.read_bytes() for path in directory.iterdir() if path.is_file()
+    } == before
+
+
+def test_exact_read_only_lookup_distinguishes_missing_and_digest_conflict(
+    journal, directory
+):
+    op = operation(journal)
+    assert lookup(journal, directory, op) is None
+    run(journal, directory, op)
+    assert_error(
+        journal,
+        "vpn_node_operation_conflict",
+        lambda: journal.lookup_node_operation_receipt(
+            directory,
+            operation_id=op.operation_id,
+            request_digest="b" * 64,
+        ),
+    )
 
 
 @pytest.mark.parametrize(

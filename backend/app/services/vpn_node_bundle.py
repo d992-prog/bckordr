@@ -35,10 +35,16 @@ _MAIN = (
     b"import app.services.vpn_xui_identity\n"
     b"import app.services.vpn_xray_runtime\n"
     b"import app.services.vpn_xui_node_executor\n"
-    b"from app.services.vpn_node_entrypoint import main\n"
+    b"from app.services.vpn_node_entrypoint import main, run_node_receipt_lookup\n"
     b"if sys.argv[1:] == ['--import-probe']:\n"
-    b"    sys.stdout.buffer.write(" + repr(IMPORT_PROBE_SENTINEL).encode("ascii") + b")\n"
+    b"    sys.stdout.buffer.write("
+    + repr(IMPORT_PROBE_SENTINEL).encode("ascii")
+    + b")\n"
     b"    raise SystemExit(0)\n"
+    b"if sys.argv[1:] == ['--lookup-receipt']:\n"
+    b"    raise SystemExit(run_node_receipt_lookup(sys.stdin.buffer, sys.stdout.buffer, sys.stderr.buffer))\n"
+    b"if sys.argv[1:]:\n"
+    b"    raise SystemExit(1)\n"
     b"raise SystemExit(main())\n"
 )
 _TIMESTAMP = (1980, 1, 1, 0, 0, 0)

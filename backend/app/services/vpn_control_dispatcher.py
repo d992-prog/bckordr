@@ -14,6 +14,7 @@ from app.services.vpn_control_intents import (
     claim_next_vpn_control_operation,
     finalize_vpn_control_operation,
 )
+from app.services.vpn_control_reconciliation import reconcile_vpn_control_finalize
 from app.services.vpn_node_transport import (
     NodeControlReceipt,
     VpnNodeTransportError,
@@ -156,10 +157,51 @@ async def _bounded_finalize(
     return outcome
 
 
+async def _finalize_with_reconciliation(
+    session_factory,
+    finalize,
+    reconcile,
+    snapshot,
+    operation_id: UUID,
+    claim_token: UUID,
+    request_digest: str,
+    receipt: NodeControlReceipt,
+    requires_node_lookup: bool,
+    precommit_timeout: float,
+    now: Callable[[], object] | None,
+) -> bool:
+    if await _bounded_finalize(
+        session_factory,
+        finalize,
+        operation_id,
+        claim_token,
+        receipt,
+        precommit_timeout,
+        now,
+    ):
+        return True
+    return await _resolve(
+        reconcile(
+            session_factory,
+            snapshot,
+            operation_id=operation_id,
+            claim_token=claim_token,
+            request_digest=request_digest,
+            safe_receipt=receipt,
+            requires_node_lookup=requires_node_lookup,
+            now=now,
+        )
+    )
+
+
 def _failure_receipt(phase: str) -> NodeControlReceipt:
     if phase == "prewrite" or phase == "preflight":
         return NodeControlReceipt("failed", "vpn_node_preflight_failed")
     return NodeControlReceipt("uncertain", "vpn_node_mutation_uncertain")
+
+
+def _requires_node_lookup(phase: str) -> bool:
+    return phase not in {"prewrite", "preflight"}
 
 
 async def dispatch_next_vpn_control_operation(
@@ -169,6 +211,7 @@ async def dispatch_next_vpn_control_operation(
     claim_token_factory: Callable[[], UUID] = uuid4,
     claim=claim_next_vpn_control_operation,
     finalize=finalize_vpn_control_operation,
+    reconcile=reconcile_vpn_control_finalize,
     snapshot_loader=load_transport_snapshot,
     transport=execute_vpn_node_request,
     finalize_timeout: float = DEFAULT_FINALIZE_TIMEOUT,
@@ -218,26 +261,36 @@ async def dispatch_next_vpn_control_operation(
     except asyncio.CancelledError:
         if claim_committed and operation_id is not None:
             try:
-                await _bounded_finalize(
+                await _finalize_with_reconciliation(
                     session_factory,
                     finalize,
+                    reconcile,
+                    snapshot,
                     operation_id,
                     claim_token,
+                    request_digest,
                     _failure_receipt("preflight"),
+                    False,
                     finalize_timeout,
                     now,
                 )
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                pass
         raise
     except Exception:
         if claim_committed and operation_id is not None:
-            await _bounded_finalize(
+            await _finalize_with_reconciliation(
                 session_factory,
                 finalize,
+                reconcile,
+                snapshot,
                 operation_id,
                 claim_token,
+                request_digest,
                 _failure_receipt("preflight"),
+                False,
                 finalize_timeout,
                 now,
             )
@@ -248,12 +301,16 @@ async def dispatch_next_vpn_control_operation(
         return False
     assert request_digest is not None and request_bytes is not None
     if snapshot_failed:
-        await _bounded_finalize(
+        await _finalize_with_reconciliation(
             session_factory,
             finalize,
+            reconcile,
+            snapshot,
             operation_id,
             claim_token,
+            request_digest,
             _failure_receipt("preflight"),
+            False,
             finalize_timeout,
             now,
         )
@@ -282,29 +339,40 @@ async def dispatch_next_vpn_control_operation(
     except asyncio.CancelledError:
         receipt = validated_receipt or _failure_receipt(phase)
         try:
-            await _bounded_finalize(
+            await _finalize_with_reconciliation(
                 session_factory,
                 finalize,
+                reconcile,
+                snapshot,
                 operation_id,
                 claim_token,
+                request_digest,
                 receipt,
+                _requires_node_lookup(phase),
                 finalize_timeout,
                 now,
             )
         except asyncio.CancelledError:
             pass
+        except Exception:
+            pass
         raise
     except VpnNodeTransportError as error:
+        phase = error.phase
         receipt = validated_receipt or _failure_receipt(error.phase)
     except Exception:
         receipt = validated_receipt or _failure_receipt(phase)
 
-    await _bounded_finalize(
+    await _finalize_with_reconciliation(
         session_factory,
         finalize,
+        reconcile,
+        snapshot,
         operation_id,
         claim_token,
+        request_digest,
         receipt,
+        _requires_node_lookup(phase),
         finalize_timeout,
         now,
     )

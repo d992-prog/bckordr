@@ -242,16 +242,56 @@ async def test_finalize_failure_rolls_back_and_never_resends(tmp_path):
     async def finalize(*_args, **_kwargs):
         raise RuntimeError("finalize failed")
 
+    async def reconcile(
+        session_factory,
+        snapshot,
+        *,
+        operation_id,
+        claim_token,
+        request_digest,
+        safe_receipt,
+        requires_node_lookup,
+        now,
+    ):
+        events.append(
+            (
+                "reconcile",
+                session_factory,
+                snapshot,
+                operation_id,
+                claim_token,
+                request_digest,
+                safe_receipt,
+                requires_node_lookup,
+                now,
+            )
+        )
+        return True
+
     assert await dispatch_next_vpn_control_operation(
         lambda: sessions.pop(0),
         tmp_path / "known_hosts",
+        claim_token_factory=lambda: TOKEN,
         claim=lambda *_args, **_kwargs: operation(),
         finalize=finalize,
         snapshot_loader=lambda *_args: SimpleNamespace(password="secret"),
         transport=transport,
+        reconcile=reconcile,
     )
     assert transport_calls == 1
     assert "rollback" in events
+    reconciliation = next(
+        event
+        for event in events
+        if isinstance(event, tuple) and event[0] == "reconcile"
+    )
+    assert reconciliation[3:8] == (
+        OPERATION_ID,
+        TOKEN,
+        "a" * 64,
+        NodeControlReceipt("observed", None),
+        True,
+    )
 
 
 @pytest.mark.asyncio
@@ -287,6 +327,36 @@ async def test_transport_failure_is_finalized_once_without_retry(
     )
     assert calls == 1
     assert {"receipt_state": state, "error_code": code} in events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transport_phase", "requires_node_lookup"),
+    [("preflight", False), ("mutation", True)],
+)
+async def test_ambiguous_finalize_reconciliation_uses_transport_phase(
+    tmp_path, transport_phase, requires_node_lookup
+):
+    events = []
+    sessions = [Session(events, operation()), Session(events)]
+
+    async def transport(*_args, **_kwargs):
+        raise VpnNodeTransportError(transport_phase)
+
+    async def reconcile(*_args, **kwargs):
+        events.append(("reconcile", kwargs["requires_node_lookup"]))
+        return True
+
+    assert await dispatch_next_vpn_control_operation(
+        lambda: sessions.pop(0),
+        tmp_path / "known_hosts",
+        claim=lambda *_args, **_kwargs: operation(),
+        finalize=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError()),
+        reconcile=reconcile,
+        snapshot_loader=lambda *_args: SimpleNamespace(password="secret"),
+        transport=transport,
+    )
+    assert ("reconcile", requires_node_lookup) in events
 
 
 @pytest.mark.asyncio
@@ -493,6 +563,10 @@ async def test_finalize_timeout_cancels_collects_and_cannot_commit_later(tmp_pat
             events.append("finalize-cancelled-once")
             await release.wait()
 
+    async def reconcile(*_args, **kwargs):
+        events.append(("reconcile", kwargs["requires_node_lookup"]))
+        return False
+
     dispatch = asyncio.create_task(
         dispatch_next_vpn_control_operation(
             lambda: sessions.pop(0),
@@ -503,6 +577,7 @@ async def test_finalize_timeout_cancels_collects_and_cannot_commit_later(tmp_pat
             transport=lambda *_args, **_kwargs: asyncio.sleep(
                 0, result=NodeControlReceipt("observed", None)
             ),
+            reconcile=reconcile,
             finalize_timeout=0.02,
         )
     )
@@ -514,6 +589,7 @@ async def test_finalize_timeout_cancels_collects_and_cannot_commit_later(tmp_pat
     assert finalize_session.closed
     assert events.count("commit") == 1
     assert "rollback" in events
+    assert ("reconcile", True) in events
     await asyncio.sleep(0.05)
     assert events.count("commit") == 1
 

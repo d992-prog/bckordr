@@ -10,6 +10,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import UUID
 import pytest
 
 from app.services.vpn_node_journal import (
@@ -185,6 +186,69 @@ def test_exact_request_and_receipt(monkeypatch, entrypoint, tmp_path):
     assert SECRET.encode() not in stdout + stderr
 
 
+def test_read_only_receipt_lookup_never_reads_panel_config_or_token(
+    monkeypatch, entrypoint, tmp_path
+):
+    journal = tmp_path / "journal"
+    touched = []
+    monkeypatch.setattr(
+        entrypoint,
+        "_read_private_file",
+        lambda *_args, **_kwargs: pytest.fail("secret file read"),
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "_validate_private_regular_file",
+        lambda *_args, **_kwargs: pytest.fail("panel database touched"),
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "_validate_journal",
+        lambda path: touched.append(path),
+    )
+    stdout = io.BytesIO()
+    code = entrypoint.run_node_receipt_lookup(
+        io.BytesIO(
+            json.dumps(
+                {
+                    "version": 1,
+                    "operation_id": OPERATION_ID,
+                    "request_digest": "a" * 64,
+                },
+                separators=(",", ":"),
+            ).encode()
+        ),
+        stdout,
+        io.BytesIO(),
+        journal_directory=journal,
+        effective_uid=lambda: 0,
+        lookup=lambda directory, **identity: (
+            touched.append((directory, identity))
+            or NodeOperationReceipt("observed", None)
+        ),
+    )
+    assert code == 0
+    assert json.loads(stdout.getvalue()) == {
+        "version": 1,
+        "operation_id": OPERATION_ID,
+        "request_digest": "a" * 64,
+        "found": True,
+        "state": "observed",
+        "error_code": None,
+    }
+    assert touched == [
+        journal,
+        (
+            journal,
+            {
+                "operation_id": UUID(OPERATION_ID),
+                "request_digest": "a" * 64,
+            },
+        ),
+    ]
+    assert SECRET.encode() not in stdout.getvalue()
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -311,9 +375,7 @@ def test_config_is_exact_and_precedes_token(monkeypatch, entrypoint, tmp_path):
         ("blocked", "vpn_node_key_revoked"),
     ],
 )
-def test_allowlisted_receipts(
-    monkeypatch, entrypoint, tmp_path, state, error_code
-):
+def test_allowlisted_receipts(monkeypatch, entrypoint, tmp_path, state, error_code):
     config, token, _database, journal, _checked = install_trusted_inputs(
         monkeypatch, entrypoint, tmp_path
     )
@@ -765,16 +827,16 @@ def test_private_file_rejects_untrusted_metadata(monkeypatch, entrypoint, fault)
         entrypoint._read_private_file(path, limit=100)
 
 
-def test_private_file_is_nofollow_bounded_and_identity_checked(
-    monkeypatch, entrypoint
-):
+def test_private_file_is_nofollow_bounded_and_identity_checked(monkeypatch, entrypoint):
     path = Path("/var/lib/veltrix-vpn/control-auth/node.json")
     info = metadata(stat.S_IFREG | 0o600, size=3)
     opened = []
     reads = [b"abc", b""]
     monkeypatch.setattr(entrypoint, "_validate_ancestors", lambda _path: None)
     monkeypatch.setattr(os, "lstat", lambda _path: info)
-    monkeypatch.setattr(os, "open", lambda target, flags: opened.append((target, flags)) or 9)
+    monkeypatch.setattr(
+        os, "open", lambda target, flags: opened.append((target, flags)) or 9
+    )
     monkeypatch.setattr(os, "fstat", lambda _fd: info)
     monkeypatch.setattr(os, "read", lambda _fd, _size: reads.pop(0))
     monkeypatch.setattr(os, "close", lambda _fd: None)
@@ -817,6 +879,7 @@ def test_secure_ancestors_reject_symlinks_wrong_owner_and_writable_dirs(
     changed = Path("/var/lib/veltrix-vpn")
 
     for fault in ("symlink", "owner", "writable", "file", "reparse"):
+
         def lstat(candidate, fault=fault):
             info = metadata(good.st_mode)
             if Path(candidate) == changed:

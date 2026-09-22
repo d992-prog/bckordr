@@ -149,6 +149,20 @@ def _connect(path: Path, timeout: float) -> sqlite3.Connection:
         raise
 
 
+def _connect_read_only(path: Path, timeout: float) -> sqlite3.Connection:
+    connection = sqlite3.connect(
+        path.as_uri() + "?mode=ro", uri=True, timeout=timeout, isolation_level=None
+    )
+    try:
+        if connection.execute("PRAGMA journal_mode").fetchone() != ("delete",):
+            _error()
+        connection.execute("PRAGMA query_only=ON")
+        return connection
+    except BaseException:
+        connection.close()
+        raise
+
+
 def _close(connection: sqlite3.Connection | None) -> None:
     if connection is not None:
         try:
@@ -296,6 +310,63 @@ def _write_phase(
     if cursor.rowcount != 1:
         _error()
     connection.commit()
+
+
+def lookup_node_operation_receipt(
+    directory: Path,
+    *,
+    operation_id: UUID,
+    request_digest: str,
+    lock_timeout_seconds: float = 2.0,
+) -> NodeOperationReceipt | None:
+    """Read one exact durable receipt without changing either journal database."""
+    if (
+        not isinstance(operation_id, UUID)
+        or not isinstance(request_digest, str)
+        or _DIGEST.fullmatch(request_digest) is None
+        or type(lock_timeout_seconds) not in (int, float)
+        or not 0 < lock_timeout_seconds <= 30
+        or not math.isfinite(lock_timeout_seconds)
+    ):
+        _error("vpn_node_journal_invalid")
+    _directory(directory)
+    gate = journal = None
+    try:
+        identities = _files(directory)
+        gate = _connect_read_only(
+            directory / "gate.sqlite3", float(lock_timeout_seconds)
+        )
+        journal = _connect_read_only(
+            directory / "operations.sqlite3", float(lock_timeout_seconds)
+        )
+        gate.execute("BEGIN")
+        journal.execute("BEGIN")
+        if _metadata(gate, _GATE_SCHEMA) != _metadata(journal, _JOURNAL_SCHEMA):
+            _error()
+        _validate_rows(journal)
+        row = journal.execute(
+            "SELECT request_digest, phase, error_code FROM operations WHERE operation_id=?",
+            (str(operation_id),),
+        ).fetchone()
+        if _files(directory) != identities:
+            _error()
+        if row is None:
+            return None
+        digest, phase, error_code = row
+        if digest != request_digest:
+            _error("vpn_node_operation_conflict")
+        if phase in {"queued", "mutating"}:
+            return NodeOperationReceipt("blocked", "vpn_node_reconciliation_required")
+        return NodeOperationReceipt(phase, error_code)
+    except (OSError, sqlite3.Error, OverflowError, ValueError, TypeError) as error:
+        if isinstance(error, NodeJournalError):
+            raise
+        _error()
+    finally:
+        try:
+            _close(journal)
+        finally:
+            _close(gate)
 
 
 def execute_node_operation(

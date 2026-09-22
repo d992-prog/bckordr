@@ -6,12 +6,17 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 from collections.abc import Callable
 from typing import BinaryIO
+from uuid import UUID
 
-from app.services.vpn_node_journal import NodeOperationReceipt
+from app.services.vpn_node_journal import (
+    NodeOperationReceipt,
+    lookup_node_operation_receipt,
+)
 from app.services.vpn_node_request import (
     node_request_digest,
     parse_node_request,
@@ -41,6 +46,7 @@ _RECEIPTS = frozenset(
         ("blocked", "vpn_node_key_revoked"),
     }
 )
+_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class NodeEntrypointError(ValueError):
@@ -101,7 +107,13 @@ def _json_object(raw: bytes) -> dict[str, object]:
             parse_constant=_constant,
             parse_float=_float,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, RecursionError):
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+        TypeError,
+        RecursionError,
+    ):
         _fail()
     if type(value) is not dict:
         _fail()
@@ -174,7 +186,9 @@ def _read_private_file(path: Path, *, limit: int) -> bytes:
                 _fail()
         after = os.fstat(descriptor)
         linked = os.lstat(path)
-        if _identity(after) != _identity(opened) or _identity(linked) != _identity(opened):
+        if _identity(after) != _identity(opened) or _identity(linked) != _identity(
+            opened
+        ):
             _fail()
         return bytes(result)
     except (OSError, ValueError, TypeError):
@@ -252,9 +266,13 @@ def run_node_entrypoint(
     executor: Callable[..., NodeOperationReceipt] = execute_node_client_operation,
 ) -> int:
     try:
-        request = parse_node_request(_json_object(_bounded_read(stdin, MAX_REQUEST_BYTES)))
+        request = parse_node_request(
+            _json_object(_bounded_read(stdin, MAX_REQUEST_BYTES))
+        )
     except BaseException as error:
-        return EXIT_INVALID_REQUEST if isinstance(error, Exception) else EXIT_INTERRUPTED
+        return (
+            EXIT_INVALID_REQUEST if isinstance(error, Exception) else EXIT_INTERRUPTED
+        )
     try:
         if effective_uid() != 0:
             _fail()
@@ -294,6 +312,74 @@ def run_node_entrypoint(
                     "request_digest": node_request_digest(request),
                     "state": receipt.state,
                     "error_code": receipt.error_code,
+                },
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+            + b"\n"
+        )
+        if stdout.write(encoded) != len(encoded):
+            _fail()
+        stdout.flush()
+        return 0
+    except BaseException as error:
+        return EXIT_FAILURE if isinstance(error, Exception) else EXIT_INTERRUPTED
+
+
+def run_node_receipt_lookup(
+    stdin: BinaryIO,
+    stdout: BinaryIO,
+    _stderr: BinaryIO,
+    *,
+    journal_directory: Path = NODE_JOURNAL_DIRECTORY,
+    effective_uid: Callable[[], int] = _effective_uid,
+    lookup: Callable[..., NodeOperationReceipt | None] = (
+        lookup_node_operation_receipt
+    ),
+) -> int:
+    try:
+        value = _json_object(_bounded_read(stdin, MAX_REQUEST_BYTES))
+        if set(value) != {"version", "operation_id", "request_digest"}:
+            _fail()
+        if value["version"] != 1 or type(value["version"]) is not int:
+            _fail()
+        identity = value["operation_id"]
+        digest = value["request_digest"]
+        if (
+            type(identity) is not str
+            or str(UUID(identity)) != identity
+            or type(digest) is not str
+            or _DIGEST.fullmatch(digest) is None
+        ):
+            _fail()
+    except BaseException as error:
+        return (
+            EXIT_INVALID_REQUEST if isinstance(error, Exception) else EXIT_INTERRUPTED
+        )
+    try:
+        if effective_uid() != 0:
+            _fail()
+        _validate_journal(journal_directory)
+        receipt = lookup(
+            journal_directory,
+            operation_id=UUID(identity),
+            request_digest=digest,
+        )
+        if receipt is not None and (
+            not isinstance(receipt, NodeOperationReceipt)
+            or (receipt.state, receipt.error_code) not in _RECEIPTS
+        ):
+            _fail()
+        encoded = (
+            json.dumps(
+                {
+                    "version": 1,
+                    "operation_id": identity,
+                    "request_digest": digest,
+                    "found": receipt is not None,
+                    "state": receipt.state if receipt is not None else None,
+                    "error_code": (receipt.error_code if receipt is not None else None),
                 },
                 separators=(",", ":"),
                 ensure_ascii=True,

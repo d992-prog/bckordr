@@ -14,6 +14,7 @@ from app.services.vpn_control_intents import (
     finalize_vpn_control_operation,
 )
 from app.services.vpn_control_dispatcher import dispatch_next_vpn_control_operation
+from app.services.vpn_control_reconciliation import reconcile_vpn_control_finalize
 from app.services.vpn_node_transport import (
     NodeControlReceipt,
     VpnNodeTransportError,
@@ -432,7 +433,7 @@ async def test_finalize_uses_distinct_backend_and_transaction(
 
 
 @pytest.mark.asyncio
-async def test_finalize_commit_failure_stays_reserved_without_resend(
+async def test_finalize_commit_failure_reconciles_claimed_without_resend(
     postgres_control, tmp_path
 ):
     await _seed(postgres_control)
@@ -462,11 +463,21 @@ async def test_finalize_commit_failure_stays_reserved_without_resend(
         calls += 1
         return NodeControlReceipt("observed", None)
 
+    async def reconcile(*args, **kwargs):
+        return await reconcile_vpn_control_finalize(
+            *args,
+            **kwargs,
+            receipt_lookup=lambda *_args, **_kwargs: NodeControlReceipt(
+                "observed", None
+            ),
+        )
+
     assert await dispatch_next_vpn_control_operation(
         sessions,
         tmp_path / "known_hosts",
         snapshot_loader=lambda *_args: SimpleNamespace(password="secret"),
         transport=transport,
+        reconcile=reconcile,
         now=lambda: NOW + timedelta(seconds=1),
     )
     async with postgres_control.sessions() as session:
@@ -476,7 +487,7 @@ async def test_finalize_commit_failure_stays_reserved_without_resend(
                     VpnControlOperation.id == str(operation_id)
                 )
             )
-            == "claimed"
+            == "succeeded"
         )
     assert not await dispatch_next_vpn_control_operation(
         postgres_control.sessions,
@@ -486,3 +497,66 @@ async def test_finalize_commit_failure_stays_reserved_without_resend(
         now=lambda: NOW + timedelta(days=1),
     )
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_lost_finalize_commit_response_accepts_already_finalized_without_node(
+    postgres_control, tmp_path
+):
+    await _seed(postgres_control)
+    operation_id = await _stage(postgres_control, 7)
+    async with postgres_control.sessions() as session:
+        worker = await session.get(WorkerNode, 2)
+        worker.ssh_username = "root"
+        worker.ssh_password = "secret"
+        await session.commit()
+
+    transport_calls = 0
+    session_calls = 0
+
+    async def commit_then_lose_response(session):
+        await session.commit()
+        raise RuntimeError("synthetic lost commit response")
+
+    def sessions():
+        nonlocal session_calls
+        session_calls += 1
+        session = postgres_control.sessions()
+        return (
+            SessionProxy(session, commit=commit_then_lose_response)
+            if session_calls == 2
+            else session
+        )
+
+    async def transport(*_args, **_kwargs):
+        nonlocal transport_calls
+        transport_calls += 1
+        return NodeControlReceipt("observed", None)
+
+    async def reconcile(*args, **kwargs):
+        return await reconcile_vpn_control_finalize(
+            *args,
+            **kwargs,
+            receipt_lookup=lambda *_args, **_kwargs: pytest.fail(
+                "already-finalized row queried node"
+            ),
+        )
+
+    assert await dispatch_next_vpn_control_operation(
+        sessions,
+        tmp_path / "known_hosts",
+        snapshot_loader=lambda *_args: SimpleNamespace(password="secret"),
+        transport=transport,
+        reconcile=reconcile,
+        now=lambda: NOW + timedelta(seconds=1),
+    )
+    async with postgres_control.sessions() as session:
+        assert (
+            await session.scalar(
+                select(VpnControlOperation.state).where(
+                    VpnControlOperation.id == str(operation_id)
+                )
+            )
+            == "succeeded"
+        )
+    assert transport_calls == 1

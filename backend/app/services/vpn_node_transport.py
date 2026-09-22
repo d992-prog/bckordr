@@ -10,6 +10,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import stat
 from typing import Literal
 from uuid import UUID
@@ -18,6 +19,7 @@ import asyncssh
 
 
 FIXED_NODE_COMMAND = "/usr/bin/python3 -I -S /opt/veltrix-vpn/current/vpn-node.pyz"
+FIXED_NODE_RECEIPT_LOOKUP_COMMAND = FIXED_NODE_COMMAND + " --lookup-receipt"
 MAX_KNOWN_HOSTS_BYTES = 64 * 1024
 MAX_PRIVATE_KEY_BYTES = 64 * 1024
 MAX_STDOUT_BYTES = 64 * 1024
@@ -37,6 +39,7 @@ _RECEIPTS = frozenset(
         ("blocked", "vpn_node_key_revoked"),
     }
 )
+_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class VpnNodeTransportError(RuntimeError):
@@ -302,23 +305,27 @@ def _parse_exact_receipt(
     return NodeControlReceipt(value["state"], value["error_code"])
 
 
-async def _bounded_read(reader, limit: int) -> bytes:
+async def _bounded_read(
+    reader, limit: int, phase: Literal["preflight", "mutation"] = "mutation"
+) -> bytes:
     result = bytearray()
     while True:
         chunk = await reader.read(min(65536, limit + 1 - len(result)))
         if not isinstance(chunk, bytes):
-            _fail("mutation")
+            _fail(phase)
         if not chunk:
             return bytes(result)
         result.extend(chunk)
         if len(result) > limit:
-            _fail("mutation")
+            _fail(phase)
 
 
-async def _read_process_output(process) -> tuple[bytes, bytes]:
+async def _read_process_output(
+    process, phase: Literal["preflight", "mutation"] = "mutation"
+) -> tuple[bytes, bytes]:
     tasks = (
-        asyncio.create_task(_bounded_read(process.stdout, MAX_STDOUT_BYTES)),
-        asyncio.create_task(_bounded_read(process.stderr, MAX_STDERR_BYTES)),
+        asyncio.create_task(_bounded_read(process.stdout, MAX_STDOUT_BYTES, phase)),
+        asyncio.create_task(_bounded_read(process.stderr, MAX_STDERR_BYTES, phase)),
     )
     try:
         stdout, stderr = await asyncio.gather(*tasks)
@@ -330,18 +337,7 @@ async def _read_process_output(process) -> tuple[bytes, bytes]:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-async def execute_vpn_node_request(
-    snapshot: VpnNodeTransportSnapshot,
-    request: bytes,
-    *,
-    operation_id: UUID,
-    request_digest: str,
-    phase_observer: Callable[[str, NodeControlReceipt | None], None] | None = None,
-    connector: Callable[..., object] = asyncssh.connect,
-) -> NodeControlReceipt:
-    """Execute exactly once. The caller, not this function, owns durable retry policy."""
-    phase: Literal["preflight", "mutation"] = "preflight"
-    observer = phase_observer or (lambda _phase, _receipt: None)
+def _connection_options(snapshot: VpnNodeTransportSnapshot) -> dict[str, object]:
     password_mode = type(snapshot.password) is str and bool(snapshot.password)
     key_mode = isinstance(snapshot.client_key, asyncssh.SSHKey)
     if (
@@ -350,13 +346,11 @@ async def execute_vpn_node_request(
         or type(snapshot.port) is not int
         or not 1 <= snapshot.port <= 65535
         or snapshot.username != "root"
-        or type(request) is not bytes
-        or not request
         or password_mode == key_mode
     ):
         _fail()
     known_hosts = _parse_known_hosts(snapshot.known_hosts, snapshot.host, snapshot.port)
-    options = {
+    return {
         "config": None,
         "known_hosts": known_hosts,
         "client_keys": None if password_mode else [snapshot.client_key],
@@ -379,6 +373,23 @@ async def execute_vpn_node_request(
         "connect_timeout": CONNECT_TIMEOUT,
         "login_timeout": LOGIN_TIMEOUT,
     }
+
+
+async def execute_vpn_node_request(
+    snapshot: VpnNodeTransportSnapshot,
+    request: bytes,
+    *,
+    operation_id: UUID,
+    request_digest: str,
+    phase_observer: Callable[[str, NodeControlReceipt | None], None] | None = None,
+    connector: Callable[..., object] = asyncssh.connect,
+) -> NodeControlReceipt:
+    """Execute exactly once. The caller, not this function, owns durable retry policy."""
+    phase: Literal["preflight", "mutation"] = "preflight"
+    observer = phase_observer or (lambda _phase, _receipt: None)
+    if type(request) is not bytes or not request:
+        _fail()
+    options = _connection_options(snapshot)
     try:
         async with asyncio.timeout(CONNECT_TIMEOUT + LOGIN_TIMEOUT):
             connection = await connector(
@@ -413,3 +424,142 @@ async def execute_vpn_node_request(
         raise
     except Exception:
         _fail(phase)
+
+
+def _parse_exact_lookup_receipt(
+    raw: bytes, operation_id: UUID, request_digest: str
+) -> NodeControlReceipt | None:
+    try:
+        value = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=lambda pairs: _lookup_pairs(pairs),
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+            parse_float=lambda value: _lookup_float(value),
+        )
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+        TypeError,
+        RecursionError,
+    ):
+        _fail()
+    if (
+        type(value) is not dict
+        or set(value)
+        != {
+            "version",
+            "operation_id",
+            "request_digest",
+            "found",
+            "state",
+            "error_code",
+        }
+        or value["version"] != 1
+        or type(value["version"]) is not int
+        or value["operation_id"] != str(operation_id)
+        or value["request_digest"] != request_digest
+        or type(value["found"]) is not bool
+        or (value["found"] and (value["state"], value["error_code"]) not in _RECEIPTS)
+        or (
+            not value["found"]
+            and (value["state"] is not None or value["error_code"] is not None)
+        )
+    ):
+        _fail()
+    canonical = (
+        json.dumps(
+            {
+                "version": value["version"],
+                "operation_id": value["operation_id"],
+                "request_digest": value["request_digest"],
+                "found": value["found"],
+                "state": value["state"],
+                "error_code": value["error_code"],
+            },
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+        + b"\n"
+    )
+    if raw != canonical:
+        _fail()
+    if not value["found"]:
+        return None
+    return NodeControlReceipt(value["state"], value["error_code"])
+
+
+def _lookup_pairs(values: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in values:
+        if key in result:
+            raise ValueError from None
+        result[key] = value
+    return result
+
+
+def _lookup_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError from None
+    return parsed
+
+
+async def lookup_vpn_node_receipt(
+    snapshot: VpnNodeTransportSnapshot,
+    *,
+    operation_id: UUID,
+    request_digest: str,
+    connector: Callable[..., object] = asyncssh.connect,
+) -> NodeControlReceipt | None:
+    """Fetch one exact journal receipt through a fixed read-only node command."""
+    if (
+        not isinstance(operation_id, UUID)
+        or type(request_digest) is not str
+        or _DIGEST.fullmatch(request_digest) is None
+    ):
+        _fail()
+    options = _connection_options(snapshot)
+    request = (
+        json.dumps(
+            {
+                "version": 1,
+                "operation_id": str(operation_id),
+                "request_digest": request_digest,
+            },
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+        + b"\n"
+    )
+    try:
+        async with asyncio.timeout(CONNECT_TIMEOUT + LOGIN_TIMEOUT):
+            connection = await connector(
+                snapshot.host,
+                snapshot.port,
+                username=snapshot.username,
+                **options,
+            )
+        async with asyncio.timeout(REMOTE_OPERATION_TIMEOUT):
+            async with connection:
+                process = await connection.create_process(
+                    FIXED_NODE_RECEIPT_LOOKUP_COMMAND,
+                    term_type=None,
+                    encoding=None,
+                )
+                process.stdin.write(request)
+                await process.stdin.drain()
+                process.stdin.write_eof()
+                stdout, stderr = await _read_process_output(process, "preflight")
+                await process.wait()
+                if process.exit_status != 0 or stderr:
+                    _fail()
+                return _parse_exact_lookup_receipt(stdout, operation_id, request_digest)
+    except asyncio.CancelledError:
+        raise
+    except VpnNodeTransportError:
+        raise
+    except Exception:
+        _fail()

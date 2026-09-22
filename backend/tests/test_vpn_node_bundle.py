@@ -62,6 +62,13 @@ def test_bundle_import_probe_emits_unambiguous_sentinel(tmp_path):
     assert result.stderr == b""
 
 
+def test_bundle_routes_receipt_lookup_to_a_distinct_read_only_mode():
+    from app.services import vpn_node_bundle
+
+    assert b"--lookup-receipt" in vpn_node_bundle._MAIN
+    assert b"run_node_receipt_lookup" in vpn_node_bundle._MAIN
+
+
 def test_bundle_modules_use_only_stdlib_and_bundled_imports():
     bundled = {
         member[:-3].replace("/", ".")

@@ -14,17 +14,20 @@ import pytest
 from app.services import vpn_node_transport
 from app.services.vpn_node_transport import (
     FIXED_NODE_COMMAND,
+    FIXED_NODE_RECEIPT_LOOKUP_COMMAND,
     MAX_STDERR_BYTES,
     NodeControlReceipt,
     VpnNodeTransportError,
     VpnNodeTransportSnapshot,
     _bounded_read,
+    _parse_exact_lookup_receipt,
     _parse_exact_receipt,
     _parse_known_hosts,
     _read_private_file,
     _validate_ancestors,
     execute_vpn_node_request,
     load_transport_snapshot,
+    lookup_vpn_node_receipt,
 )
 
 
@@ -101,6 +104,74 @@ async def test_real_loopback_server_uses_exact_pin_fixed_command_and_stdin_only(
             (FIXED_NODE_COMMAND, None, b'{"request":"only-on-stdin"}\n')
         ]
         assert "only-on-stdin" not in FIXED_NODE_COMMAND
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_read_only_lookup_uses_distinct_fixed_command_and_exact_identity_only():
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    invocations = []
+
+    async def process_factory(process):
+        request = await process.stdin.read()
+        invocations.append((process.command, process.term_type, request))
+        process.stdout.write(
+            json.dumps(
+                {
+                    "version": 1,
+                    "operation_id": str(OPERATION_ID),
+                    "request_digest": DIGEST,
+                    "found": True,
+                    "state": "observed",
+                    "error_code": None,
+                },
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
+        process.exit(0)
+
+    server = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_factory=PasswordServer,
+        server_host_keys=[host_key],
+        process_factory=process_factory,
+        encoding=None,
+    )
+    try:
+        port = server.get_port()
+        snapshot = VpnNodeTransportSnapshot(
+            host="127.0.0.1",
+            port=port,
+            username="root",
+            known_hosts=(
+                f"[127.0.0.1]:{port} ".encode() + host_key.export_public_key("openssh")
+            ),
+            password=PASSWORD,
+        )
+        assert await lookup_vpn_node_receipt(
+            snapshot,
+            operation_id=OPERATION_ID,
+            request_digest=DIGEST,
+        ) == NodeControlReceipt("observed", None)
+        expected_request = (
+            json.dumps(
+                {
+                    "version": 1,
+                    "operation_id": str(OPERATION_ID),
+                    "request_digest": DIGEST,
+                },
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
+        assert invocations == [
+            (FIXED_NODE_RECEIPT_LOOKUP_COMMAND, None, expected_request)
+        ]
+        assert FIXED_NODE_RECEIPT_LOOKUP_COMMAND != FIXED_NODE_COMMAND
     finally:
         server.close()
         await server.wait_closed()
@@ -210,6 +281,40 @@ def test_exact_receipt_rejects_wrong_operation_id():
     )
     with pytest.raises(VpnNodeTransportError):
         _parse_exact_receipt(raw, OPERATION_ID, DIGEST)
+
+
+def test_exact_lookup_receipt_accepts_missing_and_rejects_reordered_output():
+    missing = (
+        json.dumps(
+            {
+                "version": 1,
+                "operation_id": str(OPERATION_ID),
+                "request_digest": DIGEST,
+                "found": False,
+                "state": None,
+                "error_code": None,
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+    assert _parse_exact_lookup_receipt(missing, OPERATION_ID, DIGEST) is None
+    reordered = (
+        json.dumps(
+            {
+                "found": False,
+                "version": 1,
+                "operation_id": str(OPERATION_ID),
+                "request_digest": DIGEST,
+                "state": None,
+                "error_code": None,
+            },
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+    with pytest.raises(VpnNodeTransportError):
+        _parse_exact_lookup_receipt(reordered, OPERATION_ID, DIGEST)
 
 
 @pytest.mark.asyncio
