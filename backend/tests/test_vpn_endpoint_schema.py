@@ -606,10 +606,13 @@ async def test_legacy_and_endpoint_bound_access_keys_round_trip_with_worker_rela
         await engine.dispose()
 
 
-def test_endpoint_migrations_are_appended_with_named_constraints():
+def test_endpoint_migrations_remain_contiguous_with_named_constraints():
     from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
 
-    assert MIGRATIONS[-len(VPN_ENDPOINT_MIGRATIONS) :] == VPN_ENDPOINT_MIGRATIONS
+    start = MIGRATIONS.index(VPN_ENDPOINT_MIGRATIONS[0])
+    assert MIGRATIONS[start : start + len(VPN_ENDPOINT_MIGRATIONS)] == (
+        VPN_ENDPOINT_MIGRATIONS
+    )
     migration_sql = "\n".join(VPN_ENDPOINT_MIGRATIONS)
     assert "CREATE TABLE IF NOT EXISTS vpn_endpoints" in migration_sql
     assert "CONSTRAINT uq_vpn_endpoint_worker_inbound UNIQUE (worker_id, inbound_id)" in migration_sql

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import pytest_asyncio
@@ -130,7 +131,8 @@ async def postgres_friend_control(
 
 
 def _token(link: str) -> str:
-    return link.rsplit("i_", 1)[1]
+    payload = parse_qs(urlsplit(link).query)["start"][0]
+    return payload.removeprefix("i_")
 
 
 async def _count(db: AsyncSession, model: type[object]) -> int:
@@ -201,8 +203,18 @@ async def test_eleven_concurrent_issues_persist_exactly_ten_slots(
 @pytest.mark.asyncio
 async def test_two_identities_racing_one_token_have_one_winner_and_generic_rejection(
     postgres_friend_control: PostgresFriendControl,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     control = postgres_friend_control
+    token_with_internal_marker = "A" * 15 + "i_" + "A" * 26
+    monkeypatch.setattr(
+        invitations,
+        "_new_token",
+        lambda: (
+            token_with_internal_marker,
+            invitations.digest_invite_token(token_with_internal_marker),
+        ),
+    )
     async with control.sessions() as db:
         issued = await issue_friend_invitation(
             db,
@@ -240,6 +252,8 @@ async def test_two_identities_racing_one_token_have_one_winner_and_generic_rejec
 
     winners = [result for state, result in results if state == "redeemed"]
     rejections = [result for state, result in results if state == "rejected"]
+    assert len(winners) == 1
+    assert rejections == ["friend_invitation_rejected"]
     async with control.sessions() as db:
         invitation = await db.get(VpnFriendInvitation, 1)
         assert invitation is not None
@@ -249,8 +263,6 @@ async def test_two_identities_racing_one_token_have_one_winner_and_generic_rejec
         assert await _count(db, VpnSubscription) == 1
         assert await _count(db, VpnAccessKey) == 1
         assert await _count(db, VpnControlOperation) == 1
-    assert len(winners) == 1
-    assert rejections == ["friend_invitation_rejected"]
 
 
 @pytest.mark.asyncio
