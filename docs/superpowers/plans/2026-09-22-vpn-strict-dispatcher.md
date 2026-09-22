@@ -152,7 +152,7 @@ runtime scheduler, route, TCP 443 setting, invitation or payment was changed.
 - Modify matching intent, policy, maintenance, decommission, control and
   PostgreSQL tests
 
-- [ ] **Step 1: Write RED guard tests**
+- [x] **Step 1: Write RED guard tests**
 
 Queued/claimed/uncertain operations must be included in the VPN mutation worker
 set. After worker `FOR UPDATE`, attack allocation requeries reservations before
@@ -162,7 +162,7 @@ bulk maintenance creation path locks the worker; the last pre-SSH check repeats
 the control reservation. Sensitive worker update and decommission refuse while
 any reservation exists and do not clear credentials.
 
-- [ ] **Step 2: Prove real PostgreSQL races**
+- [x] **Step 2: Prove real PostgreSQL races**
 
 Use two independent connections to interleave stage/claim with attack assignment,
 single and bulk maintenance queue/run, worker edit and decommission. Force attack
@@ -172,7 +172,7 @@ attack/maintenance commits first, then stage/claim refuses it. No SSH callback
 occurs in the losing path. Add an inverse-order bulk-maintenance versus attack
 race which would deadlock if either side used route or business-priority order.
 
-- [ ] **Step 3: Implement minimal shared guards**
+- [x] **Step 3: Implement minimal shared guards**
 
 Reuse `active_vpn_control_worker_ids`; do not add another reservation table or
 in-memory lock. Preserve the canonical customer/subscription/key/worker/endpoint/
@@ -181,10 +181,19 @@ and bulk paths first lock all candidate `WorkerNode` rows by ascending ID,
 requery reservations, and only then apply target-RPS/name business ordering;
 never lock a batch one-by-one in route iteration order.
 
-- [ ] **Step 4: Verify, review and commit**
+- [x] **Step 4: Verify, review and commit**
 
 Run focused actual-PostgreSQL tests, relevant endpoint/lifecycle/maintenance/
 decommission/control suites, Ruff and diff check. Obtain spec then quality review.
+
+Evidence: commits `189e391`, `a29be31` and `4ea2c37`; independent spec and
+quality reviews approved. The final local focused suite passed with
+`230 passed, 36 skipped`, and `ruff check app tests` plus both diff checks
+passed. A fresh,
+loopback-only PostgreSQL 14 run passed all `32` cross-system race tests in
+`24.06s`; its exact temporary root, archive and script were removed, its port was
+closed, and `domain-drop-control.service` remained active. No production database,
+VPN node, runtime, deployment, TCP 443 setting, invitation or payment was changed.
 
 ## Task 4: Independent final review and local evidence
 
