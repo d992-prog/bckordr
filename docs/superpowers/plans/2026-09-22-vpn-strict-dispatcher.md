@@ -67,7 +67,7 @@ executor tests and commit only Task 1.
 - Create `backend/tests/test_vpn_control_dispatcher.py`
 - Create `backend/tests/test_vpn_control_dispatcher_postgres.py`
 
-- [ ] **Step 1: Write RED strict-transport tests**
+- [x] **Step 1: Write RED strict-transport tests**
 
 Use a real loopback AsyncSSH server with an ephemeral Ed25519 host key. Prove
 correct exact literal host/port pin succeeds and missing/wrong/changed/wildcard/
@@ -81,7 +81,7 @@ PTY, binary stdin, no request in argv/env/logs and no retry.
 Read stdout/stderr concurrently with limits and reject wrong ID/digest, duplicate/
 extra/trailing JSON, nonzero exit and any ambiguous output.
 
-- [ ] **Step 2: Implement transport failure phases**
+- [x] **Step 2: Implement transport failure phases**
 
 Validate/read the known_hosts file before importing/connecting. Accept exactly
 one credential mode. Password mode disables client keys/publickey; key mode opens
@@ -90,7 +90,7 @@ its bytes before network and disables password. Both disable every ambient auth
 source and use one explicit preferred method. Build a frozen credential snapshot
 with secret-free repr. Do not store or stringify AsyncSSH exceptions.
 
-- [ ] **Step 3: Write RED dispatcher transaction tests**
+- [x] **Step 3: Write RED dispatcher transaction tests**
 
 Prove claim commits before the injected transport sees the operation, request
 bytes equal the committed snapshot, the claim session is closed during network,
@@ -114,19 +114,30 @@ definitive driver outcome and session close even beyond that deadline. A lost
 COMMIT response may leave the row finalized or claimed, but never permits an
 automatic resend.
 
-- [ ] **Step 4: Add actual PostgreSQL dispatcher races**
+- [x] **Step 4: Add actual PostgreSQL dispatcher races**
 
 Using independent backend PIDs, prove two dispatchers cannot execute the same
 operation/worker, different workers can progress, committed claims survive
 process/session loss, and ambiguous execution cannot be reclaimed by time.
 
-- [ ] **Step 5: Implement, verify and commit**
+- [x] **Step 5: Implement, verify and commit**
 
 Keep the dispatcher callable but not wired to application runtime. Run transport,
 dispatcher, node protocol and control-intent suites with actual PostgreSQL, Ruff
 and diff check; commit only Task 2. Runtime/deployment scheduling remains blocked
 until PostgreSQL `statement_timeout`, a driver command timeout and explicit
 commit-ambiguity reconciliation are separately configured and tested.
+
+Evidence: commits `d9e1548`, `3326910`, `0525839` and `aa855bc`; independent
+specification and quality reviews approved the final code. Focused local
+verification passed `69` tests with `11` expected PostgreSQL skips, and the
+related node/control regression passed `998` tests with `30` environment skips.
+All `11` dispatcher PostgreSQL acceptance tests then passed against a fresh
+loopback-only PostgreSQL 14 cluster on the managing server in `12.45s`. The exact
+temporary directory `/tmp/veltrix-strict-dispatcher-test-TOdHK1cg`, uploaded
+archive and database were removed, port `56675` was closed, and
+`domain-drop-control.service` remained active. No production database, VPN node,
+runtime scheduler, route, TCP 443 setting, invitation or payment was changed.
 
 ## Task 3: Cross-system worker reservations
 
