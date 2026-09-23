@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 import asyncssh
@@ -90,15 +91,32 @@ def _run_candidate_admin(module, parent: Path, request: bytes):
     )
 
 
+@pytest.fixture
+def secure_candidate_parent(tmp_path: Path):
+    if os.name == "posix":
+        if os.geteuid() != 0:
+            pytest.skip("root-only candidate administrator")
+        with tempfile.TemporaryDirectory(
+            prefix="veltrix-endpoint-test-", dir="/root"
+        ) as raw:
+            parent = Path(raw) / "remote"
+            parent.mkdir(mode=0o700)
+            yield parent
+        return
+    parent = tmp_path / "remote"
+    parent.mkdir(mode=0o700)
+    yield parent
+
+
 def test_candidate_admin_installs_idempotently_and_removes_only_exact_hash(
     tmp_path: Path,
+    secure_candidate_parent: Path,
 ) -> None:
     module = importlib.import_module("app.services.vpn_reality_endpoint_deployment")
     bundle_path = tmp_path / "built.pyz"
     digest = module.build_endpoint_installer_bundle(BACKEND, bundle_path)
     bundle = bundle_path.read_bytes()
-    parent = tmp_path / "remote"
-    parent.mkdir(mode=0o700)
+    parent = secure_candidate_parent
     target = parent / module.ENDPOINT_CANDIDATE_NAME
     install_request = module._encode_candidate_admin_request(
         "install", digest, bundle

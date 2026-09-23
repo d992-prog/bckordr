@@ -203,10 +203,14 @@ def test_failure_rolls_back_new_state_and_preserves_old_code(
     bundle, digest = _bundle(tmp_path)
     replace = deployment.os.replace
 
-    def fail_activation(source, destination):
-        if Path(destination) == layout.active and Path(source).suffix == ".pyz":
+    def fail_activation(source, destination, *args, **kwargs):
+        destination_is_active = Path(destination) == layout.active or (
+            kwargs.get("dst_dir_fd") is not None
+            and destination == layout.active.name
+        )
+        if destination_is_active and Path(source).suffix == ".pyz":
             raise OSError("secret activation detail")
-        return replace(source, destination)
+        return replace(source, destination, *args, **kwargs)
 
     monkeypatch.setattr(deployment.os, "replace", fail_activation)
 
