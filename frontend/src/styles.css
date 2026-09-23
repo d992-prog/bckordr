@@ -167,6 +167,67 @@ button {
   min-height: 112px;
 }
 
+.vpn-capacity-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.vpn-capacity-card {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--panel-strong);
+}
+
+.vpn-capacity-head,
+.vpn-capacity-usage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.vpn-capacity-head > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.vpn-capacity-usage {
+  flex-wrap: wrap;
+}
+
+.vpn-capacity-usage span,
+.vpn-capacity-usage small {
+  color: var(--muted);
+}
+
+.vpn-capacity-form,
+.vpn-capacity-fields,
+.vpn-capacity-fields label {
+  display: grid;
+  gap: 10px;
+}
+
+.vpn-capacity-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.vpn-capacity-fields label {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.vpn-capacity-message {
+  min-height: 1.25rem;
+  color: var(--success);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .grid {
   display: grid;
   gap: 20px;
@@ -1417,6 +1478,11 @@ button:disabled {
   .app-shell,
   .auth-shell {
     padding: 18px 14px 32px;
+  }
+
+  .vpn-capacity-grid,
+  .vpn-capacity-fields {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .stats,

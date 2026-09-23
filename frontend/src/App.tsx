@@ -23,6 +23,7 @@ import {
   StrategyPreview,
   VpnAccessKey,
   VpnCustomer,
+  VpnEndpointCapacity,
   VpnFriendInvitation,
   VpnLifecycleStatus,
   VpnNodeEvent,
@@ -44,6 +45,8 @@ import {
 import { isVpnConfigurationActionDisabled } from "./vpnMaintenance";
 import { VpnCustomerWorkspace } from "./VpnCustomerWorkspacePanel";
 import { shouldApplyLoadGeneration } from "./vpnCustomerWorkspace";
+import { VpnEndpointCapacityPanel } from "./VpnEndpointCapacityPanel";
+import { replaceVpnEndpointCapacity } from "./vpnEndpointCapacity";
 
 type Toast = { type: "success" | "error"; text: string } | null;
 type Tab =
@@ -1055,6 +1058,7 @@ export default function App() {
   const [tasks, setTasks] = useState<WorkerTask[]>([]);
   const [events, setEvents] = useState<AttackEvent[]>([]);
   const [vpnOverview, setVpnOverview] = useState<VpnOverview | null>(null);
+  const [vpnEndpointCapacities, setVpnEndpointCapacities] = useState<VpnEndpointCapacity[]>([]);
   const [vpnPlans, setVpnPlans] = useState<VpnPlan[]>([]);
   const [vpnCustomers, setVpnCustomers] = useState<VpnCustomer[]>([]);
   const [vpnSubscriptions, setVpnSubscriptions] = useState<VpnSubscription[]>([]);
@@ -1062,6 +1066,7 @@ export default function App() {
   const [vpnFriendInvitations, setVpnFriendInvitations] = useState<VpnFriendInvitation[]>([]);
   const loadAllGenerationRef = useRef(0);
   const lastAppliedLoadGenerationRef = useRef(0);
+  const vpnCapacityMutationGenerationRef = useRef(0);
   const [vpnNodeEvents, setVpnNodeEvents] = useState<VpnNodeEvent[]>([]);
   const [vpnLifecycleStatus, setVpnLifecycleStatus] = useState<VpnLifecycleStatus | null>(null);
   const [vpnNodeEligibility, setVpnNodeEligibility] = useState<Record<number, VpnNodeEligibility>>({});
@@ -1383,6 +1388,7 @@ export default function App() {
 
   async function loadAll(options?: { silent?: boolean; throwOnError?: boolean }) {
     const generation = ++loadAllGenerationRef.current;
+    const capacityMutationGeneration = vpnCapacityMutationGenerationRef.current;
     try {
       const [
         overviewData,
@@ -1402,6 +1408,7 @@ export default function App() {
         tasksData,
         eventsData,
         vpnOverviewData,
+        vpnEndpointCapacitiesData,
         vpnPlansData,
         vpnCustomersData,
         vpnSubscriptionsData,
@@ -1430,6 +1437,7 @@ export default function App() {
         api.getTasks(),
         api.getEvents(),
         api.getVpnOverview(),
+        api.getVpnEndpointCapacities(),
         api.getVpnPlans(),
         api.getVpnCustomers(),
         api.getVpnSubscriptions(),
@@ -1463,6 +1471,9 @@ export default function App() {
       setTasks(tasksData);
       setEvents(eventsData);
       setVpnOverview(vpnOverviewData);
+      if (capacityMutationGeneration === vpnCapacityMutationGenerationRef.current) {
+        setVpnEndpointCapacities(vpnEndpointCapacitiesData);
+      }
       setVpnPlans(vpnPlansData);
       setVpnCustomers(vpnCustomersData);
       setVpnSubscriptions(vpnSubscriptionsData);
@@ -1603,6 +1614,7 @@ export default function App() {
     setTasks([]);
     setEvents([]);
     setVpnOverview(null);
+    setVpnEndpointCapacities([]);
     setVpnPlans([]);
     setVpnCustomers([]);
     setVpnSubscriptions([]);
@@ -4396,6 +4408,22 @@ export default function App() {
             <article><span>Пропущено безопасностью</span><strong>{vpnLifecycleStatus?.skipped_unsafe_keys ?? 0}</strong></article>
             <article><span>Ошибки</span><strong>{vpnLifecycleStatus?.failed_keys ?? 0}</strong></article>
           </div>
+        </div>
+
+        <div className="card full-span">
+          <div className="card-head">
+            <div>
+              <h2>Ёмкость VPN endpoint’ов</h2>
+              <p className="muted">Ограничивает число выданных профилей. Пустой лимит означает, что публичная автовыдача на endpoint отключена.</p>
+            </div>
+          </div>
+          <VpnEndpointCapacityPanel
+            endpoints={vpnEndpointCapacities}
+            onUpdated={(updated) => {
+              vpnCapacityMutationGenerationRef.current += 1;
+              setVpnEndpointCapacities((current) => replaceVpnEndpointCapacity(current, updated));
+            }}
+          />
         </div>
 
         <section className="grid">

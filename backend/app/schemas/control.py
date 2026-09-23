@@ -543,6 +543,23 @@ class VpnNodeEligibilityResponse(BaseModel):
     blocked_reasons: list[str]
 
 
+class VpnEndpointCapacityUpdateRequest(BaseModel):
+    max_active_profiles: int | None = Field(default=None, ge=1, le=100_000)
+    capacity_warning_percent: int = Field(default=80, ge=1, le=100)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class VpnEndpointCapacityResponse(BaseModel):
+    endpoint_id: int
+    worker_id: int
+    label: str
+    status: str
+    occupied_profiles: int
+    max_active_profiles: int | None
+    capacity_warning_percent: int
+
+
 class VpnPlanBase(BaseModel):
     slug: str = Field(min_length=2, max_length=64)
     name: str = Field(min_length=2, max_length=128)

@@ -30,6 +30,7 @@ from app.db.models import (
     User,
     VpnAccessKey,
     VpnCustomer,
+    VpnEndpoint,
     VpnNodeEvent,
     VpnPlan,
     VpnSubscription,
@@ -98,6 +99,8 @@ from app.schemas.control import (
     VpnCustomerArchiveResponse,
     VpnCustomerResponse,
     VpnCustomerUpdateRequest,
+    VpnEndpointCapacityResponse,
+    VpnEndpointCapacityUpdateRequest,
     VpnFriendInvitationIssuedResponse,
     VpnFriendInvitationResponse,
     VpnLifecycleStatusResponse,
@@ -187,6 +190,7 @@ from app.services.vpn_customer_lifecycle import (
     stage_vpn_customer_archive,
 )
 from app.services.vpn_policy import (
+    NODE_CAPACITY_STATUSES,
     VPN_MUTATION_ACTIONS,
     active_attack_worker_ids,
     count_device_slots,
@@ -2878,6 +2882,101 @@ def _friend_invitation_response(
         invitation,
         from_attributes=True,
     )
+
+
+def _vpn_endpoint_capacity_response(
+    endpoint: VpnEndpoint,
+    occupied_profiles: int,
+) -> VpnEndpointCapacityResponse:
+    return VpnEndpointCapacityResponse(
+        endpoint_id=endpoint.id,
+        worker_id=endpoint.worker_id,
+        label=f"{endpoint.public_host}:{endpoint.port}",
+        status=endpoint.status,
+        occupied_profiles=occupied_profiles,
+        max_active_profiles=endpoint.max_active_profiles,
+        capacity_warning_percent=endpoint.capacity_warning_percent,
+    )
+
+
+@router.get(
+    "/vpn/endpoints/capacity",
+    response_model=list[VpnEndpointCapacityResponse],
+)
+async def list_vpn_endpoint_capacities(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnEndpointCapacityResponse]:
+    del admin
+    occupancy = (
+        select(
+            VpnAccessKey.endpoint_id.label("endpoint_id"),
+            func.count(VpnAccessKey.id).label("occupied_profiles"),
+        )
+        .where(
+            VpnAccessKey.endpoint_id.is_not(None),
+            VpnAccessKey.status.in_(NODE_CAPACITY_STATUSES),
+        )
+        .group_by(VpnAccessKey.endpoint_id)
+        .subquery()
+    )
+    rows = (
+        await db.execute(
+            select(
+                VpnEndpoint,
+                func.coalesce(occupancy.c.occupied_profiles, 0),
+            )
+            .outerjoin(occupancy, occupancy.c.endpoint_id == VpnEndpoint.id)
+            .order_by(VpnEndpoint.id.asc())
+        )
+    ).all()
+    return [
+        _vpn_endpoint_capacity_response(endpoint, int(occupied_profiles))
+        for endpoint, occupied_profiles in rows
+    ]
+
+
+@router.patch(
+    "/vpn/endpoints/{endpoint_id}/capacity",
+    response_model=VpnEndpointCapacityResponse,
+)
+async def update_vpn_endpoint_capacity(
+    endpoint_id: int,
+    payload: VpnEndpointCapacityUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnEndpointCapacityResponse:
+    endpoint = await db.scalar(
+        select(VpnEndpoint)
+        .where(VpnEndpoint.id == endpoint_id)
+        .with_for_update()
+    )
+    if endpoint is None:
+        raise HTTPException(status_code=404, detail="VPN endpoint not found")
+    endpoint.max_active_profiles = payload.max_active_profiles
+    endpoint.capacity_warning_percent = payload.capacity_warning_percent
+    occupied_profiles = int(
+        await db.scalar(
+            select(func.count(VpnAccessKey.id)).where(
+                VpnAccessKey.endpoint_id == endpoint.id,
+                VpnAccessKey.status.in_(NODE_CAPACITY_STATUSES),
+            )
+        )
+        or 0
+    )
+    limit = "null" if payload.max_active_profiles is None else str(payload.max_active_profiles)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_endpoint_capacity_update",
+        details=(
+            f"endpoint_id={endpoint.id} max_active_profiles={limit} "
+            f"capacity_warning_percent={payload.capacity_warning_percent}"
+        ),
+    )
+    await db.commit()
+    return _vpn_endpoint_capacity_response(endpoint, occupied_profiles)
 
 
 def _friend_invitation_http_error(

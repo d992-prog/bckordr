@@ -7,7 +7,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -19,12 +19,17 @@ from app.db.models import (
     AttackRun,
     DropDomain,
     VpnAccessKey,
+    VpnCustomer,
+    VpnEndpoint,
     VpnSubscription,
     WorkerNode,
     WorkerTask,
 )
 from app.db.session import get_db
-from app.schemas.control import VpnAccessKeyDisplayNameUpdateRequest
+from app.schemas.control import (
+    VpnAccessKeyDisplayNameUpdateRequest,
+    VpnEndpointCapacityUpdateRequest,
+)
 
 
 def test_vpn_access_key_display_name_request_is_name_only_and_safe():
@@ -39,6 +44,253 @@ def test_vpn_access_key_display_name_request_is_name_only_and_safe():
     ):
         with pytest.raises(ValidationError):
             VpnAccessKeyDisplayNameUpdateRequest(**payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"max_active_profiles": 0, "capacity_warning_percent": 80},
+        {"max_active_profiles": -1, "capacity_warning_percent": 80},
+        {"max_active_profiles": 100_001, "capacity_warning_percent": 80},
+        {"max_active_profiles": 10, "capacity_warning_percent": 0},
+        {"max_active_profiles": 10, "capacity_warning_percent": 101},
+        {
+            "max_active_profiles": 10,
+            "capacity_warning_percent": 80,
+            "public_key": "must-not-be-accepted",
+        },
+    ),
+)
+def test_vpn_endpoint_capacity_request_rejects_invalid_or_secret_fields(payload):
+    with pytest.raises(ValidationError):
+        VpnEndpointCapacityUpdateRequest(**payload)
+
+
+@pytest.mark.asyncio
+async def test_vpn_endpoint_capacity_api_is_grouped_safe_and_audited():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
+        worker = WorkerNode(
+            name="capacity-node",
+            status="ready",
+            is_enabled=True,
+            vpn_role="vpn_node",
+            vpn_enabled=True,
+            vpn_runtime_status="ready",
+            vpn_public_host="worker-secret.example",
+            vpn_inbound_id=9,
+            ssh_host="10.0.0.9",
+            ssh_password="node-password",
+        )
+        customer = VpnCustomer(telegram_user_id="capacity-owner")
+        session.add_all([worker, customer])
+        await session.flush()
+        subscription = VpnSubscription(customer_id=customer.id, status="active", max_devices=5)
+        session.add(subscription)
+        await session.flush()
+        first = VpnEndpoint(
+            worker_id=worker.id,
+            inbound_id=91,
+            public_host="edge-1.example.net",
+            port=443,
+            security="reality",
+            public_key="reality-public-key-must-not-leak",
+            short_id="aabbccdd",
+            server_name="front-secret.example",
+            status="ready",
+            verified_at=datetime.now(UTC),
+            max_active_profiles=10,
+            capacity_warning_percent=80,
+        )
+        second = VpnEndpoint(
+            worker_id=worker.id,
+            inbound_id=92,
+            public_host="edge-2.example.net",
+            port=8443,
+            security="reality",
+            public_key="second-secret-key",
+            short_id="eeff0011",
+            status="draining",
+            verified_at=datetime.now(UTC),
+            max_active_profiles=None,
+            capacity_warning_percent=90,
+        )
+        session.add_all([first, second])
+        await session.flush()
+        session.add_all(
+            [
+                VpnAccessKey(
+                    subscription_id=subscription.id,
+                    worker_id=worker.id,
+                    endpoint_id=first.id,
+                    status="active",
+                ),
+                VpnAccessKey(
+                    subscription_id=subscription.id,
+                    worker_id=worker.id,
+                    endpoint_id=first.id,
+                    status="pending_suspend",
+                ),
+                VpnAccessKey(
+                    subscription_id=subscription.id,
+                    worker_id=worker.id,
+                    endpoint_id=first.id,
+                    status="revoked",
+                ),
+            ]
+        )
+        await session.commit()
+        first_id = first.id
+        second_id = second.id
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+    statements: list[str] = []
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement.lower())
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record_statement)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        listed = await client.get("/control/vpn/endpoints/capacity")
+        assert listed.status_code == 200
+        assert listed.json() == [
+            {
+                "endpoint_id": first_id,
+                "worker_id": 1,
+                "label": "edge-1.example.net:443",
+                "status": "ready",
+                "occupied_profiles": 2,
+                "max_active_profiles": 10,
+                "capacity_warning_percent": 80,
+            },
+            {
+                "endpoint_id": second_id,
+                "worker_id": 1,
+                "label": "edge-2.example.net:8443",
+                "status": "draining",
+                "occupied_profiles": 0,
+                "max_active_profiles": None,
+                "capacity_warning_percent": 90,
+            },
+        ]
+        serialized = listed.text
+        for secret in (
+            "reality-public-key-must-not-leak",
+            "second-secret-key",
+            "aabbccdd",
+            "eeff0011",
+            "node-password",
+            "front-secret.example",
+            "config_uri",
+        ):
+            assert secret not in serialized
+        list_queries = [statement for statement in statements if "vpn_endpoints" in statement]
+        assert len(list_queries) == 1
+        assert "group by vpn_access_keys.endpoint_id" in list_queries[0]
+
+        updated = await client.patch(
+            f"/control/vpn/endpoints/{first_id}/capacity",
+            json={"max_active_profiles": 50, "capacity_warning_percent": 75},
+        )
+        assert updated.status_code == 200
+        assert updated.json() == {
+            "endpoint_id": first_id,
+            "worker_id": 1,
+            "label": "edge-1.example.net:443",
+            "status": "ready",
+            "occupied_profiles": 2,
+            "max_active_profiles": 50,
+            "capacity_warning_percent": 75,
+        }
+
+        unlimited = await client.patch(
+            f"/control/vpn/endpoints/{first_id}/capacity",
+            json={"max_active_profiles": None, "capacity_warning_percent": 70},
+        )
+        assert unlimited.status_code == 200
+        assert unlimited.json()["max_active_profiles"] is None
+        assert unlimited.json()["occupied_profiles"] == 2
+
+        for payload in (
+            {"max_active_profiles": 0, "capacity_warning_percent": 80},
+            {"max_active_profiles": -1, "capacity_warning_percent": 80},
+            {"max_active_profiles": 100_001, "capacity_warning_percent": 80},
+            {"max_active_profiles": 10, "capacity_warning_percent": 0},
+            {"max_active_profiles": 10, "capacity_warning_percent": 101},
+            {
+                "max_active_profiles": 10,
+                "capacity_warning_percent": 80,
+                "short_id": "secret",
+            },
+        ):
+            invalid = await client.patch(
+                f"/control/vpn/endpoints/{first_id}/capacity",
+                json=payload,
+            )
+            assert invalid.status_code == 422
+        missing = await client.patch(
+            "/control/vpn/endpoints/999999/capacity",
+            json={"max_active_profiles": 10, "capacity_warning_percent": 80},
+        )
+        assert missing.status_code == 404
+
+    event.remove(engine.sync_engine, "before_cursor_execute", record_statement)
+    async with session_factory() as session:
+        audit_rows = list(
+            await session.scalars(
+                select(AdminAuditLog)
+                .where(AdminAuditLog.action == "vpn_endpoint_capacity_update")
+                .order_by(AdminAuditLog.id)
+            )
+        )
+        assert [row.details for row in audit_rows] == [
+            f"endpoint_id={first_id} max_active_profiles=50 capacity_warning_percent=75",
+            f"endpoint_id={first_id} max_active_profiles=null capacity_warning_percent=70",
+        ]
+        for row in audit_rows:
+            assert "edge-1" not in (row.details or "")
+            assert "key" not in (row.details or "")
+            assert "secret" not in (row.details or "")
+
+    unauthenticated_app = FastAPI()
+    unauthenticated_app.include_router(control_router)
+    unauthenticated_app.dependency_overrides[get_db] = override_get_db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=unauthenticated_app),
+        base_url="http://testserver",
+    ) as client:
+        assert (await client.get("/control/vpn/endpoints/capacity")).status_code == 401
+        assert (
+            await client.patch(
+                f"/control/vpn/endpoints/{first_id}/capacity",
+                json={"max_active_profiles": 10, "capacity_warning_percent": 80},
+            )
+        ).status_code == 401
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio

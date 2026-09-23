@@ -458,6 +458,21 @@ export type VpnOverview = {
   active_keys: number;
 };
 
+export type VpnEndpointCapacity = {
+  endpoint_id: number;
+  worker_id: number;
+  label: string;
+  status: string;
+  occupied_profiles: number;
+  max_active_profiles: number | null;
+  capacity_warning_percent: number;
+};
+
+export type VpnEndpointCapacityUpdate = {
+  max_active_profiles: number | null;
+  capacity_warning_percent: number;
+};
+
 export type VpnFriendInvitation = {
   slot: number;
   invite_state:
@@ -1022,6 +1037,13 @@ export const api = {
   deleteWorker: (id: number) => request<{ detail: string }>(`/control/workers/${id}`, { method: "DELETE" }),
 
   getVpnOverview: () => request<VpnOverview>("/control/vpn/overview"),
+  getVpnEndpointCapacities: () =>
+    request<VpnEndpointCapacity[]>("/control/vpn/endpoints/capacity"),
+  updateVpnEndpointCapacity: (id: number, payload: VpnEndpointCapacityUpdate) =>
+    request<VpnEndpointCapacity>(`/control/vpn/endpoints/${id}/capacity`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
   getVpnFriendInvitations: () =>
     request<VpnFriendInvitation[]>("/control/vpn/friend-invitations"),
   issueVpnFriendInvitation: () =>
