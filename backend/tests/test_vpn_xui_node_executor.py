@@ -421,6 +421,18 @@ def test_create_suspend_resume_revoke_preserves_identity_and_other_policy(
     assert capsys.readouterr() == ("", "") and caplog.text == ""
 
 
+def test_3x_ui_default_spider_path_allows_new_client(executor, node):
+    def add_default_spider(rows):
+        rows[0]["streamSettings"]["realitySettings"]["settings"]["spiderX"] = "/"
+
+    node["inbounds_override"] = add_default_spider
+    node["records"].pop(0)
+    with sqlite3.connect(node["database"]) as connection:
+        connection.execute("DELETE FROM client_traffics")
+
+    assert run(executor, node, allow_create=True).state == "observed"
+
+
 def test_readonly_noop_and_digest_owned_by_executor(executor, node):
     before = node["database"].read_bytes()
     assert run(executor, node).state == "observed"

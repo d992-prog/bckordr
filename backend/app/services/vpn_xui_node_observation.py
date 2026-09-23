@@ -230,7 +230,7 @@ def _reality_matches(stream: dict, target: VpnEndpointTarget) -> bool:
         and isinstance(reality.get("privateKey"), str)
         and bool(reality["privateKey"])
         and settings.get("serverName", "") in ("", target.server_name)
-        and settings.get("spiderX", "") == ""
+        and settings.get("spiderX", "") in ("", "/")
         and settings.get("mldsa65Verify", "") == ""
         and reality.get("spiderX", "") == ""
         and reality.get("mldsa65Verify", "") == ""

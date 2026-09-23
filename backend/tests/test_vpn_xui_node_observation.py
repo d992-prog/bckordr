@@ -396,7 +396,7 @@ def test_reality_shape_mismatch(observation, panel, data, field, value):
         ("fingerprint", "wrong"),
         ("fingerprint", "bad\n"),
         ("serverName", "wrong"),
-        ("spiderX", "/"),
+        ("spiderX", "/unsafe"),
         ("mldsa65Verify", SECRET),
     ],
 )
@@ -405,6 +405,13 @@ def test_reality_nested_settings_mismatch(observation, panel, data, field, value
         field
     ] = value
     assert observe(observation, panel, data).transport == "mismatch"
+
+
+def test_3x_ui_default_nested_spider_path_is_supported(observation, panel, data):
+    data["inbounds"]["obj"][0]["streamSettings"]["realitySettings"][
+        "settings"
+    ]["spiderX"] = "/"
+    assert observe(observation, panel, data).transport == "matched"
 
 
 @pytest.mark.parametrize(
