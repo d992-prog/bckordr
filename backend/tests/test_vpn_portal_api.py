@@ -23,13 +23,18 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import Settings
 from app.db.base import Base, utcnow
 from app.db.models import (
+    AppSetting,
     VpnAccessKey,
+    VpnControlOperation,
     VpnCustomer,
     VpnCustomerSession,
+    VpnEndpoint,
     VpnFriendInvitation,
+    VpnPlan,
     VpnSubscription,
     User,
     UserSession,
+    WorkerNode,
 )
 from app.db.session import get_db
 from app.api.routes.vpn_portal import telegram_callback
@@ -372,6 +377,195 @@ async def portal_app(monkeypatch):
         )
 
     await engine.dispose()
+
+
+async def seed_ready_public_trial(portal_app, monkeypatch) -> None:
+    from app.services import vpn_public_trial
+
+    settings = portal_app.settings
+    settings.vpn_public_trial_enabled = True
+    settings.vpn_public_trial_release_id = "a" * 64
+    settings.vpn_control_dispatch_enabled = True
+    monkeypatch.setattr(vpn_public_trial, "load_transport_snapshot", lambda *_: object())
+    async with portal_app.factory() as session:
+        worker = WorkerNode(
+            name="portal-trial",
+            status="ready",
+            is_enabled=True,
+            vpn_enabled=True,
+            vpn_role="vpn_node",
+            vpn_runtime_status="ready",
+            vpn_public_host="vpn.example",
+            vpn_inbound_id=1,
+            ssh_host="10.0.0.1",
+            ssh_password="private transport marker",
+            vpn_last_checked_at=utcnow(),
+        )
+        session.add_all([
+            worker,
+            VpnPlan(slug="trial-7d", name="Portal trial", duration_days=7, max_devices=1),
+            AppSetting(key="vpn_public_release_ready_v1", value="a" * 64),
+        ])
+        await session.flush()
+        session.add(VpnEndpoint(
+            worker_id=worker.id,
+            inbound_id=1,
+            public_host="vpn.example",
+            port=443,
+            security="reality",
+            transport="raw",
+            server_name="cdn.example.test",
+            public_key="A" * 43,
+            short_id="0123456789abcdef",
+            fingerprint="chrome",
+            flow="xtls-rprx-vision",
+            status="ready",
+            verified_at=utcnow(),
+            max_active_profiles=4,
+        ))
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_public_trial_fresh_signed_mini_app_can_read_activate_and_replay(portal_app, monkeypatch):
+    await seed_ready_public_trial(portal_app, monkeypatch)
+    portal_app.settings.vpn_portal_allowed_telegram_ids = ""
+    config = await portal_app.client.get("/api/vpn-portal/config")
+    assert config.json()["enabled"] is True
+    assert config.json()["browser_login_enabled"] is True
+    assert config.json()["mini_app_enabled"] is True
+    assert "access-control-allow-origin" not in config.headers
+
+    fresh = httpx.AsyncClient(transport=httpx.ASGITransport(app=portal_app.app), base_url=PORTAL_ORIGIN)
+    try:
+        path = "/api/vpn-portal/trial"
+        denied = await fresh.get(path)
+        assert denied.status_code == 401
+        assert denied.headers["cache-control"] == "no-store"
+        login = await fresh.post(
+            "/api/vpn-portal/auth/mini-app",
+            headers={"Origin": PORTAL_ORIGIN},
+            json={"init_data": mini_app_data(400, portal_app.settings.vpn_telegram_bot_token)},
+        )
+        assert login.status_code == 200
+        assert login.headers["cache-control"] == "no-store"
+        assert (await fresh.get("/api/vpn-portal/me")).status_code == 200
+        available = await fresh.get(path)
+        assert available.status_code == 200
+        assert available.json() == {
+            "state": "available", "duration_days": 7, "profile_limit": 1,
+            "subscription_id": None, "access_key_id": None, "expires_at": None,
+        }
+        assert available.headers["cache-control"] == "no-store"
+
+        csrf = login.json()["csrf_token"]
+        for headers in ({}, {"Origin": PORTAL_ORIGIN}, {"X-CSRF-Token": csrf},
+                        {"Origin": "https://foreign.example", "X-CSRF-Token": csrf}):
+            rejected = await fresh.post(path + "/activate", headers=headers)
+            assert (rejected.status_code, rejected.json()) == (403, {"detail": "customer_request_rejected"})
+            assert rejected.headers["cache-control"] == "no-store"
+        headers = {"Origin": PORTAL_ORIGIN, "X-CSRF-Token": csrf}
+        activated = await fresh.post(path + "/activate", headers=headers)
+        assert activated.status_code == 200, activated.json()
+        payload = activated.json()
+        assert payload == {
+            "state": "preparing", "duration_days": 7, "profile_limit": 1,
+            "subscription_id": payload["subscription_id"],
+            "access_key_id": payload["access_key_id"],
+            "expires_at": payload["expires_at"],
+        }
+        assert isinstance(payload["subscription_id"], int)
+        assert isinstance(payload["access_key_id"], int)
+        assert payload["expires_at"] is not None
+        assert activated.headers["cache-control"] == "no-store"
+        assert "private transport marker" not in activated.text
+        assert "config_uri" not in activated.text
+        replay = await fresh.post(path + "/activate", headers=headers)
+        assert replay.status_code == 200 and replay.json() == payload
+        assert (await fresh.get(path)).json() == payload
+        async with portal_app.factory() as session:
+            assert await session.scalar(select(func.count(VpnControlOperation.id))) == 1
+            customer = await session.scalar(select(VpnCustomer).where(VpnCustomer.telegram_user_id == "400"))
+            assert customer is not None and customer.trial_started_at is not None
+        logout = await fresh.post("/api/vpn-portal/logout", headers=headers)
+        assert logout.status_code == 200
+        assert (await fresh.get(path)).status_code == 401
+    finally:
+        await fresh.aclose()
+
+
+@pytest.mark.asyncio
+async def test_public_trial_unavailable_and_used_errors_are_static(portal_app):
+    portal_app.settings.vpn_public_trial_enabled = True
+    portal_app.settings.vpn_portal_allowed_telegram_ids = ""
+    fresh = httpx.AsyncClient(transport=httpx.ASGITransport(app=portal_app.app), base_url=PORTAL_ORIGIN)
+    try:
+        login = await fresh.post(
+            "/api/vpn-portal/auth/mini-app", headers={"Origin": PORTAL_ORIGIN},
+            json={"init_data": mini_app_data(401, portal_app.settings.vpn_telegram_bot_token)},
+        )
+        assert login.status_code == 200
+        headers = {"Origin": PORTAL_ORIGIN, "X-CSRF-Token": login.json()["csrf_token"]}
+        paused = await fresh.get("/api/vpn-portal/trial")
+        assert paused.json()["state"] == "capacity_paused"
+        unavailable = await fresh.post("/api/vpn-portal/trial/activate", headers=headers)
+        assert (unavailable.status_code, unavailable.json()) == (409, {"detail": "public_trial_capacity_unavailable"})
+        assert unavailable.headers["cache-control"] == "no-store"
+        async with portal_app.factory() as session:
+            customer = await session.scalar(select(VpnCustomer).where(VpnCustomer.telegram_user_id == "401"))
+            assert customer.trial_started_at is None
+            assert await session.scalar(select(func.count(VpnControlOperation.id))) == 0
+            customer.trial_started_at = utcnow()
+            await session.commit()
+        used = await fresh.post("/api/vpn-portal/trial/activate", headers=headers)
+        assert (used.status_code, used.json()) == (409, {"detail": "public_trial_already_used"})
+        assert used.headers["cache-control"] == "no-store"
+    finally:
+        await fresh.aclose()
+
+
+@pytest.mark.asyncio
+async def test_disabled_public_trial_does_not_admit_fresh_mini_app_identity(portal_app):
+    portal_app.settings.vpn_portal_allowed_telegram_ids = ""
+    portal_app.settings.vpn_public_trial_enabled = False
+    denied = await portal_app.client.post(
+        "/api/vpn-portal/auth/mini-app", headers={"Origin": PORTAL_ORIGIN},
+        json={"init_data": mini_app_data(402, portal_app.settings.vpn_telegram_bot_token)},
+    )
+    assert denied.status_code == 401
+    assert denied.headers["cache-control"] == "no-store"
+    async with portal_app.factory() as session:
+        assert await session.scalar(select(VpnCustomer).where(VpnCustomer.telegram_user_id == "402")) is None
+
+
+@pytest.mark.asyncio
+async def test_public_trial_allows_fresh_oidc_identity_through_existing_callback(portal_app, monkeypatch):
+    portal_app.settings.vpn_portal_allowed_telegram_ids = ""
+    portal_app.settings.vpn_public_trial_enabled = True
+
+    async def verified_identity(*args, **kwargs) -> TelegramIdentity:
+        del args, kwargs
+        return TelegramIdentity(user_id="403", first_name="OIDC")
+
+    monkeypatch.setattr("app.api.routes.vpn_portal.exchange_authorization_code", verified_identity)
+    portal_app.app.state.vpn_portal_http_client = None
+    portal_app.app.state.vpn_portal_jwks_provider = None
+    async with portal_app.factory() as session:
+        state, binding, _verifier = await create_login_attempt(session)
+        await session.commit()
+        callback = Request({
+            "type": "http",
+            "method": "GET",
+            "path": "/api/vpn-portal/auth/telegram/callback",
+            "query_string": urlencode({"state": state, "code": "provider-code"}).encode(),
+            "headers": [(b"cookie", f"{BINDING_COOKIE}={binding}".encode())],
+            "app": portal_app.app,
+        })
+        response = await telegram_callback(callback, session)
+    assert response.headers["location"] == "/cabinet/"
+    async with portal_app.factory() as session:
+        customer = await session.scalar(select(VpnCustomer).where(VpnCustomer.telegram_user_id == "403"))
+        assert customer is not None and customer.first_name == "OIDC"
 
 
 @pytest.mark.asyncio

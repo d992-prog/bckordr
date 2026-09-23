@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
@@ -14,6 +15,7 @@ from app.schemas.vpn_portal import (
     PortalMe,
     PortalProfile,
     PortalSubscription,
+    PortalTrial,
     RenamePortalProfile,
 )
 from app.services.vpn_customer_view import (
@@ -49,7 +51,13 @@ from app.services.vpn_portal_telegram import (
     authorization_url,
     exchange_authorization_code,
 )
-from app.services.vpn_telegram_identity import resolve_telegram_customer
+from app.services.vpn_public_trial import (
+    PublicTrialConflict,
+    PublicTrialUnavailable,
+    activate_public_trial,
+    public_trial_status,
+)
+from app.services.vpn_telegram_identity import TelegramIdentity, resolve_telegram_customer
 
 
 router = APIRouter(prefix="/vpn-portal", tags=["vpn-portal"])
@@ -132,6 +140,41 @@ async def config(request: Request) -> dict[str, object]:
 @router.get("/me", response_model=PortalMe)
 async def me(principal: PortalPrincipal = Depends(current_customer)) -> PortalMe:
     return _portal_me(principal)
+
+
+@router.get("/trial", response_model=PortalTrial)
+async def trial_status(
+    request: Request,
+    principal: PortalPrincipal = Depends(current_customer),
+    db: AsyncSession = Depends(get_db),
+) -> PortalTrial:
+    view = await public_trial_status(db, _settings(request), principal.customer, datetime.now(UTC))
+    return PortalTrial.model_validate(asdict(view))
+
+
+@router.post("/trial/activate", response_model=PortalTrial)
+async def trial_activate(
+    request: Request,
+    principal: PortalPrincipal = Depends(require_mutation),
+    db: AsyncSession = Depends(get_db),
+) -> PortalTrial:
+    customer = principal.customer
+    identity = TelegramIdentity(
+        user_id=principal.session.telegram_user_id,
+        username=customer.telegram_username,
+        first_name=customer.first_name,
+        last_name=customer.last_name,
+    )
+    try:
+        view = await activate_public_trial(db, _settings(request), identity, datetime.now(UTC))
+    except PublicTrialUnavailable:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="public_trial_capacity_unavailable") from None
+    except PublicTrialConflict:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="public_trial_already_used") from None
+    await db.commit()
+    return PortalTrial.model_validate(asdict(view))
 
 
 @router.post("/auth/mini-app", response_model=PortalMe)

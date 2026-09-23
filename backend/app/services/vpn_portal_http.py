@@ -33,7 +33,7 @@ def portal_capabilities(settings: Settings) -> dict[str, bool]:
     else:
         origin_valid = True
 
-    access_configured = settings.vpn_portal_public_access or any(
+    access_configured = settings.vpn_public_trial_enabled or settings.vpn_portal_public_access or any(
         identity_allowed(settings, candidate.strip())
         for candidate in settings.vpn_portal_allowed_telegram_ids.split(",")
         if candidate.strip()

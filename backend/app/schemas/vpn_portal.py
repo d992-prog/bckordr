@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -10,6 +11,15 @@ from app.services.vpn_display import validate_display_name
 class PortalMe(BaseModel):
     display_name: str
     csrf_token: str
+
+
+class PortalTrial(BaseModel):
+    state: Literal["disabled", "available", "capacity_paused", "preparing", "active", "used"]
+    duration_days: int
+    profile_limit: int
+    subscription_id: int | None
+    access_key_id: int | None
+    expires_at: datetime | None
 
 
 class PortalSubscription(BaseModel):

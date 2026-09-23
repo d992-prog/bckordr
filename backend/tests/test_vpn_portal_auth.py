@@ -225,6 +225,21 @@ def test_identity_allowlist_is_feature_gated_and_canonical():
     assert identity_allowed(portal_settings(VPN_PORTAL_PUBLIC_ACCESS=True), "invalid") is False
 
 
+def test_public_trial_admits_only_valid_identities_while_portal_is_enabled():
+    settings = portal_settings(VPN_PORTAL_ALLOWED_TELEGRAM_IDS="", VPN_PUBLIC_TRIAL_ENABLED=True)
+    assert identity_allowed(settings, "000999") is True
+    assert identity_allowed(settings, "invalid") is False
+    assert identity_allowed(settings, True) is False
+    assert identity_allowed(
+        portal_settings(VPN_PORTAL_ALLOWED_TELEGRAM_IDS="", VPN_PUBLIC_TRIAL_ENABLED=False),
+        "999",
+    ) is False
+    assert identity_allowed(
+        portal_settings(VPN_PORTAL_ENABLED=False, VPN_PUBLIC_TRIAL_ENABLED=True),
+        "999",
+    ) is False
+
+
 @pytest.mark.asyncio
 async def test_friend_admission_requires_the_exact_active_invitation_chain(session_factory):
     settings = portal_settings(
