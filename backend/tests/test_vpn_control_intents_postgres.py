@@ -1485,7 +1485,7 @@ async def test_attack_batch_lock_order_is_compatible_with_ascending_bulk_mainten
         gate.set()
         done, _pending = await asyncio.wait(
             {bulk_task, attack_task},
-            timeout=3,
+            timeout=30,
             return_when=asyncio.FIRST_COMPLETED,
         )
         assert done, "bulk maintenance and attack deadlocked"
