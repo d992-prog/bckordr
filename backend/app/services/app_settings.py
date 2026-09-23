@@ -14,6 +14,7 @@ DIAGNOSTIC_TELEGRAM_CHAT_ID_KEY = "diagnostic_telegram_chat_id"
 DISCOVERY_RUNTIME_SETTING_PREFIX = "discovery_runtime_"
 VPN_LIFECYCLE_LAST_RESULT_KEY = "vpn_lifecycle_last_result"
 _VPN_FRIEND_BETA_RELEASE_READY_KEY = "vpn_friend_beta_release_ready_v1"
+_VPN_PUBLIC_RELEASE_READY_KEY = "vpn_public_release_ready_v1"
 
 
 @dataclass(frozen=True)

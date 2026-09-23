@@ -821,6 +821,8 @@ async def redeem_friend_invitation(
 
             endpoint = await require_friend_invitation_readiness(db, settings)
             customer = await resolve_telegram_customer(db, identity)
+            if customer.trial_started_at is not None:
+                _rejected()
             subscription = VpnSubscription(
                 customer_id=customer.id,
                 status="trial",
@@ -853,6 +855,7 @@ async def redeem_friend_invitation(
                 now=current,
             )
             invitation.redeemed_at = current
+            customer.trial_started_at = current
             invitation.telegram_user_id = normalized_user_id
             invitation.access_key_id = access_key.id
             await db.flush()

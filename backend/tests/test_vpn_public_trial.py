@@ -1,23 +1,29 @@
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, asdict
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, update
+from sqlalchemy import event, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
 from app.db.models import (
+    AppSetting,
     AttackRun,
     DropDomain,
     VpnAccessKey,
     VpnCustomer,
+    VpnControlOperation,
     VpnEndpoint,
+    VpnPlan,
     VpnSubscription,
     WorkerNode,
     WorkerTask,
 )
+from app.core.config import Settings
+from app.services.vpn_telegram_identity import TelegramIdentity
 from app.services.vpn_policy import NODE_CAPACITY_STATUSES, select_public_vpn_endpoint
 
 
@@ -347,3 +353,248 @@ async def test_lock_rejects_pending_orm_mutation_without_flushing_it(session_fac
 async def test_no_candidate_returns_none(session_factory):
     async with session_factory() as session:
         assert await select_public_vpn_endpoint(session, now=NOW, health_max_age_seconds=60) is None
+
+
+def trial_settings(**overrides):
+    values = dict(
+        VPN_PUBLIC_TRIAL_ENABLED=True,
+        VPN_PUBLIC_TRIAL_RELEASE_ID="a" * 64,
+        VPN_CONTROL_DISPATCH_ENABLED=True,
+        VPN_CONTROL_KNOWN_HOSTS_PATH="C:/veltrix/known_hosts",
+    )
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+async def seed_trial(db):
+    node = worker("public")
+    plan = VpnPlan(slug="trial-7d", name="Trial", duration_days=7, max_devices=1, traffic_limit_gb=13)
+    customer = VpnCustomer(telegram_user_id="123", status="active")
+    db.add_all([node, plan, customer, AppSetting(key="vpn_public_release_ready_v1", value="a" * 64)])
+    await db.flush()
+    target = endpoint(
+        node, server_name="cdn.example.test", public_key="A" * 43,
+        short_id="0123456789abcdef", fingerprint="chrome", flow="xtls-rprx-vision",
+    )
+    db.add(target)
+    await db.commit()
+    return customer, plan, target
+
+
+async def trial_counts(db):
+    return [await db.scalar(select(func.count()).select_from(model))
+            for model in (VpnSubscription, VpnAccessKey, VpnControlOperation)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [
+    "disabled", "dispatch", "marker", "release", "uppercase", "missing_plan",
+    "duration", "devices", "inactive", "transport", "capacity",
+])
+async def test_trial_readiness_fails_closed_without_rows(session_factory, monkeypatch, failure):
+    from app.services import vpn_public_trial as trial
+
+    async with session_factory() as db:
+        customer, plan, target = await seed_trial(db)
+        settings = trial_settings()
+        monkeypatch.setattr(trial, "load_transport_snapshot", lambda *_: object())
+        if failure == "disabled":
+            settings.vpn_public_trial_enabled = False
+        elif failure == "dispatch":
+            settings.vpn_control_dispatch_enabled = False
+        elif failure == "marker":
+            (await db.scalar(select(AppSetting))).value = "b" * 64
+        elif failure in {"release", "uppercase"}:
+            settings.vpn_public_trial_release_id = "A" * 64 if failure == "uppercase" else "bad"
+        elif failure == "missing_plan":
+            await db.delete(plan)
+        elif failure == "duration":
+            plan.duration_days = 8
+        elif failure == "devices":
+            plan.max_devices = 2
+        elif failure == "inactive":
+            plan.is_active = False
+        elif failure == "capacity":
+            target.max_active_profiles = None
+        elif failure == "transport":
+            monkeypatch.undo()  # Real strict transport rejects the absent known-hosts file.
+        await db.commit()
+        view = await trial.public_trial_status(db, settings, customer, NOW)
+        assert view.state == ("disabled" if failure == "disabled" else "capacity_paused")
+        with pytest.raises(trial.PublicTrialUnavailable, match="^public_trial_unavailable$"):
+            await trial.activate_public_trial(db, settings, TelegramIdentity("00123"), NOW)
+        await db.rollback()
+        assert await trial_counts(db) == [0, 0, 0]
+        assert (await db.get(VpnCustomer, 1)).trial_started_at is None
+
+
+@pytest.mark.asyncio
+async def test_trial_activation_copies_plan_and_replays_same_private_chain(session_factory, monkeypatch):
+    from app.services import vpn_public_trial as trial
+
+    monkeypatch.setattr(trial, "load_transport_snapshot", lambda *_: object())
+    async with session_factory() as db:
+        customer, plan, target = await seed_trial(db)
+        settings = trial_settings()
+        assert (await trial.public_trial_status(db, settings, customer, NOW)).state == "available"
+        result = await trial.activate_public_trial(db, settings, TelegramIdentity("00123"), NOW.replace(tzinfo=None))
+        assert result.state == "preparing"
+        assert result.duration_days == 7 and result.profile_limit == 1
+        assert result.expires_at == NOW + timedelta(days=7)
+        await db.commit()
+        subscription = await db.get(VpnSubscription, result.subscription_id)
+        key = await db.get(VpnAccessKey, result.access_key_id)
+        assert subscription.customer_id == customer.id
+        assert (subscription.plan_id, subscription.traffic_limit_gb, subscription.max_devices) == (plan.id, 13, 1)
+        assert subscription.status == "trial"
+        assert key.endpoint_id == target.id and key.worker_id == target.worker_id
+        assert key.protocol == "vless" and key.status == "pending_sync"
+        assert key.config_uri is None and UUID(key.external_uuid).int > 0
+        assert len(key.panel_sub_id) == 32
+        assert key.verified_client_email == f"veltrix-trial-{customer.id}"
+        assert key.display_name == "Veltrix VPN"
+        assert customer.trial_started_at == NOW
+        operation = await db.scalar(select(VpnControlOperation))
+        assert (operation.generation, operation.action, operation.state) == (1, "provision", "queued")
+        assert set(asdict(result)) == {"state", "duration_days", "profile_limit", "subscription_id", "access_key_id", "expires_at"}
+        assert key.external_uuid not in repr(result)
+        with pytest.raises(FrozenInstanceError):
+            result.state = "active"
+        settings.vpn_public_trial_enabled = False
+        replay = await trial.activate_public_trial(db, settings, TelegramIdentity("123"), NOW)
+        assert replay == result
+        assert (await trial.public_trial_status(db, settings, customer, NOW)).state == "preparing"
+        assert await trial_counts(db) == [1, 1, 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change,expected", [
+    ("queued", "preparing"), ("claimed", "preparing"), ("failed", "preparing"),
+    ("uncertain", "preparing"), ("ready", "active"), ("no_uri", "preparing"),
+    ("expired", "used"), ("revoked", "used"), ("disabled", "used"),
+    ("cancelled", "used"), ("customer_disabled", "used"),
+])
+async def test_trial_status_chain_states(session_factory, monkeypatch, change, expected):
+    from app.services import vpn_public_trial as trial
+
+    monkeypatch.setattr(trial, "load_transport_snapshot", lambda *_: object())
+    async with session_factory() as db:
+        customer, _, _ = await seed_trial(db)
+        result = await trial.activate_public_trial(db, trial_settings(), TelegramIdentity("123"), NOW)
+        key = await db.get(VpnAccessKey, result.access_key_id)
+        subscription = await db.get(VpnSubscription, result.subscription_id)
+        operation = await db.scalar(select(VpnControlOperation))
+        if change in {"queued", "claimed", "failed", "uncertain"}:
+            operation.state = change
+        else:
+            operation.state = "succeeded"
+            key.status = "active"
+            key.config_uri = "vless://private-material"
+            if change == "no_uri":
+                key.config_uri = None
+            elif change == "expired":
+                subscription.expires_at = NOW
+            elif change == "revoked":
+                key.status = "revoked"
+            elif change in {"disabled", "cancelled"}:
+                subscription.status = change
+            elif change == "customer_disabled":
+                customer.status = "disabled"
+        await db.commit()
+        result = await trial.public_trial_status(db, trial_settings(VPN_PUBLIC_TRIAL_ENABLED=False), customer, NOW)
+        assert result.state == expected
+        assert "private-material" not in repr(result)
+        if expected == "used":
+            with pytest.raises(trial.PublicTrialConflict):
+                await trial.activate_public_trial(db, trial_settings(), TelegramIdentity("123"), NOW)
+        else:
+            replay = await trial.activate_public_trial(db, trial_settings(), TelegramIdentity("123"), NOW)
+            assert replay.subscription_id == result.subscription_id
+        assert await trial_counts(db) == [1, 1, 1]
+
+
+@pytest.mark.asyncio
+async def test_trial_past_marker_blocks_new_trial(session_factory, monkeypatch):
+    from app.services import vpn_public_trial as trial
+
+    async with session_factory() as db:
+        customer, _, _ = await seed_trial(db)
+        customer.trial_started_at = NOW - timedelta(days=8)
+        await db.commit()
+        assert (await trial.public_trial_status(db, trial_settings(), customer, NOW)).state == "used"
+        with pytest.raises(trial.PublicTrialConflict):
+            await trial.activate_public_trial(db, trial_settings(), TelegramIdentity("123"), NOW)
+        assert await trial_counts(db) == [0, 0, 0]
+
+
+@pytest.mark.asyncio
+async def test_trial_staging_failure_caller_rollback_clears_everything(session_factory, monkeypatch):
+    from app.services import vpn_public_trial as trial
+    from app.services.vpn_control_intents import VpnControlIntentError
+
+    async def fail_stage(*_args, **_kwargs):
+        raise VpnControlIntentError("internal-secret")
+
+    monkeypatch.setattr(trial, "load_transport_snapshot", lambda *_: object())
+    monkeypatch.setattr(trial, "stage_vpn_control_operation", fail_stage)
+    async with session_factory() as db:
+        await seed_trial(db)
+        with pytest.raises(trial.PublicTrialUnavailable, match="^public_trial_unavailable$"):
+            await trial.activate_public_trial(db, trial_settings(), TelegramIdentity("123"), NOW)
+        await db.rollback()
+        assert await trial_counts(db) == [0, 0, 0]
+        assert (await db.get(VpnCustomer, 1)).trial_started_at is None
+
+
+@pytest.mark.asyncio
+async def test_friend_trial_marker_and_replay_and_second_trial_rejection(session_factory, monkeypatch):
+    from app.services import vpn_friend_invitations as friends
+    from app.db.models import User, VpnFriendInvitation
+
+    monkeypatch.setattr(friends, "load_transport_snapshot", lambda *_: object())
+    async with session_factory() as db:
+        customer, _, _ = await seed_trial(db)
+        db.add(User(id=1, username="owner", password_hash="hash", role="admin", status="active"))
+        db.add(AppSetting(key="vpn_friend_beta_release_ready_v1", value="a" * 64))
+        await db.flush()
+        for slot, token in [(1, "A" * 43), (2, "B" * 43)]:
+            db.add(VpnFriendInvitation(slot=slot, token_digest=friends.digest_invite_token(token),
+                                      created_by_user_id=1, redeem_expires_at=NOW + timedelta(days=1)))
+        await db.commit()
+        settings = trial_settings(VPN_FRIEND_BETA_ENABLED=True, VPN_FRIEND_BETA_RELEASE_ID="a" * 64)
+        first = await friends.redeem_friend_invitation(db, settings, "A" * 43, TelegramIdentity("123"), NOW)
+        assert customer.trial_started_at == NOW
+        assert await friends.redeem_friend_invitation(db, settings, "A" * 43, TelegramIdentity("123"), NOW) == first
+        with pytest.raises(friends.FriendInvitationConflict):
+            await friends.redeem_friend_invitation(db, settings, "B" * 43, TelegramIdentity("123"), NOW)
+        assert await trial_counts(db) == [1, 1, 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_trial", [False, True])
+async def test_friend_trial_rejection_or_staging_failure_preserves_marker(session_factory, monkeypatch, prior_trial):
+    from app.services import vpn_friend_invitations as friends
+    from app.services.vpn_control_intents import VpnControlIntentError
+    from app.db.models import VpnFriendInvitation
+
+    async def fail_stage(*_args, **_kwargs):
+        raise VpnControlIntentError("synthetic-staging-failure")
+
+    monkeypatch.setattr(friends, "load_transport_snapshot", lambda *_: object())
+    monkeypatch.setattr(friends, "stage_vpn_control_operation", fail_stage)
+    async with session_factory() as db:
+        customer, _, _ = await seed_trial(db)
+        previous = NOW - timedelta(days=8) if prior_trial else None
+        customer.trial_started_at = previous
+        db.add(AppSetting(key="vpn_friend_beta_release_ready_v1", value="a" * 64))
+        db.add(VpnFriendInvitation(slot=1, token_digest=friends.digest_invite_token("A" * 43),
+                                  redeem_expires_at=NOW + timedelta(days=1)))
+        await db.commit()
+        settings = trial_settings(VPN_FRIEND_BETA_ENABLED=True, VPN_FRIEND_BETA_RELEASE_ID="a" * 64)
+        error = friends.FriendInvitationConflict if prior_trial else friends.FriendInvitationUnavailable
+        with pytest.raises(error):
+            await friends.redeem_friend_invitation(db, settings, "A" * 43, TelegramIdentity("123"), NOW)
+        await db.refresh(customer)
+        assert (customer.trial_started_at is not None) == prior_trial
+        assert await trial_counts(db) == [0, 0, 0]
+        assert (await db.get(VpnFriendInvitation, 1)).redeemed_at is None
