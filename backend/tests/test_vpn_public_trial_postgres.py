@@ -343,8 +343,9 @@ async def test_rejected_candidate_releases_savepoint_locks_and_falls_through(pg_
 
 
 @pytest.mark.asyncio
-async def test_public_and_friend_race_share_one_trial_marker(pg_trial):
-    _, sessions = pg_trial
+@pytest.mark.parametrize("winner", ["public", "friend"])
+async def test_public_and_friend_race_share_one_trial_marker(pg_trial, winner):
+    engine, sessions = pg_trial
     from app.db.models import AppSetting
 
     async with sessions() as db:
@@ -368,12 +369,37 @@ async def test_public_and_friend_race_share_one_trial_marker(pg_trial):
             )
         )
         await db.commit()
-    start = asyncio.Event()
+    winner_has_customer = asyncio.Event()
+    loser_waits_customer = asyncio.Event()
+    release_winner = asyncio.Event()
+    pids = {}
+
+    class ContendingSession(AsyncSession):
+        first_customer_lock = True
+
+        async def scalar(self, statement, **kwargs):
+            first = self.first_customer_lock and locking(statement, VpnCustomer)
+            if first:
+                self.first_customer_lock = False
+                if self.info["role"] != winner:
+                    loser_waits_customer.set()
+            result = await super().scalar(statement, **kwargs)
+            if first and self.info["role"] == winner:
+                assert result is not None
+                winner_has_customer.set()
+                await asyncio.wait_for(release_winner.wait(), 5)
+            return result
+
+    contending = async_sessionmaker(
+        engine, class_=ContendingSession, expire_on_commit=False
+    )
 
     async def public():
-        await start.wait()
-        async with sessions() as db:
+        async with contending(info={"role": "public"}) as db:
             await limits(db)
+            pids["public"] = (
+                await db.execute(text("SELECT pg_backend_pid()"))
+            ).scalar_one()
             try:
                 result = await trial.activate_public_trial(
                     db, trial_settings(), TelegramIdentity("123"), NOW
@@ -389,9 +415,11 @@ async def test_public_and_friend_race_share_one_trial_marker(pg_trial):
             return result.access_key_id
 
     async def friend():
-        await start.wait()
-        async with sessions() as db:
+        async with contending(info={"role": "friend"}) as db:
             await limits(db)
+            pids["friend"] = (
+                await db.execute(text("SELECT pg_backend_pid()"))
+            ).scalar_one()
             settings = trial_settings(
                 VPN_FRIEND_BETA_ENABLED=True, VPN_FRIEND_BETA_RELEASE_ID="a" * 64
             )
@@ -405,15 +433,41 @@ async def test_public_and_friend_race_share_one_trial_marker(pg_trial):
             await db.commit()
             return result.access_key_id
 
-    public_task, friend_task = (
-        asyncio.create_task(public()),
-        asyncio.create_task(friend()),
-    )
-    start.set()
-    public_id, friend_id = await asyncio.wait_for(
-        asyncio.gather(public_task, friend_task), 15
-    )
+    contender = {"public": public, "friend": friend}
+    loser = "friend" if winner == "public" else "public"
+    tasks = {winner: asyncio.create_task(contender[winner]())}
+    try:
+        await asyncio.wait_for(winner_has_customer.wait(), 5)
+        tasks[loser] = asyncio.create_task(contender[loser]())
+        await asyncio.wait_for(loser_waits_customer.wait(), 5)
+
+        async def observe_customer_lock_wait():
+            async with sessions() as probe:
+                await limits(probe)
+                while True:
+                    blockers = (
+                        await probe.execute(
+                            text("SELECT pg_blocking_pids(:pid)"),
+                            {"pid": pids[loser]},
+                        )
+                    ).scalar_one()
+                    if pids[winner] in blockers:
+                        return
+                    await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(observe_customer_lock_wait(), 3)
+        release_winner.set()
+        public_id, friend_id = await asyncio.wait_for(
+            asyncio.gather(tasks["public"], tasks["friend"]), 15
+        )
+    finally:
+        release_winner.set()
+        for task in tasks.values():
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
     assert (public_id is None) != (friend_id is None)
+    assert (public_id is not None) == (winner == "public")
     async with sessions() as db:
         assert await trial_counts(db) == [1, 1, 1]
         assert (await db.get(VpnCustomer, 1)).trial_started_at == NOW

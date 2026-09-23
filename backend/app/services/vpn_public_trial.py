@@ -123,9 +123,12 @@ async def _existing_trial(
     else:
         operation = await db.scalar(
             select(VpnControlOperation)
-            .where(VpnControlOperation.access_key_id == key.id)
-            .order_by(VpnControlOperation.generation.desc())
-            .limit(1)
+            .join(VpnAccessKey, VpnAccessKey.id == VpnControlOperation.access_key_id)
+            .where(
+                VpnAccessKey.id == key.id,
+                VpnControlOperation.generation == VpnAccessKey.operation_generation,
+                VpnAccessKey.operation_generation > 0,
+            )
             .execution_options(populate_existing=True)
         )
         if (

@@ -1,6 +1,6 @@
 from dataclasses import FrozenInstanceError, asdict
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -605,6 +605,93 @@ async def test_friend_trial_is_never_a_public_replay(session_factory, monkeypatc
         assert await trial_counts(db) == [1, 1, 1]
         if binding == "redeemed":
             assert await friends.redeem_friend_invitation(db, settings, "A" * 43, identity, NOW) == first
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("generation", [0, 2])
+async def test_trial_active_requires_successful_current_generation(session_factory, monkeypatch, generation):
+    from app.services import vpn_public_trial as trial
+
+    monkeypatch.setattr(trial, "load_transport_snapshot", lambda *_: object())
+    async with session_factory() as db:
+        customer, _, _ = await seed_trial(db)
+        settings = trial_settings()
+        result = await trial.activate_public_trial(db, settings, TelegramIdentity("123"), NOW)
+        key = await db.get(VpnAccessKey, result.access_key_id)
+        operation = await db.scalar(select(VpnControlOperation))
+        operation.state = "succeeded"
+        key.status = "active"
+        key.config_uri = "vless://synthetic-current-generation"
+        key.operation_generation = generation
+        await db.commit()
+        assert (await trial.public_trial_status(db, settings, customer, NOW)).state == "preparing"
+
+        key.operation_generation = 2
+        db.add(VpnControlOperation(
+            id=str(uuid4()), access_key_id=key.id, worker_id=key.worker_id,
+            endpoint_id=key.endpoint_id, generation=2, action="provision", state="succeeded",
+            request_snapshot=operation.request_snapshot, request_digest=operation.request_digest,
+        ))
+        await db.commit()
+        assert (await trial.public_trial_status(db, settings, customer, NOW)).state == "active"
+
+
+@pytest.mark.asyncio
+async def test_trial_status_reads_current_generation_from_database(session_factory, monkeypatch):
+    from app.services import vpn_public_trial as trial
+
+    monkeypatch.setattr(trial, "load_transport_snapshot", lambda *_: object())
+    async with session_factory() as db:
+        customer, _, _ = await seed_trial(db)
+        settings = trial_settings()
+        result = await trial.activate_public_trial(db, settings, TelegramIdentity("123"), NOW)
+        key = await db.get(VpnAccessKey, result.access_key_id)
+        (await db.scalar(select(VpnControlOperation))).state = "succeeded"
+        key.status = "active"
+        key.config_uri = "vless://synthetic-current-generation"
+        await db.commit()
+        original_scalar = db.scalar
+
+        async def advance_generation_before_operation_read(statement, **kwargs):
+            if statement.column_descriptions[0]["entity"] is VpnControlOperation:
+                await db.execute(update(VpnAccessKey).where(VpnAccessKey.id == key.id)
+                                 .values(operation_generation=2)
+                                 .execution_options(synchronize_session=False))
+            return await original_scalar(statement, **kwargs)
+
+        db.scalar = advance_generation_before_operation_read
+        assert (await trial.public_trial_status(db, settings, customer, NOW)).state == "preparing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["expired", "disabled"])
+async def test_legacy_friend_without_marker_blocks_second_invitation(session_factory, monkeypatch, status):
+    from app.services import vpn_friend_invitations as friends
+    from app.services import vpn_public_trial as trial
+    from app.db.models import VpnFriendInvitation
+
+    monkeypatch.setattr(friends, "load_transport_snapshot", lambda *_: object())
+    async with session_factory() as db:
+        customer, _, _ = await seed_trial(db)
+        db.add(AppSetting(key="vpn_friend_beta_release_ready_v1", value="a" * 64))
+        for slot, token in [(1, "A" * 43), (2, "B" * 43)]:
+            db.add(VpnFriendInvitation(
+                slot=slot, token_digest=friends.digest_invite_token(token),
+                redeem_expires_at=NOW + timedelta(days=1),
+            ))
+        await db.commit()
+        settings = trial_settings(VPN_FRIEND_BETA_ENABLED=True, VPN_FRIEND_BETA_RELEASE_ID="a" * 64)
+        identity = TelegramIdentity("123")
+        first = await friends.redeem_friend_invitation(db, settings, "A" * 43, identity, NOW)
+        subscription = await db.get(VpnSubscription, first.subscription_id)
+        subscription.status = status
+        customer.trial_started_at = None
+        await db.commit()
+        assert (await trial.public_trial_status(db, settings, customer, NOW)).state == "used"
+        with pytest.raises(friends.FriendInvitationConflict):
+            await friends.redeem_friend_invitation(db, settings, "B" * 43, identity, NOW)
+        assert await trial_counts(db) == [1, 1, 1]
+        assert await friends.redeem_friend_invitation(db, settings, "A" * 43, identity, NOW) == first
 
 
 @pytest.mark.asyncio

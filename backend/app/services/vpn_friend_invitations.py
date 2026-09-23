@@ -823,6 +823,17 @@ async def redeem_friend_invitation(
             customer = await resolve_telegram_customer(db, identity)
             if customer.trial_started_at is not None:
                 _rejected()
+            # Legacy or damaged friend bindings consume the trial even when
+            # the marker was never backfilled. The resolver holds customer's lock.
+            prior_friend_slot = await db.scalar(
+                select(VpnFriendInvitation.slot)
+                .join(VpnAccessKey, VpnAccessKey.id == VpnFriendInvitation.access_key_id)
+                .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
+                .where(VpnSubscription.customer_id == customer.id)
+                .limit(1)
+            )
+            if prior_friend_slot is not None:
+                _rejected()
             subscription = VpnSubscription(
                 customer_id=customer.id,
                 status="trial",
