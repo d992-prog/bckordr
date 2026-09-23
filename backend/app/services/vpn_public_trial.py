@@ -16,6 +16,7 @@ from app.db.models import (
     VpnAccessKey,
     VpnControlOperation,
     VpnCustomer,
+    VpnFriendInvitation,
     VpnPlan,
     VpnSubscription,
     WorkerNode,
@@ -71,6 +72,17 @@ def _unavailable() -> None:
 async def _existing_trial(
     db: AsyncSession, customer: VpnCustomer, now: datetime
 ) -> PublicTrialView | None:
+    # An invitation owns its chain even if its redemption metadata is damaged.
+    # Fail closed instead of reclassifying any friend key as a public replay.
+    friend_slot = await db.scalar(
+        select(VpnFriendInvitation.slot)
+        .join(VpnAccessKey, VpnAccessKey.id == VpnFriendInvitation.access_key_id)
+        .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
+        .where(VpnSubscription.customer_id == customer.id)
+        .limit(1)
+    )
+    if friend_slot is not None:
+        return PublicTrialView("used")
     trial_filter = VpnSubscription.status == "trial"
     if customer.trial_started_at is not None:
         trial_filter = or_(

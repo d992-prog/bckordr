@@ -571,6 +571,43 @@ async def test_friend_trial_marker_and_replay_and_second_trial_rejection(session
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("binding", ["redeemed", "missing_redeemed_at", "wrong_identity", "missing_marker"])
+async def test_friend_trial_is_never_a_public_replay(session_factory, monkeypatch, binding):
+    from app.services import vpn_friend_invitations as friends
+    from app.services import vpn_public_trial as trial
+    from app.db.models import VpnFriendInvitation
+
+    monkeypatch.setattr(friends, "load_transport_snapshot", lambda *_: object())
+    async with session_factory() as db:
+        customer, _, _ = await seed_trial(db)
+        db.add(AppSetting(key="vpn_friend_beta_release_ready_v1", value="a" * 64))
+        invitation = VpnFriendInvitation(
+            slot=1, token_digest=friends.digest_invite_token("A" * 43),
+            redeem_expires_at=NOW + timedelta(days=1),
+        )
+        db.add(invitation)
+        await db.commit()
+        settings = trial_settings(VPN_FRIEND_BETA_ENABLED=True, VPN_FRIEND_BETA_RELEASE_ID="a" * 64)
+        identity = TelegramIdentity("123")
+        first = await friends.redeem_friend_invitation(db, settings, "A" * 43, identity, NOW)
+        assert await friends.redeem_friend_invitation(db, settings, "A" * 43, identity, NOW) == first
+        if binding == "missing_redeemed_at":
+            invitation.redeemed_at = None
+        elif binding == "wrong_identity":
+            invitation.telegram_user_id = "456"
+        elif binding == "missing_marker":
+            customer.trial_started_at = None
+        await db.commit()
+
+        assert (await trial.public_trial_status(db, settings, customer, NOW)).state == "used"
+        with pytest.raises(trial.PublicTrialConflict):
+            await trial.activate_public_trial(db, settings, identity, NOW)
+        assert await trial_counts(db) == [1, 1, 1]
+        if binding == "redeemed":
+            assert await friends.redeem_friend_invitation(db, settings, "A" * 43, identity, NOW) == first
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("prior_trial", [False, True])
 async def test_friend_trial_rejection_or_staging_failure_preserves_marker(session_factory, monkeypatch, prior_trial):
     from app.services import vpn_friend_invitations as friends

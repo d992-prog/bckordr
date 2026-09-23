@@ -374,9 +374,17 @@ async def test_public_and_friend_race_share_one_trial_marker(pg_trial):
         await start.wait()
         async with sessions() as db:
             await limits(db)
-            result = await trial.activate_public_trial(
-                db, trial_settings(), TelegramIdentity("123"), NOW
-            )
+            try:
+                result = await trial.activate_public_trial(
+                    db, trial_settings(), TelegramIdentity("123"), NOW
+                )
+            except trial.PublicTrialConflict:
+                await db.rollback()
+                customer = await db.get(VpnCustomer, 1)
+                assert (
+                    await trial.public_trial_status(db, trial_settings(), customer, NOW)
+                ).state == "used"
+                return None
             await db.commit()
             return result.access_key_id
 
@@ -405,7 +413,25 @@ async def test_public_and_friend_race_share_one_trial_marker(pg_trial):
     public_id, friend_id = await asyncio.wait_for(
         asyncio.gather(public_task, friend_task), 15
     )
-    assert friend_id is None or friend_id == public_id
+    assert (public_id is None) != (friend_id is None)
     async with sessions() as db:
         assert await trial_counts(db) == [1, 1, 1]
         assert (await db.get(VpnCustomer, 1)).trial_started_at == NOW
+        only_key = await db.scalar(select(VpnAccessKey))
+        assert only_key.id == (public_id if public_id is not None else friend_id)
+        invitation = await db.get(VpnFriendInvitation, 1)
+        if friend_id is not None:
+            assert invitation.access_key_id == friend_id
+            settings = trial_settings(
+                VPN_FRIEND_BETA_ENABLED=True, VPN_FRIEND_BETA_RELEASE_ID="a" * 64
+            )
+            replay = await friends.redeem_friend_invitation(
+                db, settings, "A" * 43, TelegramIdentity("123"), NOW
+            )
+            assert replay.access_key_id == friend_id
+        else:
+            assert invitation.redeemed_at is None
+            replay = await trial.activate_public_trial(
+                db, trial_settings(), TelegramIdentity("123"), NOW
+            )
+            assert replay.access_key_id == public_id
