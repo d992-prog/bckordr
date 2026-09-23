@@ -116,7 +116,7 @@ async def _lock_worker(session: AsyncSession, worker_id: int) -> WorkerNode:
         or worker.status != "ready"
         or worker.is_enabled is not True
         or worker.vpn_enabled is not True
-        or worker.vpn_role != "vpn_node"
+        or worker.vpn_role == "none"
     ):
         _fail("vpn_endpoint_registration_worker_unavailable")
     return worker

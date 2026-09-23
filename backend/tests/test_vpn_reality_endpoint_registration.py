@@ -57,7 +57,7 @@ def _acceptance(module, **overrides):
     return module.ExternalEndpointAcceptance(**values)
 
 
-async def _seed_worker(factory, *, archived_at=None):
+async def _seed_worker(factory, *, archived_at=None, vpn_role="vpn_node"):
     async with factory() as db:
         db.add(
             WorkerNode(
@@ -66,7 +66,7 @@ async def _seed_worker(factory, *, archived_at=None):
                 status="ready",
                 is_enabled=True,
                 vpn_enabled=True,
-                vpn_role="vpn_node",
+                vpn_role=vpn_role,
                 vpn_runtime_status="ready",
                 archived_at=archived_at,
             )
@@ -142,6 +142,18 @@ async def test_stage_creates_exact_staged_endpoint_idempotently_and_preserves_ow
         (1, 8443, "staged"),
         (27, 443, "staged"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_stage_accepts_enabled_legacy_dual_role_worker(database) -> None:
+    module = importlib.import_module("app.services.vpn_reality_endpoint_registration")
+    await _seed_worker(database, vpn_role="drop_worker_vpn")
+
+    async with database() as db:
+        endpoint = await module.stage_protected_endpoint(db, _receipt())
+
+    assert endpoint.worker_id == 15
+    assert endpoint.status == "staged"
 
 
 @pytest.mark.asyncio
