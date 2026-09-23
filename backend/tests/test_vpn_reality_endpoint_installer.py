@@ -166,7 +166,7 @@ def test_public_receipt_is_canonical_bounded_and_self_authenticating() -> None:
     assert decoded == asdict(receipt)
     assert decoded["port"] == 443
     assert decoded["protocol"] == "vless"
-    assert decoded["transport"] == "raw"
+    assert decoded["transport"] == "tcp"
     assert decoded["security"] == "reality"
     assert decoded["fingerprint"] == "chrome"
     assert decoded["flow"] == "xtls-rprx-vision"
@@ -275,7 +275,7 @@ def test_ensure_creates_exact_empty_reality_inbound_and_never_exports_private_ke
     )
     assert mutation[2]["port"] == 443
     assert mutation[2]["settings"]["clients"] == []
-    assert mutation[2]["streamSettings"]["network"] == "raw"
+    assert mutation[2]["streamSettings"]["network"] == "tcp"
     assert mutation[2]["streamSettings"]["security"] == "reality"
     assert mutation[2]["streamSettings"]["realitySettings"]["target"] == "front.example.test:443"
 

@@ -37,7 +37,7 @@ from app.services.vpn_xui_node_http import (
 
 PORT = 443
 PROTOCOL = "vless"
-TRANSPORT = "raw"
+TRANSPORT = "tcp"
 SECURITY = "reality"
 FINGERPRINT = "chrome"
 FLOW = "xtls-rprx-vision"
