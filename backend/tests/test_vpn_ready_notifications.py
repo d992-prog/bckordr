@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
@@ -22,6 +23,10 @@ from app.services.vpn_ready_notifications import (
     ReadyNoticeClaim,
     claim_ready_notice,
     deliver_next_ready_notice,
+)
+from test_vpn_endpoint_migrations import (
+    PostgresSchema,
+    postgres_schema as postgres_schema,
 )
 
 
@@ -144,6 +149,50 @@ async def test_claim_accepts_active_unexpired_subscription_and_is_durable_once(
 
     async with session_factory() as second:
         assert await claim_ready_notice(second, now=NOW + timedelta(seconds=1)) is None
+
+
+@pytest.mark.asyncio
+async def test_postgres_concurrent_workers_claim_ready_notice_once(
+    postgres_schema: PostgresSchema,
+) -> None:
+    async with postgres_schema.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = async_sessionmaker(
+        postgres_schema.engine,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
+    key_id = await _seed_ready_key(sessions)
+    first_claimed = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def first_worker() -> ReadyNoticeClaim | None:
+        async with sessions() as db:
+            await db.execute(text("SET LOCAL statement_timeout = '5s'"))
+            claim = await claim_ready_notice(db, now=NOW)
+            first_claimed.set()
+            await release_first.wait()
+            await db.commit()
+            return claim
+
+    async def second_worker() -> ReadyNoticeClaim | None:
+        await first_claimed.wait()
+        async with sessions() as db:
+            await db.execute(text("SET LOCAL statement_timeout = '5s'"))
+            claim = await claim_ready_notice(db, now=NOW + timedelta(seconds=1))
+            await db.commit()
+            return claim
+
+    first_task = asyncio.create_task(first_worker())
+    try:
+        second_claim = await asyncio.wait_for(second_worker(), timeout=6)
+    finally:
+        release_first.set()
+    first_claim = await asyncio.wait_for(first_task, timeout=6)
+
+    claims = [claim for claim in (first_claim, second_claim) if claim is not None]
+    assert len(claims) == 1
+    assert claims[0].access_key_id == key_id
 
 
 @pytest.mark.asyncio
