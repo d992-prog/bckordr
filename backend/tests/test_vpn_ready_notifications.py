@@ -1,0 +1,243 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.core.config import Settings
+from app.db.base import Base
+from app.db.models import (
+    VpnAccessKey,
+    VpnCustomer,
+    VpnNodeEvent,
+    VpnSubscription,
+    WorkerNode,
+)
+from app.services.vpn_ready_notifications import (
+    READY_TEXT,
+    ReadyNoticeClaim,
+    claim_ready_notice,
+    deliver_next_ready_notice,
+)
+
+
+NOW = datetime(2026, 9, 23, 15, 0, tzinfo=UTC)
+
+
+@pytest_asyncio.fixture
+async def session_factory(
+    tmp_path: Path,
+) -> async_sessionmaker[AsyncSession]:
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'vpn-ready-notifications.sqlite3'}"
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    try:
+        yield factory
+    finally:
+        await engine.dispose()
+
+
+async def _seed_ready_key(
+    factory: async_sessionmaker[AsyncSession],
+    **changes: object,
+) -> int:
+    async with factory() as db:
+        worker = WorkerNode(name="ready-node")
+        customer = VpnCustomer(
+            telegram_user_id="123456",
+            status="active",
+        )
+        db.add_all([worker, customer])
+        await db.flush()
+        subscription = VpnSubscription(
+            customer_id=customer.id,
+            status="trial",
+            starts_at=NOW - timedelta(minutes=1),
+            expires_at=NOW + timedelta(days=7),
+        )
+        db.add(subscription)
+        await db.flush()
+        key = VpnAccessKey(
+            subscription_id=subscription.id,
+            worker_id=worker.id,
+            status="active",
+            config_uri="vless://secret-uuid@vpn.example.test:443",
+        )
+        models = {
+            "key": key,
+            "subscription": subscription,
+            "customer": customer,
+        }
+        for target, field, value in changes.values():
+            setattr(models[target], field, value)
+        db.add(key)
+        await db.commit()
+        return key.id
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        ("key", "status", "suspended"),
+        ("key", "config_uri", None),
+        ("key", "config_uri", ""),
+        ("key", "worker_id", None),
+        ("key", "ready_notice_claimed_at", NOW - timedelta(minutes=1)),
+        ("key", "ready_notified_at", NOW - timedelta(minutes=1)),
+        ("subscription", "status", "expired"),
+        ("subscription", "expires_at", NOW),
+        ("subscription", "starts_at", NOW + timedelta(seconds=1)),
+        ("customer", "status", "archived"),
+        ("customer", "telegram_user_id", None),
+        ("customer", "telegram_user_id", ""),
+    ],
+    ids=[
+        "inactive-key",
+        "missing-uri",
+        "empty-uri",
+        "missing-worker",
+        "already-claimed",
+        "already-notified",
+        "inactive-subscription",
+        "expired-subscription",
+        "future-subscription",
+        "inactive-customer",
+        "missing-telegram-id",
+        "empty-telegram-id",
+    ],
+)
+@pytest.mark.asyncio
+async def test_claim_rejects_ineligible_profiles(session_factory, change) -> None:
+    await _seed_ready_key(session_factory, change=change)
+
+    async with session_factory() as db:
+        assert await claim_ready_notice(db, now=NOW) is None
+
+
+@pytest.mark.parametrize("status", ["active", "trial"])
+@pytest.mark.asyncio
+async def test_claim_accepts_active_unexpired_subscription_and_is_durable_once(
+    session_factory,
+    status: str,
+) -> None:
+    key_id = await _seed_ready_key(
+        session_factory,
+        change=("subscription", "status", status),
+    )
+
+    async with session_factory() as first:
+        claim = await claim_ready_notice(first, now=NOW)
+        assert claim == ReadyNoticeClaim(
+            access_key_id=key_id,
+            worker_id=1,
+            chat_id="123456",
+            claimed_at=NOW,
+        )
+        await first.commit()
+
+    async with session_factory() as second:
+        assert await claim_ready_notice(second, now=NOW + timedelta(seconds=1)) is None
+
+
+@pytest.mark.asyncio
+async def test_delivery_commits_claim_before_send_and_notifies_once(session_factory) -> None:
+    key_id = await _seed_ready_key(session_factory)
+    sent: list[tuple[str, str]] = []
+
+    async def sender(_settings: Settings, chat_id: str, text: str) -> None:
+        async with session_factory() as db:
+            key = await db.get(VpnAccessKey, key_id)
+            assert key is not None
+            assert key.ready_notice_claimed_at is not None
+            assert key.ready_notified_at is None
+        sent.append((chat_id, text))
+
+    settings = Settings(_env_file=None)
+    assert await deliver_next_ready_notice(
+        session_factory,
+        settings,
+        sender,
+        now=NOW,
+    ) is True
+    assert await deliver_next_ready_notice(
+        session_factory,
+        settings,
+        sender,
+        now=NOW + timedelta(seconds=1),
+    ) is False
+
+    assert sent == [("123456", READY_TEXT)]
+    assert "vless://" not in sent[0][1]
+    async with session_factory() as db:
+        key = await db.get(VpnAccessKey, key_id)
+        assert key is not None
+        assert key.ready_notice_claimed_at is None
+        assert key.ready_notified_at == NOW.replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_delivery_failure_resets_matching_claim_and_records_bounded_event(
+    session_factory,
+) -> None:
+    key_id = await _seed_ready_key(session_factory)
+    secret = "vless://must-not-leak"
+
+    async def sender(_settings: Settings, _chat_id: str, _text: str) -> None:
+        raise RuntimeError(secret)
+
+    assert await deliver_next_ready_notice(
+        session_factory,
+        Settings(_env_file=None),
+        sender,
+        now=NOW,
+    ) is False
+
+    async with session_factory() as db:
+        key = await db.get(VpnAccessKey, key_id)
+        event = await db.scalar(
+            select(VpnNodeEvent).where(
+                VpnNodeEvent.event_type == "telegram_ready_delivery_failed"
+            )
+        )
+    assert key is not None
+    assert key.ready_notice_claimed_at is None
+    assert key.ready_notified_at is None
+    assert event is not None
+    assert event.worker_id == 1
+    assert event.message == "Telegram VPN ready notification delivery failed"
+    assert event.details == {"access_key_id": key_id}
+    assert secret not in f"{event.message}{event.details}"
+
+
+@pytest.mark.asyncio
+async def test_failure_never_clears_a_replaced_claim(session_factory) -> None:
+    key_id = await _seed_ready_key(session_factory)
+    replacement = NOW + timedelta(seconds=30)
+
+    async def sender(_settings: Settings, _chat_id: str, _text: str) -> None:
+        async with session_factory() as db:
+            key = await db.get(VpnAccessKey, key_id)
+            assert key is not None
+            key.ready_notice_claimed_at = replacement
+            await db.commit()
+        raise RuntimeError("ordinary failure")
+
+    assert await deliver_next_ready_notice(
+        session_factory,
+        Settings(_env_file=None),
+        sender,
+        now=NOW,
+    ) is False
+
+    async with session_factory() as db:
+        key = await db.get(VpnAccessKey, key_id)
+    assert key is not None
+    assert key.ready_notice_claimed_at == replacement.replace(tzinfo=None)
+    assert key.ready_notified_at is None

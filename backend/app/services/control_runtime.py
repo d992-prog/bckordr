@@ -39,6 +39,11 @@ from app.services.vpn_control_dispatcher import dispatch_next_vpn_control_operat
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
 from app.services.vpn_node_transport import VpnNodeTransportError, load_transport_snapshot
 from app.services.vpn_portal_auth import cleanup_expired_portal_auth
+from app.services.vpn_ready_notifications import (
+    ReadyNoticeSender,
+    deliver_next_ready_notice,
+)
+from app.services.vpn_telegram import send_telegram_message
 from app.services.zone_scanner import run_zone_scan_job
 
 logger = logging.getLogger(__name__)
@@ -64,6 +69,7 @@ class ControlRuntimeOrchestrator:
         vpn_control_snapshot_loader: Callable[[WorkerNode, Path], object] = (
             load_transport_snapshot
         ),
+        vpn_ready_sender: ReadyNoticeSender = send_telegram_message,
     ) -> None:
         self._session_factory = session_factory
         self._interval_seconds = max(interval_seconds, 0.25)
@@ -98,12 +104,17 @@ class ControlRuntimeOrchestrator:
         self._vpn_control_database_factory = vpn_control_database_factory
         self._vpn_control_dispatcher = vpn_control_dispatcher
         self._vpn_control_snapshot_loader = vpn_control_snapshot_loader
+        self._vpn_ready_notifications_enabled = (
+            settings.vpn_ready_notifications_enabled if settings else False
+        )
+        self._vpn_ready_sender = vpn_ready_sender
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._zone_scan_tasks: dict[int, asyncio.Task[None]] = {}
         self._vpn_lifecycle_task: asyncio.Task[None] | None = None
         self._vpn_control_database: VpnControlDatabase | None = None
         self._vpn_control_dispatch_task: asyncio.Task[None] | None = None
+        self._vpn_ready_notification_task: asyncio.Task[None] | None = None
         self._last_worker_supervision_at = None
         self._last_discovery_at = None
         self._last_vpn_lifecycle_at = None
@@ -141,6 +152,14 @@ class ControlRuntimeOrchestrator:
             except asyncio.CancelledError:
                 pass
         self._vpn_control_dispatch_task = None
+        ready_notification_task = self._vpn_ready_notification_task
+        if ready_notification_task is not None and not ready_notification_task.done():
+            ready_notification_task.cancel()
+            try:
+                await ready_notification_task
+            except asyncio.CancelledError:
+                pass
+        self._vpn_ready_notification_task = None
         database = self._vpn_control_database
         if database is not None:
             await database.engine.dispose()
@@ -291,6 +310,14 @@ class ControlRuntimeOrchestrator:
             )
         if start_vpn_control_dispatch:
             self._start_vpn_control_dispatch(now)
+        if self._vpn_ready_notifications_enabled and (
+            self._vpn_ready_notification_task is None
+            or self._vpn_ready_notification_task.done()
+        ):
+            self._vpn_ready_notification_task = asyncio.create_task(
+                self._run_vpn_ready_notification(),
+                name="vpn-ready-notification",
+            )
         await self._start_zone_scan_jobs_if_needed()
 
     def _vpn_control_dispatch_due(self, now) -> bool:
@@ -381,6 +408,19 @@ class ControlRuntimeOrchestrator:
             raise
         except Exception:
             logger.error("VPN control dispatch failed")
+
+    async def _run_vpn_ready_notification(self) -> None:
+        assert self._settings is not None
+        try:
+            await deliver_next_ready_notice(
+                self._session_factory,
+                self._settings,
+                self._vpn_ready_sender,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error("VPN ready notification task failed")
 
     async def _run_vpn_lifecycle(self, now) -> None:
         async with self._session_factory() as session:

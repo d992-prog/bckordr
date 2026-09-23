@@ -630,6 +630,168 @@ async def test_dispatch_exception_logs_only_a_static_message(
     assert secret not in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_ready_notifications_flag_schedules_at_most_one_injected_sender(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, _engine = runtime_database
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls: list[tuple[object, Settings, object]] = []
+
+    async def sender(_settings: Settings, _chat_id: str, _text: str) -> None:
+        raise AssertionError("sender is passed through, not called by the runtime")
+
+    async def deliver(session_factory, settings, injected_sender) -> bool:
+        calls.append((session_factory, settings, injected_sender))
+        started.set()
+        await release.wait()
+        return False
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.deliver_next_ready_notice",
+        deliver,
+    )
+    settings = _runtime_settings(
+        VPN_FRIEND_BETA_ENABLED=False,
+        VPN_CONTROL_DISPATCH_ENABLED=False,
+        VPN_READY_NOTIFICATIONS_ENABLED=True,
+    )
+    runtime = ControlRuntimeOrchestrator(
+        factory,
+        settings=settings,
+        vpn_ready_sender=sender,
+    )
+
+    await runtime.run_cycle()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    first_task = runtime._vpn_ready_notification_task
+    await runtime.run_cycle()
+
+    assert first_task is not None
+    assert runtime._vpn_ready_notification_task is first_task
+    assert calls == [(factory, settings, sender)]
+
+    release.set()
+    await first_task
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ready_notifications_disabled_never_schedules(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, _engine = runtime_database
+    calls = 0
+
+    async def deliver(*_args) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.deliver_next_ready_notice",
+        deliver,
+    )
+    runtime = ControlRuntimeOrchestrator(
+        factory,
+        settings=_runtime_settings(
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_CONTROL_DISPATCH_ENABLED=False,
+            VPN_READY_NOTIFICATIONS_ENABLED=False,
+        ),
+    )
+
+    await runtime.run_cycle()
+    await runtime.shutdown()
+
+    assert runtime._vpn_ready_notification_task is None
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_ready_notification_does_not_block_strict_dispatch(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, _engine = runtime_database
+    await _seed_runtime_readiness(factory)
+    readiness_started = asyncio.Event()
+    dispatch_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def deliver(*_args) -> bool:
+        readiness_started.set()
+        await release.wait()
+        return False
+
+    async def dispatcher(*_args, **_kwargs) -> bool:
+        dispatch_started.set()
+        await release.wait()
+        return False
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.deliver_next_ready_notice",
+        deliver,
+    )
+    runtime = _orchestrator(
+        factory,
+        _runtime_settings(VPN_READY_NOTIFICATIONS_ENABLED=True),
+        database_factory=lambda _settings: SimpleNamespace(
+            engine=_FakeDedicatedEngine(),
+            session_factory=object(),
+        ),
+        dispatcher=dispatcher,
+        snapshot_loader=lambda worker, path: object(),
+    )
+
+    await runtime.run_cycle()
+    await asyncio.wait_for(readiness_started.wait(), timeout=1)
+    await asyncio.wait_for(dispatch_started.wait(), timeout=1)
+
+    release.set()
+    await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_and_awaits_ready_notification_task(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, _engine = runtime_database
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def deliver(*_args) -> bool:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.deliver_next_ready_notice",
+        deliver,
+    )
+    runtime = ControlRuntimeOrchestrator(
+        factory,
+        settings=_runtime_settings(
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_CONTROL_DISPATCH_ENABLED=False,
+            VPN_READY_NOTIFICATIONS_ENABLED=True,
+        ),
+    )
+
+    await runtime.run_cycle()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await runtime.shutdown()
+
+    assert cancelled.is_set()
+    assert runtime._vpn_ready_notification_task is None
+
+
 def _validated_postgres_url() -> str:
     raw_url = os.getenv("VPN_PORTAL_TEST_PG_URL")
     if not raw_url:
