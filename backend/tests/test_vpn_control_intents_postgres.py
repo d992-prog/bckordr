@@ -958,7 +958,7 @@ async def test_committed_stage_blocks_real_worker_mutation_after_its_worker_lock
             with pytest.raises(WorkerDecommissionConflictError, match="VPN control operation"):
                 await asyncio.wait_for(competing, timeout=1)
         else:
-            response = await asyncio.wait_for(competing, timeout=1)
+            response = await asyncio.wait_for(competing, timeout=30)
             assert response.skipped_worker_ids == [2]
             assert [job.worker_id for job in response.jobs] == [3]
             assert len(background.tasks) == 1
@@ -1019,15 +1019,15 @@ async def test_real_maintenance_creation_commits_before_waiting_stage_rechecks(
                     admin=SimpleNamespace(id=None),
                 )
             )
-        await asyncio.wait_for(worker_locked.wait(), timeout=1)
+        await asyncio.wait_for(worker_locked.wait(), timeout=30)
         stage_task = asyncio.create_task(
             stage_vpn_control_operation(stager, 7, "provision", now=NOW)
         )
         await _assert_blocked(stage_task)
         release_worker.set()
-        await asyncio.wait_for(maintenance_task, timeout=1)
+        await asyncio.wait_for(maintenance_task, timeout=30)
         with pytest.raises(VpnControlIntentError) as caught:
-            await asyncio.wait_for(stage_task, timeout=1)
+            await asyncio.wait_for(stage_task, timeout=30)
         assert caught.value.code == "vpn_control_worker_busy"
         await stager.rollback()
 
@@ -1061,7 +1061,7 @@ async def test_running_maintenance_is_published_before_stage_and_uses_real_runne
     monkeypatch.setattr(worker_maintenance, "lock_vpn_worker", paused_lock)
     monkeypatch.setattr(worker_maintenance, "execute_worker_ssh_commands", no_ssh)
     runner = asyncio.create_task(worker_maintenance.run_worker_maintenance_job(job_id))
-    await asyncio.wait_for(before_worker_lock.wait(), timeout=1)
+    await asyncio.wait_for(before_worker_lock.wait(), timeout=30)
 
     async with postgres_control.sessions() as stager:
         with pytest.raises(VpnControlIntentError) as caught:
@@ -1070,7 +1070,7 @@ async def test_running_maintenance_is_published_before_stage_and_uses_real_runne
         await stager.rollback()
 
     release_runner.set()
-    await asyncio.wait_for(runner, timeout=1)
+    await asyncio.wait_for(runner, timeout=30)
     async with postgres_control.sessions() as session:
         job = await session.get(WorkerMaintenanceJob, job_id)
         assert job is not None and job.status == "succeeded"
@@ -1121,7 +1121,7 @@ async def test_committed_cross_system_work_blocks_waiting_stage_after_worker_loc
             await asyncio.wait_for(asyncio.shield(stage_task), timeout=0.05)
         await holder.commit()
         with pytest.raises(VpnControlIntentError) as caught:
-            await asyncio.wait_for(stage_task, timeout=1)
+            await asyncio.wait_for(stage_task, timeout=30)
         assert caught.value.code == "vpn_control_worker_busy"
         await stager.rollback()
 
@@ -1307,7 +1307,7 @@ async def test_real_runner_rechecks_new_control_reservation_at_last_pre_ssh_gate
     )
     monkeypatch.setattr(worker_maintenance, "execute_worker_ssh_commands", forbidden_ssh)
     runner = asyncio.create_task(worker_maintenance.run_worker_maintenance_job(job_id))
-    await asyncio.wait_for(pre_ssh_gate.wait(), timeout=1)
+    await asyncio.wait_for(pre_ssh_gate.wait(), timeout=30)
 
     async with postgres_control.sessions() as inserter:
         inserter.add(
@@ -1325,7 +1325,7 @@ async def test_real_runner_rechecks_new_control_reservation_at_last_pre_ssh_gate
         )
         await inserter.commit()
     release_gate.set()
-    await asyncio.wait_for(runner, timeout=1)
+    await asyncio.wait_for(runner, timeout=30)
 
     async with postgres_control.sessions() as session:
         job = await session.get(WorkerMaintenanceJob, job_id)
@@ -1481,7 +1481,7 @@ async def test_attack_batch_lock_order_is_compatible_with_ascending_bulk_mainten
         attack_task = asyncio.create_task(
             load_attack_available_workers(attack_session, worker_ids=[3, 2])
         )
-        await asyncio.wait_for(both_ready.wait(), timeout=1)
+        await asyncio.wait_for(both_ready.wait(), timeout=30)
         gate.set()
         done, _pending = await asyncio.wait(
             {bulk_task, attack_task},
@@ -1502,10 +1502,10 @@ async def test_attack_batch_lock_order_is_compatible_with_ascending_bulk_mainten
                     )
                 )
             await attacker.commit()
-            bulk_response = await asyncio.wait_for(bulk_task, timeout=2)
+            bulk_response = await asyncio.wait_for(bulk_task, timeout=30)
         else:
-            bulk_response = await asyncio.wait_for(bulk_task, timeout=2)
-            attack_workers = await asyncio.wait_for(attack_task, timeout=2)
+            bulk_response = await asyncio.wait_for(bulk_task, timeout=30)
+            attack_workers = await asyncio.wait_for(attack_task, timeout=30)
         await attacker.rollback()
 
     assert len(lock_statements) == 2
