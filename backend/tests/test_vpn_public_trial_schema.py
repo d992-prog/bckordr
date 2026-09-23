@@ -54,7 +54,15 @@ def test_public_trial_columns_and_constraints() -> None:
     )
 
 
-def test_public_trial_settings_default_off() -> None:
+def test_public_trial_settings_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "VPN_PUBLIC_TRIAL_ENABLED",
+        "VPN_PUBLIC_TRIAL_RELEASE_ID",
+        "VPN_PUBLIC_TRIAL_PLAN_SLUG",
+        "VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS",
+        "VPN_READY_NOTIFICATIONS_ENABLED",
+    ):
+        monkeypatch.delenv(key, raising=False)
     settings = Settings(_env_file=None)
     assert settings.vpn_public_trial_enabled is False
     assert settings.vpn_public_trial_release_id == ""
@@ -82,6 +90,9 @@ def test_public_trial_upgrade_statements_are_registered() -> None:
         "status = 'active' AND config_uri IS NOT NULL AND ready_notified_at IS NULL"
         in sql
     )
+    assert "vpn_ready_notice_backfill_v1" in sql
+    assert "ON CONFLICT (key) DO NOTHING" in sql
+    assert "RETURNING key" in sql
 
 
 @pytest_asyncio.fixture
@@ -124,6 +135,7 @@ async def postgres_schema() -> AsyncIterator[AsyncEngine]:
 async def _create_prechange_schema(engine: AsyncEngine, *, with_endpoint: bool) -> None:
     async with engine.begin() as connection:
         for statement in (
+            "CREATE TABLE app_settings (id SERIAL PRIMARY KEY, key VARCHAR(128) UNIQUE NOT NULL, value TEXT)",
             "CREATE TABLE users (id SERIAL PRIMARY KEY)",
             "CREATE TABLE worker_nodes (id SERIAL PRIMARY KEY)",
             "CREATE TABLE vpn_customers (id SERIAL PRIMARY KEY, telegram_user_id VARCHAR(64), status VARCHAR(32) DEFAULT 'active')",
@@ -323,9 +335,20 @@ async def test_prechange_postgres_upgrade_backfills_once(
         )
 
     before = await _existing_snapshot(postgres_schema)
-    for _ in range(2):
-        await _run_trial_migrations(postgres_schema)
-        assert await _existing_snapshot(postgres_schema) == before
+    await _run_trial_migrations(postgres_schema)
+    assert await _existing_snapshot(postgres_schema) == before
+    async with postgres_schema.begin() as connection:
+        await connection.execute(
+            text("""
+                INSERT INTO vpn_access_keys
+                    (id, subscription_id, config_uri, status, created_at)
+                VALUES (27, 13, 'vless://new', 'active', :late)
+            """),
+            {"late": late},
+        )
+    before_second_run = await _existing_snapshot(postgres_schema)
+    await _run_trial_migrations(postgres_schema)
+    assert await _existing_snapshot(postgres_schema) == before_second_run
 
     async with postgres_schema.connect() as connection:
         customers = (
@@ -362,9 +385,18 @@ async def test_prechange_postgres_upgrade_backfills_once(
             (24, None, None),
             (25, None, None),
             (26, None, preserved),
+            (27, None, None),
         ]
         assert endpoint == (None, 80)
         assert friend == (1, early, "friend", 21)
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT count(*) FROM app_settings WHERE key = 'vpn_ready_notice_backfill_v1'"
+                )
+            )
+            == 1
+        )
     _assert_public_trial_contract(await _schema_contract(postgres_schema))
     for values in ((0, 80), (-1, 80), (1, 0), (1, 101)):
         with pytest.raises(IntegrityError):

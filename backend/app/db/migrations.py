@@ -21,9 +21,16 @@ VPN_PUBLIC_TRIAL_MIGRATIONS = (
     WHERE customer.id = trials.customer_id AND customer.trial_started_at IS NULL
     """,
     """
+    WITH ready_notice_backfill AS (
+        INSERT INTO app_settings (key, value)
+        VALUES ('vpn_ready_notice_backfill_v1', 'done')
+        ON CONFLICT (key) DO NOTHING
+        RETURNING key
+    )
     UPDATE vpn_access_keys
     SET ready_notified_at = COALESCE(last_synced_at, issued_at, created_at)
     WHERE status = 'active' AND config_uri IS NOT NULL AND ready_notified_at IS NULL
+      AND EXISTS (SELECT 1 FROM ready_notice_backfill)
     """,
 )
 
