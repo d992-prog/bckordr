@@ -328,11 +328,21 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     const isCurrentLoad = () => (
       sessionGeneration.isCurrent(generation) && dataLoadEpoch.current === loadEpoch
     );
+    async function observe<T>(request: Promise<T>): Promise<T> {
+      try {
+        return await request;
+      } catch (error) {
+        if (isCurrentLoad() && isUnauthorized(error)) {
+          handleUnauthorized();
+        }
+        throw error;
+      }
+    }
     try {
       const [nextTrial, nextSubscriptions, nextProfiles] = await Promise.all([
-        portalApi.trial(),
-        portalApi.subscriptions(),
-        portalApi.profiles(),
+        observe(portalApi.trial()),
+        observe(portalApi.subscriptions()),
+        observe(portalApi.profiles()),
       ]);
       if (!isCurrentLoad()) {
         return;

@@ -84,6 +84,14 @@ const profiles = [
   { id: 21, subscription_id: 11, display_name: "iPhone", state: "active", can_connect: true },
   { id: 22, subscription_id: 12, display_name: "Старый ключ", state: "active", can_connect: false },
 ];
+const disabledTrial = {
+  state: "disabled",
+  duration_days: 7,
+  profile_limit: 1,
+  subscription_id: null,
+  access_key_id: null,
+  expires_at: null,
+};
 
 function responseJson(route, body, status = 200) {
   return route.fulfill({
@@ -130,9 +138,12 @@ async function newPortalPage(browser, options = {}) {
   return { context, page };
 }
 
-async function installApi(page, handler) {
+async function installApi(page, handler, { trial = disabledTrial } = {}) {
   await page.route("**/api/vpn-portal/**", async (route) => {
     const url = new URL(route.request().url());
+    if (trial !== null && route.request().method() === "GET" && url.pathname.endsWith("/trial")) {
+      return responseJson(route, trial);
+    }
     await handler(route, url.pathname, route.request());
   });
 }
@@ -231,6 +242,113 @@ async function verifyFullPortal(browser, origin) {
 
   await page.screenshot({ path: path.join(outputRoot, "portal-390-light.png"), fullPage: true });
   await context.close();
+}
+
+async function verifyPublicTrialFlow(browser, origin) {
+  const trialSubscription = {
+    id: 31,
+    service_name: "Veltrix VPN",
+    state: "trial",
+    starts_at: "2026-09-23T00:00:00Z",
+    expires_at: "2026-09-30T00:00:00Z",
+    profile_limit: 1,
+    profiles_used: 1,
+    traffic_limit_gb_per_profile: null,
+  };
+  const trialProfile = {
+    id: 41,
+    subscription_id: 31,
+    display_name: "Пробный профиль",
+    state: "active",
+    can_connect: true,
+  };
+
+  {
+    const { context, page } = await newPortalPage(browser);
+    let trialReads = 0;
+    let activationCalls = 0;
+    await installApi(page, async (route, pathname, request) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/trial/activate")) {
+        activationCalls += 1;
+        assert.equal(request.method(), "POST");
+        assert.equal(request.headers()["x-csrf-token"], me.csrf_token);
+        return responseJson(route, {
+          ...disabledTrial,
+          state: "preparing",
+          subscription_id: 31,
+          access_key_id: 41,
+          expires_at: "2026-09-30T00:00:00Z",
+        });
+      }
+      if (pathname.endsWith("/trial")) {
+        trialReads += 1;
+        const state = trialReads === 1 ? "available" : trialReads === 2 ? "preparing" : "active";
+        return responseJson(route, {
+          ...disabledTrial,
+          state,
+          subscription_id: state === "available" ? null : 31,
+          access_key_id: state === "available" ? null : 41,
+          expires_at: state === "available" ? null : "2026-09-30T00:00:00Z",
+        });
+      }
+      if (pathname.endsWith("/subscriptions")) {
+        return responseJson(route, trialReads >= 3 ? [trialSubscription] : []);
+      }
+      if (pathname.endsWith("/profiles")) {
+        return responseJson(route, trialReads >= 3 ? [trialProfile] : []);
+      }
+      return responseJson(route, {}, 404);
+    }, { trial: null });
+
+    await page.goto(`${origin}/cabinet/`);
+    await page.getByRole("button", { name: "Получить 7 дней" }).click();
+    await page.getByRole("heading", { name: "Готовим VPN-профиль" }).waitFor();
+    await page.getByRole("heading", { name: "Пробный доступ готов" }).waitFor({ timeout: 5_000 });
+    assert.equal(activationCalls, 1);
+    assert.equal(trialReads, 3);
+    await page.getByRole("link", { name: "Открыть профиль" }).click();
+    await page.getByRole("heading", { name: trialProfile.display_name }).waitFor();
+    await context.close();
+  }
+
+  {
+    const { context, page } = await newPortalPage(browser);
+    let trialReads = 0;
+    let pendingTrial;
+    await installApi(page, async (route, pathname) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/trial/activate")) {
+        return responseJson(route, { ...disabledTrial, state: "preparing" });
+      }
+      if (pathname.endsWith("/trial")) {
+        trialReads += 1;
+        if (trialReads === 1) return responseJson(route, { ...disabledTrial, state: "available" });
+        pendingTrial = route;
+        return;
+      }
+      if (pathname.endsWith("/subscriptions") || pathname.endsWith("/profiles")) {
+        return responseJson(route, []);
+      }
+      if (pathname.endsWith("/logout")) return responseJson(route, { logged_out: true });
+      return responseJson(route, {}, 404);
+    }, { trial: null });
+
+    await page.goto(`${origin}/cabinet/`);
+    await page.getByRole("button", { name: "Получить 7 дней" }).click();
+    await page.getByRole("heading", { name: "Готовим VPN-профиль" }).waitFor();
+    await page.waitForFunction(() => document.body.innerText.includes("Готовим VPN-профиль"));
+    assert.ok(pendingTrial);
+    await page.getByRole("button", { name: "Выйти", exact: true }).click();
+    await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
+    await responseJson(pendingTrial, { ...disabledTrial, state: "active" });
+    await page.waitForTimeout(100);
+    assert.equal(await page.getByRole("heading", { name: "Пробный доступ готов" }).count(), 0);
+    assert.equal((await page.locator("body").innerText()).includes(me.display_name), false);
+    await context.close();
+  }
 }
 
 async function verifyMiniAppStates(browser, origin) {
@@ -877,6 +995,7 @@ const browser = await chromium.launch({
 
 try {
   await verifyFullPortal(browser, server.origin);
+  await verifyPublicTrialFlow(browser, server.origin);
   await verifyMiniAppStates(browser, server.origin);
   await verifySessionInvalidation(browser, server.origin);
   await verifyProfileRequestRaces(browser, server.origin);
