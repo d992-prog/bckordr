@@ -175,7 +175,8 @@ application implementation is the commit range `ebebebc..1899ef7`.
 
 ## Strict VPN dispatcher and reservation checkpoint (2026-09-22, local only)
 
-This is the newest checkpoint. Continue in
+This is a historical checkpoint, superseded by the current 2026-09-24
+public-trial release-candidate checkpoint above. Its work remains in
 `.worktrees/veltrix-customer-portal`, branch `codex/veltrix-customer-portal`.
 The strict dispatcher is callable and fully tested, but it has no runtime,
 startup, API or lifecycle caller and is **not deployed**. Do not enable enqueue
@@ -985,12 +986,17 @@ Architecture goal:
   - one default contact profile
 - `owner/admin/bill/tech` are currently cloned from one contact profile, not managed separately.
 - TLD-specific `extra_parameters` are supported as raw JSON text, not as a rich typed UI model.
-- The VPN customer workspace is operational; visual browser smoke testing still needs to be repeated in an environment where the desktop browser runner is available.
+- The Task 9 disposable local desktop/mobile browser smoke is complete. Pending
+  verification is limited to the production Mini App through the live Telegram
+  webhook and a real VPN client.
 - Worker runtime IP allowlist enforcement is implemented on the control side, but nginx/origin deployment still must be configured on the server.
 - VPN payments are intentionally not implemented yet.
 - A real Telegram webhook smoke test requires a deployed HTTPS control URL and a BotFather token; automated webhook behavior is covered locally.
 
-## Most Recent Verified Checks
+## Earlier Verified Checks (historical)
+
+These 2026-09-20 checks are retained for history and are superseded by the
+current 2026-09-24 public-trial release-gate section above.
 
 VPN connectivity repair on 2026-09-20:
 - Reproduced a plain VLESS connection that worked over node loopback but stalled on public port 443. Packet-header capture confirmed TLS payload reached the node while plain VLESS payload did not.
