@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +11,7 @@ from app.db.models import (
     AttackRun,
     VpnAccessKey,
     VpnCustomer,
+    VpnEndpoint,
     VpnSubscription,
     WorkerMaintenanceJob,
     WorkerNode,
@@ -20,6 +21,9 @@ from app.db.models import (
 
 DEVICE_SLOT_STATUSES = (
     "pending_sync", "syncing", "active", "pending_revoke", "pending_suspend", "suspended", "failed",
+)
+NODE_CAPACITY_STATUSES = (
+    "pending_sync", "syncing", "active", "pending_suspend", "suspended", "pending_revoke", "failed",
 )
 VPN_MUTATION_ACTIONS = {
     "vpn_install",
@@ -34,6 +38,17 @@ VPN_MUTATION_ACTIONS = {
 class VpnNodeEligibility:
     eligible: bool
     reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VpnEndpointCapacity:
+    endpoint: VpnEndpoint
+    occupied_profiles: int
+    max_active_profiles: int
+
+    @property
+    def utilization(self) -> float:
+        return self.occupied_profiles / self.max_active_profiles
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -161,6 +176,67 @@ async def evaluate_vpn_node(session: AsyncSession, worker: WorkerNode) -> VpnNod
     if worker.id in await active_attack_worker_ids(session):
         reasons.append("Worker is assigned to an active domain attack")
     return VpnNodeEligibility(eligible=not reasons, reasons=tuple(reasons))
+
+
+async def select_public_vpn_endpoint(
+    session: AsyncSession,
+    *,
+    now: datetime,
+    health_max_age_seconds: int,
+    lock: bool = False,
+) -> VpnEndpointCapacity | None:
+    current_time = _as_utc(now)
+    assert current_time is not None
+    healthy_since = current_time - timedelta(seconds=max(health_max_age_seconds, 1))
+
+    async def capacity(endpoint: VpnEndpoint) -> VpnEndpointCapacity | None:
+        limit = endpoint.max_active_profiles
+        if (
+            endpoint.status != "ready"
+            or endpoint.security != "reality"
+            or endpoint.verified_at is None
+            or limit is None
+            or limit <= 0
+        ):
+            return None
+        worker = await session.scalar(
+            select(WorkerNode)
+            .where(WorkerNode.id == endpoint.worker_id, WorkerNode.archived_at.is_(None))
+            .execution_options(populate_existing=True)
+        )
+        if (
+            worker is None
+            or _as_utc(worker.vpn_last_checked_at) is None
+            or _as_utc(worker.vpn_last_checked_at) < healthy_since
+            or not (await evaluate_vpn_node(session, worker)).eligible
+        ):
+            return None
+        occupied = int(await session.scalar(
+            select(func.count(VpnAccessKey.id)).where(
+                VpnAccessKey.endpoint_id == endpoint.id,
+                VpnAccessKey.status.in_(NODE_CAPACITY_STATUSES),
+            )
+        ) or 0)
+        if occupied >= limit:
+            return None
+        return VpnEndpointCapacity(endpoint, occupied, limit)
+
+    endpoints = (await session.execute(select(VpnEndpoint).order_by(VpnEndpoint.id))).scalars().all()
+    candidates = [result for endpoint in endpoints if (result := await capacity(endpoint)) is not None]
+    candidates.sort(key=lambda result: (result.utilization, result.endpoint.id))
+    if not lock:
+        return candidates[0] if candidates else None
+
+    for candidate in candidates:
+        endpoint = await session.scalar(
+            select(VpnEndpoint)
+            .where(VpnEndpoint.id == candidate.endpoint.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if endpoint is not None and (result := await capacity(endpoint)) is not None:
+            return result
+    return None
 
 
 async def select_vpn_node(
