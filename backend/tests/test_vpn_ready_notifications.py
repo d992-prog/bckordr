@@ -51,12 +51,14 @@ async def session_factory(
 
 async def _seed_ready_key(
     factory: async_sessionmaker[AsyncSession],
+    *,
+    suffix: str = "",
     **changes: object,
 ) -> int:
     async with factory() as db:
-        worker = WorkerNode(name="ready-node")
+        worker = WorkerNode(name=f"ready-node{suffix}")
         customer = VpnCustomer(
-            telegram_user_id="123456",
+            telegram_user_id=f"123456{suffix}",
             status="active",
         )
         db.add_all([worker, customer])
@@ -149,6 +151,36 @@ async def test_claim_accepts_active_unexpired_subscription_and_is_durable_once(
 
     async with session_factory() as second:
         assert await claim_ready_notice(second, now=NOW + timedelta(seconds=1)) is None
+
+
+@pytest.mark.asyncio
+async def test_stale_claim_is_recovered_but_fresh_claim_is_not_stolen(
+    session_factory,
+) -> None:
+    fresh_id = await _seed_ready_key(
+        session_factory,
+        suffix="1",
+        change=("key", "ready_notice_claimed_at", NOW - timedelta(seconds=119)),
+    )
+    stale_id = await _seed_ready_key(
+        session_factory,
+        suffix="2",
+        change=("key", "ready_notice_claimed_at", NOW - timedelta(seconds=121)),
+    )
+
+    async with session_factory() as db:
+        claim = await claim_ready_notice(db, now=NOW)
+        await db.commit()
+
+    assert claim is not None
+    assert claim.access_key_id == stale_id
+    async with session_factory() as db:
+        fresh = await db.get(VpnAccessKey, fresh_id)
+        stale = await db.get(VpnAccessKey, stale_id)
+    assert fresh is not None and fresh.ready_notice_claimed_at == (
+        NOW - timedelta(seconds=119)
+    ).replace(tzinfo=None)
+    assert stale is not None and stale.ready_notice_claimed_at == NOW.replace(tzinfo=None)
 
 
 @pytest.mark.asyncio
@@ -263,6 +295,112 @@ async def test_delivery_failure_resets_matching_claim_and_records_bounded_event(
     assert event.message == "Telegram VPN ready notification delivery failed"
     assert event.details == {"access_key_id": key_id}
     assert secret not in f"{event.message}{event.details}"
+
+
+@pytest.mark.asyncio
+async def test_failed_key_backs_off_while_next_key_is_delivered(session_factory) -> None:
+    first_key_id = await _seed_ready_key(session_factory, suffix="1")
+    second_key_id = await _seed_ready_key(session_factory, suffix="2")
+    attempts: list[str] = []
+
+    async def sender(_settings: Settings, chat_id: str, _text: str) -> None:
+        attempts.append(chat_id)
+        if chat_id == "1234561":
+            raise RuntimeError("permanent failure with secret data")
+
+    settings = Settings(_env_file=None)
+    assert await deliver_next_ready_notice(
+        session_factory,
+        settings,
+        sender,
+        now=NOW,
+    ) is False
+    assert await deliver_next_ready_notice(
+        session_factory,
+        settings,
+        sender,
+        now=NOW + timedelta(seconds=1),
+    ) is True
+    assert await deliver_next_ready_notice(
+        session_factory,
+        settings,
+        sender,
+        now=NOW + timedelta(seconds=2),
+    ) is False
+
+    async with session_factory() as db:
+        events_before_retry = list(
+            await db.scalars(
+                select(VpnNodeEvent).where(
+                    VpnNodeEvent.event_type == "telegram_ready_delivery_failed"
+                )
+            )
+        )
+        first_key = await db.get(VpnAccessKey, first_key_id)
+        second_key = await db.get(VpnAccessKey, second_key_id)
+    assert attempts == ["1234561", "1234562"]
+    assert len(events_before_retry) == 1
+    assert first_key is not None and first_key.ready_notified_at is None
+    assert second_key is not None and second_key.ready_notified_at is not None
+
+    assert await deliver_next_ready_notice(
+        session_factory,
+        settings,
+        sender,
+        now=NOW + timedelta(seconds=61),
+    ) is False
+    async with session_factory() as db:
+        events_after_retry = list(
+            await db.scalars(
+                select(VpnNodeEvent).where(
+                    VpnNodeEvent.event_type == "telegram_ready_delivery_failed"
+                )
+            )
+        )
+    assert attempts == ["1234561", "1234562", "1234561"]
+    assert len(events_after_retry) == 2
+
+
+@pytest.mark.asyncio
+async def test_cancelled_delivery_preserves_cancellation_and_recovers_stale_claim(
+    session_factory,
+) -> None:
+    key_id = await _seed_ready_key(session_factory)
+    started = asyncio.Event()
+
+    async def sender(_settings: Settings, _chat_id: str, _text: str) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    delivery = asyncio.create_task(
+        deliver_next_ready_notice(
+            session_factory,
+            Settings(_env_file=None),
+            sender,
+            now=NOW,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    delivery.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await delivery
+
+    async with session_factory() as db:
+        fresh_claim = await claim_ready_notice(
+            db,
+            now=NOW + timedelta(seconds=119),
+        )
+        await db.rollback()
+    assert fresh_claim is None
+
+    async with session_factory() as db:
+        recovered = await claim_ready_notice(
+            db,
+            now=NOW + timedelta(seconds=121),
+        )
+        await db.commit()
+    assert recovered is not None
+    assert recovered.access_key_id == key_id
 
 
 @pytest.mark.asyncio
