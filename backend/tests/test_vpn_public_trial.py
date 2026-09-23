@@ -250,7 +250,17 @@ async def test_lock_recounts_full_first_candidate_and_tries_next(session_factory
         first_endpoint, second_endpoint = endpoint(first, max_active_profiles=1), endpoint(second)
         session.add_all([first_endpoint, second_endpoint])
         await session.flush()
-        locked_ids = []
+        events = []
+
+        @event.listens_for(session.sync_session, "after_transaction_create")
+        def trace_savepoint(_session, transaction):
+            if transaction.nested:
+                events.append("savepoint")
+
+        @event.listens_for(session.sync_session, "after_soft_rollback")
+        def trace_rollback(_session, transaction):
+            if transaction.nested:
+                events.append("rollback")
 
         async def fill_first(current_session):
             await add_key(current_session, first_endpoint)
@@ -260,15 +270,21 @@ async def test_lock_recounts_full_first_candidate_and_tries_next(session_factory
 
         async def record_locks(statement, **kwargs):
             if statement._for_update_arg is not None:
-                locked_ids.append(statement.compile().params)
+                entity = statement.column_descriptions[0]["entity"]
+                events.append((entity, next(iter(statement.compile().params.values()))))
             return await original_scalar(statement, **kwargs)
 
         session.scalar = record_locks
         result = await select_public_vpn_endpoint(session, now=NOW, health_max_age_seconds=60, lock=True)
         assert result is not None and result.endpoint.id == second_endpoint.id
-        assert [next(iter(params.values())) for params in locked_ids] == [
-            first_endpoint.id,
-            second_endpoint.id,
+        assert events[:7] == [
+            "savepoint",
+            (WorkerNode, first.id),
+            (VpnEndpoint, first_endpoint.id),
+            "rollback",
+            "savepoint",
+            (WorkerNode, second.id),
+            (VpnEndpoint, second_endpoint.id),
         ]
 
 
@@ -300,13 +316,31 @@ async def test_lock_revalidates_and_returns_none_without_alternative(
                 update(model)
                 .where(model.id == (target.id if model is VpnEndpoint else node.id))
                 .values(**changes)
+                .execution_options(synchronize_session=False)
             )
-            current_session.expire_all()
 
         session.on_lock = invalidate
         assert await select_public_vpn_endpoint(
             session, now=NOW, health_max_age_seconds=60, lock=True
         ) is None
+
+
+@pytest.mark.asyncio
+async def test_lock_rejects_pending_orm_mutation_without_flushing_it(session_factory):
+    async with session_factory() as session:
+        node = worker("only")
+        session.add(node)
+        await session.flush()
+        session.add(endpoint(node))
+        await session.flush()
+        pending = worker("pending")
+        session.add(pending)
+
+        with pytest.raises(ValueError, match="pending ORM changes"):
+            await select_public_vpn_endpoint(
+                session, now=NOW, health_max_age_seconds=60, lock=True
+            )
+        assert pending in session.new
 
 
 @pytest.mark.asyncio

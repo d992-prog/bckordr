@@ -185,11 +185,25 @@ async def select_public_vpn_endpoint(
     health_max_age_seconds: int,
     lock: bool = False,
 ) -> VpnEndpointCapacity | None:
+    if lock and (session.new or session.dirty or session.deleted):
+        raise ValueError("Cannot lock VPN endpoint with pending ORM changes")
     current_time = _as_utc(now)
     assert current_time is not None
     healthy_since = current_time - timedelta(seconds=max(health_max_age_seconds, 1))
 
-    async def capacity(endpoint: VpnEndpoint) -> VpnEndpointCapacity | None:
+    async def eligible_worker(worker: WorkerNode | None) -> bool:
+        return bool(
+            worker is not None
+            and worker.archived_at is None
+            and (checked_at := _as_utc(worker.vpn_last_checked_at)) is not None
+            and checked_at >= healthy_since
+            and (await evaluate_vpn_node(session, worker)).eligible
+        )
+
+    async def capacity(
+        endpoint: VpnEndpoint,
+        worker: WorkerNode | None = None,
+    ) -> VpnEndpointCapacity | None:
         limit = endpoint.max_active_profiles
         if (
             endpoint.status != "ready"
@@ -199,17 +213,13 @@ async def select_public_vpn_endpoint(
             or limit <= 0
         ):
             return None
-        worker = await session.scalar(
-            select(WorkerNode)
-            .where(WorkerNode.id == endpoint.worker_id, WorkerNode.archived_at.is_(None))
-            .execution_options(populate_existing=True)
-        )
-        if (
-            worker is None
-            or _as_utc(worker.vpn_last_checked_at) is None
-            or _as_utc(worker.vpn_last_checked_at) < healthy_since
-            or not (await evaluate_vpn_node(session, worker)).eligible
-        ):
+        if worker is None:
+            worker = await session.scalar(
+                select(WorkerNode)
+                .where(WorkerNode.id == endpoint.worker_id)
+                .execution_options(populate_existing=True)
+            )
+        if not await eligible_worker(worker):
             return None
         occupied = int(await session.scalar(
             select(func.count(VpnAccessKey.id)).where(
@@ -228,14 +238,31 @@ async def select_public_vpn_endpoint(
         return candidates[0] if candidates else None
 
     for candidate in candidates:
-        endpoint = await session.scalar(
-            select(VpnEndpoint)
-            .where(VpnEndpoint.id == candidate.endpoint.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-        if endpoint is not None and (result := await capacity(endpoint)) is not None:
-            return result
+        endpoint_id = candidate.endpoint.id
+        worker_id = candidate.endpoint.worker_id
+        savepoint = await session.begin_nested()
+        try:
+            worker = await session.scalar(
+                select(WorkerNode)
+                .where(WorkerNode.id == worker_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if await eligible_worker(worker):
+                endpoint = await session.scalar(
+                    select(VpnEndpoint)
+                    .where(VpnEndpoint.id == endpoint_id, VpnEndpoint.worker_id == worker_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                if endpoint is not None and (result := await capacity(endpoint, worker)) is not None:
+                    await savepoint.commit()
+                    return result
+            await savepoint.rollback()
+        except BaseException:
+            if savepoint.is_active:
+                await savepoint.rollback()
+            raise
     return None
 
 
