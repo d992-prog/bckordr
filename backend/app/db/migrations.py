@@ -8,6 +8,8 @@ VPN_PUBLIC_TRIAL_MIGRATIONS = (
     "ALTER TABLE vpn_customers ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMPTZ NULL",
     "CREATE INDEX IF NOT EXISTS ix_vpn_customers_trial_started_at ON vpn_customers(trial_started_at)",
     "ALTER TABLE vpn_access_keys ADD COLUMN IF NOT EXISTS ready_notice_claimed_at TIMESTAMPTZ NULL",
+    "ALTER TABLE vpn_access_keys ADD COLUMN IF NOT EXISTS ready_notice_retry_at TIMESTAMPTZ NULL",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_ready_notice_retry_at ON vpn_access_keys(ready_notice_retry_at)",
     "ALTER TABLE vpn_access_keys ADD COLUMN IF NOT EXISTS ready_notified_at TIMESTAMPTZ NULL",
     """
     UPDATE vpn_customers AS customer
@@ -191,6 +193,7 @@ MIGRATIONS = (
         expires_at TIMESTAMPTZ NULL,
         revoked_at TIMESTAMPTZ NULL,
         last_synced_at TIMESTAMPTZ NULL,
+        ready_notice_retry_at TIMESTAMPTZ NULL,
         last_error TEXT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()

@@ -5,7 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import exists, or_, select, update
+from sqlalchemy import case, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -34,14 +34,6 @@ async def claim_ready_notice(
     now: datetime | None = None,
 ) -> ReadyNoticeClaim | None:
     current_time = now or utcnow()
-    recent_failure = exists(
-        select(VpnNodeEvent.id).where(
-            VpnNodeEvent.event_type == "telegram_ready_delivery_failed",
-            VpnNodeEvent.created_at
-            >= current_time - READY_NOTICE_FAILURE_BACKOFF,
-            VpnNodeEvent.details["access_key_id"].as_integer() == VpnAccessKey.id,
-        )
-    )
     row = (
         await db.execute(
             select(VpnAccessKey, VpnCustomer.telegram_user_id)
@@ -58,6 +50,10 @@ async def claim_ready_notice(
                     <= current_time - READY_NOTICE_CLAIM_STALE_AFTER,
                 ),
                 VpnAccessKey.ready_notified_at.is_(None),
+                or_(
+                    VpnAccessKey.ready_notice_retry_at.is_(None),
+                    VpnAccessKey.ready_notice_retry_at <= current_time,
+                ),
                 VpnSubscription.status.in_(("active", "trial")),
                 or_(
                     VpnSubscription.starts_at.is_(None),
@@ -70,9 +66,15 @@ async def claim_ready_notice(
                 VpnCustomer.status == "active",
                 VpnCustomer.telegram_user_id.is_not(None),
                 VpnCustomer.telegram_user_id != "",
-                ~recent_failure,
             )
-            .order_by(VpnAccessKey.id)
+            .order_by(
+                case(
+                    (VpnAccessKey.ready_notice_retry_at.is_(None), 0),
+                    else_=1,
+                ),
+                VpnAccessKey.ready_notice_retry_at,
+                VpnAccessKey.id,
+            )
             .limit(1)
             .with_for_update(skip_locked=True, of=VpnAccessKey)
         )
@@ -111,14 +113,21 @@ async def deliver_next_ready_notice(
             timeout=READY_NOTICE_SEND_TIMEOUT_SECONDS,
         )
     except Exception:
+        completed_at = utcnow()
         async with session_factory() as db:
             await db.execute(
                 update(VpnAccessKey)
                 .where(
                     VpnAccessKey.id == claim.access_key_id,
                     VpnAccessKey.ready_notice_claimed_at == claim.claimed_at,
+                    VpnAccessKey.ready_notified_at.is_(None),
                 )
-                .values(ready_notice_claimed_at=None)
+                .values(
+                    ready_notice_claimed_at=None,
+                    ready_notice_retry_at=(
+                        completed_at + READY_NOTICE_FAILURE_BACKOFF
+                    ),
+                )
             )
             db.add(
                 VpnNodeEvent(
@@ -127,7 +136,7 @@ async def deliver_next_ready_notice(
                     event_type="telegram_ready_delivery_failed",
                     message="Telegram VPN ready notification delivery failed",
                     details={"access_key_id": claim.access_key_id},
-                    created_at=current_time,
+                    created_at=completed_at,
                 )
             )
             await db.commit()
@@ -143,6 +152,7 @@ async def deliver_next_ready_notice(
             )
             .values(
                 ready_notice_claimed_at=None,
+                ready_notice_retry_at=None,
                 ready_notified_at=current_time,
             )
         )

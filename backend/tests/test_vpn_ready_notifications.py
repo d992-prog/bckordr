@@ -18,6 +18,7 @@ from app.db.models import (
     VpnSubscription,
     WorkerNode,
 )
+from app.services import vpn_ready_notifications as notices
 from app.services.vpn_ready_notifications import (
     READY_TEXT,
     ReadyNoticeClaim,
@@ -184,6 +185,81 @@ async def test_stale_claim_is_recovered_but_fresh_claim_is_not_stolen(
 
 
 @pytest.mark.asyncio
+async def test_never_attempted_key_precedes_large_due_retry_backlog(
+    session_factory,
+) -> None:
+    retry_ids = [
+        await _seed_ready_key(
+            session_factory,
+            suffix=f"retry-{index}",
+            change=(
+                "key",
+                "ready_notice_retry_at",
+                NOW - timedelta(minutes=index + 1),
+            ),
+        )
+        for index in range(12)
+    ]
+    never_attempted_id = await _seed_ready_key(session_factory, suffix="new")
+
+    async with session_factory() as db:
+        claim = await claim_ready_notice(db, now=NOW)
+        await db.commit()
+
+    assert claim is not None
+    assert claim.access_key_id == never_attempted_id
+    assert claim.access_key_id not in retry_ids
+
+
+@pytest.mark.asyncio
+async def test_due_retries_use_oldest_time_and_exact_boundary(session_factory) -> None:
+    newer_id = await _seed_ready_key(
+        session_factory,
+        suffix="newer",
+        change=("key", "ready_notice_retry_at", NOW - timedelta(seconds=30)),
+    )
+    oldest_id = await _seed_ready_key(
+        session_factory,
+        suffix="oldest",
+        change=("key", "ready_notice_retry_at", NOW - timedelta(seconds=50)),
+    )
+    exact_id = await _seed_ready_key(
+        session_factory,
+        suffix="exact",
+        change=("key", "ready_notice_retry_at", NOW),
+    )
+
+    claimed_ids: list[int] = []
+    for _ in range(3):
+        async with session_factory() as db:
+            claim = await claim_ready_notice(db, now=NOW)
+            assert claim is not None
+            claimed_ids.append(claim.access_key_id)
+            await db.commit()
+
+    assert claimed_ids == [oldest_id, newer_id, exact_id]
+
+
+@pytest.mark.asyncio
+async def test_stale_claim_does_not_bypass_future_retry(session_factory) -> None:
+    key_id = await _seed_ready_key(
+        session_factory,
+        change=("key", "ready_notice_claimed_at", NOW - timedelta(minutes=3)),
+        retry=("key", "ready_notice_retry_at", NOW + timedelta(seconds=10)),
+    )
+
+    async with session_factory() as db:
+        assert await claim_ready_notice(db, now=NOW) is None
+        await db.rollback()
+    async with session_factory() as db:
+        claim = await claim_ready_notice(db, now=NOW + timedelta(seconds=10))
+        await db.commit()
+
+    assert claim is not None
+    assert claim.access_key_id == key_id
+
+
+@pytest.mark.asyncio
 async def test_postgres_concurrent_workers_claim_ready_notice_once(
     postgres_schema: PostgresSchema,
 ) -> None:
@@ -229,7 +305,10 @@ async def test_postgres_concurrent_workers_claim_ready_notice_once(
 
 @pytest.mark.asyncio
 async def test_delivery_commits_claim_before_send_and_notifies_once(session_factory) -> None:
-    key_id = await _seed_ready_key(session_factory)
+    key_id = await _seed_ready_key(
+        session_factory,
+        change=("key", "ready_notice_retry_at", NOW - timedelta(seconds=1)),
+    )
     sent: list[tuple[str, str]] = []
 
     async def sender(_settings: Settings, chat_id: str, text: str) -> None:
@@ -260,6 +339,7 @@ async def test_delivery_commits_claim_before_send_and_notifies_once(session_fact
         key = await db.get(VpnAccessKey, key_id)
         assert key is not None
         assert key.ready_notice_claimed_at is None
+        assert key.ready_notice_retry_at is None
         assert key.ready_notified_at == NOW.replace(tzinfo=None)
 
 
@@ -298,7 +378,10 @@ async def test_delivery_failure_resets_matching_claim_and_records_bounded_event(
 
 
 @pytest.mark.asyncio
-async def test_failed_key_backs_off_while_next_key_is_delivered(session_factory) -> None:
+async def test_failed_key_backs_off_while_next_key_is_delivered(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     first_key_id = await _seed_ready_key(session_factory, suffix="1")
     second_key_id = await _seed_ready_key(session_factory, suffix="2")
     attempts: list[str] = []
@@ -309,6 +392,9 @@ async def test_failed_key_backs_off_while_next_key_is_delivered(session_factory)
             raise RuntimeError("permanent failure with secret data")
 
     settings = Settings(_env_file=None)
+    failure_completed_at = NOW + timedelta(seconds=9)
+    completion_times = iter((failure_completed_at, NOW + timedelta(seconds=70)))
+    monkeypatch.setattr(notices, "utcnow", lambda: next(completion_times))
     assert await deliver_next_ready_notice(
         session_factory,
         settings,
@@ -341,13 +427,17 @@ async def test_failed_key_backs_off_while_next_key_is_delivered(session_factory)
     assert attempts == ["1234561", "1234562"]
     assert len(events_before_retry) == 1
     assert first_key is not None and first_key.ready_notified_at is None
+    assert first_key.ready_notice_retry_at == (
+        failure_completed_at + timedelta(seconds=60)
+    ).replace(tzinfo=None)
     assert second_key is not None and second_key.ready_notified_at is not None
+    assert second_key.ready_notice_retry_at is None
 
     assert await deliver_next_ready_notice(
         session_factory,
         settings,
         sender,
-        now=NOW + timedelta(seconds=61),
+        now=failure_completed_at + timedelta(seconds=60),
     ) is False
     async with session_factory() as db:
         events_after_retry = list(
@@ -427,4 +517,5 @@ async def test_failure_never_clears_a_replaced_claim(session_factory) -> None:
         key = await db.get(VpnAccessKey, key_id)
     assert key is not None
     assert key.ready_notice_claimed_at == replacement.replace(tzinfo=None)
+    assert key.ready_notice_retry_at is None
     assert key.ready_notified_at is None

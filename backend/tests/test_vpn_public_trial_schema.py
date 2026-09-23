@@ -23,15 +23,23 @@ def test_public_trial_columns_and_constraints() -> None:
     capacity = VpnEndpoint.__table__.c.max_active_profiles
     warning = VpnEndpoint.__table__.c.capacity_warning_percent
     claimed = VpnAccessKey.__table__.c.ready_notice_claimed_at
+    retry = VpnAccessKey.__table__.c.ready_notice_retry_at
     notified = VpnAccessKey.__table__.c.ready_notified_at
-    for column in (trial, claimed, notified):
+    for column in (trial, claimed, retry, notified):
         assert column.type.timezone is True
         assert column.nullable is True
     assert trial.index is True
+    assert retry.index is True
     assert any(
         index.name == "ix_vpn_customers_trial_started_at"
         and tuple(column.name for column in index.columns) == ("trial_started_at",)
         for index in VpnCustomer.__table__.indexes
+    )
+    assert any(
+        index.name == "ix_vpn_access_keys_ready_notice_retry_at"
+        and tuple(column.name for column in index.columns)
+        == ("ready_notice_retry_at",)
+        for index in VpnAccessKey.__table__.indexes
     )
     assert capacity.type.python_type is int
     assert capacity.nullable is True
@@ -82,7 +90,15 @@ def test_public_trial_upgrade_statements_are_registered() -> None:
     assert "ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMPTZ" in sql
     assert "ix_vpn_customers_trial_started_at" in sql
     assert "ADD COLUMN IF NOT EXISTS ready_notice_claimed_at TIMESTAMPTZ" in sql
+    assert "ADD COLUMN IF NOT EXISTS ready_notice_retry_at TIMESTAMPTZ" in sql
     assert "ADD COLUMN IF NOT EXISTS ready_notified_at TIMESTAMPTZ" in sql
+    assert "ix_vpn_access_keys_ready_notice_retry_at" in sql
+    access_key_table_sql = next(
+        statement
+        for statement in migrations.MIGRATIONS
+        if "CREATE TABLE IF NOT EXISTS vpn_access_keys" in statement
+    )
+    assert "ready_notice_retry_at TIMESTAMPTZ NULL" in access_key_table_sql
     assert "MIN(starts_at)" in sql
     assert "status = 'trial' AND starts_at IS NOT NULL" in sql
     assert "COALESCE(last_synced_at, issued_at, created_at)" in sql
@@ -176,6 +192,7 @@ async def _schema_contract(
               AND (table_name, column_name) IN (
                 ('vpn_customers', 'trial_started_at'),
                 ('vpn_access_keys', 'ready_notice_claimed_at'),
+                ('vpn_access_keys', 'ready_notice_retry_at'),
                 ('vpn_access_keys', 'ready_notified_at'),
                 ('vpn_endpoints', 'max_active_profiles'),
                 ('vpn_endpoints', 'capacity_warning_percent')
@@ -189,7 +206,10 @@ async def _schema_contract(
                     text("""
             SELECT indexname FROM pg_indexes
             WHERE schemaname = current_schema()
-              AND indexname = 'ix_vpn_customers_trial_started_at'
+              AND indexname IN (
+                  'ix_vpn_customers_trial_started_at',
+                  'ix_vpn_access_keys_ready_notice_retry_at'
+              )
         """)
                 )
             )
@@ -233,6 +253,11 @@ def _assert_public_trial_contract(
             "YES",
             None,
         ),
+        ("vpn_access_keys", "ready_notice_retry_at"): (
+            "timestamp with time zone",
+            "YES",
+            None,
+        ),
         ("vpn_access_keys", "ready_notified_at"): (
             "timestamp with time zone",
             "YES",
@@ -241,7 +266,10 @@ def _assert_public_trial_contract(
         ("vpn_endpoints", "max_active_profiles"): ("integer", "YES", None),
         ("vpn_endpoints", "capacity_warning_percent"): ("integer", "NO", "80"),
     }
-    assert indexes == {"ix_vpn_customers_trial_started_at"}
+    assert indexes == {
+        "ix_vpn_customers_trial_started_at",
+        "ix_vpn_access_keys_ready_notice_retry_at",
+    }
     assert set(checks) == {
         "ck_vpn_endpoint_capacity",
         "ck_vpn_endpoint_capacity_warning",
@@ -359,7 +387,7 @@ async def test_prechange_postgres_upgrade_backfills_once(
         keys = (
             await connection.execute(
                 text(
-                    "SELECT id, ready_notice_claimed_at, ready_notified_at FROM vpn_access_keys ORDER BY id"
+                    "SELECT id, ready_notice_claimed_at, ready_notice_retry_at, ready_notified_at FROM vpn_access_keys ORDER BY id"
                 )
             )
         ).all()
@@ -379,13 +407,13 @@ async def test_prechange_postgres_upgrade_backfills_once(
         ).one()
         assert customers == [(1, None), (2, early), (3, preserved), (4, None)]
         assert keys == [
-            (21, None, synced),
-            (22, None, issued),
-            (23, None, late),
-            (24, None, None),
-            (25, None, None),
-            (26, None, preserved),
-            (27, None, None),
+            (21, None, None, synced),
+            (22, None, None, issued),
+            (23, None, None, late),
+            (24, None, None, None),
+            (25, None, None, None),
+            (26, None, None, preserved),
+            (27, None, None, None),
         ]
         assert endpoint == (None, 80)
         assert friend == (1, early, "friend", 21)
