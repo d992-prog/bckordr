@@ -1,8 +1,116 @@
 # Current State
 
+## Public-trial release-candidate checkpoint (2026-09-24, local only)
+
+The product now has a release-shaped, non-payment public trial path, but this
+checkpoint is deliberately fail-closed and **not deployed**. No production
+database, Telegram webhook, VPN node or feature flag was changed. Payments are
+still intentionally absent and remain the final integration stage.
+
+### Customer, bot and provisioning behavior
+
+- A Telegram identity can use at most one Veltrix trial across the bot, cabinet
+  and historical friend-invitation path. A redeemed friend invitation consumes
+  the same one-time right. A used, expired, suspended or revoked trial never
+  becomes a second trial.
+- The bot shows `Получить 7 дней` only while the public-trial flag is on.
+  `/start` only offers the trial; it does not activate it. Activation is accepted
+  only in a private chat and is committed before Telegram is answered. A retry
+  after a delivery failure reuses its stored bounded result without creating
+  another subscription, key or control operation. The stored replay context
+  contains only an outcome and optional access-key ID, never a UUID, connection
+  URI or raw internal error.
+- The cabinet admits a new Telegram identity only while the public-trial flag is
+  enabled. Its status endpoint is authenticated and activation additionally
+  requires a CSRF token. They return only `disabled`, `available`,
+  `capacity_paused`, `preparing`, `active` or `used`. After activation, the
+  browser makes one status request at a time every two seconds for at most 30
+  attempts; manual refresh remains available.
+  A session-generation guard prevents an old poll from updating a new session.
+- Activation atomically creates the existing seven-day subscription, one
+  endpoint-bound VLESS key and one durable strict-dispatcher provision operation.
+  The profile remains `preparing` until that operation succeeded and the active
+  key has a connection URI. The URI is shown only through the existing protected
+  cabinet profile flow.
+
+### Capacity, notification and retry behavior
+
+- Public allocation considers only a verified, ready REALITY endpoint with a
+  positive explicit capacity and a fresh healthy worker. The worker must be
+  enabled, unarchived, VPN-ready and free of existing safety blockers. Health is
+  stale after the configured 300-second window.
+- Capacity counts `pending_sync`, `syncing`, `active`, `pending_suspend`,
+  `suspended`, `pending_revoke` and `failed`; `revoked` does not occupy a slot.
+  Selection is deterministic by lowest utilization and endpoint ID. Activation
+  locks the worker and endpoint in that order and revalidates health and capacity
+  before commit, so concurrent users cannot oversubscribe a one-slot endpoint.
+- The admin VPN workspace lists occupancy and permits only the capacity limit
+  and warning percentage to be edited. Limits are validated as 1..100000 or
+  unset; warnings are 1..100. Changes produce numeric audit details and do not
+  expose transport credentials.
+- A ready notice is eligible only for an active key with a URI, an active and
+  unexpired active/trial subscription, an active customer and a Telegram ID.
+  Workers claim one row with `FOR UPDATE SKIP LOCKED` and commit the claim before
+  sending. Success sets `ready_notified_at`; an ordinary failure clears the
+  claim, records a bounded event and waits one minute before retry. Sending is
+  bounded to 30 seconds, and a claim older than two minutes can be reclaimed.
+  The runtime keeps at most one notification task. The message never contains a
+  VPN URI.
+- Delivery is intentionally at-least-once at the Telegram boundary: if Telegram
+  accepted a message but the process died before recording success, the stale
+  claim can be retried and the customer can receive a duplicate notification.
+
+### Fail-closed defaults and production boundary
+
+```env
+VPN_PUBLIC_TRIAL_ENABLED=false
+VPN_PUBLIC_TRIAL_RELEASE_ID=
+VPN_PUBLIC_TRIAL_PLAN_SLUG=trial-7d
+VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS=300
+VPN_READY_NOTIFICATIONS_ENABLED=false
+```
+
+Production enablement requires all of the following in addition to reviewed
+code: the exact `vpn_public_release_ready_v1` database marker matching a
+lowercase 64-hex release ID, an active `trial-7d` plan with a seven-day duration
+and one-device limit, configured endpoint capacity, a fresh healthy endpoint,
+the strict dispatcher, a second externally verified production VPN node, a
+reviewed migration backup and separate deployment approval. The public-trial and
+ready-notification flags remain off; this checkpoint performs no rollout.
+
+### Local release-gate evidence
+
+- The desktop and mobile browser smoke used a disposable SQLite database, a fake
+  seven-day plan and a fake ready endpoint. It exercised signed Telegram Mini
+  App admission, the available card, one activation, preparing state, automatic
+  and manual refresh, a capacity-paused second identity, and an admin capacity
+  edit from 1/80% to 2/75%. No production node or Telegram webhook was reachable.
+- The browser run observed bounded single-flight polling; the exact 30-attempt
+  ceiling is covered by the frontend test suite rather than a 60-second visual
+  wait.
+- The final PostgreSQL evidence is a composite rather than one uninterrupted
+  run. At the current code revision the full real-PostgreSQL run recorded 2,321
+  passes and the one expected Windows skip for POSIX ownership/modes before the
+  external SSH tunnel reset; exactly two Telegram/PostgreSQL tests then reported
+  connection-loss setup errors. Both interrupted node IDs passed on a fresh
+  disposable PostgreSQL cluster (2/2, no skips). Together these results cover all
+  2,324 collected backend node IDs at the current revision, with no PostgreSQL
+  failure or PostgreSQL skip and only the POSIX-only check excluded.
+- The independent local backend run recorded 2,245 passes and 79 skips: 74
+  real-PostgreSQL cases covered by the composite gate above, four Windows tests
+  for unavailable symlink creation and the same POSIX ownership/mode check.
+  Ruff passed for the complete backend application and test tree. The frontend
+  recorded 72/72 passing tests, and the production Vite build produced both the
+  admin and cabinet entries. `git diff --check` passed.
+- Every disposable PostgreSQL run used a loopback-only remote listener through
+  the SSH tunnel. After the transport reset, the single abandoned cluster was
+  stopped and removed only after its directory, pidfile, port and process were
+  validated. A separate final probe confirmed the temporary port closed, no
+  matching temporary directory and the control service still active.
+
 ## Friend invitation closed-beta application checkpoint (2026-09-23, local only)
 
-This is the newest checkpoint. Continue in
+This is the preceding closed-beta checkpoint. Continue in
 `.worktrees/veltrix-customer-portal`, branch `codex/veltrix-customer-portal`.
 The approved design is `64a3972`, the execution plan is `1255aed`, and the
 application implementation is the commit range `ebebebc..1899ef7`.

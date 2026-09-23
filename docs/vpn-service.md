@@ -6,6 +6,111 @@ The service supports manually created plans and subscriptions, automatic lifecyc
 
 The Telegram bot supports `/start`, `/status`, `/keys`, and `/support`. A VPN URI is a credential: only use the bot in a private chat, protect the webhook with both configured secrets, and never paste a URI into logs or public channels.
 
+## Public Trial Release Candidate (Disabled)
+
+The public seven-day trial is implemented but is not a production rollout.
+Payments are intentionally absent. Keep these exact fail-closed defaults until a
+separate release-operations approval:
+
+```dotenv
+VPN_PUBLIC_TRIAL_ENABLED=false
+VPN_PUBLIC_TRIAL_RELEASE_ID=
+VPN_PUBLIC_TRIAL_PLAN_SLUG=trial-7d
+VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS=300
+VPN_READY_NOTIFICATIONS_ENABLED=false
+```
+
+Do not enable the public path merely because the code is deployed. Every item
+below is required at the same time:
+
+1. A reviewed migration backup and separate deployment approval exist.
+2. A second production VPN node has been externally verified, including real
+   HTTPS traffic through its issued client profile.
+3. The strict dispatcher is enabled and its node trust/configuration has passed
+   the release checks.
+4. The configured active plan has slug `trial-7d`, exactly seven days and one
+   device.
+5. At least one verified ready REALITY endpoint has an explicit positive
+   capacity and a healthy, enabled, unarchived, VPN-ready worker checked within
+   300 seconds.
+6. `VPN_PUBLIC_TRIAL_RELEASE_ID` is a reviewed lowercase 64-hex release ID, and
+   the value of the exact database marker `vpn_public_release_ready_v1` matches
+   it. The public-trial flag is enabled only after that marker is written.
+7. Ready notifications are enabled separately only after Telegram delivery and
+   retry monitoring are accepted.
+
+### Customer-facing behavior
+
+- The one-time right is shared by the bot, cabinet and friend-invitation
+  history. A redeemed invitation consumes the public trial. Expired, suspended,
+  revoked and otherwise used trials are not reissued.
+- The bot adds `Получить 7 дней` only when the public flag is enabled.
+  `/start` offers without activating. Trial activation is private-chat only and
+  commits before reply; a retry after delivery failure returns its stored
+  bounded outcome without creating a second chain. The replay data contains no
+  UUID, URI or raw error.
+- A newly authenticated Telegram identity is admitted to the cabinet only while
+  the public flag is enabled. Status uses the existing authenticated portal
+  session; activation additionally requires its CSRF token. The card exposes the
+  bounded states `disabled`, `available`, `capacity_paused`, `preparing`,
+  `active` and `used`.
+- Preparing status polls serially every two seconds for no more than 30 attempts.
+  The customer can continue with manual refresh after polling stops. Logout or a
+  new session invalidates stale polling work.
+
+### Allocation and administration
+
+Capacity includes keys in `pending_sync`, `syncing`, `active`,
+`pending_suspend`, `suspended`, `pending_revoke` and `failed`; `revoked` is
+excluded. Eligible endpoints are ranked by utilization and then ID. Activation
+locks the worker and endpoint and rechecks eligibility and occupancy before
+commit. If no slot survives that check, the customer keeps the unused trial
+right and sees `capacity_paused`.
+
+The admin capacity editor changes only `max_active_profiles` and
+`capacity_warning_percent`. Capacity may be unset or 1..100000; warning is
+1..100. Each change is audited with numeric values. Treat an unset limit as
+ineligible for public allocation, not as unlimited public capacity.
+
+### Ready notification operations
+
+Notification candidates require an active key with a non-empty URI, an active
+and unexpired active/trial subscription, an active customer and a Telegram ID.
+The dispatcher claims one row with `FOR UPDATE SKIP LOCKED` and commits before
+network I/O. A successful delivery sets `ready_notified_at`. An ordinary failure
+clears the claim, records a bounded event and defers retry for one minute; the
+send timeout is 30 seconds. Claims older than two minutes may be reclaimed, and
+the runtime starts at most one notification task at once.
+
+The message tells the customer to open the cabinet and never contains the VPN
+URI. Delivery has the unavoidable at-least-once edge: a process crash after
+Telegram accepts the message but before success is recorded can lead to a
+duplicate when the stale claim is reclaimed.
+
+### Non-production verification boundary
+
+The release-candidate browser smoke uses only disposable data, a fake endpoint
+and a fake plan; it must never target a production node or Telegram webhook. The
+completed local smoke covered desktop and mobile admission, the available card,
+one activation, preparing and manual refresh, a capacity-paused second user and
+an admin capacity edit from 1/80% to 2/75%. Automatic single-flight polling was
+observed; the exact 30-attempt ceiling is asserted by the frontend test suite.
+Production flags remain off and no production rollout is part of this checkpoint.
+
+The backend release gate used a composite because the external SSH tunnel reset
+near the end of the final full run. That current-revision run completed 2,321
+node IDs successfully, skipped only the Windows POSIX ownership/mode check and
+reported connection-loss setup errors for exactly two Telegram/PostgreSQL node
+IDs. Both interrupted node IDs then passed on a fresh disposable PostgreSQL
+cluster with no skip. The composite therefore covers all 2,324 collected backend
+node IDs with no PostgreSQL failure or PostgreSQL skip; it is not represented as
+one uninterrupted green run. The separate local run passed 2,245 tests and
+skipped 74 real-PostgreSQL cases covered above, four unavailable Windows symlink
+cases and the same POSIX-only check. Full Ruff, all 72 frontend tests, the
+two-entry Vite production build and `git diff --check` passed. Final independent
+cleanup verification found the temporary PostgreSQL port closed, no temporary
+cluster directory and the existing control service active.
+
 ## Safe Node Rollout
 
 1. Enable the VPN role on one non-critical worker.
