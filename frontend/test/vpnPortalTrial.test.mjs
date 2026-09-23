@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { nextTrialPoll } from "../src/vpn-portal/trialPolling.ts";
+import * as trialPolling from "../src/vpn-portal/trialPolling.ts";
+
+const { nextTrialPoll } = trialPolling;
 
 const trialCardUrl = new URL("../src/vpn-portal/TrialCard.tsx", import.meta.url);
 const portalUrl = new URL("../src/vpn-portal/Portal.tsx", import.meta.url);
@@ -44,7 +46,7 @@ test("trial polling schedules exactly thirty non-overlapping two-second attempts
   let completed = 0;
 
   const scheduleNext = () => nextTrialPoll(completed, () => {
-    completed += 1;
+    completed = trialPolling.updateTrialPollCount(completed, "automatic");
     scheduleNext();
   }, schedule);
 
@@ -61,6 +63,47 @@ test("trial polling schedules exactly thirty non-overlapping two-second attempts
   assert.equal(timers.length, 0);
 });
 
+test("manual refresh preserves an exhausted auto-poll budget", async () => {
+  assert.equal(typeof trialPolling.updateTrialPollCount, "function");
+  const updateTrialPollCount = trialPolling.updateTrialPollCount;
+  const timers = [];
+  const schedule = (callback) => {
+    timers.push(callback);
+    return timers.length;
+  };
+  let completedPolls = 30;
+  let trialState = "preparing";
+  let requests = 0;
+
+  const scheduleIfPreparing = () => trialState === "preparing"
+    ? nextTrialPoll(completedPolls, () => {}, schedule)
+    : null;
+  const manualRefresh = async (responseState) => {
+    completedPolls = updateTrialPollCount(completedPolls, "manual");
+    requests += 1;
+    trialState = await Promise.resolve(responseState);
+  };
+
+  await manualRefresh("preparing");
+  assert.equal(requests, 1);
+  assert.equal(completedPolls, 30);
+  assert.equal(scheduleIfPreparing(), null);
+  assert.equal(timers.length, 0);
+
+  await manualRefresh("active");
+  assert.equal(requests, 2);
+  assert.equal(trialState, "active");
+  assert.equal(scheduleIfPreparing(), null);
+
+  completedPolls = updateTrialPollCount(completedPolls, "activation");
+  trialState = "preparing";
+  assert.equal(completedPolls, 0);
+  assert.notEqual(scheduleIfPreparing(), null);
+
+  completedPolls = 30;
+  assert.equal(updateTrialPollCount(completedPolls, "session"), 0);
+});
+
 test("portal loads, activates and bounds trial polling through the session generation", async () => {
   const source = await readFile(portalUrl, "utf8");
 
@@ -73,8 +116,15 @@ test("portal loads, activates and bounds trial polling through the session gener
   assert.match(source, /sessionGeneration\.isCurrent\(generation\)/);
   assert.match(source, /clearTimeout\(timer\)/);
   assert.match(source, /trial\?\.state !== "preparing"/);
-  assert.match(source, /setTrialPollCount\(\(current\) => current \+ 1\)/);
-  assert.match(source, /setTrialPollCount\(0\)/);
+  assert.match(source, /updateTrialPollCount\(current, "automatic"\)/);
+  const refreshSource = source.slice(
+    source.indexOf("async function refreshTrial"),
+    source.indexOf("useEffect(() =>", source.indexOf("async function refreshTrial")),
+  );
+  assert.doesNotMatch(refreshSource, /setTrialPollCount\(0\)/);
+  assert.match(refreshSource, /updateTrialPollCount\(current, "manual"\)/);
+  assert.match(source, /updateTrialPollCount\(current, "activation"\)/);
+  assert.match(source, /updateTrialPollCount\(current, "session"\)/);
 });
 
 test("trial styling reuses portal tokens and makes actions full-width on mobile", async () => {

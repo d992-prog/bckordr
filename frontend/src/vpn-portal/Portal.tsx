@@ -9,7 +9,7 @@ import {
 } from "./bootstrap";
 import ProfileCard from "./ProfileCard";
 import TrialCard from "./TrialCard";
-import { nextTrialPoll } from "./trialPolling";
+import { nextTrialPoll, updateTrialPollCount } from "./trialPolling";
 import type {
   PortalConfig,
   PortalMe,
@@ -291,7 +291,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     setTrial(null);
     setTrialBusy(false);
     setTrialError("");
-    setTrialPollCount(0);
+    setTrialPollCount((current) => updateTrialPollCount(current, "session"));
     trialRequestInFlight.current = false;
     setProfileOperations({});
     setDataError("");
@@ -378,7 +378,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
         return;
       }
       setTrial(activatedTrial);
-      setTrialPollCount(0);
+      setTrialPollCount((current) => updateTrialPollCount(current, "activation"));
       await loadPrivateData(true);
     } catch (error) {
       if (!sessionGeneration.isCurrent(generation)) {
@@ -413,7 +413,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     trialRequestInFlight.current = true;
     setTrialBusy(true);
     setTrialError("");
-    setTrialPollCount(0);
+    setTrialPollCount((current) => updateTrialPollCount(current, "manual"));
     try {
       await loadPrivateData(true);
     } finally {
@@ -462,7 +462,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
         trialRequestInFlight.current = false;
         if (sessionGeneration.isCurrent(generation)) {
           setTrialBusy(false);
-          setTrialPollCount((current) => current + 1);
+          setTrialPollCount((current) => updateTrialPollCount(current, "automatic"));
         }
       });
     });
