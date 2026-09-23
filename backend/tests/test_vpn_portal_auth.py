@@ -49,7 +49,7 @@ from app.services.vpn_portal_auth import (
     set_binding_cookie,
     set_session_cookie,
     valid_mutation,
-    _lock_current_principal,
+    lock_current_principal,
 )
 
 
@@ -334,12 +334,12 @@ async def test_invited_identity_survives_session_and_locked_recheck_until_revoke
 
         principal = await lookup_session(db, raw_session, settings, now=NOW)
         assert principal is not None
-        assert await _lock_current_principal(db, principal, settings, NOW) is not None
+        assert await lock_current_principal(db, principal, settings, NOW) is not None
 
         invitation.revoked_at = NOW
         await db.commit()
         assert await lookup_session(db, raw_session, settings, now=NOW) is None
-        assert await _lock_current_principal(db, principal, settings, NOW) is None
+        assert await lock_current_principal(db, principal, settings, NOW) is None
 
 
 @pytest.mark.asyncio

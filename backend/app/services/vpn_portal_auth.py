@@ -274,7 +274,7 @@ async def lookup_session(
     return PortalPrincipal(customer=customer, session=session, csrf=csrf_token(raw_session))
 
 
-async def _lock_current_principal(
+async def lock_current_principal(
     db: AsyncSession,
     principal: PortalPrincipal,
     settings: Settings,
@@ -476,7 +476,7 @@ async def exchange_mini_app_session(
     if existing_claim is not None:
         if principal is None:
             raise PortalAuthenticationError()
-        principal = await _lock_current_principal(
+        principal = await lock_current_principal(
             db,
             principal,
             settings,
@@ -487,7 +487,7 @@ async def exchange_mini_app_session(
             raise PortalAuthenticationError()
         return MiniAppExchangeResult(principal=principal, raw_session=None)
     if principal is not None:
-        principal = await _lock_current_principal(
+        principal = await lock_current_principal(
             db,
             principal,
             settings,

@@ -14,7 +14,7 @@ import jwt
 import pytest
 import pytest_asyncio
 from cryptography.hazmat.primitives.asymmetric import rsa
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from starlette.requests import Request
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -37,7 +37,7 @@ from app.db.models import (
     WorkerNode,
 )
 from app.db.session import get_db
-from app.api.routes.vpn_portal import telegram_callback
+from app.api.routes.vpn_portal import current_customer, telegram_callback
 from app.services.vpn_portal_auth import (
     BINDING_COOKIE,
     SESSION_COOKIE,
@@ -460,7 +460,8 @@ async def test_public_trial_fresh_signed_mini_app_can_read_activate_and_replay(p
 
         csrf = login.json()["csrf_token"]
         for headers in ({}, {"Origin": PORTAL_ORIGIN}, {"X-CSRF-Token": csrf},
-                        {"Origin": "https://foreign.example", "X-CSRF-Token": csrf}):
+                        {"Origin": "https://foreign.example", "X-CSRF-Token": csrf},
+                        {"Origin": PORTAL_ORIGIN, "X-CSRF-Token": csrf_token(portal_app.ids.bob_raw)}):
             rejected = await fresh.post(path + "/activate", headers=headers)
             assert (rejected.status_code, rejected.json()) == (403, {"detail": "customer_request_rejected"})
             assert rejected.headers["cache-control"] == "no-store"
@@ -490,6 +491,67 @@ async def test_public_trial_fresh_signed_mini_app_can_read_activate_and_replay(p
         logout = await fresh.post("/api/vpn-portal/logout", headers=headers)
         assert logout.status_code == 200
         assert (await fresh.get(path)).status_code == 401
+    finally:
+        await fresh.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["rebind", "revoke"])
+async def test_trial_activation_rechecks_committed_principal_change(portal_app, monkeypatch, change):
+    await seed_ready_public_trial(portal_app, monkeypatch)
+    portal_app.settings.vpn_portal_allowed_telegram_ids = ""
+    fresh = httpx.AsyncClient(transport=httpx.ASGITransport(app=portal_app.app), base_url=PORTAL_ORIGIN)
+    try:
+        login = await fresh.post(
+            "/api/vpn-portal/auth/mini-app", headers={"Origin": PORTAL_ORIGIN},
+            json={"init_data": mini_app_data(400, portal_app.settings.vpn_telegram_bot_token)},
+        )
+        assert login.status_code == 200
+        async with portal_app.factory() as session:
+            customer = await session.scalar(select(VpnCustomer).where(VpnCustomer.telegram_user_id == "400"))
+            customer_id = customer.id
+
+        async def changed_after_lookup(
+            request: Request, db: AsyncSession = Depends(get_db)
+        ):
+            principal = await current_customer(request, db)
+            if change == "rebind":
+                await db.execute(
+                    update(VpnCustomer)
+                    .where(VpnCustomer.id == customer_id)
+                    .values(telegram_user_id="404")
+                    .execution_options(synchronize_session=False)
+                )
+            else:
+                await db.execute(
+                    update(VpnCustomerSession)
+                    .where(VpnCustomerSession.token_hash == principal.session.token_hash)
+                    .values(revoked_at=utcnow())
+                    .execution_options(synchronize_session=False)
+                )
+            await db.commit()
+            return principal
+
+        portal_app.app.dependency_overrides[current_customer] = changed_after_lookup
+        try:
+            response = await fresh.post(
+                "/api/vpn-portal/trial/activate",
+                headers={"Origin": PORTAL_ORIGIN, "X-CSRF-Token": login.json()["csrf_token"]},
+            )
+        finally:
+            portal_app.app.dependency_overrides.pop(current_customer, None)
+        assert (response.status_code, response.json()) == (
+            401, {"detail": "customer_authentication_required"}
+        )
+        assert response.headers["cache-control"] == "no-store"
+        async with portal_app.factory() as session:
+            counts = [
+                await session.scalar(select(func.count()).select_from(model))
+                for model in (VpnCustomer, VpnSubscription, VpnAccessKey, VpnControlOperation)
+            ]
+            assert counts == [3, 2, 2, 0]
+            stored = await session.get(VpnCustomer, customer_id)
+            assert stored.trial_started_at is None
     finally:
         await fresh.aclose()
 

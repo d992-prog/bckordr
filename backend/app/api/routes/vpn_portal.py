@@ -38,6 +38,7 @@ from app.services.vpn_portal_auth import (
     exchange_mini_app_session,
     identity_admitted,
     issue_session,
+    lock_current_principal,
     lookup_session,
     public_origin,
     revoke_session,
@@ -158,6 +159,12 @@ async def trial_activate(
     principal: PortalPrincipal = Depends(require_mutation),
     db: AsyncSession = Depends(get_db),
 ) -> PortalTrial:
+    settings = _settings(request)
+    current_time = datetime.now(UTC)
+    principal = await lock_current_principal(db, principal, settings, current_time)
+    if principal is None:
+        await db.rollback()
+        raise HTTPException(status_code=401, detail="customer_authentication_required") from None
     customer = principal.customer
     identity = TelegramIdentity(
         user_id=principal.session.telegram_user_id,
@@ -166,7 +173,7 @@ async def trial_activate(
         last_name=customer.last_name,
     )
     try:
-        view = await activate_public_trial(db, _settings(request), identity, datetime.now(UTC))
+        view = await activate_public_trial(db, settings, identity, current_time)
     except PublicTrialUnavailable:
         await db.rollback()
         raise HTTPException(status_code=409, detail="public_trial_capacity_unavailable") from None
