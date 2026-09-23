@@ -70,8 +70,11 @@ async def pg_trial(postgres_schema, monkeypatch):
 
 
 async def limits(db):
-    await db.execute(text("SET LOCAL lock_timeout = '5s'"))
-    await db.execute(text("SET LOCAL statement_timeout = '10s'"))
+    # The test database may sit behind the release-gate SSH tunnel. Keep the
+    # deliberately blocked contender bounded without making network latency
+    # consume the lock budget before the winner can finish and commit.
+    await db.execute(text("SET LOCAL lock_timeout = '30s'"))
+    await db.execute(text("SET LOCAL statement_timeout = '45s'"))
 
 
 def locking(statement, model):
@@ -458,7 +461,7 @@ async def test_public_and_friend_race_share_one_trial_marker(pg_trial, winner):
         await asyncio.wait_for(observe_customer_lock_wait(), 3)
         release_winner.set()
         public_id, friend_id = await asyncio.wait_for(
-            asyncio.gather(tasks["public"], tasks["friend"]), 15
+            asyncio.gather(tasks["public"], tasks["friend"]), 60
         )
     finally:
         release_winner.set()
