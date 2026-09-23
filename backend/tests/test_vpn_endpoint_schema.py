@@ -31,6 +31,8 @@ ENDPOINT_COLUMNS = {
     "status",
     "verified_at",
     "last_error_code",
+    "max_active_profiles",
+    "capacity_warning_percent",
     "created_at",
     "updated_at",
 }
@@ -632,7 +634,7 @@ def test_endpoint_migrations_remain_contiguous_with_named_constraints():
     assert "CONSTRAINT ck_vpn_control_operation_generation" in migration_sql
     assert "CONSTRAINT ck_vpn_control_operation_action" in migration_sql
     assert "CONSTRAINT ck_vpn_control_operation_state" in migration_sql
-    assert migration_sql.count("IF NOT EXISTS (SELECT 1 FROM pg_constraint") == 3
+    assert migration_sql.count("IF NOT EXISTS (SELECT 1 FROM pg_constraint") == 5
     assert "END;\n    $$" in migration_sql
     assert "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_endpoint_id" in migration_sql
     assert "CREATE INDEX IF NOT EXISTS ix_vpn_control_operations_state" in migration_sql

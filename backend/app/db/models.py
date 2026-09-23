@@ -676,6 +676,9 @@ class VpnCustomer(Base):
     last_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active", server_default="active")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trial_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utcnow,
@@ -764,6 +767,14 @@ class VpnEndpoint(Base):
         CheckConstraint("inbound_id > 0", name="ck_vpn_endpoint_inbound"),
         CheckConstraint("port BETWEEN 1 AND 65535", name="ck_vpn_endpoint_port"),
         CheckConstraint(
+            "max_active_profiles IS NULL OR max_active_profiles > 0",
+            name="ck_vpn_endpoint_capacity",
+        ),
+        CheckConstraint(
+            "capacity_warning_percent BETWEEN 1 AND 100",
+            name="ck_vpn_endpoint_capacity_warning",
+        ),
+        CheckConstraint(
             "status IN ('staged','ready','draining','disabled')",
             name="ck_vpn_endpoint_status",
         ),
@@ -797,6 +808,10 @@ class VpnEndpoint(Base):
     status: Mapped[str] = mapped_column(String(32), default="staged", server_default="staged", index=True)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    max_active_profiles: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    capacity_warning_percent: Mapped[int] = mapped_column(
+        Integer, default=80, server_default="80", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utcnow,
@@ -861,6 +876,8 @@ class VpnAccessKey(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ready_notice_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ready_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

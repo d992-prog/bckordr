@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     )
     vpn_friend_beta_enabled: bool = Field(default=False, alias="VPN_FRIEND_BETA_ENABLED")
     vpn_friend_beta_release_id: str = Field(default="", alias="VPN_FRIEND_BETA_RELEASE_ID")
+    vpn_public_trial_enabled: bool = Field(default=False, alias="VPN_PUBLIC_TRIAL_ENABLED")
+    vpn_public_trial_release_id: str = Field(default="", alias="VPN_PUBLIC_TRIAL_RELEASE_ID")
+    vpn_public_trial_plan_slug: str = Field(default="trial-7d", alias="VPN_PUBLIC_TRIAL_PLAN_SLUG")
+    vpn_endpoint_health_max_age_seconds: int = Field(
+        default=300, alias="VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS"
+    )
+    vpn_ready_notifications_enabled: bool = Field(
+        default=False, alias="VPN_READY_NOTIFICATIONS_ENABLED"
+    )
     vpn_telegram_bot_token: str = Field(default="", alias="VPN_TELEGRAM_BOT_TOKEN")
     vpn_telegram_bot_username: str = Field(default="", alias="VPN_TELEGRAM_BOT_USERNAME")
     vpn_telegram_webhook_secret: str = Field(default="", alias="VPN_TELEGRAM_WEBHOOK_SECRET")

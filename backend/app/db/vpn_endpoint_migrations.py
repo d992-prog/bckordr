@@ -17,12 +17,20 @@ VPN_ENDPOINT_MIGRATIONS = (
         status VARCHAR(32) NOT NULL DEFAULT 'staged',
         verified_at TIMESTAMPTZ NULL,
         last_error_code VARCHAR(64) NULL,
+        max_active_profiles INTEGER NULL,
+        capacity_warning_percent INTEGER NOT NULL DEFAULT 80,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         CONSTRAINT uq_vpn_endpoint_worker_inbound UNIQUE (worker_id, inbound_id),
         CONSTRAINT uq_vpn_endpoint_id_worker UNIQUE (id, worker_id),
         CONSTRAINT ck_vpn_endpoint_inbound CHECK (inbound_id > 0),
         CONSTRAINT ck_vpn_endpoint_port CHECK (port BETWEEN 1 AND 65535),
+        CONSTRAINT ck_vpn_endpoint_capacity CHECK (
+            max_active_profiles IS NULL OR max_active_profiles > 0
+        ),
+        CONSTRAINT ck_vpn_endpoint_capacity_warning CHECK (
+            capacity_warning_percent BETWEEN 1 AND 100
+        ),
         CONSTRAINT ck_vpn_endpoint_status CHECK (status IN ('staged','ready','draining','disabled')),
         CONSTRAINT ck_vpn_endpoint_security CHECK (security IN ('none','tls','reality')),
         CONSTRAINT ck_vpn_endpoint_ready CHECK (
@@ -129,5 +137,21 @@ VPN_ENDPOINT_MIGRATIONS = (
     CREATE UNIQUE INDEX IF NOT EXISTS uq_vpn_control_operations_worker_reserved
     ON vpn_control_operations(worker_id)
     WHERE state IN ('claimed','uncertain')
+    """,
+    "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS max_active_profiles INTEGER NULL",
+    "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS capacity_warning_percent INTEGER NOT NULL DEFAULT 80",
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='vpn_endpoints'::regclass AND conname='ck_vpn_endpoint_capacity') THEN
+            ALTER TABLE vpn_endpoints ADD CONSTRAINT ck_vpn_endpoint_capacity
+                CHECK (max_active_profiles IS NULL OR max_active_profiles > 0);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='vpn_endpoints'::regclass AND conname='ck_vpn_endpoint_capacity_warning') THEN
+            ALTER TABLE vpn_endpoints ADD CONSTRAINT ck_vpn_endpoint_capacity_warning
+                CHECK (capacity_warning_percent BETWEEN 1 AND 100);
+        END IF;
+    END;
+    $$
     """,
 )
