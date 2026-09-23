@@ -138,6 +138,9 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
 .veltrix-portal .hint { color: var(--muted); line-height: 1.55; }
 .veltrix-portal .subscription-card > .hint { margin: 24px 0 0; padding-top: 18px; border-top: 1px solid var(--line); }
 .veltrix-portal .section-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.veltrix-portal .trial-card { display: grid; gap: 16px; margin-bottom: 16px; }
+.veltrix-portal .trial-card__meta { margin: 0; color: var(--muted); line-height: 1.55; }
+.veltrix-portal .trial-card__actions { display: flex; flex-wrap: wrap; gap: 10px; }
 
 .veltrix-portal .button, .veltrix-portal .platform {
   display: inline-flex;
@@ -214,6 +217,11 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
   .veltrix-portal .facts { grid-template-columns: minmax(0, 1fr); }
   .veltrix-portal .platforms { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .veltrix-portal .card-row, .veltrix-portal .profile-card__heading { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 640px) {
+  .veltrix-portal .trial-card__actions { width: 100%; }
+  .veltrix-portal .trial-card__actions .button { width: 100%; }
 }
 
 @media (prefers-color-scheme: dark) {

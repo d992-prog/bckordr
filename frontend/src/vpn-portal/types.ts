@@ -11,6 +11,23 @@ export interface PortalMe {
   csrf_token: string;
 }
 
+export type PortalTrialState =
+  | "disabled"
+  | "available"
+  | "capacity_paused"
+  | "preparing"
+  | "active"
+  | "used";
+
+export interface PortalTrial {
+  state: PortalTrialState;
+  duration_days: number;
+  profile_limit: number;
+  subscription_id: number | null;
+  access_key_id: number | null;
+  expires_at: string | null;
+}
+
 export interface PortalSubscription {
   id: number;
   service_name: string;

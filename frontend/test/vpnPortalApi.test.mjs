@@ -59,6 +59,7 @@ function forbidBrowserStorage() {
 test("exports only the typed portal client and safe error class", () => {
   assert.deepEqual(Object.keys(portalModule).sort(), ["PortalError", "portalApi"]);
   assert.deepEqual(Object.keys(portalApi).sort(), [
+    "activateTrial",
     "config",
     "connection",
     "loginMiniApp",
@@ -67,6 +68,7 @@ test("exports only the typed portal client and safe error class", () => {
     "profiles",
     "rename",
     "subscriptions",
+    "trial",
   ]);
 });
 
@@ -96,13 +98,22 @@ test("portal reads use only the customer namespace and omit CSRF headers", async
     state: "active",
     can_connect: true,
   }];
+  const trial = {
+    state: "available",
+    duration_days: 7,
+    profile_limit: 1,
+    subscription_id: null,
+    access_key_id: null,
+    expires_at: null,
+  };
   const connection = { uri: "vless://connection-secret" };
-  const calls = installFetchRecorder([config, me, subscriptions, profiles, connection]);
+  const calls = installFetchRecorder([config, me, subscriptions, profiles, trial, connection]);
 
   assert.deepEqual(await portalApi.config(), config);
   assert.deepEqual(await portalApi.me(), me);
   assert.deepEqual(await portalApi.subscriptions(), subscriptions);
   assert.deepEqual(await portalApi.profiles(), profiles);
+  assert.equal(await portalApi.trial().then((value) => value.state), "available");
   assert.deepEqual(await portalApi.connection(21), connection);
 
   assert.deepEqual(calls.map((call) => call.url), [
@@ -110,6 +121,7 @@ test("portal reads use only the customer namespace and omit CSRF headers", async
     "/api/vpn-portal/me",
     "/api/vpn-portal/subscriptions",
     "/api/vpn-portal/profiles",
+    "/api/vpn-portal/trial",
     "/api/vpn-portal/profiles/21/connection",
   ]);
   for (const call of calls) {
@@ -194,6 +206,39 @@ test("logout and rename attach CSRF only as a header and return server JSON", as
     assert.equal(call.url.startsWith("/api/control"), false);
     assert.equal(call.url.startsWith("/api/auth"), false);
   }
+});
+
+test("trial activation posts to the exact customer endpoint with CSRF only in the header", async () => {
+  const trial = {
+    state: "preparing",
+    duration_days: 7,
+    profile_limit: 1,
+    subscription_id: 12,
+    access_key_id: 22,
+    expires_at: "2026-09-30T00:00:00Z",
+  };
+  const calls = installFetchRecorder([trial]);
+  const restoreStorage = forbidBrowserStorage();
+
+  try {
+    assert.equal(
+      await portalApi.activateTrial("trial-csrf-secret").then((value) => value.state),
+      "preparing",
+    );
+  } finally {
+    restoreStorage();
+  }
+
+  assert.equal(calls[0].url, "/api/vpn-portal/trial/activate");
+  assert.equal(calls[0].init?.method, "POST");
+  assert.equal(calls[0].init?.body, undefined);
+  assert.equal(calls[0].init?.credentials, "same-origin");
+  assert.equal(calls[0].init?.cache, "no-store");
+  assert.equal(headerValue(calls[0].init?.headers, "Content-Type"), "application/json");
+  assert.equal(headerValue(calls[0].init?.headers, "X-CSRF-Token"), "trial-csrf-secret");
+  assert.equal(headerValue(calls[0].init?.headers, "Authorization"), null);
+  assert.equal(headerValue(calls[0].init?.headers, "Origin"), null);
+  assert.equal(calls[0].url.includes("csrf-secret"), false);
 });
 
 test("HTTP errors use static Russian messages without reading unsafe response data", async () => {

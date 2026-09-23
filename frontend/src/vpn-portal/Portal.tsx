@@ -8,7 +8,15 @@ import {
   type TelegramLaunch,
 } from "./bootstrap";
 import ProfileCard from "./ProfileCard";
-import type { PortalConfig, PortalMe, PortalProfile, PortalSubscription } from "./types";
+import TrialCard from "./TrialCard";
+import { nextTrialPoll } from "./trialPolling";
+import type {
+  PortalConfig,
+  PortalMe,
+  PortalProfile,
+  PortalSubscription,
+  PortalTrial,
+} from "./types";
 import { portalDate, stateLabel } from "./view";
 
 interface PortalProps {
@@ -101,13 +109,32 @@ function SubscriptionSection({
   error,
   onRetry,
   subscriptions,
-}: DataSectionProps & { subscriptions: PortalSubscription[] }) {
+  trial,
+  trialBusy,
+  trialError,
+  onActivateTrial,
+  onRefreshTrial,
+}: DataSectionProps & {
+  subscriptions: PortalSubscription[];
+  trial: PortalTrial | null;
+  trialBusy: boolean;
+  trialError: string;
+  onActivateTrial: () => void;
+  onRefreshTrial: () => void;
+}) {
   return (
     <section id="subscription" className="portal-section">
       <div className="section-heading">
         <p className="eyebrow">Личный кабинет</p>
         <h1>Ваша подписка</h1>
       </div>
+      <TrialCard
+        trial={trial}
+        busy={trialBusy}
+        error={trialError}
+        onActivate={onActivateTrial}
+        onRefresh={onRefreshTrial}
+      />
       {busy && <p className="card">Загружаем подписки…</p>}
       {error && <DataError message={error} onRetry={onRetry} />}
       {!busy && !error && subscriptions.length === 0 && (
@@ -238,6 +265,10 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const [me, setMe] = useState<PortalMe | null>(null);
   const [subscriptions, setSubscriptions] = useState<PortalSubscription[]>([]);
   const [profiles, setProfiles] = useState<PortalProfile[]>([]);
+  const [trial, setTrial] = useState<PortalTrial | null>(null);
+  const [trialBusy, setTrialBusy] = useState(false);
+  const [trialError, setTrialError] = useState("");
+  const [trialPollCount, setTrialPollCount] = useState(0);
   const [dataBusy, setDataBusy] = useState(false);
   const [dataError, setDataError] = useState("");
   const [platform, setPlatform] = useState("iPhone");
@@ -246,6 +277,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const sessionGeneration = useMemo(() => new SessionGeneration(), []);
   const logoutCsrf = useRef<string | null>(null);
   const dataLoadEpoch = useRef(0);
+  const trialRequestInFlight = useRef(false);
 
   function clearPrivateData(nextScreen: ManualScreen): void {
     sessionGeneration.invalidate();
@@ -256,6 +288,11 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     setMe(null);
     setSubscriptions([]);
     setProfiles([]);
+    setTrial(null);
+    setTrialBusy(false);
+    setTrialError("");
+    setTrialPollCount(0);
+    trialRequestInFlight.current = false;
     setProfileOperations({});
     setDataError("");
     setDataBusy(false);
@@ -280,27 +317,31 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     });
   }
 
-  function loadPrivateData(): void {
+  async function loadPrivateData(silent = false): Promise<void> {
     const generation = sessionGeneration.current();
     const loadEpoch = ++dataLoadEpoch.current;
-    let nextSubscriptions: PortalSubscription[] | null = null;
-    let nextProfiles: PortalProfile[] | null = null;
-    let failed = false;
-    setDataBusy(true);
-    setDataError("");
+    if (!silent) {
+      setDataBusy(true);
+      setDataError("");
+    }
 
     const isCurrentLoad = () => (
       sessionGeneration.isCurrent(generation) && dataLoadEpoch.current === loadEpoch
     );
-    const commitIfComplete = () => {
-      if (!isCurrentLoad() || failed || nextSubscriptions === null || nextProfiles === null) {
+    try {
+      const [nextTrial, nextSubscriptions, nextProfiles] = await Promise.all([
+        portalApi.trial(),
+        portalApi.subscriptions(),
+        portalApi.profiles(),
+      ]);
+      if (!isCurrentLoad()) {
         return;
       }
+      setTrial(nextTrial);
       setSubscriptions(nextSubscriptions);
       setProfiles(nextProfiles);
-      setDataBusy(false);
-    };
-    const handleLoadError = (error: unknown) => {
+      setTrialError("");
+    } catch (error) {
       if (!isCurrentLoad()) {
         return;
       }
@@ -308,29 +349,79 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
         handleUnauthorized();
         return;
       }
-      failed = true;
-      setDataError(
+      const message = error instanceof PortalError
+        ? error.message
+        : "Не удалось загрузить данные. Попробуйте ещё раз.";
+      if (silent) {
+        setTrialError(message);
+      } else {
+        setDataError(message);
+      }
+    } finally {
+      if (!silent && isCurrentLoad()) {
+        setDataBusy(false);
+      }
+    }
+  }
+
+  async function activateTrial(): Promise<void> {
+    if (trialRequestInFlight.current || dataBusy || me === null) {
+      return;
+    }
+    const generation = sessionGeneration.current();
+    trialRequestInFlight.current = true;
+    setTrialBusy(true);
+    setTrialError("");
+    try {
+      const activatedTrial = await portalApi.activateTrial(me.csrf_token);
+      if (!sessionGeneration.isCurrent(generation)) {
+        return;
+      }
+      setTrial(activatedTrial);
+      setTrialPollCount(0);
+      await loadPrivateData(true);
+    } catch (error) {
+      if (!sessionGeneration.isCurrent(generation)) {
+        return;
+      }
+      if (isUnauthorized(error)) {
+        handleUnauthorized();
+        return;
+      }
+      if (error instanceof PortalError && error.status === 409) {
+        await loadPrivateData(true);
+        return;
+      }
+      setTrialError(
         error instanceof PortalError
           ? error.message
-          : "Не удалось загрузить данные. Попробуйте ещё раз.",
+          : "Не удалось активировать пробный доступ. Попробуйте ещё раз.",
       );
-      setDataBusy(false);
-    };
+    } finally {
+      trialRequestInFlight.current = false;
+      if (sessionGeneration.isCurrent(generation)) {
+        setTrialBusy(false);
+      }
+    }
+  }
 
-    void portalApi.subscriptions().then((value) => {
-      if (!isCurrentLoad()) {
-        return;
+  async function refreshTrial(): Promise<void> {
+    if (trialRequestInFlight.current || dataBusy) {
+      return;
+    }
+    const generation = sessionGeneration.current();
+    trialRequestInFlight.current = true;
+    setTrialBusy(true);
+    setTrialError("");
+    setTrialPollCount(0);
+    try {
+      await loadPrivateData(true);
+    } finally {
+      trialRequestInFlight.current = false;
+      if (sessionGeneration.isCurrent(generation)) {
+        setTrialBusy(false);
       }
-      nextSubscriptions = value;
-      commitIfComplete();
-    }, handleLoadError);
-    void portalApi.profiles().then((value) => {
-      if (!isCurrentLoad()) {
-        return;
-      }
-      nextProfiles = value;
-      commitIfComplete();
-    }, handleLoadError);
+    }
   }
 
   useEffect(() => {
@@ -349,6 +440,39 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     // The bootstrap function is a stable module-level coordinator in production.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootstrap, launch]);
+
+  useEffect(() => () => {
+    sessionGeneration.invalidate();
+    dataLoadEpoch.current += 1;
+    trialRequestInFlight.current = false;
+  }, [sessionGeneration]);
+
+  useEffect(() => {
+    if (trial?.state !== "preparing" || trialBusy || dataBusy) {
+      return;
+    }
+    const generation = sessionGeneration.current();
+    const timer = nextTrialPoll(trialPollCount, () => {
+      if (!sessionGeneration.isCurrent(generation) || trialRequestInFlight.current) {
+        return;
+      }
+      trialRequestInFlight.current = true;
+      setTrialBusy(true);
+      void loadPrivateData(true).finally(() => {
+        trialRequestInFlight.current = false;
+        if (sessionGeneration.isCurrent(generation)) {
+          setTrialBusy(false);
+          setTrialPollCount((current) => current + 1);
+        }
+      });
+    });
+    if (timer === null) {
+      return;
+    }
+    return () => window.clearTimeout(timer);
+    // loadPrivateData is intentionally invoked only by the scheduled generation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataBusy, sessionGeneration, trial?.state, trialBusy, trialPollCount]);
 
   useEffect(() => {
     const updateSection = () => {
@@ -508,6 +632,11 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
             error={dataError}
             subscriptions={subscriptions}
             onRetry={() => void loadPrivateData()}
+            trial={trial}
+            trialBusy={trialBusy || dataBusy}
+            trialError={trialError}
+            onActivateTrial={() => void activateTrial()}
+            onRefreshTrial={() => void refreshTrial()}
           />
         )}
 

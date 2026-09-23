@@ -4,6 +4,7 @@ import type {
   PortalMe,
   PortalProfile,
   PortalSubscription,
+  PortalTrial,
 } from "./types";
 
 const GENERIC_ERROR_MESSAGE = "Не удалось выполнить запрос. Попробуйте ещё раз.";
@@ -73,6 +74,12 @@ export const portalApi = {
     }),
   subscriptions: () => portalRequest<PortalSubscription[]>("/subscriptions"),
   profiles: () => portalRequest<PortalProfile[]>("/profiles"),
+  trial: () => portalRequest<PortalTrial>("/trial"),
+  activateTrial: (csrf: string) =>
+    portalRequest<PortalTrial>("/trial/activate", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf },
+    }),
   connection: (id: number) =>
     portalRequest<PortalConnection>(`/profiles/${id}/connection`),
   rename: (id: number, displayName: string, csrf: string) =>
