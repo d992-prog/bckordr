@@ -34,6 +34,11 @@ from app.services.vpn_friend_invitations import (
 )
 from app.services.vpn_portal_auth import identity_admitted, public_origin
 from app.services.vpn_portal_http import portal_capabilities
+from app.services.vpn_public_trial import (
+    PublicTrialConflict,
+    PublicTrialUnavailable,
+    activate_public_trial,
+)
 from app.services.vpn_telegram_identity import (
     TelegramIdentity,
     identity_from_user,
@@ -53,6 +58,14 @@ INVITATION_UNAVAILABLE_TEXT = (
 INVITATION_PREPARING_TEXT = (
     "Veltrix VPN\nДоступ готовится. Это может занять несколько минут."
 )
+PUBLIC_TRIAL_TEXTS = {
+    "ready": "Veltrix VPN\nПрофиль готов. Откройте личный кабинет, чтобы подключиться.",
+    "provisioning": "Veltrix VPN\nДоступ готовится. Мы сообщим, когда профиль будет готов.",
+    "used": "Veltrix VPN\nПробный доступ для этого аккаунта уже использован.",
+    "capacity_paused": "Veltrix VPN\nНовые подключения временно приостановлены. Попробуйте позже.",
+    "disabled": "Veltrix VPN\nПробный доступ сейчас недоступен.",
+    "unsupported": "Veltrix VPN\nПробный доступ сейчас недоступен.",
+}
 _REDACTED_START_PAYLOAD = "<redacted-start-payload>"
 _REDACTED_MESSAGE = "<redacted-message>"
 _MAX_SIGNED_BIGINT = 2**63 - 1
@@ -71,6 +84,7 @@ _PERSISTED_COMMANDS = frozenset(
         "моя подписка",
         "мои профили",
         "помощь",
+        "получить 7 дней",
     }
 )
 
@@ -162,6 +176,38 @@ def _invitation_context(update: VpnTelegramUpdate) -> tuple[str, int | None] | N
     return outcome, access_key_id
 
 
+def _with_public_trial_context(
+    payload: dict,
+    outcome: str,
+    access_key_id: int | None = None,
+) -> dict:
+    context: dict[str, object] = {"outcome": outcome}
+    if outcome in {"ready", "provisioning"}:
+        context["access_key_id"] = access_key_id
+    return {**payload, "public_trial": context}
+
+
+def _public_trial_context(update: VpnTelegramUpdate) -> tuple[str, int | None] | None:
+    payload = update.payload
+    if not isinstance(payload, dict):
+        return None
+    context = payload.get("public_trial")
+    if not isinstance(context, dict):
+        return None
+    outcome = context.get("outcome")
+    if outcome in {"used", "capacity_paused", "disabled", "unsupported"}:
+        return (outcome, None) if set(context) == {"outcome"} else None
+    access_key_id = context.get("access_key_id")
+    if (
+        outcome not in {"ready", "provisioning"}
+        or set(context) != {"outcome", "access_key_id"}
+        or type(access_key_id) is not int
+        or not 1 <= access_key_id <= _MAX_SIGNED_BIGINT
+    ):
+        return None
+    return outcome, access_key_id
+
+
 def sanitize_telegram_error(exc: Exception, settings: Settings) -> str:
     message = str(exc)
     if settings.vpn_telegram_bot_token:
@@ -219,11 +265,14 @@ def parse_telegram_message(payload: dict) -> TelegramMessage:
 
 def telegram_keyboard(settings: Settings, chat_id: str) -> dict:
     """Keep commands available and replace any previously sent WebApp keyboard."""
+    rows = [
+        [{"text": "Моя подписка"}, {"text": "Мои профили"}],
+        [{"text": "Помощь"}],
+    ]
+    if settings.vpn_public_trial_enabled:
+        rows.insert(1, [{"text": "Получить 7 дней"}])
     return {
-        "keyboard": [
-            [{"text": "Моя подписка"}, {"text": "Мои профили"}],
-            [{"text": "Помощь"}],
-        ],
+        "keyboard": rows,
         "resize_keyboard": True,
     }
 
@@ -317,6 +366,7 @@ COMMANDS = {
     "моя подписка": "status",
     "мои профили": "keys",
     "помощь": "support",
+    "получить 7 дней": "trial",
 }
 
 
@@ -367,6 +417,11 @@ async def render_customer_response(
 
     if command in {"start", "status"}:
         if not subscriptions:
+            if command == "start" and settings.vpn_public_trial_enabled:
+                return (
+                    "Veltrix VPN\nАктивной подписки нет. Нажмите «Получить 7 дней», "
+                    "чтобы активировать пробный доступ."
+                )
             return (
                 "VeltrixVPN\nАктивной VPN-подписки нет. "
                 "Выберите «Помощь» для связи с администратором."
@@ -462,6 +517,11 @@ async def _invitation_response(
     return f"Ваш профиль VeltrixVPN:\n\n{connection.uri}"
 
 
+def _public_trial_response(update: VpnTelegramUpdate) -> str:
+    context = _public_trial_context(update)
+    return PUBLIC_TRIAL_TEXTS[context[0] if context is not None else "unsupported"]
+
+
 async def _record_delivery_failure(
     session: AsyncSession,
     update: VpnTelegramUpdate,
@@ -479,7 +539,20 @@ async def _record_delivery_failure(
     if update.customer_id is None:
         return
     payload = update.payload if isinstance(update.payload, dict) else {}
-    if "friend_invitation" in payload:
+    if "public_trial" in payload:
+        context = _public_trial_context(update)
+        if context is None or context[0] not in {"ready", "provisioning"}:
+            return
+        key = await session.scalar(
+            select(VpnAccessKey)
+            .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
+            .where(
+                VpnAccessKey.id == context[1],
+                VpnSubscription.customer_id == update.customer_id,
+                VpnAccessKey.worker_id.is_not(None),
+            )
+        )
+    elif "friend_invitation" in payload:
         context = _invitation_context(update)
         if context is None or context[0] != "redeemed" or context[1] is None:
             return
@@ -549,6 +622,26 @@ async def _replay_existing_update(
     sender: TelegramSender | None,
 ) -> dict[str, bool]:
     if existing.processed_at is not None:
+        return {"processed": True, "duplicate": True}
+    payload = existing.payload if isinstance(existing.payload, dict) else {}
+    if "public_trial" in payload:
+        try:
+            message = parse_telegram_message(payload)
+        except ValueError:
+            return {"processed": False, "duplicate": True}
+        try:
+            await _send_response(
+                session,
+                settings,
+                message,
+                _public_trial_response(existing),
+                sender,
+            )
+        except Exception:
+            await _record_delivery_failure(session, existing)
+            return {"processed": False, "duplicate": True}
+        existing.processed_at = utcnow()
+        existing.error_message = None
         return {"processed": True, "duplicate": True}
     if _stored_invite_update(existing):
         try:
@@ -673,6 +766,53 @@ async def process_telegram_update(
         update.error_message = None
         return {"processed": True, "duplicate": False}
 
+    command = COMMANDS.get(message.text.strip().casefold(), "start")
+    if message.chat_type == "private" and command == "trial":
+        try:
+            async with session.begin_nested():
+                trial = await activate_public_trial(
+                    session,
+                    settings,
+                    message.identity,
+                    utcnow(),
+                )
+        except PublicTrialConflict:
+            outcome = "used"
+            access_key_id = None
+        except PublicTrialUnavailable:
+            outcome = (
+                "capacity_paused" if settings.vpn_public_trial_enabled else "disabled"
+            )
+            access_key_id = None
+        else:
+            outcome = {"active": "ready", "preparing": "provisioning"}.get(
+                trial.state,
+                "unsupported",
+            )
+            access_key_id = trial.access_key_id
+        customer = await resolve_telegram_customer(session, message.identity)
+        update.customer_id = customer.id
+        update.payload = _with_public_trial_context(
+            update.payload,
+            outcome,
+            access_key_id,
+        )
+        update.error_message = None
+        await session.commit()
+        try:
+            await _send_response(
+                session,
+                settings,
+                message,
+                _public_trial_response(update),
+                sender,
+            )
+        except Exception:
+            await _record_delivery_failure(session, update)
+            return {"processed": False, "duplicate": False}
+        update.processed_at = utcnow()
+        return {"processed": True, "duplicate": False}
+
     # Generic updates keep their existing durable reservation before delivery.
     await session.commit()
     if message.chat_type != "private":
@@ -694,7 +834,6 @@ async def process_telegram_update(
     customer = await resolve_telegram_customer(session, message.identity)
     update.customer_id = customer.id
 
-    command = COMMANDS.get(message.text.strip().casefold(), "start")
     response_text = await render_customer_response(session, customer, command, settings)
     try:
         await _send_response(

@@ -27,6 +27,7 @@ from app.db.models import (
     VpnEndpoint,
     VpnFriendInvitation,
     VpnNodeEvent,
+    VpnPlan,
     VpnSubscription,
     VpnTelegramUpdate,
     WorkerNode,
@@ -53,6 +54,8 @@ FRIEND_RELEASE_ID = "a" * 64
 FRIEND_READINESS_KEY = "vpn_friend_beta_release_ready_v1"
 FRIEND_TOKEN = "T" * 43
 FRIEND_START = f"/start i_{FRIEND_TOKEN}"
+PUBLIC_TRIAL_RELEASE_ID = "b" * 64
+PUBLIC_TRIAL_READINESS_KEY = "vpn_public_release_ready_v1"
 
 
 def telegram_message(update_id: int, user_id: int | str, text: str) -> dict:
@@ -249,6 +252,74 @@ async def seed_friend_invitation(
     return invitation
 
 
+async def seed_public_trial_capacity(session: AsyncSession) -> None:
+    now = utcnow()
+    session.add_all(
+        [
+            AppSetting(
+                key=PUBLIC_TRIAL_READINESS_KEY,
+                value=PUBLIC_TRIAL_RELEASE_ID,
+            ),
+            VpnPlan(
+                slug="trial-7d",
+                name="Public trial",
+                duration_days=7,
+                max_devices=1,
+                traffic_limit_gb=10,
+            ),
+            WorkerNode(
+                id=601,
+                name="public-trial-worker",
+                status="ready",
+                is_enabled=True,
+                vpn_enabled=True,
+                vpn_role="vpn_node",
+                vpn_runtime_status="ready",
+                vpn_last_checked_at=now,
+                vpn_public_host="vpn.example.test",
+                vpn_inbound_id=61,
+                ssh_host="192.0.2.61",
+                ssh_port=22,
+                ssh_username="root",
+                ssh_password="test-only-password",
+            ),
+        ]
+    )
+    await session.flush()
+    session.add(
+        VpnEndpoint(
+            id=601,
+            worker_id=601,
+            inbound_id=61,
+            public_host="vpn.example.test",
+            port=443,
+            protocol="vless",
+            transport="raw",
+            security="reality",
+            server_name="cdn.example.test",
+            public_key="A" * 43,
+            short_id="0123456789abcdef",
+            fingerprint="chrome",
+            flow="xtls-rprx-vision",
+            status="ready",
+            verified_at=now,
+            max_active_profiles=10,
+        )
+    )
+    await session.commit()
+
+
+async def enable_public_trial(telegram_app, monkeypatch) -> None:
+    telegram_app.settings.vpn_public_trial_enabled = True
+    telegram_app.settings.vpn_public_trial_release_id = PUBLIC_TRIAL_RELEASE_ID
+    monkeypatch.setattr(
+        "app.services.vpn_public_trial.load_transport_snapshot",
+        lambda *_args: object(),
+    )
+    async with telegram_app.session_factory() as session:
+        await seed_public_trial_capacity(session)
+
+
 async def friend_business_state(session: AsyncSession) -> tuple:
     invitation = await session.get(VpnFriendInvitation, 1)
     customer = await session.scalar(select(VpnCustomer).order_by(VpnCustomer.id))
@@ -340,6 +411,22 @@ def test_telegram_reply_keyboard_never_launches_an_authenticated_mini_app():
     assert all("web_app" not in button for row in allowed["keyboard"] for button in row)
     assert all("web_app" not in button for row in disallowed["keyboard"] for button in row)
     assert all("web_app" not in button for row in group["keyboard"] for button in row)
+
+
+def test_telegram_reply_keyboard_shows_public_trial_only_while_enabled():
+    disabled = Settings(VPN_PUBLIC_TRIAL_ENABLED=False)
+    enabled = Settings(VPN_PUBLIC_TRIAL_ENABLED=True)
+
+    assert [
+        button["text"]
+        for row in telegram_keyboard(disabled, "12345")["keyboard"]
+        for button in row
+    ] == ["Моя подписка", "Мои профили", "Помощь"]
+    assert [
+        button["text"]
+        for row in telegram_keyboard(enabled, "12345")["keyboard"]
+        for button in row
+    ] == ["Моя подписка", "Мои профили", "Получить 7 дней", "Помощь"]
 
 
 @pytest.fixture
@@ -645,6 +732,284 @@ async def test_start_creates_customer_once_and_duplicate_update_is_idempotent(te
     async with telegram_app.session_factory() as session:
         assert await session.scalar(select(func.count(VpnCustomer.id))) == 1
         assert await session.scalar(select(func.count(VpnTelegramUpdate.id))) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_offers_enabled_public_trial_without_activating_it(
+    telegram_app,
+):
+    telegram_app.settings.vpn_public_trial_enabled = True
+
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=telegram_message(600, 50600, "/start"),
+    )
+
+    assert response.status_code == 200
+    assert telegram_app.delivered[-1]["text"] == (
+        "Veltrix VPN\nАктивной подписки нет. Нажмите «Получить 7 дней», "
+        "чтобы активировать пробный доступ."
+    )
+    async with telegram_app.session_factory() as session:
+        assert await session.scalar(select(func.count(VpnSubscription.id))) == 0
+        assert await session.scalar(select(func.count(VpnAccessKey.id))) == 0
+        assert await session.scalar(select(func.count(VpnControlOperation.id))) == 0
+
+
+@pytest.mark.asyncio
+async def test_public_trial_button_stages_once_and_duplicate_update_does_not_reactivate(
+    telegram_app,
+    monkeypatch,
+):
+    await enable_public_trial(telegram_app, monkeypatch)
+    payload = telegram_message(601, 50601, "Получить 7 дней")
+
+    first = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=payload,
+    )
+    duplicate = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=payload,
+    )
+
+    assert first.json() == {"ok": True, "processed": True, "duplicate": False}
+    assert duplicate.json() == {"ok": True, "processed": True, "duplicate": True}
+    assert telegram_app.delivered == [{
+        "chat_id": "50601",
+        "text": "Veltrix VPN\nДоступ готовится. Мы сообщим, когда профиль будет готов.",
+    }]
+    async with telegram_app.session_factory() as session:
+        assert await session.scalar(select(func.count(VpnSubscription.id))) == 1
+        assert await session.scalar(select(func.count(VpnAccessKey.id))) == 1
+        assert await session.scalar(select(func.count(VpnControlOperation.id))) == 1
+        update_row = await session.scalar(
+            select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "601")
+        )
+        assert update_row is not None and update_row.customer_id is not None
+        assert update_row.payload["public_trial"] == {
+            "outcome": "provisioning",
+            "access_key_id": await session.scalar(select(VpnAccessKey.id)),
+        }
+        assert set(update_row.payload["public_trial"]) == {"outcome", "access_key_id"}
+        persisted = repr(update_row.payload)
+        assert "vless://" not in persisted
+        assert "external_uuid" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_public_trial_button_reports_ready_without_revealing_connection(
+    telegram_app,
+    monkeypatch,
+):
+    await enable_public_trial(telegram_app, monkeypatch)
+    first = telegram_message(602, 50602, "Получить 7 дней")
+    await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=first,
+    )
+    async with telegram_app.session_factory() as session:
+        key = await session.scalar(select(VpnAccessKey))
+        operation = await session.scalar(select(VpnControlOperation))
+        assert key is not None and operation is not None
+        key.status = "active"
+        key.config_uri = VALID_VLESS_URI
+        operation.state = "succeeded"
+        await session.commit()
+    telegram_app.delivered.clear()
+
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=telegram_message(603, 50602, "Получить 7 дней"),
+    )
+
+    assert response.json() == {"ok": True, "processed": True, "duplicate": False}
+    assert telegram_app.delivered == [{
+        "chat_id": "50602",
+        "text": "Veltrix VPN\nПрофиль готов. Откройте личный кабинет, чтобы подключиться.",
+    }]
+    assert "vless://" not in repr(telegram_app.delivered)
+    async with telegram_app.session_factory() as session:
+        update_row = await session.scalar(
+            select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "603")
+        )
+        assert update_row is not None
+        assert update_row.payload["public_trial"] == {
+            "outcome": "ready",
+            "access_key_id": key.id,
+        }
+        assert await session.scalar(select(func.count(VpnSubscription.id))) == 1
+        assert await session.scalar(select(func.count(VpnControlOperation.id))) == 1
+
+
+@pytest.mark.asyncio
+async def test_public_trial_capacity_pause_is_retryable_and_safe(telegram_app):
+    telegram_app.settings.vpn_public_trial_enabled = True
+    telegram_app.settings.vpn_public_trial_release_id = PUBLIC_TRIAL_RELEASE_ID
+
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=telegram_message(604, 50604, "Получить 7 дней"),
+    )
+
+    assert response.json() == {"ok": True, "processed": True, "duplicate": False}
+    assert telegram_app.delivered[-1]["text"] == (
+        "Veltrix VPN\nНовые подключения временно приостановлены. Попробуйте позже."
+    )
+    async with telegram_app.session_factory() as session:
+        update_row = await session.scalar(
+            select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "604")
+        )
+        assert update_row is not None and update_row.customer_id is not None
+        assert update_row.payload["public_trial"] == {"outcome": "capacity_paused"}
+        assert update_row.error_message is None
+        assert await session.scalar(select(func.count(VpnSubscription.id))) == 0
+        assert await session.scalar(select(func.count(VpnAccessKey.id))) == 0
+        assert await session.scalar(select(func.count(VpnControlOperation.id))) == 0
+
+
+@pytest.mark.asyncio
+async def test_public_trial_already_used_response_is_static(telegram_app):
+    telegram_app.settings.vpn_public_trial_enabled = True
+    async with telegram_app.session_factory() as session:
+        customer = VpnCustomer(
+            telegram_user_id="50605",
+            status="active",
+            trial_started_at=utcnow() - timedelta(days=8),
+        )
+        session.add(customer)
+        await session.commit()
+
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=telegram_message(605, 50605, "Получить 7 дней"),
+    )
+
+    assert response.json() == {"ok": True, "processed": True, "duplicate": False}
+    assert telegram_app.delivered[-1]["text"] == (
+        "Veltrix VPN\nПробный доступ для этого аккаунта уже использован."
+    )
+    async with telegram_app.session_factory() as session:
+        update_row = await session.scalar(
+            select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "605")
+        )
+        assert update_row is not None and update_row.customer_id == customer.id
+        assert update_row.payload["public_trial"] == {"outcome": "used"}
+        assert await session.scalar(select(func.count(VpnSubscription.id))) == 0
+
+
+@pytest.mark.asyncio
+async def test_disabled_public_trial_command_is_bounded_and_does_not_activate(telegram_app):
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=telegram_message(606, 50606, "Получить 7 дней"),
+    )
+
+    assert response.json() == {"ok": True, "processed": True, "duplicate": False}
+    assert telegram_app.delivered[-1]["text"] == (
+        "Veltrix VPN\nПробный доступ сейчас недоступен."
+    )
+    async with telegram_app.session_factory() as session:
+        update_row = await session.scalar(
+            select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "606")
+        )
+        assert update_row is not None
+        assert update_row.payload["public_trial"] == {"outcome": "disabled"}
+        assert await session.scalar(select(func.count(VpnSubscription.id))) == 0
+
+
+@pytest.mark.asyncio
+async def test_public_trial_command_never_activates_outside_private_chat(
+    telegram_app,
+    monkeypatch,
+):
+    telegram_app.settings.vpn_public_trial_enabled = True
+
+    async def must_not_activate(*_args, **_kwargs):
+        pytest.fail("public trial activation must be private")
+
+    monkeypatch.setattr(vpn_telegram_service, "activate_public_trial", must_not_activate)
+    payload = telegram_message(607, 50607, "Получить 7 дней")
+    payload["message"]["chat"] = {"id": -10050607, "type": "supergroup"}
+
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct",
+        headers=webhook_headers(),
+        json=payload,
+    )
+
+    assert response.json() == {"ok": True, "processed": True, "duplicate": False}
+    assert telegram_app.delivered[-1]["text"] == (
+        "VPN-ключи и данные подписки доступны только в личном чате с ботом."
+    )
+    async with telegram_app.session_factory() as session:
+        update_row = await session.scalar(
+            select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "607")
+        )
+        assert update_row is not None
+        assert "public_trial" not in update_row.payload
+        assert await session.scalar(select(func.count(VpnCustomer.id))) == 0
+        assert await session.scalar(select(func.count(VpnSubscription.id))) == 0
+
+
+@pytest.mark.asyncio
+async def test_public_trial_delivery_failure_replays_saved_response_without_second_chain(
+    telegram_app,
+    monkeypatch,
+):
+    await enable_public_trial(telegram_app, monkeypatch)
+    payload = telegram_message(608, 50608, "Получить 7 дней")
+
+    async def fail_after_commit(_settings, _chat_id: str, _text: str) -> None:
+        raise RuntimeError("private-uuid vless://internal")
+
+    async with telegram_app.session_factory() as session:
+        first = await process_telegram_update(
+            session,
+            payload,
+            telegram_app.settings,
+            sender=fail_after_commit,
+        )
+        await session.commit()
+    delivered: list[str] = []
+
+    async def capture(_settings, _chat_id: str, text: str) -> None:
+        delivered.append(text)
+
+    async with telegram_app.session_factory() as session:
+        replay = await process_telegram_update(
+            session,
+            payload,
+            telegram_app.settings,
+            sender=capture,
+        )
+        await session.commit()
+        update_row = await session.scalar(
+            select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == "608")
+        )
+        assert update_row is not None and update_row.processed_at is not None
+        assert update_row.error_message is None
+        assert set(update_row.payload["public_trial"]) == {"outcome", "access_key_id"}
+        persisted = repr(update_row.payload)
+        assert "private-uuid" not in persisted
+        assert "vless://" not in persisted
+        assert await session.scalar(select(func.count(VpnSubscription.id))) == 1
+        assert await session.scalar(select(func.count(VpnAccessKey.id))) == 1
+        assert await session.scalar(select(func.count(VpnControlOperation.id))) == 1
+
+    assert first == {"processed": False, "duplicate": False}
+    assert replay == {"processed": True, "duplicate": True}
+    assert delivered == [
+        "Veltrix VPN\nДоступ готовится. Мы сообщим, когда профиль будет готов."
+    ]
 
 
 @pytest.mark.asyncio
@@ -1716,7 +2081,9 @@ async def test_friend_invite_replay_refreshes_cached_chain_after_commit(telegram
 
 
 @pytest.mark.asyncio
-async def test_second_invitation_response_and_replay_use_only_its_exact_key(telegram_app):
+async def test_second_invitation_for_same_account_is_rejected_and_replays_rejection(
+    telegram_app,
+):
     first_token = "1" * 43
     second_token = "2" * 43
     user_id = 50518
@@ -1761,7 +2128,7 @@ async def test_second_invitation_response_and_replay_use_only_its_exact_key(tele
                 sender=crash_after_send,
             )
 
-    assert attempted == [vpn_telegram_service.INVITATION_PREPARING_TEXT]
+    assert attempted == [vpn_telegram_service.INVITATION_REJECTED_TEXT]
     assert first_uuid not in attempted[0]
     async with telegram_app.session_factory() as session:
         pending_update = await session.scalar(
@@ -1769,21 +2136,10 @@ async def test_second_invitation_response_and_replay_use_only_its_exact_key(tele
         )
         second_invitation = await session.get(VpnFriendInvitation, 2)
         assert pending_update is not None and second_invitation is not None
-        assert pending_update.customer_id is not None
-        assert second_invitation.access_key_id is not None
-        second_key = await session.get(VpnAccessKey, second_invitation.access_key_id)
-        assert second_key is not None and second_key.external_uuid is not None
-        assert pending_update.payload["friend_invitation"] == {
-            "outcome": "redeemed",
-            "access_key_id": second_key.id,
-        }
-        assert pending_update.error_message is None
-        second_key.status = "active"
-        second_key.config_uri = VALID_VLESS_URI.replace(
-            "11111111-1111-4111-8111-111111111111", second_key.external_uuid
-        )
-        second_uuid = second_key.external_uuid
-        await session.commit()
+        assert pending_update.customer_id is None
+        assert second_invitation.access_key_id is None
+        assert pending_update.payload["friend_invitation"] == {"outcome": "rejected"}
+        assert pending_update.error_message == "friend_invitation_rejected"
         before_replay = await all_friend_business_state(session)
 
     replayed: list[str] = []
@@ -1802,8 +2158,7 @@ async def test_second_invitation_response_and_replay_use_only_its_exact_key(tele
         )
 
     assert result == {"processed": True, "duplicate": True}
-    assert len(replayed) == 1
-    assert second_uuid in replayed[0]
+    assert replayed == [vpn_telegram_service.INVITATION_REJECTED_TEXT]
     assert first_uuid not in replayed[0]
     assert after_replay == before_replay
     assert completed_update is not None and completed_update.processed_at is not None
