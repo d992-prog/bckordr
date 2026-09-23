@@ -49,6 +49,8 @@ MAX_REQUEST_BYTES = 128 * 1024
 MAX_RECEIPT_BYTES = 2048
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_TOKEN_BYTES = 4096
+POST_MUTATION_SETTLE_SECONDS = 10.0
+POST_MUTATION_POLL_SECONDS = 0.05
 NODE_CONFIG_PATH = Path("/var/lib/veltrix-vpn/control-auth/node.json")
 NODE_TOKEN_PATH = Path("/var/lib/veltrix-vpn/control-auth/api-token")
 EXIT_FAILURE = 1
@@ -905,6 +907,35 @@ def _acceptance_client_payload(request: EndpointInstallRequest) -> dict[str, Any
     }
 
 
+def _wait_for_acceptance_state(
+    panel: _Panel,
+    database_path: Path,
+    request: EndpointInstallRequest,
+    *,
+    present: bool,
+) -> tuple[dict[str, Any], str]:
+    deadline = time.monotonic() + POST_MUTATION_SETTLE_SECONDS
+    while True:
+        try:
+            rows, clients = _snapshot(panel, database_path)
+            row, public_key = _matching_endpoint(rows, request)
+            if row is not None and public_key is not None:
+                if present and _acceptance_matches(request, row, clients):
+                    return row, public_key
+                if not present and not row["settings"]["clients"] and not _attached_clients(row, clients):
+                    return row, public_key
+        except EndpointInstallError as error:
+            if error.code not in {
+                "vpn_endpoint_install_runtime_unavailable",
+                "vpn_endpoint_install_inventory_invalid",
+            }:
+                raise
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _fail("vpn_endpoint_install_postcondition_failed")
+        time.sleep(min(POST_MUTATION_POLL_SECONDS, remaining))
+
+
 def execute_endpoint_action(
     request: EndpointInstallRequest,
     *,
@@ -979,19 +1010,17 @@ def execute_endpoint_action(
                     },
                     mutation=True,
                 )
-                rows, clients = _snapshot(panel, database_path)
-                row, public_key = _matching_endpoint(rows, request)
-                if row is None or not _acceptance_matches(request, row, clients):
-                    _fail("vpn_endpoint_install_postcondition_failed")
+                row, public_key = _wait_for_acceptance_state(
+                    panel, database_path, request, present=True
+                )
                 return _endpoint_receipt(request, row, public_key, "acceptance_client_present")
             if not matches or len(row["settings"]["clients"]) != 1 or len(_attached_clients(row, clients)) != 1:
                 _fail("vpn_endpoint_install_identity_mismatch")
             route_email = quote(request.acceptance_email, safe="")
             panel.request("POST", f"panel/api/clients/del/{route_email}", body={}, mutation=True)
-            rows, clients = _snapshot(panel, database_path)
-            row, public_key = _matching_endpoint(rows, request)
-            if row is None or row["settings"]["clients"] or _attached_clients(row, clients):
-                _fail("vpn_endpoint_install_postcondition_failed")
+            row, public_key = _wait_for_acceptance_state(
+                panel, database_path, request, present=False
+            )
             return _endpoint_receipt(request, row, public_key, "acceptance_client_removed")
     except EndpointInstallError:
         raise

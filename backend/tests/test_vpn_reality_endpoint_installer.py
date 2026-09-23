@@ -433,6 +433,116 @@ def test_disposable_acceptance_client_add_and_exact_cleanup_never_echo_identity(
     assert panel.clients == []
 
 
+def test_acceptance_client_waits_for_eventually_consistent_panel_inventory(monkeypatch) -> None:
+    module = _module()
+
+    class EventuallyConsistentPanel(FakePanel):
+        def __init__(self):
+            super().__init__([_exact_row(module)])
+            self.stale = False
+
+        def request(self, method, route, *, body=None, mutation=False):
+            if route == "panel/api/clients/add":
+                response = super().request(method, route, body=body, mutation=mutation)
+                self.stale = True
+                return response
+            if self.stale and route == "panel/api/inbounds/list":
+                row = deepcopy(self.rows[0])
+                row["settings"]["clients"] = []
+                return {"success": True, "obj": [row]}
+            if self.stale and route == "panel/api/clients/list":
+                self.stale = False
+                return {"success": True, "obj": []}
+            return super().request(method, route, body=body, mutation=mutation)
+
+    panel = EventuallyConsistentPanel()
+    _mock_complete_inventory(module, monkeypatch, panel)
+    endpoint = module.make_endpoint_receipt(
+        state="observed", worker_id=15, inbound_id=27,
+        public_host="vpn.example.test", server_name="front.example.test",
+        public_key=PUBLIC_KEY, short_id="0123456789abcdef",
+    )
+    request = module.parse_install_request(
+        _request(
+            action="add_acceptance_client",
+            inbound_id=27,
+            receipt_digest=endpoint.receipt_digest,
+            acceptance_uuid=CLIENT_UUID,
+            acceptance_email=CLIENT_EMAIL,
+        )
+    )
+
+    receipt = module.execute_endpoint_action(
+        request,
+        database_path=Path("C:/synthetic/panel.db"),
+        panel_factory=lambda: panel,
+    )
+
+    assert receipt.state == "acceptance_client_present"
+
+
+def test_acceptance_client_removal_waits_for_eventually_consistent_panel_inventory(monkeypatch) -> None:
+    module = _module()
+    embedded = {
+        "id": CLIENT_UUID,
+        "email": CLIENT_EMAIL,
+        "enable": True,
+        "flow": "xtls-rprx-vision",
+    }
+    global_client = {
+        "id": 91,
+        "uuid": CLIENT_UUID,
+        "email": CLIENT_EMAIL,
+        "enable": True,
+        "inboundIds": [27],
+    }
+
+    class EventuallyConsistentPanel(FakePanel):
+        def __init__(self):
+            super().__init__([_exact_row(module, clients=[embedded])], [global_client])
+            self.stale_row = None
+            self.stale_clients = None
+
+        def request(self, method, route, *, body=None, mutation=False):
+            if route.startswith("panel/api/clients/del/"):
+                self.stale_row = deepcopy(self.rows[0])
+                self.stale_clients = deepcopy(self.clients)
+                return super().request(method, route, body=body, mutation=mutation)
+            if self.stale_row is not None and route == "panel/api/inbounds/list":
+                return {"success": True, "obj": [deepcopy(self.stale_row)]}
+            if self.stale_clients is not None and route == "panel/api/clients/list":
+                clients = self.stale_clients
+                self.stale_row = None
+                self.stale_clients = None
+                return {"success": True, "obj": deepcopy(clients)}
+            return super().request(method, route, body=body, mutation=mutation)
+
+    panel = EventuallyConsistentPanel()
+    _mock_complete_inventory(module, monkeypatch, panel)
+    endpoint = module.make_endpoint_receipt(
+        state="observed", worker_id=15, inbound_id=27,
+        public_host="vpn.example.test", server_name="front.example.test",
+        public_key=PUBLIC_KEY, short_id="0123456789abcdef",
+    )
+    request = module.parse_install_request(
+        _request(
+            action="remove_acceptance_client",
+            inbound_id=27,
+            receipt_digest=endpoint.receipt_digest,
+            acceptance_uuid=CLIENT_UUID,
+            acceptance_email=CLIENT_EMAIL,
+        )
+    )
+
+    receipt = module.execute_endpoint_action(
+        request,
+        database_path=Path("C:/synthetic/panel.db"),
+        panel_factory=lambda: panel,
+    )
+
+    assert receipt.state == "acceptance_client_removed"
+
+
 def test_pinned_xray_key_output_is_parsed_exactly_without_repr_leak() -> None:
     module = _module()
     output = (
