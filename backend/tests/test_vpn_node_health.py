@@ -5,7 +5,7 @@ import importlib
 import json
 import subprocess
 import sys
-from dataclasses import FrozenInstanceError, asdict, replace
+from dataclasses import FrozenInstanceError, asdict, dataclass, replace
 from pathlib import Path
 from traceback import format_exception
 
@@ -100,6 +100,39 @@ def test_request_serialization_is_exact_canonical_and_roundtrips(api, health_req
         secret not in encoded
         for secret in (b'"client_uuid"', b'"uri"', b'"panel_token"')
     )
+
+
+def test_request_projects_only_declared_target_fields(api, target):
+    @dataclass(frozen=True, slots=True)
+    class ExtendedTarget(VpnEndpointTarget):
+        panel_token: str
+
+    extended = ExtendedTarget(**asdict(target), panel_token=SECRET)
+    request = api.VpnNodeHealthRequest(
+        worker_id=extended.worker_id,
+        target=extended,
+        checked_at_ms=NOW_MS,
+    )
+
+    encoded = api.serialize_node_health_request(request, now_ms=NOW_MS)
+    assert SECRET.encode() not in encoded
+    assert set(json.loads(encoded)["target"]) == {
+        "endpoint_id",
+        "worker_id",
+        "inbound_id",
+        "public_host",
+        "port",
+        "protocol",
+        "transport",
+        "security",
+        "server_name",
+        "public_key",
+        "short_id",
+        "fingerprint",
+        "flow",
+    }
+    parsed = api.parse_node_health_request(encoded, now_ms=NOW_MS)
+    assert parsed == replace(request, target=target)
 
 
 def test_request_uses_current_time_when_now_is_not_supplied(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import dataclass, field, fields
 from time import time_ns
 from typing import Literal
 
@@ -173,7 +173,7 @@ def serialize_node_health_request(
         {
             "version": VPN_NODE_HEALTH_VERSION,
             "worker_id": request.worker_id,
-            "target": asdict(request.target),
+            "target": {name: getattr(request.target, name) for name in _TARGET_FIELDS},
             "checked_at_ms": request.checked_at_ms,
         }
     )
