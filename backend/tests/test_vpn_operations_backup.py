@@ -883,11 +883,12 @@ def test_overlapping_backup_lock_fails_closed(tmp_path: Path) -> None:
     root = tmp_path / "backups"
     root.mkdir(mode=0o700)
 
-    with backup_module._exclusive_backup_root(root), pytest.raises(
-        BackupError, match="^backup_busy$"
+    with (
+        backup_module._exclusive_backup_root(root),
+        pytest.raises(BackupError, match="^backup_busy$"),
+        backup_module._exclusive_backup_root(root),
     ):
-        with backup_module._exclusive_backup_root(root):
-            raise AssertionError("overlapping backup acquired the lock")
+        raise AssertionError("overlapping backup acquired the lock")
 
 
 def test_marker_replace_failure_rolls_promoted_set_back_to_partial(
