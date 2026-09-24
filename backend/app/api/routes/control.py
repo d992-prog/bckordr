@@ -227,6 +227,7 @@ from app.services.app_settings import (
     DiscoveryRuntimeSettings,
     get_discovery_runtime_settings,
     get_vpn_lifecycle_last_result,
+    get_vpn_watchdog_observations,
     set_discovery_runtime_settings,
     set_vpn_public_release_ready,
 )
@@ -3011,18 +3012,20 @@ async def update_vpn_endpoint_capacity(
     return _vpn_endpoint_capacity_response(endpoint, occupied_profiles)
 
 
-def _release_readiness_observations() -> tuple[
+async def _release_readiness_observations(
+    db: AsyncSession,
+) -> tuple[
     OperationalObservations | None,
     BackupObservation | None,
 ]:
-    return None, None
+    return await get_vpn_watchdog_observations(db)
 
 
 async def _load_vpn_release_readiness_report(
     db: AsyncSession,
     settings: Settings,
 ) -> ReleaseReadiness:
-    operational, backup = _release_readiness_observations()
+    operational, backup = await _release_readiness_observations(db)
     snapshot = await load_release_readiness_snapshot(
         db,
         settings,

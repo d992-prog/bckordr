@@ -2,19 +2,40 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.db.models import AppSetting
+from app.services.vpn_release_readiness import (
+    BackupObservation,
+    OperationalObservations,
+    ReadinessObservation,
+)
 
 DIAGNOSTIC_TELEGRAM_TOKEN_KEY = "diagnostic_telegram_token"
 DIAGNOSTIC_TELEGRAM_CHAT_ID_KEY = "diagnostic_telegram_chat_id"
 DISCOVERY_RUNTIME_SETTING_PREFIX = "discovery_runtime_"
 VPN_LIFECYCLE_LAST_RESULT_KEY = "vpn_lifecycle_last_result"
+VPN_WATCHDOG_OBSERVATIONS_KEY = "vpn_watchdog_observations_v1"
 _VPN_FRIEND_BETA_RELEASE_READY_KEY = "vpn_friend_beta_release_ready_v1"
 _VPN_PUBLIC_RELEASE_READY_KEY = "vpn_public_release_ready_v1"
+_VPN_WATCHDOG_OBSERVATIONS_MAX_BYTES = 4_096
+_VPN_WATCHDOG_OBSERVATIONS_VERSION = 1
+_VPN_WATCHDOG_OPERATIONAL_MAX_AGE_SECONDS = 600
+_VPN_WATCHDOG_BACKUP_MAX_AGE_SECONDS = 36 * 60 * 60
+_VPN_WATCHDOG_OPERATIONAL_KEYS = (
+    "system",
+    "control",
+    "local",
+    "public",
+    "cabinet",
+    "disk",
+    "known_hosts",
+)
+_VPN_WATCHDOG_STATES = {"pass", "warn", "fail"}
 
 
 @dataclass(frozen=True)
@@ -54,6 +75,118 @@ async def set_vpn_public_release_ready(
     release_id: str,
 ) -> AppSetting:
     return await set_app_setting(session, _VPN_PUBLIC_RELEASE_READY_KEY, release_id)
+
+
+def _watchdog_timestamp(value: datetime | None) -> str:
+    if value is None or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("vpn_watchdog_observation_invalid")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _watchdog_observation_payload(
+    value: ReadinessObservation | BackupObservation | None,
+) -> dict[str, str]:
+    if value is None or value.state not in _VPN_WATCHDOG_STATES:
+        raise ValueError("vpn_watchdog_observation_invalid")
+    return {
+        "state": value.state,
+        "observed_at": _watchdog_timestamp(value.observed_at),
+    }
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("vpn_watchdog_observation_invalid")
+        value[key] = item
+    return value
+
+
+def _parse_watchdog_observation(
+    value: object,
+    *,
+    max_age_seconds: int,
+) -> ReadinessObservation:
+    if not isinstance(value, dict) or set(value) != {"state", "observed_at"}:
+        raise ValueError("vpn_watchdog_observation_invalid")
+    state = value["state"]
+    observed_at = value["observed_at"]
+    if state not in _VPN_WATCHDOG_STATES or not isinstance(observed_at, str):
+        raise ValueError("vpn_watchdog_observation_invalid")
+    if not observed_at.endswith("Z"):
+        raise ValueError("vpn_watchdog_observation_invalid")
+    timestamp = datetime.fromisoformat(f"{observed_at[:-1]}+00:00")
+    if timestamp.tzinfo is None or timestamp.utcoffset() != UTC.utcoffset(timestamp):
+        raise ValueError("vpn_watchdog_observation_invalid")
+    return ReadinessObservation(
+        state=state,
+        observed_at=timestamp,
+        max_age_seconds=max_age_seconds,
+    )
+
+
+async def get_vpn_watchdog_observations(
+    session: AsyncSession,
+) -> tuple[OperationalObservations | None, BackupObservation | None]:
+    with session.no_autoflush:
+        raw = await get_app_setting(session, VPN_WATCHDOG_OBSERVATIONS_KEY)
+    if raw is None:
+        return None, None
+    try:
+        if len(raw.encode("utf-8")) > _VPN_WATCHDOG_OBSERVATIONS_MAX_BYTES:
+            return None, None
+        payload = json.loads(raw, object_pairs_hook=_unique_json_object)
+        if not isinstance(payload, dict) or set(payload) != {
+            "version",
+            "operational",
+            "backup",
+        }:
+            return None, None
+        if type(payload["version"]) is not int or payload["version"] != 1:
+            return None, None
+        operational_payload = payload["operational"]
+        if not isinstance(operational_payload, dict) or set(
+            operational_payload
+        ) != set(_VPN_WATCHDOG_OPERATIONAL_KEYS):
+            return None, None
+        operational_values = {
+            name: _parse_watchdog_observation(
+                operational_payload[name],
+                max_age_seconds=_VPN_WATCHDOG_OPERATIONAL_MAX_AGE_SECONDS,
+            )
+            for name in _VPN_WATCHDOG_OPERATIONAL_KEYS
+        }
+        parsed_backup = _parse_watchdog_observation(
+            payload["backup"],
+            max_age_seconds=_VPN_WATCHDOG_BACKUP_MAX_AGE_SECONDS,
+        )
+    except (TypeError, UnicodeError, ValueError):
+        return None, None
+    return OperationalObservations(**operational_values), BackupObservation(
+        state=parsed_backup.state,
+        observed_at=parsed_backup.observed_at,
+        max_age_seconds=parsed_backup.max_age_seconds,
+    )
+
+
+async def set_vpn_watchdog_observations(
+    session: AsyncSession,
+    operational: OperationalObservations,
+    backup: BackupObservation,
+) -> AppSetting:
+    payload = {
+        "version": _VPN_WATCHDOG_OBSERVATIONS_VERSION,
+        "operational": {
+            name: _watchdog_observation_payload(getattr(operational, name))
+            for name in _VPN_WATCHDOG_OPERATIONAL_KEYS
+        },
+        "backup": _watchdog_observation_payload(backup),
+    }
+    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+    if len(raw.encode("utf-8")) > _VPN_WATCHDOG_OBSERVATIONS_MAX_BYTES:
+        raise ValueError("vpn_watchdog_observation_invalid")
+    return await set_app_setting(session, VPN_WATCHDOG_OBSERVATIONS_KEY, raw)
 
 
 async def get_vpn_lifecycle_last_result(session: AsyncSession) -> dict[str, object]:

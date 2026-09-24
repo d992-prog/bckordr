@@ -4,13 +4,14 @@ import asyncio
 import base64
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -33,6 +34,7 @@ from app.schemas.control import (
     VpnEndpointExternalVerificationRequest,
     VpnReleaseReadinessCommitRequest,
 )
+from app.services import app_settings
 from app.services.vpn_endpoint_types import (
     VpnEndpointTarget,
     public_endpoint_fingerprint,
@@ -280,7 +282,7 @@ async def test_release_mutations_reject_missing_or_foreign_origin_without_writes
     monkeypatch.setattr(
         control_routes,
         "_release_readiness_observations",
-        lambda: _passing_observations(api_context.now),
+        AsyncMock(return_value=_passing_observations(api_context.now)),
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api_context.app),
@@ -454,6 +456,130 @@ async def test_get_release_readiness_is_fail_closed_bounded_and_no_store(
     )
     assert changed_check["state"] == "fail"
     assert "changed.example" not in changed.text
+
+
+@pytest.mark.asyncio
+async def test_get_release_readiness_uses_fresh_persisted_observations(
+    api_context,
+) -> None:
+    async with api_context.factory() as session:
+        await _seed_ready_release(session, now=api_context.now)
+        operational, backup = _passing_observations(api_context.now)
+        await app_settings.set_vpn_watchdog_observations(
+            session,
+            operational,
+            backup,
+        )
+        await session.commit()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api_context.app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get("/control/vpn/release-readiness")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    operational_codes = {
+        "system_health",
+        "control_health",
+        "local_health",
+        "public_health",
+        "cabinet_health",
+        "disk_health",
+        "known_hosts",
+        "backup_health",
+    }
+    assert {
+        check["state"]
+        for check in response.json()["checks"]
+        if check["code"] in operational_codes
+    } == {"pass"}
+
+
+@pytest.mark.asyncio
+async def test_persisted_stale_and_corrupt_observations_fail_without_leak(
+    api_context,
+) -> None:
+    async with api_context.factory() as session:
+        await _seed_ready_release(session, now=api_context.now)
+        operational, backup = _passing_observations(
+            api_context.now - timedelta(seconds=601)
+        )
+        await app_settings.set_vpn_watchdog_observations(
+            session,
+            operational,
+            backup,
+        )
+        await session.commit()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api_context.app),
+        base_url="http://testserver",
+    ) as client:
+        stale = await client.get("/control/vpn/release-readiness")
+
+    stale_checks = {check["code"]: check for check in stale.json()["checks"]}
+    assert stale.json()["ready"] is False
+    assert stale_checks["system_health"]["state"] == "fail"
+    assert stale_checks["backup_health"]["state"] == "pass"
+
+    secret = "https://private.example/vless://uuid-secret"
+    async with api_context.factory() as session:
+        stored = await session.scalar(
+            select(AppSetting).where(
+                AppSetting.key == app_settings.VPN_WATCHDOG_OBSERVATIONS_KEY
+            )
+        )
+        assert stored is not None
+        stored.value = '{"version":1,"raw_message":"' + secret + '"}'
+        await session.commit()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api_context.app),
+        base_url="http://testserver",
+    ) as client:
+        corrupt = await client.get("/control/vpn/release-readiness")
+
+    assert corrupt.json()["ready"] is False
+    assert secret not in corrupt.text
+    corrupt_checks = {check["code"]: check for check in corrupt.json()["checks"]}
+    assert corrupt_checks["system_health"]["state"] == "fail"
+    assert corrupt_checks["backup_health"]["state"] == "fail"
+
+
+@pytest.mark.asyncio
+async def test_release_readiness_reads_observations_before_clean_uow_guard(
+    api_context,
+) -> None:
+    statements: list[str] = []
+
+    @event.listens_for(api_context.engine.sync_engine, "before_cursor_execute")
+    def capture_statement(_conn, _cursor, statement, _params, _context, _many):
+        statements.append(statement)
+
+    async with api_context.factory() as session:
+        pending = VpnPlan(
+            slug="pending-api-readiness",
+            name="Pending API readiness",
+            is_active=True,
+            duration_days=7,
+            max_devices=1,
+        )
+        session.add(pending)
+
+        with pytest.raises(ValueError, match="^vpn_release_readiness_pending_state$"):
+            await control_routes._load_vpn_release_readiness_report(
+                session,
+                api_context.settings,
+            )
+
+        assert pending in session.new
+        assert pending.id is None
+
+    assert len(statements) == 1
+    assert "app_settings" in statements[0].lower()
+    assert "insert" not in statements[0].lower()
 
 
 @pytest.mark.asyncio
@@ -729,7 +855,7 @@ async def test_blocked_and_invalid_release_commits_do_not_change_marker(
     monkeypatch.setattr(
         control_routes,
         "_release_readiness_observations",
-        lambda: _passing_observations(api_context.now),
+        AsyncMock(return_value=_passing_observations(api_context.now)),
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api_context.app),
@@ -826,11 +952,14 @@ async def test_ready_commit_writes_exact_marker_audits_and_serializes(
         await session.commit()
         access_key_id = access_key.id
 
-    monkeypatch.setattr(
-        control_routes,
-        "_release_readiness_observations",
-        lambda: _passing_observations(api_context.now),
-    )
+    async with api_context.factory() as session:
+        operational, backup = _passing_observations(api_context.now)
+        await app_settings.set_vpn_watchdog_observations(
+            session,
+            operational,
+            backup,
+        )
+        await session.commit()
     barrier_calls = 0
     active_barriers = 0
     max_active_barriers = 0

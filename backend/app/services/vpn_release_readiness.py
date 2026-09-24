@@ -291,6 +291,28 @@ def _observation_check(
     return _check(code, value.state, observed_at=value.observed_at)
 
 
+def evaluate_operational_checks(
+    operational: OperationalObservations | None,
+    backup: BackupObservation | None,
+    known_hosts_configured: bool,
+    now: datetime,
+) -> tuple[ReleaseCheck, ...]:
+    checked_at = _as_utc(now)
+    assert checked_at is not None
+    checks: list[ReleaseCheck] = []
+    for name in ("system", "control", "local", "public", "cabinet", "disk"):
+        value = getattr(operational, name) if operational is not None else None
+        checks.append(_observation_check(f"{name}_health", value, checked_at))
+    known_hosts = operational.known_hosts if operational is not None else None
+    checks.append(
+        _check("known_hosts", "fail")
+        if not known_hosts_configured
+        else _observation_check("known_hosts", known_hosts, checked_at)
+    )
+    checks.append(_observation_check("backup_health", backup, checked_at))
+    return tuple(checks)
+
+
 def evaluate_release_readiness(
     snapshot: ReleaseReadinessSnapshot,
     *,
@@ -385,17 +407,14 @@ def evaluate_release_readiness(
         )
     )
 
-    operational = snapshot.operational
-    for name in ("system", "control", "local", "public", "cabinet", "disk"):
-        value = getattr(operational, name) if operational is not None else None
-        checks.append(_observation_check(f"{name}_health", value, checked_at))
-    known_hosts = operational.known_hosts if operational is not None else None
-    checks.append(
-        _check("known_hosts", "fail")
-        if not snapshot.known_hosts_configured
-        else _observation_check("known_hosts", known_hosts, checked_at)
+    checks.extend(
+        evaluate_operational_checks(
+            snapshot.operational,
+            snapshot.backup,
+            snapshot.known_hosts_configured,
+            checked_at,
+        )
     )
-    checks.append(_observation_check("backup_health", snapshot.backup, checked_at))
 
     healthy_worker_ids: set[int] = set()
     aggregate_available = 0

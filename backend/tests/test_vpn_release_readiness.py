@@ -1,16 +1,18 @@
 import base64
+import json
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import (
+    AppSetting,
     VpnAccessKey,
     VpnControlOperation,
     VpnCustomer,
@@ -20,6 +22,7 @@ from app.db.models import (
     WorkerMaintenanceJob,
     WorkerNode,
 )
+from app.services import app_settings
 from app.services import vpn_release_readiness as release_readiness
 from app.services.vpn_endpoint_types import (
     VpnEndpointTarget,
@@ -87,6 +90,53 @@ def operations(**changes) -> OperationalObservations:
     }
     values.update(changes)
     return OperationalObservations(**values)
+
+
+def test_operational_check_helper_matches_full_evaluator() -> None:
+    operational = operations(
+        control=observation("warn"),
+        public=observation(observed_at=NOW - timedelta(seconds=301)),
+    )
+    backup = BackupObservation(
+        state="pass",
+        observed_at=NOW,
+        max_age_seconds=86_400,
+    )
+
+    direct = release_readiness.evaluate_operational_checks(
+        operational,
+        backup,
+        True,
+        NOW,
+    )
+    complete = evaluate_release_readiness(
+        ready_snapshot(operational=operational, backup=backup),
+        now=NOW,
+    )
+
+    operational_codes = {
+        "system_health",
+        "control_health",
+        "local_health",
+        "public_health",
+        "cabinet_health",
+        "disk_health",
+        "known_hosts",
+        "backup_health",
+    }
+    assert direct == tuple(
+        check for check in complete.checks if check.code in operational_codes
+    )
+    assert tuple(check.code for check in direct) == (
+        "system_health",
+        "control_health",
+        "local_health",
+        "public_health",
+        "cabinet_health",
+        "disk_health",
+        "known_hosts",
+        "backup_health",
+    )
 
 
 def worker(worker_id: int, **changes) -> WorkerSnapshot:
@@ -745,6 +795,220 @@ async def session_factory():
         yield engine, factory
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_watchdog_observations_round_trip_as_strict_safe_json(
+    session_factory,
+) -> None:
+    _engine, factory = session_factory
+    operational = operations(control=observation("warn"))
+    backup = BackupObservation(
+        state="pass",
+        observed_at=NOW,
+        max_age_seconds=1,
+    )
+
+    async with factory() as session:
+        await app_settings.set_vpn_watchdog_observations(
+            session,
+            operational,
+            backup,
+        )
+        raw = await session.scalar(
+            select(AppSetting.value).where(
+                AppSetting.key == app_settings.VPN_WATCHDOG_OBSERVATIONS_KEY
+            )
+        )
+        stored_operational, stored_backup = (
+            await app_settings.get_vpn_watchdog_observations(session)
+        )
+
+    assert raw is not None
+    assert len(raw.encode("utf-8")) <= 4_096
+    payload = json.loads(raw)
+    assert set(payload) == {"version", "operational", "backup"}
+    assert payload["version"] == 1
+    assert set(payload["operational"]) == {
+        "system",
+        "control",
+        "local",
+        "public",
+        "cabinet",
+        "disk",
+        "known_hosts",
+    }
+    assert all(
+        set(value) == {"state", "observed_at"}
+        for value in (*payload["operational"].values(), payload["backup"])
+    )
+    assert all(
+        value["observed_at"].endswith("Z")
+        for value in (*payload["operational"].values(), payload["backup"])
+    )
+    assert stored_operational is not None
+    assert stored_operational.control is not None
+    assert stored_operational.control.state == "warn"
+    assert stored_operational.control.max_age_seconds == 600
+    assert stored_backup is not None
+    assert stored_backup.max_age_seconds == 36 * 60 * 60
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda payload: payload.update(version=2),
+        lambda payload: payload.update(extra="must-not-be-accepted"),
+        lambda payload: payload["operational"].pop("disk"),
+        lambda payload: payload["operational"].update(extra={}),
+        lambda payload: payload["backup"].update(state="unknown"),
+        lambda payload: payload["backup"].update(observed_at="2026-09-24T15:00:00+03:00"),
+        lambda payload: payload["backup"].update(raw_message="private"),
+    ],
+)
+async def test_watchdog_observations_reject_noncanonical_payloads(
+    session_factory,
+    mutate,
+) -> None:
+    _engine, factory = session_factory
+    item = {"state": "pass", "observed_at": "2026-09-24T12:00:00Z"}
+    payload = {
+        "version": 1,
+        "operational": {
+            name: dict(item)
+            for name in (
+                "system",
+                "control",
+                "local",
+                "public",
+                "cabinet",
+                "disk",
+                "known_hosts",
+            )
+        },
+        "backup": dict(item),
+    }
+    mutate(payload)
+
+    async with factory() as session:
+        session.add(
+            AppSetting(
+                key="vpn_watchdog_observations_v1",
+                value=json.dumps(payload),
+            )
+        )
+        await session.flush()
+        assert await app_settings.get_vpn_watchdog_observations(session) == (
+            None,
+            None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_watchdog_observations_reject_oversize_before_json_decode(
+    session_factory,
+    monkeypatch,
+) -> None:
+    _engine, factory = session_factory
+    async with factory() as session:
+        session.add(
+            AppSetting(
+                key="vpn_watchdog_observations_v1",
+                value="x" * 4_097,
+            )
+        )
+        await session.flush()
+        monkeypatch.setattr(
+            app_settings.json,
+            "loads",
+            lambda _raw: pytest.fail("oversized state reached JSON decoder"),
+        )
+        assert await app_settings.get_vpn_watchdog_observations(session) == (
+            None,
+            None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_watchdog_observation_future_timestamp_is_evaluator_staleness(
+    session_factory,
+) -> None:
+    _engine, factory = session_factory
+    future = NOW + timedelta(seconds=1)
+    operational = operations(
+        **{
+            name: observation(observed_at=future)
+            for name in (
+                "system",
+                "control",
+                "local",
+                "public",
+                "cabinet",
+                "disk",
+                "known_hosts",
+            )
+        }
+    )
+    backup = BackupObservation(
+        state="pass",
+        observed_at=future,
+        max_age_seconds=1,
+    )
+
+    async with factory() as session:
+        await app_settings.set_vpn_watchdog_observations(
+            session,
+            operational,
+            backup,
+        )
+        stored_operational, stored_backup = (
+            await app_settings.get_vpn_watchdog_observations(session)
+        )
+
+    assert stored_operational is not None
+    assert stored_backup is not None
+    assert {
+        check.state
+        for check in release_readiness.evaluate_operational_checks(
+            stored_operational,
+            stored_backup,
+            True,
+            NOW,
+        )
+    } == {"fail"}
+
+
+@pytest.mark.asyncio
+async def test_watchdog_observation_get_does_not_autoflush_pending_uow(
+    session_factory,
+) -> None:
+    engine, factory = session_factory
+    statements: list[str] = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def capture_statement(_conn, _cursor, statement, _params, _context, _many):
+        statements.append(statement)
+
+    async with factory() as session:
+        pending = VpnPlan(
+            slug="pending-observation-read",
+            name="Pending observation read",
+            is_active=True,
+            duration_days=7,
+            max_devices=1,
+        )
+        session.add(pending)
+
+        assert await app_settings.get_vpn_watchdog_observations(session) == (
+            None,
+            None,
+        )
+        assert pending in session.new
+        assert pending.id is None
+
+    assert statements
+    assert all("INSERT" not in statement.upper() for statement in statements)
 
 
 @pytest.mark.asyncio
