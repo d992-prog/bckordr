@@ -67,8 +67,9 @@ class BackupObservation:
 class OperationalObservations:
     system: ReadinessObservation | None
     control: ReadinessObservation | None
-    api: ReadinessObservation | None
-    public_cabinet: ReadinessObservation | None
+    local: ReadinessObservation | None
+    public: ReadinessObservation | None
+    cabinet: ReadinessObservation | None
     disk: ReadinessObservation | None
     known_hosts: ReadinessObservation | None
 
@@ -138,58 +139,61 @@ class ReleaseReadinessSnapshot:
 
 
 _MESSAGES: dict[tuple[str, CheckState], str] = {
-    ("release_id", "pass"): "Release identifier is valid.",
-    ("release_id", "fail"): "Release identifier is invalid.",
-    ("dispatch", "pass"): "VPN control dispatch is enabled.",
-    ("dispatch", "fail"): "VPN control dispatch is disabled.",
-    ("known_hosts", "pass"): "Known-hosts verification is ready.",
-    ("known_hosts", "warn"): "Known-hosts verification reports a warning.",
-    ("known_hosts", "fail"): "Known-hosts verification is not ready.",
-    ("payment_disabled", "pass"): "Payment integration is disabled.",
-    ("payment_disabled", "fail"): "Payment integration is enabled.",
-    ("public_trial_disabled", "pass"): "Public trial is disabled.",
-    ("public_trial_disabled", "fail"): "Public trial is already enabled.",
-    ("public_trial_plan", "pass"): "Public trial plan is valid.",
-    ("public_trial_plan", "fail"): "Public trial plan is invalid.",
-    ("control_operations", "pass"): "No VPN control operation blocks release.",
-    ("control_operations", "fail"): "A VPN control operation blocks release.",
-    ("maintenance", "pass"): "No maintenance job blocks release.",
-    ("maintenance", "fail"): "A maintenance job blocks release.",
-    ("system_health", "pass"): "System health is ready.",
-    ("system_health", "warn"): "System health reports a warning.",
-    ("system_health", "fail"): "System health is not ready.",
-    ("control_health", "pass"): "Control health is ready.",
-    ("control_health", "warn"): "Control health reports a warning.",
-    ("control_health", "fail"): "Control health is not ready.",
-    ("api_health", "pass"): "API health is ready.",
-    ("api_health", "warn"): "API health reports a warning.",
-    ("api_health", "fail"): "API health is not ready.",
-    ("public_cabinet_health", "pass"): "Public cabinet health is ready.",
-    ("public_cabinet_health", "warn"): "Public cabinet health reports a warning.",
-    ("public_cabinet_health", "fail"): "Public cabinet health is not ready.",
-    ("disk_health", "pass"): "Disk health is ready.",
-    ("disk_health", "warn"): "Disk health reports a warning.",
-    ("disk_health", "fail"): "Disk health is not ready.",
-    ("backup_health", "pass"): "Backup health is ready.",
-    ("backup_health", "warn"): "Backup health reports a warning.",
-    ("backup_health", "fail"): "Backup health is not ready.",
-    ("worker_active", "pass"): "VPN worker is active.",
-    ("worker_active", "fail"): "VPN worker is not active.",
-    ("worker_health", "pass"): "VPN worker health is fresh.",
-    ("worker_health", "fail"): "VPN worker health is stale or missing.",
-    ("endpoint_configuration", "pass"): "VPN endpoint configuration is ready.",
-    ("endpoint_configuration", "fail"): "VPN endpoint configuration is not ready.",
-    ("endpoint_health", "pass"): "VPN endpoint health is fresh.",
-    ("endpoint_health", "fail"): "VPN endpoint health is stale or missing.",
-    ("endpoint_external_proof", "pass"): "External endpoint proof is valid.",
-    ("endpoint_external_proof", "fail"): "External endpoint proof is invalid.",
-    ("endpoint_capacity", "pass"): "VPN endpoint capacity is available.",
-    ("endpoint_capacity", "warn"): "VPN endpoint capacity is low.",
-    ("endpoint_capacity", "fail"): "VPN endpoint capacity is unavailable.",
-    ("endpoint_redundancy", "pass"): "VPN endpoint redundancy is ready.",
-    ("endpoint_redundancy", "fail"): "VPN endpoint redundancy is insufficient.",
-    ("aggregate_capacity", "pass"): "Aggregate VPN capacity is available.",
-    ("aggregate_capacity", "fail"): "Aggregate VPN capacity is exhausted.",
+    ("release_id", "pass"): "Идентификатор релиза корректен.",
+    ("release_id", "fail"): "Идентификатор релиза некорректен.",
+    ("dispatch", "pass"): "Отправка команд ВПН включена.",
+    ("dispatch", "fail"): "Отправка команд ВПН выключена.",
+    ("known_hosts", "pass"): "Проверка ключей узлов готова.",
+    ("known_hosts", "warn"): "Проверка ключей узлов требует внимания.",
+    ("known_hosts", "fail"): "Проверка ключей узлов не готова.",
+    ("payment_disabled", "pass"): "Платёжная интеграция выключена.",
+    ("payment_disabled", "fail"): "Платёжная интеграция включена.",
+    ("public_trial_disabled", "pass"): "Публичный пробный доступ выключен.",
+    ("public_trial_disabled", "fail"): "Публичный пробный доступ уже включён.",
+    ("public_trial_plan", "pass"): "План пробного доступа корректен.",
+    ("public_trial_plan", "fail"): "План пробного доступа некорректен.",
+    ("control_operations", "pass"): "Незавершённых операций ВПН нет.",
+    ("control_operations", "fail"): "Есть незавершённая операция ВПН.",
+    ("maintenance", "pass"): "Незавершённых работ обслуживания нет.",
+    ("maintenance", "fail"): "Есть незавершённая работа обслуживания.",
+    ("system_health", "pass"): "Система готова.",
+    ("system_health", "warn"): "Состояние системы требует внимания.",
+    ("system_health", "fail"): "Система не готова.",
+    ("control_health", "pass"): "Контур управления готов.",
+    ("control_health", "warn"): "Контур управления требует внимания.",
+    ("control_health", "fail"): "Контур управления не готов.",
+    ("local_health", "pass"): "Локальная проверка пройдена.",
+    ("local_health", "warn"): "Локальная проверка требует внимания.",
+    ("local_health", "fail"): "Локальная проверка не пройдена.",
+    ("public_health", "pass"): "Публичная проверка пройдена.",
+    ("public_health", "warn"): "Публичная проверка требует внимания.",
+    ("public_health", "fail"): "Публичная проверка не пройдена.",
+    ("cabinet_health", "pass"): "Личный кабинет доступен.",
+    ("cabinet_health", "warn"): "Личный кабинет требует внимания.",
+    ("cabinet_health", "fail"): "Личный кабинет недоступен.",
+    ("disk_health", "pass"): "Состояние диска допустимо.",
+    ("disk_health", "warn"): "Состояние диска требует внимания.",
+    ("disk_health", "fail"): "Состояние диска недопустимо.",
+    ("backup_health", "pass"): "Резервное копирование готово.",
+    ("backup_health", "warn"): "Резервное копирование требует внимания.",
+    ("backup_health", "fail"): "Резервное копирование не готово.",
+    ("worker_active", "pass"): "Узел ВПН активен.",
+    ("worker_active", "fail"): "Узел ВПН неактивен.",
+    ("worker_health", "pass"): "Состояние узла ВПН актуально.",
+    ("worker_health", "fail"): "Состояние узла ВПН устарело или отсутствует.",
+    ("endpoint_configuration", "pass"): "Конфигурация точки ВПН готова.",
+    ("endpoint_configuration", "fail"): "Конфигурация точки ВПН не готова.",
+    ("endpoint_health", "pass"): "Состояние точки ВПН актуально.",
+    ("endpoint_health", "fail"): "Состояние точки ВПН устарело или отсутствует.",
+    ("endpoint_external_proof", "pass"): "Внешняя проверка точки ВПН действительна.",
+    ("endpoint_external_proof", "fail"): "Внешняя проверка точки ВПН недействительна.",
+    ("endpoint_capacity", "pass"): "Ёмкость точки ВПН доступна.",
+    ("endpoint_capacity", "warn"): "Ёмкость точки ВПН заканчивается.",
+    ("endpoint_capacity", "fail"): "Ёмкость точки ВПН недоступна.",
+    ("endpoint_redundancy", "pass"): "Резервирование точек ВПН готово.",
+    ("endpoint_redundancy", "fail"): "Резервирование точек ВПН недостаточно.",
+    ("aggregate_capacity", "pass"): "Общая ёмкость ВПН доступна.",
+    ("aggregate_capacity", "fail"): "Общая ёмкость ВПН исчерпана.",
 }
 
 
@@ -219,9 +223,9 @@ def _check(
 
 def _fresh(value: datetime | None, now: datetime, max_age_seconds: int) -> bool:
     observed = _as_utc(value)
-    return observed is not None and observed >= now - timedelta(
+    return observed is not None and now - timedelta(
         seconds=max(max_age_seconds, 1)
-    )
+    ) <= observed <= now
 
 
 def _observation_check(
@@ -272,7 +276,8 @@ def evaluate_release_readiness(
     )
     plan = snapshot.plan
     valid_plan = bool(
-        plan is not None
+        snapshot.public_trial_plan_slug.strip()
+        and plan is not None
         and plan.slug == snapshot.public_trial_plan_slug
         and plan.is_active
         and plan.duration_days == 7
@@ -330,7 +335,7 @@ def evaluate_release_readiness(
     )
 
     operational = snapshot.operational
-    for name in ("system", "control", "api", "public_cabinet", "disk"):
+    for name in ("system", "control", "local", "public", "cabinet", "disk"):
         value = getattr(operational, name) if operational is not None else None
         checks.append(_observation_check(f"{name}_health", value, checked_at))
     known_hosts = operational.known_hosts if operational is not None else None
@@ -366,7 +371,8 @@ def evaluate_release_readiness(
         )
         endpoint_fresh = _fresh(item.verified_at, checked_at, max_age_seconds)
         external_proof = bool(
-            item.external_verified_at is not None
+            (external_verified_at := _as_utc(item.external_verified_at)) is not None
+            and external_verified_at <= checked_at
             and item.external_config_fingerprint
             == public_endpoint_fingerprint(item.target)
         )

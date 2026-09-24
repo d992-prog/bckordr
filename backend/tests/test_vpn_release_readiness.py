@@ -19,6 +19,7 @@ from app.db.models import (
     WorkerMaintenanceJob,
     WorkerNode,
 )
+from app.services import vpn_release_readiness as release_readiness
 from app.services.vpn_endpoint_types import (
     VpnEndpointTarget,
     public_endpoint_fingerprint,
@@ -75,8 +76,9 @@ def operations(**changes) -> OperationalObservations:
     values = {
         "system": observation(),
         "control": observation(),
-        "api": observation(),
-        "public_cabinet": observation(),
+        "local": observation(),
+        "public": observation(),
+        "cabinet": observation(),
         "disk": observation(),
         "known_hosts": observation(),
     }
@@ -199,6 +201,28 @@ def test_two_healthy_endpoints_on_distinct_workers_are_ready_and_immutable() -> 
         result.ready = False
     with pytest.raises(FrozenInstanceError):
         result.checks[0].message = "unsafe"
+
+
+def test_all_fixed_check_messages_are_safe_russian_text() -> None:
+    messages = release_readiness._MESSAGES.values()
+
+    assert all(any("\u0400" <= char <= "\u04ff" for char in message) for message in messages)
+    assert all(
+        not any("a" <= char.lower() <= "z" for char in message)
+        for message in messages
+    )
+
+
+def test_operational_adapter_keeps_all_six_health_gates_separate() -> None:
+    assert set(OperationalObservations.__dataclass_fields__) == {
+        "system",
+        "control",
+        "local",
+        "public",
+        "cabinet",
+        "disk",
+        "known_hosts",
+    }
 
 
 def test_naive_database_datetimes_are_normalized_without_crashing() -> None:
@@ -428,7 +452,7 @@ def test_release_configuration_prerequisites_fail_closed(changes, code: str) -> 
 
 
 @pytest.mark.parametrize(
-    "name", ["system", "control", "api", "public_cabinet", "disk"]
+    "name", ["system", "control", "local", "public", "cabinet", "disk"]
 )
 @pytest.mark.parametrize("state", ["unknown", "fail"])
 def test_unknown_or_failed_operational_observation_blocks_release(
@@ -452,7 +476,7 @@ def test_missing_operational_observations_fail_closed() -> None:
     assert result.ready is False
     assert all(
         states(result, f"{name}_health") == ["fail"]
-        for name in ("system", "control", "api", "public_cabinet", "disk")
+        for name in ("system", "control", "local", "public", "cabinet", "disk")
     )
     assert "fail" in states(result, "known_hosts")
 
@@ -484,6 +508,65 @@ def test_an_operational_warning_does_not_make_release_unready() -> None:
 
     assert result.ready is True
     assert states(result, "disk_health") == ["warn"]
+
+
+@pytest.mark.parametrize(
+    ("case", "code"),
+    [
+        ("operational", "local_health"),
+        ("backup", "backup_health"),
+        ("worker", "worker_health"),
+        ("endpoint", "endpoint_health"),
+        ("external", "endpoint_external_proof"),
+    ],
+)
+def test_future_observation_timestamps_fail_closed(case: str, code: str) -> None:
+    future = NOW + timedelta(microseconds=1)
+    changes = {
+        "operational": {
+            "operational": operations(local=observation(observed_at=future))
+        },
+        "backup": {"backup": BackupObservation("pass", future, 86_400)},
+        "worker": {
+            "endpoints": (
+                endpoint(
+                    10,
+                    1,
+                    worker=worker(1, vpn_last_checked_at=future),
+                ),
+                endpoint(20, 2),
+            )
+        },
+        "endpoint": {
+            "endpoints": (
+                endpoint(10, 1, verified_at=future),
+                endpoint(20, 2),
+            )
+        },
+        "external": {
+            "endpoints": (
+                endpoint(10, 1, external_verified_at=future),
+                endpoint(20, 2),
+            )
+        },
+    }[case]
+    result = evaluate_release_readiness(ready_snapshot(**changes), now=NOW)
+
+    assert result.ready is False
+    assert "fail" in states(result, code)
+
+
+def test_whitespace_public_trial_plan_slug_fails_even_when_plan_matches() -> None:
+    result = evaluate_release_readiness(
+        ready_snapshot(
+            public_trial_plan_slug="   ",
+            plan=PlanSnapshot(7, "   ", True, 7, 1),
+        ),
+        now=NOW,
+    )
+
+    assert result.ready is False
+    assert states(result, "public_trial_plan") == ["fail"]
 
 
 def test_check_messages_are_fixed_and_never_include_sensitive_subjects() -> None:
