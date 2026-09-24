@@ -30,6 +30,8 @@ ENDPOINT_COLUMNS = {
     "flow",
     "status",
     "verified_at",
+    "external_verified_at",
+    "external_config_fingerprint",
     "last_error_code",
     "max_active_profiles",
     "capacity_warning_percent",
@@ -136,6 +138,15 @@ def _as_utc(value: datetime) -> datetime:
 
 def test_models_metadata_exposes_vpn_endpoints_table():
     assert "vpn_endpoints" in Base.metadata.tables
+
+
+def test_models_metadata_exposes_external_verification_fields():
+    table = models.VpnEndpoint.__table__
+
+    assert table.c.external_verified_at.nullable is True
+    assert table.c.external_verified_at.type.timezone is True
+    assert table.c.external_config_fingerprint.nullable is True
+    assert table.c.external_config_fingerprint.type.length == 64
 
 
 def test_models_metadata_exposes_exact_control_operation_schema():
