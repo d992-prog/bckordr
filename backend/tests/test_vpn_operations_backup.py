@@ -98,6 +98,11 @@ def _read_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _assert_marker_target_exists(root: Path) -> None:
+    marker = _read_json(root / "latest-success.json")
+    assert (root / marker["set_name"]).is_dir()
+
+
 def _write_success(root: Path, name: str) -> Path:
     directory = root / name
     directory.mkdir(mode=0o700)
@@ -272,6 +277,62 @@ def test_command_failure_is_static_and_preserves_diagnostic_partial(
     ]
 
 
+def test_dump_is_precreated_privately_and_stays_private_after_failure(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    dump_path: Path | None = None
+
+    def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+        nonlocal dump_path
+        dump_path = Path(command[3])
+        assert dump_path.is_file()
+        if os.name != "nt":
+            assert stat.S_IMODE(dump_path.stat().st_mode) == 0o600
+            dump_path.chmod(0o644)
+        return subprocess.CompletedProcess(command, 1)
+
+    with pytest.raises(BackupError, match="^backup_dump_failed$"):
+        create_validated_backup(
+            config,
+            f"postgresql://backup:{PASSWORD}@db.internal:5432/veltrix",
+            runner=runner,
+            now=lambda: NOW,
+            nonce=lambda: NONCE,
+        )
+
+    assert dump_path is not None and dump_path.is_file()
+    if os.name != "nt":
+        assert stat.S_IMODE(dump_path.stat().st_mode) == 0o600
+
+
+def test_dump_replacement_is_rejected_even_when_command_succeeds(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    replacement: Path | None = None
+
+    def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+        nonlocal replacement
+        replacement = Path(command[3])
+        replacement.unlink()
+        replacement.write_bytes(b"replacement archive")
+        return subprocess.CompletedProcess(command, 0)
+
+    with pytest.raises(BackupError, match="^backup_dump_failed$"):
+        create_validated_backup(
+            config,
+            f"postgresql://backup:{PASSWORD}@db.internal:5432/veltrix",
+            runner=runner,
+            now=lambda: NOW,
+            nonce=lambda: NONCE,
+        )
+
+    assert replacement is not None and replacement.is_file()
+    if os.name != "nt":
+        assert stat.S_IMODE(replacement.stat().st_mode) == 0o600
+
+
 def test_unexpected_runner_exception_cannot_expose_database_secret(
     tmp_path: Path,
 ) -> None:
@@ -293,17 +354,24 @@ def test_unexpected_runner_exception_cannot_expose_database_secret(
 
 
 def test_failed_copy_preserves_previous_success_marker_and_partial(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = _config(tmp_path)
     previous = _write_success(config.backup_root, "20260920T031011.000000Z-aaaaaaaa")
     previous_marker = (previous / "backup.json").read_bytes()
     marker = config.backup_root / "latest-success.json"
     marker.write_bytes(previous_marker)
-    source_to_remove = config.nginx_directory / "veltrix.conf"
+    real_write = os.write
+
+    def fail_source_copy(descriptor: int, content) -> int:
+        if bytes(content).startswith(b"SESSION_SECRET="):
+            raise OSError("synthetic copy failure")
+        return real_write(descriptor, content)
+
+    monkeypatch.setattr(backup_module.os, "write", fail_source_copy)
 
     with pytest.raises(BackupError, match="^backup_copy_failed$"):
-        _run(config, FakeRunner(after_restore=source_to_remove.unlink))
+        _run(config, FakeRunner())
 
     assert marker.read_bytes() == previous_marker
     assert previous.is_dir()
@@ -337,6 +405,47 @@ def test_backup_root_cannot_overlap_a_source_tree(tmp_path: Path) -> None:
     assert (config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial").is_dir()
 
 
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "O_DIRECTORY"),
+    reason="secure dir-fd traversal is a POSIX guarantee",
+)
+def test_source_root_swap_cannot_copy_from_replacement_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    original = config.nginx_directory.with_name("nginx-original")
+    outside = tmp_path / "outside-nginx"
+    outside.mkdir()
+    secret = b"outside-secret-must-not-be-copied"
+    (outside / "veltrix.conf").write_bytes(secret)
+    real_open = os.open
+    swapped = False
+
+    def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if (
+            not swapped
+            and path == config.nginx_directory.name
+            and flags & os.O_DIRECTORY
+            and dir_fd is not None
+        ):
+            swapped = True
+            config.nginx_directory.rename(original)
+            config.nginx_directory.symlink_to(outside, target_is_directory=True)
+        return descriptor
+
+    monkeypatch.setattr(backup_module.os, "open", swapping_open)
+
+    with pytest.raises(BackupError, match="^backup_source_(invalid|changed)$"):
+        _run(config, FakeRunner())
+
+    partial = config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial"
+    assert secret not in b"".join(
+        path.read_bytes() for path in partial.rglob("*") if path.is_file()
+    )
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO creation is POSIX-only")
 def test_special_source_file_is_rejected(tmp_path: Path) -> None:
     config = _config(tmp_path)
@@ -361,6 +470,40 @@ def test_file_count_and_size_bounds_fail_closed(
 
     with pytest.raises(BackupError, match="^backup_limits_exceeded$"):
         _run(config, FakeRunner())
+
+
+def test_enumeration_file_limit_fails_before_publication(tmp_path: Path) -> None:
+    config = _config(tmp_path, max_files=5)
+    for index in range(6):
+        (config.frontend_dist / f"extra-{index}.js").write_bytes(b"x")
+    runner = FakeRunner()
+
+    with pytest.raises(BackupError, match="^backup_limits_exceeded$"):
+        _run(config, runner)
+
+    assert [command[0] for command, _kwargs in runner.calls] == [
+        "pg_dump",
+        "pg_restore",
+    ]
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
+def test_source_tree_depth_is_bounded_before_publication(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    nested = config.frontend_dist
+    for name in ("one", "two", "three"):
+        nested /= name
+        nested.mkdir()
+    runner = FakeRunner()
+
+    with pytest.raises(BackupError, match="^backup_limits_exceeded$"):
+        _run(replace_config(config, max_depth=2), runner)
+
+    assert [command[0] for command, _kwargs in runner.calls] == [
+        "pg_dump",
+        "pg_restore",
+    ]
+    assert not (config.backup_root / "latest-success.json").exists()
 
 
 def test_oversized_dump_is_rejected_before_restore_reads_it(tmp_path: Path) -> None:
@@ -463,6 +606,152 @@ def test_marker_replace_failure_rolls_promoted_set_back_to_partial(
     assert (config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial").is_dir()
 
 
+def test_final_rename_failure_preserves_previous_marker_and_partial(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    prior = _write_success(config.backup_root, "20260920T031011.000000Z-aaaaaaaa")
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((prior / "backup.json").read_bytes())
+    before = marker.read_bytes()
+    final = config.backup_root / f"20260924T031011.000000Z-{NONCE}"
+
+    def replace(source: Path, target: Path) -> None:
+        if Path(target) == final:
+            raise OSError("synthetic final rename failure")
+        os.replace(source, target)
+
+    with pytest.raises(BackupError, match="^backup_publish_failed$"):
+        _run(config, FakeRunner(), replace=replace)
+
+    assert marker.read_bytes() == before
+    _assert_marker_target_exists(config.backup_root)
+    assert final.with_name(final.name + ".partial").is_dir()
+
+
+def test_existing_marker_is_snapshotted_through_one_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    previous = _write_success(config.backup_root, "20260920T031011.000000Z-aaaaaaaa")
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((previous / "backup.json").read_bytes())
+    real_read_bytes = Path.read_bytes
+
+    def reject_marker_reopen(path: Path) -> bytes:
+        if path == marker:
+            raise AssertionError("marker path was reopened after validation")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_marker_reopen)
+
+    result = _run(config, FakeRunner())
+
+    assert result.directory.is_dir()
+
+
+def test_directory_fsync_after_promotion_preserves_previous_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    prior = _write_success(config.backup_root, "20260920T031011.000000Z-aaaaaaaa")
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((prior / "backup.json").read_bytes())
+    before = marker.read_bytes()
+    real_sync = backup_module._sync_directory
+    failed = False
+
+    def fail_first_root_sync(path: Path) -> None:
+        nonlocal failed
+        if Path(path) == config.backup_root and not failed:
+            failed = True
+            raise BackupError("backup_write_failed")
+        real_sync(path)
+
+    monkeypatch.setattr(backup_module, "_sync_directory", fail_first_root_sync)
+    with pytest.raises(BackupError, match="^backup_publish_failed$"):
+        _run(config, FakeRunner())
+
+    assert marker.read_bytes() == before
+    _assert_marker_target_exists(config.backup_root)
+    assert (config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial").is_dir()
+
+
+def test_marker_temp_write_failure_preserves_previous_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    prior = _write_success(config.backup_root, "20260920T031011.000000Z-aaaaaaaa")
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((prior / "backup.json").read_bytes())
+    before = marker.read_bytes()
+    real_write = backup_module._write_private_file
+
+    def fail_marker_temp(path: Path, content: bytes) -> None:
+        if path.name.startswith(".latest-success"):
+            raise BackupError("backup_write_failed")
+        real_write(path, content)
+
+    monkeypatch.setattr(backup_module, "_write_private_file", fail_marker_temp)
+    with pytest.raises(BackupError, match="^backup_publish_failed$"):
+        _run(config, FakeRunner())
+
+    assert marker.read_bytes() == before
+    _assert_marker_target_exists(config.backup_root)
+    assert (config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial").is_dir()
+
+
+def test_success_never_chmods_marker_after_atomic_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    marker = config.backup_root / "latest-success.json"
+    real_chmod = Path.chmod
+
+    def chmod(path: Path, mode: int) -> None:
+        if path == marker:
+            raise OSError("post-replace chmod must not happen")
+        real_chmod(path, mode)
+
+    monkeypatch.setattr(Path, "chmod", chmod)
+
+    result = _run(config, FakeRunner())
+
+    assert _read_json(marker)["set_name"] == result.directory.name
+    assert result.directory.is_dir()
+
+
+def test_failed_marker_restoration_never_demotes_its_live_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    previous = _write_success(config.backup_root, "20260920T031011.000000Z-aaaaaaaa")
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((previous / "backup.json").read_bytes())
+    before = marker.read_bytes()
+    real_sync = backup_module._sync_directory
+    real_replace = os.replace
+
+    def fail_after_marker_replace(path: Path) -> None:
+        if Path(path) == config.backup_root and marker.read_bytes() != before:
+            raise BackupError("backup_write_failed")
+        real_sync(path)
+
+    def fail_rollback_replace(source: Path, target: Path) -> None:
+        if Path(source).name.endswith(".rollback"):
+            raise OSError("synthetic rollback failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(backup_module, "_sync_directory", fail_after_marker_replace)
+    monkeypatch.setattr(backup_module.os, "replace", fail_rollback_replace)
+
+    with pytest.raises(BackupError, match="^backup_publish_failed$"):
+        _run(config, FakeRunner())
+
+    live = _read_json(marker)["set_name"]
+    assert (config.backup_root / live).is_dir()
+
+
 def test_fsync_failure_leaves_partial_and_previous_marker_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -475,7 +764,7 @@ def test_fsync_failure_leaves_partial_and_previous_marker_unchanged(
         raise OSError("synthetic fsync output must not escape")
 
     monkeypatch.setattr("app.operations.backup.os.fsync", fail_fsync)
-    with pytest.raises(BackupError, match="^backup_write_failed$") as raised:
+    with pytest.raises(BackupError, match="^backup_dump_failed$") as raised:
         _run(config, FakeRunner())
 
     assert "synthetic" not in repr(raised.value)
@@ -499,7 +788,7 @@ def test_marker_directory_fsync_failure_restores_previous_marker_and_partial(
         real_sync(path)
 
     monkeypatch.setattr(backup_module, "_sync_directory", fail_after_marker_replace)
-    with pytest.raises(BackupError, match="^backup_write_failed$"):
+    with pytest.raises(BackupError, match="^backup_publish_failed$"):
         _run(config, FakeRunner())
 
     assert marker.read_bytes() == before
@@ -628,6 +917,28 @@ def test_main_fails_closed_without_echoing_invalid_environment(
     environment = {"DB_URL": PASSWORD}
 
     assert main(environment) == 1
+    output = capsys.readouterr()
+    assert output == ("", "")
+    assert PASSWORD not in repr(output)
+
+
+def test_main_catches_unexpected_secret_exception_without_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = _config(tmp_path)
+    environment = {
+        "DB_URL": PASSWORD,
+        "VPN_BACKUP_DIRECTORY": str(config.backup_root),
+        "VPN_BACKUP_ENV_FILE": str(config.env_file),
+        "VPN_BACKUP_SYSTEMD_UNIT": str(config.systemd_unit),
+        "VPN_BACKUP_NGINX_DIRECTORY": str(config.nginx_directory),
+        "VPN_BACKUP_FRONTEND_DIST": str(config.frontend_dist),
+    }
+
+    def create(_config: BackupConfig, _db_url: str) -> object:
+        raise RuntimeError(PASSWORD)
+
+    assert main(environment, create=create) == 1
     output = capsys.readouterr()
     assert output == ("", "")
     assert PASSWORD not in repr(output)

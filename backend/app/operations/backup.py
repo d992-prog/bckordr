@@ -55,6 +55,7 @@ class BackupConfig:
     command_timeout_seconds: float = 900.0
     deadline_seconds: float = 3600.0
     max_files: int = 50_000
+    max_depth: int = 64
     max_file_bytes: int = 8 * 1024 * 1024 * 1024
     max_total_bytes: int = 32 * 1024 * 1024 * 1024
 
@@ -78,6 +79,7 @@ class BackupConfig:
             or self.command_timeout_seconds <= 0
             or self.deadline_seconds <= 0
             or self.max_files <= 0
+            or not 1 <= self.max_depth <= 256
             or self.max_file_bytes <= 0
             or self.max_total_bytes <= 0
         ):
@@ -98,6 +100,7 @@ class _Budget:
     monotonic: Callable[[], float]
     started_at: float
     files: int = 0
+    directories: int = 0
     total_bytes: int = 0
 
     def check_deadline(self) -> None:
@@ -120,6 +123,21 @@ class _Budget:
         if (
             self.files > self.config.max_files
             or self.total_bytes > self.config.max_total_bytes
+        ):
+            raise BackupError("backup_limits_exceeded")
+
+    def add_directory(self) -> None:
+        self.check_deadline()
+        self.directories += 1
+        if self.directories > self.config.max_files:
+            raise BackupError("backup_limits_exceeded")
+
+    def check_copy_size(self, expected: int, copied: int) -> None:
+        self.check_deadline()
+        if (
+            copied > self.config.max_file_bytes
+            or self.total_bytes + max(0, copied - expected)
+            > self.config.max_total_bytes
         ):
             raise BackupError("backup_limits_exceeded")
 
@@ -162,54 +180,6 @@ def _validated_root(path: Path) -> Path:
     except OSError:
         raise BackupError("backup_root_invalid") from None
     return resolved
-
-
-def _snapshot_directory(
-    source: Path, destination: Path
-) -> list[tuple[Path, Path, bool]]:
-    _validated_path(source, directory=True)
-    items = [(source, destination, True)]
-
-    def visit(directory: Path, target: Path) -> None:
-        try:
-            entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
-        except OSError:
-            raise BackupError("backup_source_invalid") from None
-        for entry in entries:
-            path = Path(entry.path)
-            child_target = target / entry.name
-            try:
-                info = entry.stat(follow_symlinks=False)
-            except OSError:
-                raise BackupError("backup_source_invalid") from None
-            if _is_reparse(info) or stat.S_ISLNK(info.st_mode):
-                raise BackupError("backup_source_invalid")
-            if stat.S_ISDIR(info.st_mode):
-                items.append((path, child_target, True))
-                visit(path, child_target)
-            elif stat.S_ISREG(info.st_mode):
-                items.append((path, child_target, False))
-            else:
-                raise BackupError("backup_source_invalid")
-
-    visit(source, destination)
-    return items
-
-
-def _snapshot_sources(config: BackupConfig) -> list[tuple[Path, Path, bool]]:
-    _validated_path(config.env_file, directory=False)
-    _validated_path(config.systemd_unit, directory=False)
-    items = [
-        (config.env_file, Path("environment") / ".env", False),
-        (
-            config.systemd_unit,
-            Path("systemd") / config.systemd_unit.name,
-            False,
-        ),
-    ]
-    items.extend(_snapshot_directory(config.nginx_directory, Path("nginx")))
-    items.extend(_snapshot_directory(config.frontend_dist, Path("frontend")))
-    return items
 
 
 def _reject_source_overlap(config: BackupConfig, root: Path) -> None:
@@ -342,61 +312,480 @@ def _run_command(
         raise BackupError(error_code) from None
 
 
-def _copy_file(source: Path, destination: Path, budget: _Budget) -> dict[str, object]:
-    budget.check_deadline()
+def _file_identity(info: os.stat_result) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def _create_private_dump(path: Path) -> tuple[int, int]:
+    descriptor = -1
     try:
-        before = source.lstat()
-        if _is_reparse(before) or not stat.S_ISREG(before.st_mode):
-            raise BackupError("backup_source_invalid")
-        budget.add_file(before.st_size)
+        descriptor = os.open(
+            path,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError
+        return _file_identity(info)
+    except OSError:
+        raise BackupError("backup_dump_failed") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _secure_dump_after_command(path: Path, identity: tuple[int, int]) -> None:
+    descriptor = -1
+    try:
+        flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        info = os.fstat(descriptor)
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+        if not stat.S_ISREG(info.st_mode) or _file_identity(info) != identity:
+            raise OSError
+    except OSError:
+        raise BackupError("backup_dump_failed") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+_DIR_FD_SUPPORTED = (
+    os.name == "posix"
+    and hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and os.open in os.supports_dir_fd
+    and os.stat in os.supports_dir_fd
+    and os.stat in os.supports_follow_symlinks
+    and os.scandir in os.supports_fd
+)
+
+
+def _matches_identity(
+    info: os.stat_result, expected: os.stat_result, *, directory: bool
+) -> bool:
+    expected_type = (
+        stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    )
+    if expected.st_ino or expected.st_dev:
+        same_object = _file_identity(info) == _file_identity(expected)
+    else:
+        same_object = info.st_ctime_ns == expected.st_ctime_ns
+    return expected_type and not _is_reparse(info) and same_object
+
+
+def _matches_stable_file(info: os.stat_result, expected: os.stat_result) -> bool:
+    return (
+        _matches_identity(info, expected, directory=False)
+        and info.st_size == expected.st_size
+        and info.st_mtime_ns == expected.st_mtime_ns
+    )
+
+
+def _copy_descriptor(
+    source_fd: int,
+    destination: Path,
+    relative: Path,
+    expected: os.stat_result,
+    budget: _Budget,
+) -> dict[str, object]:
+    destination_fd = -1
+    digest = hashlib.sha256()
+    copied = 0
+    try:
+        opened = os.fstat(source_fd)
+        if (
+            not _matches_identity(opened, expected, directory=False)
+            or opened.st_size != expected.st_size
+        ):
+            raise BackupError("backup_source_changed")
         _mkdir_private(destination.parent)
-        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        source_fd = os.open(source, flags)
         destination_fd = os.open(
             destination,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
             0o600,
         )
-        digest = hashlib.sha256()
-        copied = 0
-        try:
-            opened = os.fstat(source_fd)
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or opened.st_dev != before.st_dev
-                or opened.st_ino != before.st_ino
-            ):
-                raise BackupError("backup_source_invalid")
-            while chunk := os.read(source_fd, _CHUNK_SIZE):
-                budget.check_deadline()
-                copied += len(chunk)
-                if copied > budget.config.max_file_bytes:
-                    raise BackupError("backup_limits_exceeded")
-                digest.update(chunk)
-                view = memoryview(chunk)
-                while view:
-                    written = os.write(destination_fd, view)
-                    if written <= 0:
-                        raise OSError
-                    view = view[written:]
-            if copied != before.st_size:
-                raise BackupError("backup_source_changed")
-            os.fchmod(destination_fd, 0o600)
-            os.fsync(destination_fd)
-        finally:
-            os.close(source_fd)
-            os.close(destination_fd)
+        while chunk := os.read(source_fd, _CHUNK_SIZE):
+            copied += len(chunk)
+            budget.check_copy_size(expected.st_size, copied)
+            digest.update(chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_fd, view)
+                if written <= 0:
+                    raise OSError
+                view = view[written:]
+        if copied != expected.st_size or not _matches_stable_file(
+            os.fstat(source_fd), expected
+        ):
+            raise BackupError("backup_source_changed")
+        os.fchmod(destination_fd, 0o600)
+        os.fsync(destination_fd)
         destination.chmod(0o600)
     except BackupError:
         raise
     except OSError:
         raise BackupError("backup_copy_failed") from None
+    finally:
+        if destination_fd >= 0:
+            os.close(destination_fd)
     return {
-        "path": destination.as_posix(),
+        "path": relative.as_posix(),
         "sha256": digest.hexdigest(),
         "size": copied,
     }
+
+
+def _open_absolute_directory(path: Path, budget: _Budget) -> tuple[int, os.stat_result]:
+    expected_path = _validated_path(path, directory=True)
+    absolute = Path(os.path.abspath(path))
+    descriptor = -1
+    try:
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        descriptor = os.open(absolute.anchor, flags)
+        opened = os.fstat(descriptor)
+        for component in absolute.parts[1:]:
+            budget.check_deadline()
+            before = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISDIR(before.st_mode) or stat.S_ISLNK(before.st_mode):
+                raise BackupError("backup_source_invalid")
+            child = os.open(component, flags, dir_fd=descriptor)
+            child_info = os.fstat(child)
+            if not _matches_identity(child_info, before, directory=True):
+                os.close(child)
+                raise BackupError("backup_source_changed")
+            os.close(descriptor)
+            descriptor = child
+            opened = child_info
+        after = path.lstat()
+        if not _matches_identity(
+            opened, expected_path, directory=True
+        ) or not _matches_identity(after, expected_path, directory=True):
+            raise BackupError("backup_source_changed")
+        return descriptor, opened
+    except BackupError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    except (OSError, ValueError):
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise BackupError("backup_source_invalid") from None
+
+
+def _scan_directory_fd(
+    descriptor: int, depth: int, budget: _Budget
+) -> list[tuple[str, os.stat_result]]:
+    entries: list[tuple[str, os.stat_result]] = []
+    try:
+        with os.scandir(descriptor) as iterator:
+            for entry in iterator:
+                budget.check_deadline()
+                info = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+                if _is_reparse(info) or stat.S_ISLNK(info.st_mode):
+                    raise BackupError("backup_source_invalid")
+                if stat.S_ISDIR(info.st_mode):
+                    if depth + 1 > budget.config.max_depth:
+                        raise BackupError("backup_limits_exceeded")
+                    budget.add_directory()
+                elif stat.S_ISREG(info.st_mode):
+                    budget.add_file(info.st_size)
+                else:
+                    raise BackupError("backup_source_invalid")
+                entries.append((entry.name, info))
+    except BackupError:
+        raise
+    except OSError:
+        raise BackupError("backup_source_invalid") from None
+    return sorted(entries, key=lambda item: item[0])
+
+
+@dataclass(slots=True)
+class _DirectoryFrame:
+    descriptor: int
+    source: Path
+    destination: Path
+    relative: Path
+    depth: int
+    expected: os.stat_result
+    parent_name: str | None = None
+    entries: list[tuple[str, os.stat_result]] | None = None
+    index: int = 0
+
+
+def _copy_posix_tree(
+    source: Path,
+    destination: Path,
+    relative: Path,
+    budget: _Budget,
+) -> list[dict[str, object]]:
+    descriptor, expected = _open_absolute_directory(source, budget)
+    budget.add_directory()
+    frames = [_DirectoryFrame(descriptor, source, destination, relative, 0, expected)]
+    records: list[dict[str, object]] = []
+    try:
+        while frames:
+            frame = frames[-1]
+            budget.check_deadline()
+            if frame.entries is None:
+                _mkdir_private(frame.destination)
+                frame.entries = _scan_directory_fd(
+                    frame.descriptor, frame.depth, budget
+                )
+            if frame.index >= len(frame.entries):
+                if not _matches_identity(
+                    os.fstat(frame.descriptor), frame.expected, directory=True
+                ):
+                    raise BackupError("backup_source_changed")
+                if len(frames) > 1:
+                    parent = frames[-2]
+                    linked = os.stat(
+                        frame.parent_name,
+                        dir_fd=parent.descriptor,
+                        follow_symlinks=False,
+                    )
+                    if not _matches_identity(linked, frame.expected, directory=True):
+                        raise BackupError("backup_source_changed")
+                else:
+                    linked = frame.source.lstat()
+                    if not _matches_identity(linked, frame.expected, directory=True):
+                        raise BackupError("backup_source_changed")
+                os.close(frame.descriptor)
+                frames.pop()
+                continue
+
+            name, entry_info = frame.entries[frame.index]
+            frame.index += 1
+            child_destination = frame.destination / name
+            child_relative = frame.relative / name
+            if stat.S_ISDIR(entry_info.st_mode):
+                child_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=frame.descriptor,
+                )
+                opened = os.fstat(child_fd)
+                if not _matches_identity(opened, entry_info, directory=True):
+                    os.close(child_fd)
+                    raise BackupError("backup_source_changed")
+                frames.append(
+                    _DirectoryFrame(
+                        child_fd,
+                        frame.source / name,
+                        child_destination,
+                        child_relative,
+                        frame.depth + 1,
+                        entry_info,
+                        name,
+                    )
+                )
+                continue
+
+            source_fd = -1
+            try:
+                source_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_BINARY", 0),
+                    dir_fd=frame.descriptor,
+                )
+                records.append(
+                    _copy_descriptor(
+                        source_fd,
+                        child_destination,
+                        child_relative,
+                        entry_info,
+                        budget,
+                    )
+                )
+                linked = os.stat(name, dir_fd=frame.descriptor, follow_symlinks=False)
+                if not _matches_stable_file(linked, entry_info):
+                    raise BackupError("backup_source_changed")
+            except BackupError:
+                raise
+            except OSError:
+                raise BackupError("backup_source_invalid") from None
+            finally:
+                if source_fd >= 0:
+                    os.close(source_fd)
+    finally:
+        for frame in frames:
+            try:
+                os.close(frame.descriptor)
+            except OSError:
+                pass
+    return records
+
+
+def _copy_posix_file(
+    source: Path,
+    destination: Path,
+    relative: Path,
+    budget: _Budget,
+) -> dict[str, object]:
+    parent_fd, parent_info = _open_absolute_directory(source.parent, budget)
+    source_fd = -1
+    try:
+        expected = os.stat(source.name, dir_fd=parent_fd, follow_symlinks=False)
+        if _is_reparse(expected) or not stat.S_ISREG(expected.st_mode):
+            raise BackupError("backup_source_invalid")
+        budget.add_file(expected.st_size)
+        source_fd = os.open(
+            source.name,
+            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_BINARY", 0),
+            dir_fd=parent_fd,
+        )
+        record = _copy_descriptor(source_fd, destination, relative, expected, budget)
+        linked = os.stat(source.name, dir_fd=parent_fd, follow_symlinks=False)
+        if not _matches_stable_file(linked, expected):
+            raise BackupError("backup_source_changed")
+        if not _matches_identity(source.parent.lstat(), parent_info, directory=True):
+            raise BackupError("backup_source_changed")
+        return record
+    except BackupError:
+        raise
+    except OSError:
+        raise BackupError("backup_source_invalid") from None
+    finally:
+        if source_fd >= 0:
+            os.close(source_fd)
+        os.close(parent_fd)
+
+
+def _copy_path_file(
+    source: Path,
+    destination: Path,
+    relative: Path,
+    budget: _Budget,
+    *,
+    expected: os.stat_result | None = None,
+) -> dict[str, object]:
+    before = _validated_path(source, directory=False) if expected is None else expected
+    if expected is None:
+        budget.add_file(before.st_size)
+    source_fd = -1
+    try:
+        source_fd = os.open(
+            source,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        record = _copy_descriptor(source_fd, destination, relative, before, budget)
+        if not _matches_stable_file(source.lstat(), before):
+            raise BackupError("backup_source_changed")
+        return record
+    except BackupError:
+        raise
+    except OSError:
+        raise BackupError("backup_source_invalid") from None
+    finally:
+        if source_fd >= 0:
+            os.close(source_fd)
+
+
+def _copy_path_tree(
+    source: Path,
+    destination: Path,
+    relative: Path,
+    budget: _Budget,
+) -> list[dict[str, object]]:
+    root_info = _validated_path(source, directory=True)
+    budget.add_directory()
+    stack = [(source, destination, relative, 0, root_info)]
+    records: list[dict[str, object]] = []
+    while stack:
+        current, target, current_relative, depth, expected = stack.pop()
+        budget.check_deadline()
+        if not _matches_identity(current.lstat(), expected, directory=True):
+            raise BackupError("backup_source_changed")
+        _mkdir_private(target)
+        entries: list[tuple[Path, os.stat_result]] = []
+        try:
+            with os.scandir(current) as iterator:
+                for entry in iterator:
+                    budget.check_deadline()
+                    child = Path(entry.path)
+                    info = child.lstat()
+                    if _is_reparse(info) or stat.S_ISLNK(info.st_mode):
+                        raise BackupError("backup_source_invalid")
+                    if stat.S_ISDIR(info.st_mode):
+                        if depth + 1 > budget.config.max_depth:
+                            raise BackupError("backup_limits_exceeded")
+                        budget.add_directory()
+                    elif stat.S_ISREG(info.st_mode):
+                        budget.add_file(info.st_size)
+                    else:
+                        raise BackupError("backup_source_invalid")
+                    entries.append((child, info))
+        except BackupError:
+            raise
+        except OSError:
+            raise BackupError("backup_source_invalid") from None
+        for child, info in sorted(entries, key=lambda item: item[0].name, reverse=True):
+            child_target = target / child.name
+            child_relative = current_relative / child.name
+            if stat.S_ISDIR(info.st_mode):
+                stack.append((child, child_target, child_relative, depth + 1, info))
+            else:
+                records.append(
+                    _copy_path_file(
+                        child,
+                        child_target,
+                        child_relative,
+                        budget,
+                        expected=info,
+                    )
+                )
+        if not _matches_identity(current.lstat(), expected, directory=True):
+            raise BackupError("backup_source_changed")
+    if not _matches_identity(source.lstat(), root_info, directory=True):
+        raise BackupError("backup_source_changed")
+    return records
+
+
+def _copy_sources(
+    config: BackupConfig, partial: Path, budget: _Budget
+) -> list[dict[str, object]]:
+    try:
+        file_copy = _copy_posix_file if _DIR_FD_SUPPORTED else _copy_path_file
+        tree_copy = _copy_posix_tree if _DIR_FD_SUPPORTED else _copy_path_tree
+        records = [
+            file_copy(
+                config.env_file,
+                partial / "environment" / ".env",
+                Path("environment") / ".env",
+                budget,
+            ),
+            file_copy(
+                config.systemd_unit,
+                partial / "systemd" / config.systemd_unit.name,
+                Path("systemd") / config.systemd_unit.name,
+                budget,
+            ),
+        ]
+        records.extend(
+            tree_copy(
+                config.nginx_directory,
+                partial / "nginx",
+                Path("nginx"),
+                budget,
+            )
+        )
+        records.extend(
+            tree_copy(
+                config.frontend_dist,
+                partial / "frontend",
+                Path("frontend"),
+                budget,
+            )
+        )
+        return records
+    except BackupError:
+        raise
+    except (OSError, RecursionError):
+        raise BackupError("backup_source_invalid") from None
 
 
 def _record_dump(path: Path, budget: _Budget) -> dict[str, object]:
@@ -455,21 +844,132 @@ def _write_private_file(path: Path, content: bytes) -> None:
 
 
 def _read_existing_marker(path: Path, root: Path) -> bytes | None:
+    descriptor = -1
     try:
-        info = path.lstat()
+        before = path.lstat()
     except FileNotFoundError:
         return None
     except OSError:
         raise BackupError("backup_publish_failed") from None
-    if _is_reparse(info) or not stat.S_ISREG(info.st_mode) or info.st_size > 16_384:
+    if (
+        _is_reparse(before)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_size > 16_384
+    ):
         raise BackupError("backup_publish_failed")
     try:
-        if path.resolve(strict=True).parent != root:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if not _matches_stable_file(opened, before):
             raise BackupError("backup_publish_failed")
-        return path.read_bytes()
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(descriptor, min(_CHUNK_SIZE, 16_385 - size)):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > 16_384:
+                raise BackupError("backup_publish_failed")
+        if size != opened.st_size or not _matches_stable_file(path.lstat(), opened):
+            raise BackupError("backup_publish_failed")
+        raw = b"".join(chunks)
+        metadata = json.loads(raw)
+        set_name = metadata.get("set_name")
+        if (
+            set(metadata)
+            != {"created_at", "manifest_sha256", "set_name", "status", "version"}
+            or not isinstance(set_name, str)
+            or not _SET_NAME.fullmatch(set_name)
+            or not _trusted_success(root / set_name, root)
+        ):
+            raise BackupError("backup_publish_failed")
+        return raw
     except BackupError:
         raise
+    except (OSError, UnicodeError, json.JSONDecodeError, AttributeError, TypeError):
+        raise BackupError("backup_publish_failed") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _remove_private_temp(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
     except OSError:
+        pass
+
+
+def _restore_marker(
+    *,
+    root: Path,
+    marker: Path,
+    previous: bytes | None,
+    nonce: str,
+    replace: Callable[[Path, Path], None],
+) -> bool:
+    rollback = root / f".latest-success.{nonce}.rollback"
+    try:
+        try:
+            unchanged = _read_existing_marker(marker, root) == previous
+        except BackupError:
+            unchanged = False
+        if unchanged:
+            _sync_directory(root)
+            return True
+        if previous is None:
+            marker.unlink(missing_ok=True)
+        else:
+            _write_private_file(rollback, previous)
+            replace(rollback, marker)
+        _sync_directory(root)
+        return True
+    except (BackupError, OSError, RecursionError):
+        _remove_private_temp(rollback)
+        return False
+
+
+def _publish_backup(
+    *,
+    root: Path,
+    partial: Path,
+    final: Path,
+    marker: Path,
+    marker_temp: Path,
+    metadata: bytes,
+    nonce: str,
+    replace: Callable[[Path, Path], None],
+) -> None:
+    promoted = False
+    marker_replaced = False
+    previous: bytes | None = None
+    try:
+        previous = _read_existing_marker(marker, root)
+        _write_private_file(marker_temp, metadata)
+        promoted = True
+        replace(partial, final)
+        _sync_directory(root)
+        marker_replaced = True
+        replace(marker_temp, marker)
+        _sync_directory(root)
+        return
+    except (BackupError, OSError, RecursionError):
+        marker_restored = not marker_replaced or _restore_marker(
+            root=root,
+            marker=marker,
+            previous=previous,
+            nonce=nonce,
+            replace=replace,
+        )
+        if promoted and marker_restored:
+            try:
+                replace(final, partial)
+                _sync_directory(root)
+            except (BackupError, OSError, RecursionError):
+                pass
+        _remove_private_temp(marker_temp)
         raise BackupError("backup_publish_failed") from None
 
 
@@ -603,7 +1103,7 @@ def create_validated_backup(
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     nonce: Callable[[], str] = lambda: secrets.token_hex(8),
     monotonic: Callable[[], float] = time.monotonic,
-    replace: Callable[[Path, Path], None] = os.replace,
+    replace: Callable[[Path, Path], None] | None = None,
 ) -> BackupResult:
     """Create one validated set without exposing database credentials."""
     database, pg_environment = _postgres_environment(db_url)
@@ -634,30 +1134,28 @@ def create_validated_backup(
 
     marker = root / "latest-success.json"
     marker_temp = root / f".latest-success.{safe_nonce}.tmp"
-    promoted = False
-    marker_replaced = False
-    previous_marker: bytes | None = None
+    atomic_replace = os.replace if replace is None else replace
     try:
         _reject_source_overlap(config, root)
-        sources = _snapshot_sources(config)
         dump = partial / "database.dump"
-        _run_command(
-            runner,
-            [
-                "pg_dump",
-                "--format=custom",
-                "--file",
-                str(dump),
-                "--dbname",
-                database,
-            ],
-            environment=pg_environment,
-            timeout=budget.command_timeout(),
-            error_code="backup_dump_failed",
-        )
-        if not dump.exists():
-            raise BackupError("backup_dump_failed")
-        dump.chmod(0o600)
+        dump_identity = _create_private_dump(dump)
+        try:
+            _run_command(
+                runner,
+                [
+                    "pg_dump",
+                    "--format=custom",
+                    "--file",
+                    str(dump),
+                    "--dbname",
+                    database,
+                ],
+                environment=pg_environment,
+                timeout=budget.command_timeout(),
+                error_code="backup_dump_failed",
+            )
+        finally:
+            _secure_dump_after_command(dump, dump_identity)
         dump_record = _record_dump(dump, budget)
         _run_command(
             runner,
@@ -667,25 +1165,7 @@ def create_validated_backup(
             error_code="backup_validation_failed",
         )
 
-        records = [dump_record]
-        for source, relative, is_directory in sources:
-            destination = partial / relative
-            if is_directory:
-                _mkdir_private(destination)
-                continue
-            try:
-                record = _copy_file(source, destination, budget)
-            except BackupError as error:
-                if error.args[0] in {
-                    "backup_limits_exceeded",
-                    "backup_deadline_exceeded",
-                    "backup_source_invalid",
-                    "backup_source_changed",
-                }:
-                    raise
-                raise BackupError("backup_copy_failed") from None
-            record["path"] = relative.as_posix()
-            records.append(record)
+        records = [dump_record, *_copy_sources(config, partial, budget)]
 
         records.sort(key=lambda item: str(item["path"]))
         manifest_raw = _json_bytes({"files": records, "version": 1})
@@ -708,47 +1188,20 @@ def create_validated_backup(
             directory.chmod(0o700)
             _sync_directory(directory)
         _sync_directory(partial)
-        previous_marker = _read_existing_marker(marker, root)
-        _write_private_file(marker_temp, metadata_raw)
-        replace(partial, final)
-        promoted = True
-        _sync_directory(root)
-        replace(marker_temp, marker)
-        marker_replaced = True
-        marker.chmod(0o600)
-        _sync_directory(root)
+        _publish_backup(
+            root=root,
+            partial=partial,
+            final=final,
+            marker=marker,
+            marker_temp=marker_temp,
+            metadata=metadata_raw,
+            nonce=safe_nonce,
+            replace=atomic_replace,
+        )
     except BackupError:
-        if promoted:
-            if marker_replaced:
-                try:
-                    if previous_marker is None:
-                        marker.unlink(missing_ok=True)
-                    else:
-                        rollback = root / f".latest-success.{safe_nonce}.rollback"
-                        _write_private_file(rollback, previous_marker)
-                        os.replace(rollback, marker)
-                except (OSError, BackupError):
-                    pass
-            try:
-                os.replace(final, partial)
-            except OSError:
-                pass
-        try:
-            marker_temp.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise
-    except OSError:
-        if promoted:
-            try:
-                os.replace(final, partial)
-            except OSError:
-                pass
-        try:
-            marker_temp.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise BackupError("backup_publish_failed") from None
+    except (OSError, RecursionError):
+        raise BackupError("backup_write_failed") from None
 
     deleted = _apply_retention(root, config.retention, set_name)
     return BackupResult(final, created_at, manifest_digest, deleted)
@@ -771,7 +1224,7 @@ def main(
             retention=int(values.get("VPN_BACKUP_RETENTION", "7")),
         )
         create(config, values["DB_URL"])
-    except (BackupError, KeyError, TypeError, ValueError):
+    except Exception:  # noqa: BLE001 - the CLI must never print secret exception text
         return 1
     return 0
 
