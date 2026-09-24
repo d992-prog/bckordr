@@ -1,20 +1,65 @@
 from __future__ import annotations
 
+import json
 import stat
+import subprocess
 import tempfile
 from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs
 
 import pytest
 
+from app.core.config import Settings
 from app.operations import watchdog
 from app.operations.watchdog import AlertState
+from app.services.vpn_release_readiness import (
+    BackupObservation,
+    OperationalObservations,
+    ReadinessObservation,
+    ReleaseCheck,
+)
 
 ALERT_ENV = {
     "VPN_TELEGRAM_BOT_TOKEN": "private-bot-token",
     "VPN_ALERT_TELEGRAM_USER_ID": "123456789",
 }
+NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
+
+
+def _settings(**overrides: object) -> Settings:
+    values = {
+        "VPN_PORTAL_PUBLIC_ORIGIN": "https://vpn.example.test",
+        "VPN_BACKUP_ENABLED": True,
+        "VPN_BACKUP_DIRECTORY": "/var/backups/domain-drop-catcher",
+        "VPN_CONTROL_KNOWN_HOSTS_PATH": "/root/.ssh/known_hosts",
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
+
+
+def _observation(state: str = "pass") -> ReadinessObservation:
+    return ReadinessObservation(
+        state=state,
+        observed_at=NOW,
+        max_age_seconds=600,
+    )
+
+
+def _observations(**overrides: ReadinessObservation) -> OperationalObservations:
+    values = {
+        "system": _observation(),
+        "control": _observation(),
+        "local": _observation(),
+        "public": _observation(),
+        "cabinet": _observation(),
+        "disk": _observation(),
+        "known_hosts": _observation(),
+    }
+    values.update(overrides)
+    return OperationalObservations(**values)
 
 
 def test_alert_state_is_immutable_and_slotted() -> None:
@@ -573,3 +618,436 @@ def test_run_alert_cycle_uses_environment_and_default_sender(
 
     assert state.notified is True
     assert sent[0][:2] == ("environment-token", "987654321")
+
+
+def test_collect_system_observations_uses_exact_independent_bounded_commands() -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def runner(command: list[str], **kwargs: object):
+        calls.append((command, kwargs))
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(command, 3)
+        return SimpleNamespace(returncode=0)
+
+    system, control = watchdog.collect_system_observations(
+        NOW,
+        runner=runner,
+    )
+
+    assert system.state == "fail"
+    assert control.state == "pass"
+    assert calls == [
+        (
+            ["/usr/bin/systemctl", "is-system-running", "--quiet"],
+            {
+                "check": False,
+                "shell": False,
+                "timeout": 3.0,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            },
+        ),
+        (
+            [
+                "/usr/bin/systemctl",
+                "is-active",
+                "--quiet",
+                "domain-drop-control.service",
+            ],
+            {
+                "check": False,
+                "shell": False,
+                "timeout": 3.0,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            },
+        ),
+    ]
+    assert system.observed_at == control.observed_at == NOW
+    assert system.max_age_seconds == control.max_age_seconds == 600
+
+
+class _HttpResponse:
+    def __init__(self, status: int, *chunks: bytes) -> None:
+        self.status_code = status
+        self.chunks = chunks
+        self.yielded = 0
+
+    async def aiter_bytes(self):
+        for chunk in self.chunks:
+            self.yielded += 1
+            yield chunk
+
+
+class _HttpStream:
+    def __init__(self, response: _HttpResponse) -> None:
+        self.response = response
+
+    async def __aenter__(self) -> _HttpResponse:
+        return self.response
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+
+class _HttpClient:
+    def __init__(self, responses: dict[str, _HttpResponse]) -> None:
+        self.responses = responses
+        self.urls: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    def stream(self, method: str, url: str) -> _HttpStream:
+        assert method == "GET"
+        self.urls.append(url)
+        response = self.responses[url]
+        if isinstance(response, Exception):
+            raise response
+        return _HttpStream(response)
+
+
+@pytest.mark.asyncio
+async def test_collect_http_observations_uses_exact_urls_and_safe_client_options() -> None:
+    local_url = "http://127.0.0.1:8000/api/health"
+    public_url = "https://vpn.example.test/api/health"
+    cabinet_url = "https://vpn.example.test/cabinet/"
+    client = _HttpClient(
+        {
+            local_url: _HttpResponse(200, b'{"status":"ok"}'),
+            public_url: _HttpResponse(200, b'{"status":', b'"ok"}'),
+            cabinet_url: _HttpResponse(200, b"x" * 4096),
+        }
+    )
+    options: list[dict[str, object]] = []
+
+    def client_factory(**kwargs: object) -> _HttpClient:
+        options.append(kwargs)
+        return client
+
+    local, public, cabinet = await watchdog.collect_http_observations(
+        _settings(),
+        NOW,
+        client_factory=client_factory,
+    )
+
+    assert (local.state, public.state, cabinet.state) == ("pass", "pass", "pass")
+    assert client.urls == [local_url, public_url, cabinet_url]
+    assert options == [
+        {"timeout": 3.0, "follow_redirects": False, "trust_env": False}
+    ]
+    assert all(item.max_age_seconds == 600 for item in (local, public, cabinet))
+
+
+@pytest.mark.asyncio
+async def test_collect_http_observations_rejects_redirects_oversize_and_bad_json_independently() -> None:
+    local_url = "http://127.0.0.1:8000/api/health"
+    public_url = "https://vpn.example.test/api/health"
+    cabinet_url = "https://vpn.example.test/cabinet/"
+    oversized = _HttpResponse(200, b"x" * 4096, b"x")
+    client = _HttpClient(
+        {
+            local_url: _HttpResponse(200, b'{"status":"not-ok"}'),
+            public_url: oversized,
+            cabinet_url: _HttpResponse(302, b"redirect"),
+        }
+    )
+
+    result = await watchdog.collect_http_observations(
+        _settings(),
+        NOW,
+        client_factory=lambda **_kwargs: client,
+    )
+
+    assert tuple(item.state for item in result) == ("fail", "fail", "fail")
+    assert client.urls == [local_url, public_url, cabinet_url]
+    assert oversized.yielded == 2
+
+
+@pytest.mark.asyncio
+async def test_invalid_public_origin_does_not_skip_local_health() -> None:
+    local_url = "http://127.0.0.1:8000/api/health"
+    client = _HttpClient(
+        {local_url: _HttpResponse(200, json.dumps({"status": "ok"}).encode())}
+    )
+
+    result = await watchdog.collect_http_observations(
+        _settings(VPN_PORTAL_PUBLIC_ORIGIN="http://unsafe.example.test"),
+        NOW,
+        client_factory=lambda **_kwargs: client,
+    )
+
+    assert tuple(item.state for item in result) == ("pass", "fail", "fail")
+    assert client.urls == [local_url]
+
+
+@pytest.mark.parametrize(
+    ("total", "free", "expected"),
+    ((100, 10, "pass"), (100, 9, "fail"), (0, 0, "fail")),
+)
+def test_disk_observation_enforces_ten_percent_boundary(
+    total: int,
+    free: int,
+    expected: str,
+) -> None:
+    paths: list[str] = []
+
+    def disk_usage(path: str):
+        paths.append(path)
+        return SimpleNamespace(total=total, free=free)
+
+    observation = watchdog.collect_disk_observation(
+        _settings(),
+        NOW,
+        disk_usage=disk_usage,
+    )
+
+    assert observation.state == expected
+    assert paths == ["/var/backups/domain-drop-catcher"]
+
+
+@pytest.mark.parametrize(
+    "info",
+    (
+        SimpleNamespace(st_mode=stat.S_IFLNK | 0o600, st_size=10, st_uid=0),
+        SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_size=10, st_uid=0),
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=0, st_uid=0),
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=65_537, st_uid=0),
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o620, st_size=10, st_uid=0),
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o602, st_size=10, st_uid=0),
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=10, st_uid=123),
+    ),
+)
+def test_known_hosts_observation_rejects_unsafe_file_metadata(info) -> None:
+    observation = watchdog.collect_known_hosts_observation(
+        _settings(),
+        NOW,
+        lstat=lambda _path: info,
+    )
+
+    assert observation.state == "fail"
+
+
+def test_known_hosts_observation_accepts_only_absolute_root_owned_private_file() -> None:
+    observed_paths: list[Path] = []
+
+    def lstat(path: Path):
+        observed_paths.append(path)
+        return SimpleNamespace(
+            st_mode=stat.S_IFREG | 0o640,
+            st_size=65_536,
+            st_uid=0,
+        )
+
+    observation = watchdog.collect_known_hosts_observation(
+        _settings(),
+        NOW,
+        lstat=lstat,
+    )
+
+    assert observation.state == "pass"
+    assert observed_paths == [Path("/root/.ssh/known_hosts")]
+    assert watchdog.collect_known_hosts_observation(
+        _settings(VPN_CONTROL_KNOWN_HOSTS_PATH="relative-known-hosts"),
+        NOW,
+        lstat=lstat,
+    ).state == "fail"
+
+
+@pytest.mark.parametrize(
+    ("enabled", "timestamp", "expected"),
+    (
+        (False, NOW, "fail"),
+        (True, None, "fail"),
+        (True, NOW, "pass"),
+        (True, NOW - timedelta(hours=36), "pass"),
+        (True, NOW - timedelta(hours=36, seconds=1), "fail"),
+        (True, NOW + timedelta(microseconds=1), "fail"),
+    ),
+)
+def test_backup_observation_requires_enabled_recent_nonfuture_validated_backup(
+    enabled: bool,
+    timestamp: datetime | None,
+    expected: str,
+) -> None:
+    calls: list[Path] = []
+
+    def latest(root: Path) -> datetime | None:
+        calls.append(root)
+        return timestamp
+
+    observation = watchdog.collect_backup_observation(
+        _settings(VPN_BACKUP_ENABLED=enabled),
+        NOW,
+        latest=latest,
+    )
+
+    assert observation.state == expected
+    assert observation.max_age_seconds == 36 * 60 * 60
+    assert calls == ([Path("/var/backups/domain-drop-catcher")] if enabled else [])
+
+
+@pytest.mark.asyncio
+async def test_database_failure_retains_local_failures_as_sorted_safe_codes() -> None:
+    operational = _observations(disk=_observation("fail"))
+    backup = BackupObservation("pass", NOW, 36 * 60 * 60)
+
+    def fail_database(_settings: Settings):
+        raise RuntimeError("postgresql://private:secret@host/database")
+
+    checks = await watchdog.collect_failing_codes(
+        _settings(),
+        now=lambda: NOW,
+        collect_observations=lambda *_args, **_kwargs: (operational, backup),
+        database_factory=fail_database,
+        evaluate_operations=lambda *_args, **_kwargs: (
+            ReleaseCheck("disk_health", "fail", "safe"),
+            ReleaseCheck("system_health", "pass", "safe"),
+            ReleaseCheck("not_allowlisted", "fail", "unsafe"),
+            ReleaseCheck("disk_health", "fail", "duplicate"),
+        ),
+    )
+
+    assert checks == ("control_database_unavailable", "disk_health")
+
+
+@pytest.mark.asyncio
+async def test_database_orchestration_persists_observations_before_dispose() -> None:
+    events: list[object] = []
+    operational = _observations()
+    backup = BackupObservation("pass", NOW, 36 * 60 * 60)
+
+    class Session:
+        async def __aenter__(self):
+            events.append("session_enter")
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            events.append("session_exit")
+
+        async def commit(self) -> None:
+            events.append("commit")
+
+    class Engine:
+        async def dispose(self) -> None:
+            events.append("dispose")
+
+    database = SimpleNamespace(engine=Engine(), session_factory=lambda: Session())
+
+    async def load_snapshot(session, settings, *, operational, backup):
+        events.append(("load", session, settings, operational, backup))
+        return "snapshot"
+
+    def evaluate(snapshot, *, now):
+        events.append(("evaluate", snapshot, now))
+        return SimpleNamespace(
+            checks=(ReleaseCheck("release_id", "fail", "safe"),)
+        )
+
+    async def store(session, stored_operational, stored_backup):
+        events.append(("store", session, stored_operational, stored_backup))
+
+    class Timeout:
+        async def __aenter__(self):
+            events.append("timeout_enter")
+
+        async def __aexit__(self, *_args) -> None:
+            events.append("timeout_exit")
+
+    timeout_values: list[float] = []
+
+    def timeout(seconds: float) -> Timeout:
+        timeout_values.append(seconds)
+        return Timeout()
+
+    checks = await watchdog.collect_failing_codes(
+        _settings(),
+        now=lambda: NOW,
+        collect_observations=lambda *_args, **_kwargs: (operational, backup),
+        database_factory=lambda _settings: database,
+        snapshot_loader=load_snapshot,
+        evaluate=evaluate,
+        store_observations=store,
+        timeout=timeout,
+    )
+
+    assert checks == ("release_id",)
+    assert timeout_values == [10.0]
+    assert events[0:2] == ["timeout_enter", "session_enter"]
+    assert events[-4:] == ["commit", "session_exit", "timeout_exit", "dispose"]
+    assert [item[0] for item in events if isinstance(item, tuple)] == [
+        "load",
+        "evaluate",
+        "store",
+    ]
+
+
+def test_main_is_fail_closed_silent_and_runs_one_enabled_cycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run_calls: list[Settings] = []
+    alert_calls: list[tuple[tuple[str, ...], Path, object]] = []
+
+    async def run(settings: Settings) -> tuple[str, ...]:
+        run_calls.append(settings)
+        return ("control_health",)
+
+    monkeypatch.setattr(
+        watchdog,
+        "run_alert_cycle",
+        lambda codes, *, state_path, environ: alert_calls.append(
+            (codes, Path(state_path), environ)
+        ),
+    )
+    disabled_run = lambda _settings: pytest.fail("disabled watchdog ran")
+    assert watchdog.main({}, run=disabled_run) == 0
+    assert watchdog.main({"VPN_WATCHDOG_ENABLED": "false"}, run=disabled_run) == 0
+    assert watchdog.main({"VPN_WATCHDOG_ENABLED": "maybe"}, run=run) == 1
+    state_path = tmp_path / "state.json"
+    environment = {
+        "VPN_WATCHDOG_ENABLED": "true",
+        "VPN_WATCHDOG_STATE_PATH": str(state_path),
+        "VPN_ALERT_TELEGRAM_USER_ID": "123456789",
+        "VPN_TELEGRAM_BOT_TOKEN": "private-token",
+    }
+
+    assert watchdog.main(environment, run=run) == 0
+
+    assert len(run_calls) == 1
+    assert alert_calls == [
+        (("control_health",), state_path, environment)
+    ]
+    assert capsys.readouterr() == ("", "")
+
+
+def test_main_returns_one_silently_on_invalid_settings_or_state_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def run(_settings: Settings) -> tuple[str, ...]:
+        return ("control_health",)
+
+    invalid = {"VPN_WATCHDOG_ENABLED": "true"}
+    assert watchdog.main(invalid, run=run) == 1
+
+    monkeypatch.setattr(
+        watchdog,
+        "run_alert_cycle",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            watchdog.AlertStateError("watchdog_state_write_failed")
+        ),
+    )
+    environment = {
+        "VPN_WATCHDOG_ENABLED": "true",
+        "VPN_WATCHDOG_STATE_PATH": str(tmp_path / "state.json"),
+        "VPN_ALERT_TELEGRAM_USER_ID": "123456789",
+        "VPN_TELEGRAM_BOT_TOKEN": "private-token",
+    }
+    assert watchdog.main(environment, run=run) == 1
+    assert capsys.readouterr() == ("", "")

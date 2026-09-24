@@ -1,14 +1,37 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import inspect
 import json
 import os
+import shutil
+import stat
+import subprocess
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, OpenerDirector, Request, build_opener
+
+import httpx
+
+from app.core.config import Settings
+from app.db.session import create_vpn_control_database
+from app.operations.backup import validated_latest_success_at
+from app.services.app_settings import set_vpn_watchdog_observations
+from app.services.vpn_portal_auth import public_origin
+from app.services.vpn_release_readiness import (
+    BackupObservation,
+    OperationalObservations,
+    ReadinessObservation,
+    evaluate_operational_checks,
+    evaluate_release_readiness,
+    load_release_readiness_snapshot,
+)
 
 SAFE_CHECK_CODES = frozenset(
     {
@@ -42,6 +65,12 @@ SAFE_CHECK_CODES = frozenset(
 TELEGRAM_TIMEOUT_SECONDS = 3.0
 TELEGRAM_RESPONSE_BYTE_LIMIT = 4096
 STATE_FILE_BYTE_LIMIT = 4096
+CHECK_TIMEOUT_SECONDS = 3.0
+HTTP_RESPONSE_BYTE_LIMIT = 4096
+OPERATIONAL_MAX_AGE_SECONDS = 600
+BACKUP_MAX_AGE_SECONDS = 36 * 60 * 60
+KNOWN_HOSTS_BYTE_LIMIT = 64 * 1024
+DATABASE_TIMEOUT_SECONDS = 10.0
 
 
 class AlertStateError(RuntimeError):
@@ -279,3 +308,328 @@ def run_alert_cycle(
     notified = build_alert_state(current.failing_codes, notified=True)
     save_alert_state(state_path, notified)
     return notified
+
+
+def _readiness_observation(state: str, observed_at: datetime) -> ReadinessObservation:
+    return ReadinessObservation(
+        state=state,  # type: ignore[arg-type]
+        observed_at=observed_at,
+        max_age_seconds=OPERATIONAL_MAX_AGE_SECONDS,
+    )
+
+
+def collect_system_observations(
+    observed_at: datetime,
+    *,
+    runner: Callable[..., Any] = subprocess.run,
+) -> tuple[ReadinessObservation, ReadinessObservation]:
+    commands = (
+        ["/usr/bin/systemctl", "is-system-running", "--quiet"],
+        [
+            "/usr/bin/systemctl",
+            "is-active",
+            "--quiet",
+            "domain-drop-control.service",
+        ],
+    )
+    observations: list[ReadinessObservation] = []
+    for command in commands:
+        try:
+            result = runner(
+                command,
+                check=False,
+                shell=False,
+                timeout=CHECK_TIMEOUT_SECONDS,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            state = "pass" if result.returncode == 0 else "fail"
+        except Exception:  # noqa: BLE001 - every local failure is a static state.
+            state = "fail"
+        observations.append(_readiness_observation(state, observed_at))
+    return observations[0], observations[1]
+
+
+async def _http_observation(
+    client: httpx.AsyncClient,
+    url: str,
+    observed_at: datetime,
+    *,
+    require_health_json: bool,
+) -> ReadinessObservation:
+    state = "fail"
+    try:
+        body = bytearray()
+        async with client.stream("GET", url) as response:
+            if response.status_code != 200:
+                return _readiness_observation(state, observed_at)
+            async for chunk in response.aiter_bytes():
+                body.extend(chunk)
+                if len(body) > HTTP_RESPONSE_BYTE_LIMIT:
+                    return _readiness_observation(state, observed_at)
+        if not require_health_json:
+            state = "pass"
+        else:
+            payload = json.loads(body)
+            if isinstance(payload, dict) and payload.get("status") == "ok":
+                state = "pass"
+    except Exception:  # noqa: BLE001 - every probe failure is a static state.
+        state = "fail"
+    return _readiness_observation(state, observed_at)
+
+
+async def collect_http_observations(
+    settings: Settings,
+    observed_at: datetime,
+    *,
+    client_factory: Callable[..., Any] = httpx.AsyncClient,
+) -> tuple[ReadinessObservation, ReadinessObservation, ReadinessObservation]:
+    local_url = f"http://127.0.0.1:8000{settings.api_prefix}/health"
+    failed = _readiness_observation("fail", observed_at)
+    origin: str | None = None
+    try:
+        candidate = public_origin(settings)
+        if not candidate.startswith("https://"):
+            raise ValueError("public_origin_must_use_https")
+        origin = candidate
+    except Exception:  # noqa: BLE001 - configuration becomes a static failure.
+        origin = None
+
+    async with client_factory(
+        timeout=CHECK_TIMEOUT_SECONDS,
+        follow_redirects=False,
+        trust_env=False,
+    ) as client:
+        local = await _http_observation(
+            client,
+            local_url,
+            observed_at,
+            require_health_json=True,
+        )
+        if origin is None:
+            return local, failed, failed
+        public = await _http_observation(
+            client,
+            f"{origin}{settings.api_prefix}/health",
+            observed_at,
+            require_health_json=True,
+        )
+        cabinet = await _http_observation(
+            client,
+            f"{origin}/cabinet/",
+            observed_at,
+            require_health_json=False,
+        )
+    return local, public, cabinet
+
+
+def collect_disk_observation(
+    settings: Settings,
+    observed_at: datetime,
+    *,
+    disk_usage: Callable[[str], Any] = shutil.disk_usage,
+) -> ReadinessObservation:
+    try:
+        usage = disk_usage(settings.vpn_backup_directory)
+        passed = usage.total > 0 and usage.free * 100 >= usage.total * 10
+    except Exception:  # noqa: BLE001 - every local failure is a static state.
+        passed = False
+    return _readiness_observation("pass" if passed else "fail", observed_at)
+
+
+def collect_known_hosts_observation(
+    settings: Settings,
+    observed_at: datetime,
+    *,
+    lstat: Callable[[Path], Any] | None = None,
+) -> ReadinessObservation:
+    inspect_path = (lambda path: path.lstat()) if lstat is None else lstat
+    try:
+        configured = settings.vpn_control_known_hosts_path.strip()
+        candidate = Path(configured)
+        if not (
+            PurePosixPath(configured).is_absolute()
+            or PureWindowsPath(configured).is_absolute()
+        ):
+            raise ValueError("known_hosts_path_invalid")
+        metadata = inspect_path(candidate)
+        passed = bool(
+            stat.S_ISREG(metadata.st_mode)
+            and 0 < metadata.st_size <= KNOWN_HOSTS_BYTE_LIMIT
+            and metadata.st_uid == 0
+            and metadata.st_mode & 0o022 == 0
+        )
+    except Exception:  # noqa: BLE001 - every local failure is a static state.
+        passed = False
+    return _readiness_observation("pass" if passed else "fail", observed_at)
+
+
+def collect_backup_observation(
+    settings: Settings,
+    observed_at: datetime,
+    *,
+    latest: Callable[[Path], datetime | None] = validated_latest_success_at,
+) -> BackupObservation:
+    timestamp: datetime | None = None
+    passed = False
+    if settings.vpn_backup_enabled:
+        try:
+            timestamp = latest(Path(settings.vpn_backup_directory))
+            passed = bool(
+                timestamp is not None
+                and timestamp.tzinfo is not None
+                and timestamp.utcoffset() is not None
+                and observed_at - timedelta(seconds=BACKUP_MAX_AGE_SECONDS)
+                <= timestamp
+                <= observed_at
+            )
+        except Exception:  # noqa: BLE001 - every local failure is a static state.
+            timestamp = None
+    return BackupObservation(
+        state="pass" if passed else "fail",
+        observed_at=timestamp,
+        max_age_seconds=BACKUP_MAX_AGE_SECONDS,
+    )
+
+
+async def collect_watchdog_observations(
+    settings: Settings,
+    observed_at: datetime,
+    *,
+    system_collector: Callable[..., Any] = collect_system_observations,
+    http_collector: Callable[..., Any] = collect_http_observations,
+    disk_collector: Callable[..., Any] = collect_disk_observation,
+    known_hosts_collector: Callable[..., Any] = collect_known_hosts_observation,
+    backup_collector: Callable[..., Any] = collect_backup_observation,
+) -> tuple[OperationalObservations, BackupObservation]:
+    failed = _readiness_observation("fail", observed_at)
+    try:
+        system, control = system_collector(observed_at)
+    except Exception:  # noqa: BLE001 - collectors remain independent.
+        system, control = failed, failed
+    try:
+        local, public, cabinet = await http_collector(settings, observed_at)
+    except Exception:  # noqa: BLE001 - collectors remain independent.
+        local, public, cabinet = failed, failed, failed
+    try:
+        disk = disk_collector(settings, observed_at)
+    except Exception:  # noqa: BLE001 - collectors remain independent.
+        disk = failed
+    try:
+        known_hosts = known_hosts_collector(settings, observed_at)
+    except Exception:  # noqa: BLE001 - collectors remain independent.
+        known_hosts = failed
+    try:
+        backup = backup_collector(settings, observed_at)
+    except Exception:  # noqa: BLE001 - collectors remain independent.
+        backup = BackupObservation(
+            state="fail",
+            observed_at=None,
+            max_age_seconds=BACKUP_MAX_AGE_SECONDS,
+        )
+    return (
+        OperationalObservations(
+            system=system,
+            control=control,
+            local=local,
+            public=public,
+            cabinet=cabinet,
+            disk=disk,
+            known_hosts=known_hosts,
+        ),
+        backup,
+    )
+
+
+async def _resolve(value: Any) -> Any:
+    return await value if inspect.isawaitable(value) else value
+
+
+async def collect_failing_codes(
+    settings: Settings,
+    *,
+    now: Callable[[], datetime] | None = None,
+    collect_observations: Callable[..., Any] = collect_watchdog_observations,
+    database_factory: Callable[..., Any] = create_vpn_control_database,
+    snapshot_loader: Callable[..., Any] = load_release_readiness_snapshot,
+    evaluate: Callable[..., Any] = evaluate_release_readiness,
+    store_observations: Callable[..., Any] = set_vpn_watchdog_observations,
+    evaluate_operations: Callable[..., Any] = evaluate_operational_checks,
+    timeout: Callable[[float], Any] = asyncio.timeout,
+) -> tuple[str, ...]:
+    current = datetime.now(UTC) if now is None else now()
+    operational, backup = await _resolve(collect_observations(settings, current))
+    database = None
+    database_failed = False
+    checks: Iterable[Any] = ()
+    try:
+        database = database_factory(settings)
+        async with (
+            timeout(DATABASE_TIMEOUT_SECONDS),
+            database.session_factory() as session,
+        ):
+            snapshot = await snapshot_loader(
+                session,
+                settings,
+                operational=operational,
+                backup=backup,
+            )
+            readiness = evaluate(snapshot, now=current)
+            checks = readiness.checks
+            await store_observations(session, operational, backup)
+            await session.commit()
+    except Exception:  # noqa: BLE001 - database details must never escape.
+        database_failed = True
+    finally:
+        if database is not None:
+            try:
+                await database.engine.dispose()
+            except Exception:  # noqa: BLE001 - disposal failure is fail-closed.
+                database_failed = True
+
+    if database_failed:
+        try:
+            checks = evaluate_operations(
+                operational,
+                backup,
+                bool(settings.vpn_control_known_hosts_path.strip()),
+                current,
+            )
+        except Exception:  # noqa: BLE001 - keep the explicit database failure.
+            checks = ()
+    codes = {
+        check.code
+        for check in checks
+        if check.state == "fail" and check.code in SAFE_CHECK_CODES
+    }
+    if database_failed:
+        codes.add("control_database_unavailable")
+    return tuple(sorted(codes))
+
+
+def main(
+    environment: Mapping[str, str] | None = None,
+    *,
+    run: Callable[[Settings], Any] = collect_failing_codes,
+) -> int:
+    environ = os.environ if environment is None else environment
+    enabled = environ.get("VPN_WATCHDOG_ENABLED", "").strip().lower()
+    if enabled in {"", "0", "false", "no", "off"}:
+        return 0
+    if enabled not in {"1", "true", "yes", "on"}:
+        return 1
+    try:
+        settings = Settings.model_validate(dict(environ))
+        failing_codes = asyncio.run(run(settings))
+        run_alert_cycle(
+            failing_codes,
+            state_path=settings.vpn_watchdog_state_path,
+            environ=environ,
+        )
+    except Exception:  # noqa: BLE001 - watchdog CLI is intentionally silent.
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
