@@ -1,0 +1,240 @@
+:root {
+  color-scheme: light dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--tg-theme-secondary-bg-color, #f3f7f3);
+  color: var(--tg-theme-text-color, #173329);
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
+.veltrix-portal button, .veltrix-portal input, .veltrix-portal textarea { font: inherit; }
+.veltrix-portal button, .veltrix-portal a { -webkit-tap-highlight-color: transparent; }
+
+.veltrix-portal {
+  --green-900: #173f2d;
+  --green-700: #267249;
+  --green-600: #31865a;
+  --green-100: #dff2e5;
+  --green-50: #edf8f0;
+  --ink: var(--tg-theme-text-color, #173329);
+  --muted: var(--tg-theme-hint-color, #62756d);
+  --surface: var(--tg-theme-bg-color, #ffffff);
+  --canvas: var(--tg-theme-secondary-bg-color, #f3f7f3);
+  --line: color-mix(in srgb, var(--ink) 13%, transparent);
+  --danger: #ad342c;
+  --portal-system-top: max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px));
+  --portal-system-right: max(env(safe-area-inset-right, 0px), var(--tg-safe-area-inset-right, 0px));
+  --portal-system-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px));
+  --portal-system-left: max(env(safe-area-inset-left, 0px), var(--tg-safe-area-inset-left, 0px));
+  --portal-safe-top: calc(var(--portal-system-top) + var(--tg-content-safe-area-inset-top, 0px));
+  --portal-safe-right: calc(var(--portal-system-right) + var(--tg-content-safe-area-inset-right, 0px));
+  --portal-safe-bottom: calc(var(--portal-system-bottom) + var(--tg-content-safe-area-inset-bottom, 0px));
+  --portal-safe-left: calc(var(--portal-system-left) + var(--tg-content-safe-area-inset-left, 0px));
+  --portal-safe-inline: max(var(--portal-safe-left), var(--portal-safe-right));
+  min-height: 100vh;
+  background: var(--canvas);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.veltrix-portal .portal-shell {
+  min-height: 100vh;
+  padding-bottom: calc(28px + var(--portal-safe-bottom));
+}
+.veltrix-portal .portal-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: calc(12px + var(--portal-safe-top)) calc(20px + var(--portal-safe-right)) 12px calc(20px + var(--portal-safe-left));
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+}
+
+.veltrix-portal .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.veltrix-portal .brand span {
+  display: inline-grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 12px;
+  background: var(--green-700);
+  color: #fff;
+  font-weight: 900;
+}
+
+.veltrix-portal .account { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.veltrix-portal .account > span { min-width: 0; max-width: 32ch; font-weight: 650; overflow-wrap: anywhere; }
+
+.veltrix-portal .section-nav {
+  display: flex;
+  gap: 6px;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 14px calc(20px + var(--portal-safe-right)) 14px calc(20px + var(--portal-safe-left));
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.veltrix-portal .section-nav::-webkit-scrollbar { display: none; }
+.veltrix-portal .section-nav a {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  padding: 0 15px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.veltrix-portal .section-nav a:hover,
+.veltrix-portal .section-nav a[aria-current="page"] { background: var(--green-50); color: var(--green-900); }
+
+.veltrix-portal .portal-content {
+  width: min(calc(100% - 40px - var(--portal-safe-inline) - var(--portal-safe-inline)), 1000px);
+  margin: 0 auto;
+}
+.veltrix-portal .portal-section { scroll-margin-top: 110px; padding: 46px 0 18px; }
+.veltrix-portal .section-heading { margin-bottom: 18px; }
+.veltrix-portal .section-heading h1, .veltrix-portal .section-heading h2 { margin: 4px 0 0; font-size: clamp(26px, 4vw, 40px); letter-spacing: -.035em; }
+.veltrix-portal .eyebrow { margin: 0; color: var(--green-600); font-size: 12px; font-weight: 850; letter-spacing: .12em; text-transform: uppercase; }
+
+.veltrix-portal .card, .veltrix-portal .profile-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: 0 12px 38px rgba(21, 62, 43, .06);
+  padding: clamp(18px, 3vw, 28px);
+}
+.veltrix-portal .card-grid, .veltrix-portal .profile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.veltrix-portal .card-row, .veltrix-portal .profile-card__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.veltrix-portal .card h2, .veltrix-portal .profile-card h3 { margin: 0; font-size: 21px; }
+.veltrix-portal .profile-card__heading .eyebrow { margin-bottom: 5px; }
+.veltrix-portal .profile-card__subscription { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
+
+.veltrix-portal .status { display: inline-flex; align-items: center; min-height: 30px; padding: 4px 10px; border-radius: 999px; font-size: 13px; font-weight: 750; white-space: nowrap; }
+.veltrix-portal .status--good { background: var(--green-100); color: var(--green-900); }
+.veltrix-portal .status--quiet { background: color-mix(in srgb, var(--muted) 12%, transparent); color: var(--muted); }
+
+.veltrix-portal .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 24px 0 0; }
+.veltrix-portal .facts div { min-width: 0; }
+.veltrix-portal .facts dt { color: var(--muted); font-size: 13px; }
+.veltrix-portal .facts dd { margin: 4px 0 0; font-weight: 700; }
+.veltrix-portal .hint { color: var(--muted); line-height: 1.55; }
+.veltrix-portal .subscription-card > .hint { margin: 24px 0 0; padding-top: 18px; border-top: 1px solid var(--line); }
+.veltrix-portal .section-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.veltrix-portal .trial-card { display: grid; gap: 16px; margin-bottom: 16px; }
+.veltrix-portal .trial-card__meta { margin: 0; color: var(--muted); line-height: 1.55; }
+.veltrix-portal .trial-card__actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.veltrix-portal .button, .veltrix-portal .platform {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  padding: 9px 15px;
+  cursor: pointer;
+  font-weight: 750;
+  text-decoration: none;
+}
+.veltrix-portal .button--primary { background: #267249; color: #fff; }
+.veltrix-portal .button--primary:hover { background: #173f2d; }
+.veltrix-portal .button--ghost { border-color: var(--line); background: transparent; color: var(--ink); }
+.veltrix-portal .button:disabled { opacity: .5; cursor: not-allowed; }
+.veltrix-portal .button:focus-visible, .veltrix-portal .platform:focus-visible, .veltrix-portal a:focus-visible, .veltrix-portal input:focus-visible, .veltrix-portal textarea:focus-visible { outline: 3px solid #62bd85; outline-offset: 3px; }
+
+.veltrix-portal .profile-card { display: grid; align-content: start; gap: 18px; }
+.veltrix-portal .connection-box { display: grid; gap: 10px; padding-top: 18px; border-top: 1px solid var(--line); }
+.veltrix-portal .connection-uri, .veltrix-portal .rename-form input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--canvas);
+  color: var(--ink);
+  padding: 12px;
+}
+.veltrix-portal .connection-uri { resize: vertical; overflow-wrap: anywhere; word-break: break-all; }
+.veltrix-portal .rename-form { display: grid; gap: 10px; }
+.veltrix-portal .button-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.veltrix-portal .message { margin: 0; line-height: 1.5; }
+.veltrix-portal .message--error { color: var(--danger); }
+
+.veltrix-portal .connect-card { display: grid; gap: 18px; }
+.veltrix-portal .platforms { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.veltrix-portal .platform { border-color: var(--line); background: transparent; color: var(--muted); }
+.veltrix-portal .platform--active { border-color: var(--green-600); background: var(--green-50); color: var(--green-900); }
+.veltrix-portal .steps { display: grid; gap: 13px; margin: 0; padding-left: 24px; line-height: 1.55; }
+.veltrix-portal .steps a, .veltrix-portal .hint a { color: var(--green-700); font-weight: 700; }
+.veltrix-portal .support-text { white-space: pre-wrap; line-height: 1.65; }
+
+.veltrix-portal .state-page {
+  display: grid;
+  width: min(calc(100% - 40px - var(--portal-safe-inline) - var(--portal-safe-inline)), 620px);
+  min-height: 100vh;
+  align-content: center;
+  gap: 20px;
+  margin: 0 auto;
+  padding: calc(28px + var(--portal-safe-top)) 0 calc(28px + var(--portal-safe-bottom));
+}
+.veltrix-portal .state-card h1 { margin-top: 0; font-size: clamp(27px, 6vw, 42px); letter-spacing: -.035em; }
+.veltrix-portal .state-card p { line-height: 1.6; }
+
+@media (max-width: 639px) {
+  .veltrix-portal .portal-header { align-items: flex-start; }
+  .veltrix-portal .account { align-items: flex-end; flex-direction: column; gap: 6px; text-align: right; }
+  .veltrix-portal .account .button { min-height: 44px; }
+  .veltrix-portal .portal-content {
+    width: min(calc(100% - 28px - var(--portal-safe-inline) - var(--portal-safe-inline)), 1000px);
+  }
+  .veltrix-portal .section-nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding-inline: calc(14px + var(--portal-safe-inline));
+    overflow: visible;
+  }
+  .veltrix-portal .section-nav a { justify-content: center; padding-inline: 8px; }
+  .veltrix-portal .section-nav a:last-child { grid-column: 1 / -1; }
+  .veltrix-portal .portal-section { padding-top: 34px; }
+  .veltrix-portal .card-grid, .veltrix-portal .profile-grid { grid-template-columns: minmax(0, 1fr); }
+  .veltrix-portal .facts { grid-template-columns: minmax(0, 1fr); }
+  .veltrix-portal .platforms { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .veltrix-portal .card-row, .veltrix-portal .profile-card__heading { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 640px) {
+  .veltrix-portal .trial-card__actions { width: 100%; }
+  .veltrix-portal .trial-card__actions .button { width: 100%; }
+}
+
+@media (prefers-color-scheme: dark) {
+  .veltrix-portal {
+    --green-900: #b6e6c6;
+    --green-700: #43a96f;
+    --green-600: #62bd85;
+    --green-100: #244d35;
+    --green-50: #1d392a;
+    --ink: var(--tg-theme-text-color, #eef8f1);
+    --muted: var(--tg-theme-hint-color, #a8b8ae);
+    --surface: var(--tg-theme-bg-color, #13251c);
+    --canvas: var(--tg-theme-secondary-bg-color, #0c1812);
+    --danger: #ff9b91;
+  }
+}

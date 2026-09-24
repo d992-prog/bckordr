@@ -4,18 +4,24 @@ import {
   api,
   type VpnAccessKey,
   type VpnCustomer,
+  type VpnFriendInvitation,
+  type VpnFriendInvitationIssued,
   type VpnPlan,
   type VpnSubscription,
   type WorkerNode,
 } from "./api";
 import {
   accessKeyStatusLabel,
+  applyAccessKeyDisplay,
   calculateExtendedExpiration,
   classifyVpnCustomer,
   customerStatusOptions,
   filterVpnCustomers,
+  nextAccessKeyEditorAfterRename,
+  reconcileAccessKeyDisplayOverrides,
   selectPrimarySubscription,
   saveSubscriptionAndRequestSync,
+  saveAccessKeyDisplayName,
   type VpnCustomerFilter,
   type VpnCustomerOperationalStatus,
 } from "./vpnCustomerWorkspace";
@@ -26,6 +32,7 @@ type Props = {
   customers: VpnCustomer[];
   subscriptions: VpnSubscription[];
   accessKeys: VpnAccessKey[];
+  friendInvitations: VpnFriendInvitation[];
   plans: VpnPlan[];
   workers: WorkerNode[];
   reload: () => Promise<void>;
@@ -54,8 +61,13 @@ type SubscriptionForm = {
 type AccessKeyForm = {
   workerId: string;
   protocol: string;
-  publicName: string;
+  displayName: string;
 };
+
+type AccessKeyDisplayOverride = Pick<
+  VpnAccessKey,
+  "display_name" | "config_uri" | "updated_at"
+>;
 
 const EMPTY_CUSTOMER_FORM: CustomerForm = {
   telegramUserId: "",
@@ -79,7 +91,7 @@ const EMPTY_SUBSCRIPTION_FORM: SubscriptionForm = {
 const EMPTY_ACCESS_KEY_FORM: AccessKeyForm = {
   workerId: "",
   protocol: "vless",
-  publicName: "",
+  displayName: "",
 };
 
 const SUBSCRIPTION_STATUS_OPTIONS = [
@@ -113,6 +125,19 @@ const CUSTOMER_RECORD_STATUS_LABELS: Record<string, string> = {
   active: "Активен",
   blocked: "Заблокирован",
   archived: "Архив",
+};
+
+const FRIEND_INVITATION_STATE_LABELS: Record<
+  VpnFriendInvitation["invite_state"],
+  string
+> = {
+  unused: "Не использовано",
+  preparing: "Готовится",
+  active: "Активно",
+  failed: "Ошибка",
+  needs_verification: "Требует проверки",
+  expired: "Истекло",
+  disabled: "Отключено",
 };
 
 function customerName(customer: VpnCustomer) {
@@ -208,10 +233,40 @@ function subscriptionStatusClass(status: string) {
   return "status inactive";
 }
 
+function friendInvitationStatusClass(state: VpnFriendInvitation["invite_state"]) {
+  if (state === "active") {
+    return "status available";
+  }
+  if (["preparing", "needs_verification"].includes(state)) {
+    return "status checking";
+  }
+  if (state === "failed") {
+    return "status error";
+  }
+  if (["expired", "disabled"].includes(state)) {
+    return "status inactive";
+  }
+  return "status";
+}
+
+function friendInvitationIdentity(invitation: VpnFriendInvitation) {
+  if (invitation.display_name) {
+    return invitation.display_name;
+  }
+  if (invitation.telegram_username) {
+    return `@${invitation.telegram_username.replace(/^@/, "")}`;
+  }
+  if (invitation.telegram_user_id) {
+    return `Telegram ID ${invitation.telegram_user_id}`;
+  }
+  return invitation.can_rotate ? "Ожидает друга" : "Свободный слот";
+}
+
 export function VpnCustomerWorkspace({
   customers,
   subscriptions,
   accessKeys,
+  friendInvitations,
   plans,
   workers,
   reload,
@@ -224,6 +279,7 @@ export function VpnCustomerWorkspace({
   const [editingCustomer, setEditingCustomer] = useState(false);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [invitationLinks, setInvitationLinks] = useState<Record<number, string>>({});
   const [subscriptionForm, setSubscriptionForm] = useState<SubscriptionForm>(
     EMPTY_SUBSCRIPTION_FORM,
   );
@@ -234,6 +290,14 @@ export function VpnCustomerWorkspace({
     number | null
   >(null);
   const [expandedKeyIds, setExpandedKeyIds] = useState<Set<number>>(() => new Set());
+  const [editingAccessKeyId, setEditingAccessKeyId] = useState<number | null>(null);
+  const [accessKeyName, setAccessKeyName] = useState("");
+  const [pendingAccessKeyRenameIds, setPendingAccessKeyRenameIds] = useState<Set<number>>(
+    () => new Set(),
+  );
+  const [accessKeyDisplayOverrides, setAccessKeyDisplayOverrides] = useState<
+    Map<number, AccessKeyDisplayOverride>
+  >(() => new Map());
 
   const filteredCustomers = useMemo(
     () => filterVpnCustomers(customers, subscriptions, filter, query),
@@ -253,14 +317,24 @@ export function VpnCustomerWorkspace({
     [selectedSubscriptions],
   );
   const selectedAccessKeys = useMemo(
-    () => accessKeys.filter((accessKey) => selectedSubscriptionIds.has(accessKey.subscription_id)),
-    [accessKeys, selectedSubscriptionIds],
+    () =>
+      accessKeys
+        .filter((accessKey) => selectedSubscriptionIds.has(accessKey.subscription_id))
+        .map((accessKey) => {
+          const display = accessKeyDisplayOverrides.get(accessKey.id);
+          return display ? applyAccessKeyDisplay(accessKey, display) : accessKey;
+        }),
+    [accessKeys, accessKeyDisplayOverrides, selectedSubscriptionIds],
   );
   const planMap = useMemo(() => new Map(plans.map((plan) => [plan.id, plan])), [plans]);
   const workerMap = useMemo(
     () => new Map(workers.map((worker) => [worker.id, worker])),
     [workers],
   );
+  const usedInvitationCount = friendInvitations.filter(
+    (invitation) => invitation.invite_state !== "unused" || invitation.can_rotate,
+  ).length;
+  const invitationsReady = friendInvitations.length === 10;
 
   useEffect(() => {
     if (
@@ -275,6 +349,158 @@ export function VpnCustomerWorkspace({
     setEditingSubscriptionId(null);
     setCreatingKeyForSubscriptionId(null);
   }, [filteredCustomers, selectedCustomerId]);
+
+  useEffect(() => {
+    setAccessKeyDisplayOverrides((current) =>
+      reconcileAccessKeyDisplayOverrides(current, accessKeys),
+    );
+  }, [accessKeys]);
+
+  useEffect(() => {
+    const usableSlots = new Set(
+      friendInvitations
+        .filter(
+          (invitation) =>
+            invitation.invite_state === "unused" && invitation.can_rotate,
+        )
+        .map((invitation) => invitation.slot),
+    );
+    setInvitationLinks((current) => {
+      const retained = Object.fromEntries(
+        Object.entries(current).filter(([slot]) => usableSlots.has(Number(slot))),
+      );
+      return Object.keys(retained).length === Object.keys(current).length
+        ? current
+        : retained;
+    });
+  }, [friendInvitations]);
+
+  async function reloadAfterSavedInvitation(failureMessage?: string) {
+    try {
+      await reload();
+    } catch {
+      notify(
+        "error",
+        failureMessage ?? "Изменение сохранено, но список не обновился",
+      );
+    }
+  }
+
+  async function rememberIssuedInvitation(
+    issued: VpnFriendInvitationIssued,
+    successMessage: string,
+  ) {
+    setInvitationLinks((current) => ({
+      ...current,
+      [issued.invitation.slot]: issued.invite_link,
+    }));
+    notify("success", successMessage);
+    await reloadAfterSavedInvitation(
+      "Приглашение создано, но список не обновился. Скопируйте показанную ссылку.",
+    );
+  }
+
+  async function issueFriendInvitation() {
+    if (!invitationsReady || usedInvitationCount >= 10) {
+      return;
+    }
+    setBusyAction("friend-invitation-issue");
+    try {
+      const issued = await api.issueVpnFriendInvitation();
+      await rememberIssuedInvitation(issued, "Тестовое приглашение создано");
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось создать приглашение",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  function forgetInvitationLink(slot: number) {
+    setInvitationLinks((current) => {
+      const next = { ...current };
+      delete next[slot];
+      return next;
+    });
+  }
+
+  async function rotateFriendInvitation(invitation: VpnFriendInvitation) {
+    if (!invitation.can_rotate) {
+      return;
+    }
+    setBusyAction(`friend-invitation-rotate-${invitation.slot}`);
+    forgetInvitationLink(invitation.slot);
+    try {
+      const issued = await api.rotateVpnFriendInvitation(invitation.slot);
+      await rememberIssuedInvitation(issued, `Ссылка для слота ${invitation.slot} обновлена`);
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось обновить приглашение",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function retryFriendInvitation(invitation: VpnFriendInvitation) {
+    if (!invitation.can_retry) {
+      return;
+    }
+    setBusyAction(`friend-invitation-retry-${invitation.slot}`);
+    try {
+      await api.retryVpnFriendInvitation(invitation.slot);
+      notify("success", `Повторная выдача для слота ${invitation.slot} запланирована`);
+      await reloadAfterSavedInvitation();
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось повторить выдачу",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function disableFriendInvitation(invitation: VpnFriendInvitation) {
+    if (
+      !invitation.can_disable ||
+      !window.confirm(
+        `Отключить участника в слоте ${invitation.slot}? Он потеряет доступ к личному кабинету и VPN.`,
+      )
+    ) {
+      return;
+    }
+    setBusyAction(`friend-invitation-disable-${invitation.slot}`);
+    try {
+      await api.disableVpnFriendInvitation(invitation.slot);
+      forgetInvitationLink(invitation.slot);
+      notify("success", `Доступ участника в слоте ${invitation.slot} отключён`);
+      await reloadAfterSavedInvitation();
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось отключить участника",
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function copyInvitationLink(slot: number) {
+    const inviteLink = invitationLinks[slot];
+    if (!inviteLink) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(inviteLink);
+      notify("success", "Ссылка приглашения скопирована");
+    } catch {
+      notify("error", "Не удалось скопировать ссылку. Выделите её вручную.");
+    }
+  }
 
   function beginCustomerCreate() {
     setCustomerForm(EMPTY_CUSTOMER_FORM);
@@ -523,7 +749,7 @@ export function VpnCustomerWorkspace({
         subscription_id: creatingKeyForSubscriptionId,
         worker_id: optionalNumber(accessKeyForm.workerId),
         protocol: accessKeyForm.protocol,
-        public_name: accessKeyForm.publicName.trim() || null,
+        display_name: accessKeyForm.displayName.trim(),
       });
       await reload();
       setCreatingKeyForSubscriptionId(null);
@@ -567,7 +793,7 @@ export function VpnCustomerWorkspace({
   }
 
   async function revokeAccessKey(accessKey: VpnAccessKey, requireConfirmation = true) {
-    const keyName = accessKey.public_name ?? `ключ #${accessKey.id}`;
+    const keyName = accessKey.display_name;
     if (
       requireConfirmation &&
       !window.confirm(
@@ -593,6 +819,62 @@ export function VpnCustomerWorkspace({
       );
     } finally {
       setBusyAction(null);
+    }
+  }
+
+  function beginAccessKeyRename(accessKey: VpnAccessKey) {
+    setEditingAccessKeyId(accessKey.id);
+    setAccessKeyName(accessKey.display_name);
+  }
+
+  function cancelAccessKeyRename() {
+    setEditingAccessKeyId(null);
+    setAccessKeyName("");
+  }
+
+  async function renameAccessKey(event: FormEvent, accessKey: VpnAccessKey) {
+    event.preventDefault();
+    const displayName = accessKeyName.trim();
+    if (!displayName) {
+      return;
+    }
+    setPendingAccessKeyRenameIds((current) => new Set(current).add(accessKey.id));
+    try {
+      const result = await saveAccessKeyDisplayName(
+        () => api.renameVpnAccessKey(accessKey.id, displayName),
+        reload,
+        (renamedAccessKey) => {
+          setAccessKeyDisplayOverrides((current) => {
+            const next = new Map(current);
+            next.set(renamedAccessKey.id, {
+              display_name: renamedAccessKey.display_name,
+              config_uri: renamedAccessKey.config_uri,
+              updated_at: renamedAccessKey.updated_at,
+            });
+            return next;
+          });
+        },
+      );
+      setEditingAccessKeyId((current) =>
+        nextAccessKeyEditorAfterRename(current, accessKey.id),
+      );
+      notify(
+        result.refreshed ? "success" : "error",
+        result.refreshed
+          ? "Название профиля сохранено"
+          : "Название профиля сохранено, но список не обновлён. Повторите обновление страницы.",
+      );
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Не удалось изменить название профиля",
+      );
+    } finally {
+      setPendingAccessKeyRenameIds((current) => {
+        const next = new Set(current);
+        next.delete(accessKey.id);
+        return next;
+      });
     }
   }
 
@@ -629,6 +911,114 @@ export function VpnCustomerWorkspace({
         "Буфер обмена недоступен. Полная ссылка выделена — скопируйте её вручную.",
       );
     }
+  }
+
+  function renderFriendInvitations() {
+    return (
+      <section className="vpn-workspace-section vpn-friend-invitations">
+        <div className="vpn-workspace-section-head">
+          <div>
+            <h3>Тестовые приглашения · {usedInvitationCount}/10</h3>
+            <p className="muted">
+              Ссылка показывается только после создания или обновления. Скопируйте её до
+              выхода из раздела.
+            </p>
+          </div>
+          {invitationsReady && usedInvitationCount < 10 ? (
+            <button
+              type="button"
+              disabled={busyAction !== null}
+              onClick={() => void issueFriendInvitation()}
+            >
+              Создать приглашение
+            </button>
+          ) : null}
+        </div>
+        <div className="vpn-friend-invitation-list">
+          {!invitationsReady ? (
+            <p className="muted">Загружаем тестовые приглашения…</p>
+          ) : null}
+          {friendInvitations.map((invitation) => {
+            const inviteLink = invitationLinks[invitation.slot];
+            const actionBusy = busyAction !== null;
+            return (
+              <article key={invitation.slot} className="vpn-friend-invitation-row">
+                <strong className="vpn-friend-invitation-slot">#{invitation.slot}</strong>
+                <div className="vpn-friend-invitation-main">
+                  <strong>{friendInvitationIdentity(invitation)}</strong>
+                  {invitation.telegram_username && invitation.display_name ? (
+                    <span className="row-hint">
+                      @{invitation.telegram_username.replace(/^@/, "")}
+                    </span>
+                  ) : null}
+                  {invitation.subscription_expires_at ? (
+                    <span className="row-hint">
+                      Доступ до {formatDateTime(invitation.subscription_expires_at)}
+                    </span>
+                  ) : null}
+                  {invitation.provisioning_error_code ? (
+                    <span className="error-text">
+                      Код выдачи: {invitation.provisioning_error_code}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="vpn-friend-invitation-controls">
+                  <span className={friendInvitationStatusClass(invitation.invite_state)}>
+                    {FRIEND_INVITATION_STATE_LABELS[invitation.invite_state]}
+                  </span>
+                  <div className="actions">
+                    {invitation.can_rotate ? (
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={actionBusy}
+                        onClick={() => void rotateFriendInvitation(invitation)}
+                      >
+                        Обновить ссылку
+                      </button>
+                    ) : null}
+                    {invitation.can_retry ? (
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={actionBusy}
+                        onClick={() => void retryFriendInvitation(invitation)}
+                      >
+                        Повторить выдачу
+                      </button>
+                    ) : null}
+                    {invitation.can_disable ? (
+                      <button
+                        type="button"
+                        className="danger"
+                        disabled={actionBusy}
+                        onClick={() => void disableFriendInvitation(invitation)}
+                      >
+                        Отключить
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+                {inviteLink ? (
+                  <div className="vpn-friend-invitation-link-block">
+                    <code className="vpn-friend-invitation-link">{inviteLink}</code>
+                    <div className="actions">
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => void copyInvitationLink(invitation.slot)}
+                      >
+                        Копировать ссылку
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    );
   }
 
   function renderCustomerFields() {
@@ -899,11 +1289,13 @@ export function VpnCustomerWorkspace({
           <label>
             <span>Название</span>
             <input
-              value={accessKeyForm.publicName}
+              value={accessKeyForm.displayName}
+              required
+              maxLength={64}
               onChange={(event) =>
                 setAccessKeyForm((current) => ({
                   ...current,
-                  publicName: event.target.value,
+                  displayName: event.target.value,
                 }))
               }
               placeholder="Например: телефон"
@@ -931,6 +1323,7 @@ export function VpnCustomerWorkspace({
 
   function renderAccessKey(accessKey: VpnAccessKey) {
     const expanded = expandedKeyIds.has(accessKey.id);
+    const renameBusy = pendingAccessKeyRenameIds.has(accessKey.id);
     const workerName = accessKey.worker_id
       ? workerMap.get(accessKey.worker_id)?.name ?? `нода #${accessKey.worker_id}`
       : "автовыбор / не назначена";
@@ -938,7 +1331,47 @@ export function VpnCustomerWorkspace({
       <article key={accessKey.id} className="vpn-key-card">
         <div className="vpn-workspace-section-head">
           <div>
-            <strong>{accessKey.public_name ?? `ключ #${accessKey.id}`}</strong>
+            {editingAccessKeyId === accessKey.id ? (
+              <form
+                className="vpn-key-rename-form"
+                onSubmit={(event) => void renameAccessKey(event, accessKey)}
+              >
+                <input
+                  aria-label={`Название профиля ${accessKey.display_name}`}
+                  value={accessKeyName}
+                  required
+                  maxLength={64}
+                  onChange={(event) => setAccessKeyName(event.target.value)}
+                />
+                <div className="actions">
+                  <button
+                    type="submit"
+                    disabled={renameBusy}
+                  >
+                    Сохранить
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={renameBusy}
+                    onClick={cancelAccessKeyRename}
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="vpn-key-title-row">
+                <strong>{accessKey.display_name}</strong>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => beginAccessKeyRename(accessKey)}
+                >
+                  Изменить название
+                </button>
+              </div>
+            )}
             <div className="row-hint">
               {accessKey.protocol.toUpperCase()} · {workerName}
             </div>
@@ -961,7 +1394,9 @@ export function VpnCustomerWorkspace({
             <strong>{accessKey.external_uuid ?? "будет создан"}</strong>
           </div>
         </div>
-        {accessKey.config_uri ? (
+        {renameBusy ? (
+          <p className="muted">Обновляем подпись ссылки…</p>
+        ) : accessKey.config_uri ? (
           <div className="vpn-key-link-block">
             <code className="vpn-key-preview">{accessKey.config_uri}</code>
             <div className="actions">
@@ -979,7 +1414,7 @@ export function VpnCustomerWorkspace({
                 value={accessKey.config_uri}
                 readOnly
                 spellCheck={false}
-                aria-label={`Полная ссылка ключа ${accessKey.public_name ?? accessKey.id}`}
+                aria-label={`Полная ссылка профиля ${accessKey.display_name}`}
               />
             ) : null}
           </div>
@@ -1005,7 +1440,7 @@ export function VpnCustomerWorkspace({
             <button
               type="button"
               className="ghost"
-              disabled={busyAction === `key-provision-${accessKey.id}`}
+              disabled={renameBusy || busyAction === `key-provision-${accessKey.id}`}
               onClick={() => void retryAccessKeyProvision(accessKey)}
             >
               Повторить синхронизацию
@@ -1015,7 +1450,7 @@ export function VpnCustomerWorkspace({
             <button
               type="button"
               className="ghost"
-              disabled={busyAction === `key-revoke-${accessKey.id}`}
+              disabled={renameBusy || busyAction === `key-revoke-${accessKey.id}`}
               onClick={() => void revokeAccessKey(accessKey, false)}
             >
               Повторить отзыв
@@ -1025,7 +1460,7 @@ export function VpnCustomerWorkspace({
             <button
               type="button"
               className="danger"
-              disabled={busyAction === `key-revoke-${accessKey.id}`}
+              disabled={renameBusy || busyAction === `key-revoke-${accessKey.id}`}
               onClick={() => void revokeAccessKey(accessKey)}
             >
               Отозвать и сохранить
@@ -1104,6 +1539,7 @@ export function VpnCustomerWorkspace({
       </aside>
 
       <section className="vpn-customer-detail">
+        {renderFriendInvitations()}
         {creatingCustomer ? (
           <form className="form vpn-workspace-section" onSubmit={saveCustomer}>
             <h3>Новый клиент</h3>

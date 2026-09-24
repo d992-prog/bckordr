@@ -8,14 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
 from app.db.models import (
-    AttackRun,
     VpnAccessKey,
     VpnNodeEvent,
     WorkerMaintenanceJob,
     WorkerNode,
-    WorkerTask,
 )
-from app.services.vpn_policy import DEVICE_SLOT_STATUSES
+from app.services.vpn_policy import DEVICE_SLOT_STATUSES, active_attack_worker_ids
+from app.services.vpn_control_intents import active_vpn_control_worker_ids
 
 
 class WorkerDecommissionNotFoundError(ValueError):
@@ -47,17 +46,24 @@ async def decommission_worker(
     if worker is None:
         raise WorkerDecommissionNotFoundError("Worker not found")
 
-    active_attack_task_id = await session.scalar(
-        select(WorkerTask.id)
-        .join(AttackRun, AttackRun.id == WorkerTask.attack_run_id)
+    if worker_id in await active_vpn_control_worker_ids(session):
+        raise WorkerDecommissionConflictError("Worker has an active VPN control operation")
+
+    bound_profile_id = await session.scalar(
+        select(VpnAccessKey.id)
         .where(
-            WorkerTask.worker_id == worker_id,
-            WorkerTask.status.in_(("queued", "planned", "running")),
-            AttackRun.status.in_(("planned", "running")),
+            VpnAccessKey.worker_id == worker_id,
+            VpnAccessKey.endpoint_id.is_not(None),
+            VpnAccessKey.status != "revoked",
         )
         .limit(1)
     )
-    if active_attack_task_id is not None:
+    if bound_profile_id is not None:
+        raise WorkerDecommissionConflictError(
+            "Endpoint-bound VPN profiles must be remotely revoked before node removal"
+        )
+
+    if worker_id in await active_attack_worker_ids(session):
         raise WorkerDecommissionConflictError("Worker is assigned to an active domain attack")
 
     active_maintenance_id = await session.scalar(

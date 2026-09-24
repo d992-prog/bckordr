@@ -1,6 +1,41 @@
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
+
+
+VPN_PUBLIC_TRIAL_MIGRATIONS = (
+    "ALTER TABLE vpn_customers ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMPTZ NULL",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_customers_trial_started_at ON vpn_customers(trial_started_at)",
+    "ALTER TABLE vpn_access_keys ADD COLUMN IF NOT EXISTS ready_notice_claimed_at TIMESTAMPTZ NULL",
+    "ALTER TABLE vpn_access_keys ADD COLUMN IF NOT EXISTS ready_notice_retry_at TIMESTAMPTZ NULL",
+    "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_ready_notice_retry_at ON vpn_access_keys(ready_notice_retry_at)",
+    "ALTER TABLE vpn_access_keys ADD COLUMN IF NOT EXISTS ready_notified_at TIMESTAMPTZ NULL",
+    """
+    UPDATE vpn_customers AS customer
+    SET trial_started_at = trials.first_started_at
+    FROM (
+        SELECT customer_id, MIN(starts_at) AS first_started_at
+        FROM vpn_subscriptions
+        WHERE status = 'trial' AND starts_at IS NOT NULL
+        GROUP BY customer_id
+    ) AS trials
+    WHERE customer.id = trials.customer_id AND customer.trial_started_at IS NULL
+    """,
+    """
+    WITH ready_notice_backfill AS (
+        INSERT INTO app_settings (key, value)
+        VALUES ('vpn_ready_notice_backfill_v1', 'done')
+        ON CONFLICT (key) DO NOTHING
+        RETURNING key
+    )
+    UPDATE vpn_access_keys
+    SET ready_notified_at = COALESCE(last_synced_at, issued_at, created_at)
+    WHERE status = 'active' AND config_uri IS NOT NULL AND ready_notified_at IS NULL
+      AND EXISTS (SELECT 1 FROM ready_notice_backfill)
+    """,
+)
+
 
 MIGRATIONS = (
     "CREATE TABLE IF NOT EXISTS app_settings (id SERIAL PRIMARY KEY, key VARCHAR(128) UNIQUE NOT NULL, value TEXT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())",
@@ -158,6 +193,7 @@ MIGRATIONS = (
         expires_at TIMESTAMPTZ NULL,
         revoked_at TIMESTAMPTZ NULL,
         last_synced_at TIMESTAMPTZ NULL,
+        ready_notice_retry_at TIMESTAMPTZ NULL,
         last_error TEXT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -168,6 +204,7 @@ MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_external_uuid ON vpn_access_keys(external_uuid)",
     "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_status ON vpn_access_keys(status)",
     "CREATE INDEX IF NOT EXISTS ix_vpn_access_keys_expires_at ON vpn_access_keys(expires_at)",
+    "ALTER TABLE vpn_access_keys ADD COLUMN IF NOT EXISTS display_name VARCHAR(64) NULL",
     """
     CREATE TABLE IF NOT EXISTS vpn_node_events (
         id SERIAL PRIMARY KEY,
@@ -517,6 +554,27 @@ MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_zone ON zone_scan_candidates(zone)",
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_lifecycle_stage ON zone_scan_candidates(lifecycle_stage)",
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_discovery_domain_id ON zone_scan_candidates(discovery_domain_id)",
+) + VPN_PUBLIC_TRIAL_MIGRATIONS + VPN_ENDPOINT_MIGRATIONS + (
+    """
+    CREATE TABLE IF NOT EXISTS vpn_friend_invitations (
+        slot SMALLINT PRIMARY KEY,
+        token_digest VARCHAR(64) NOT NULL,
+        created_by_user_id INTEGER NULL REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        redeem_expires_at TIMESTAMPTZ NOT NULL,
+        redeemed_at TIMESTAMPTZ NULL,
+        telegram_user_id VARCHAR(64) NULL,
+        access_key_id INTEGER NULL REFERENCES vpn_access_keys(id) ON DELETE RESTRICT,
+        revoked_at TIMESTAMPTZ NULL,
+        CONSTRAINT ck_vpn_friend_invitation_slot CHECK (slot BETWEEN 1 AND 10),
+        CONSTRAINT ck_vpn_friend_invitation_redemption CHECK (
+            (redeemed_at IS NULL AND telegram_user_id IS NULL AND access_key_id IS NULL) OR
+            (redeemed_at IS NOT NULL AND telegram_user_id IS NOT NULL AND access_key_id IS NOT NULL)
+        ),
+        UNIQUE (token_digest),
+        CONSTRAINT uq_vpn_friend_invitation_access_key UNIQUE (access_key_id)
+    )
+    """,
 )
 
 

@@ -17,6 +17,7 @@ from app.db.models import (
     AttackRun,
     DropDomain,
     VpnAccessKey,
+    VpnControlOperation,
     VpnCustomer,
     VpnNodeEvent,
     VpnSubscription,
@@ -164,7 +165,13 @@ async def test_decommission_worker_archives_node_and_retires_attached_keys(sessi
 
 
 @pytest.mark.asyncio
-async def test_decommission_worker_rejects_active_attack_without_partial_changes(session_factory):
+@pytest.mark.parametrize("run_status,task_status", [
+    ("running", "running"), ("planned", "planned"),
+    ("verifying", "cancelled"), ("verifying", "succeeded"),
+])
+async def test_decommission_worker_rejects_active_attack_without_partial_changes(
+    session_factory, run_status, task_status,
+):
     async with session_factory() as session:
         worker, _, _, access_key = await seed_vpn_node(session)
         now = datetime.now(UTC)
@@ -173,7 +180,7 @@ async def test_decommission_worker_rejects_active_attack_without_partial_changes
         await session.flush()
         run = AttackRun(
             domain_id=domain.id,
-            status="running",
+            status=run_status,
             planned_start_at=now,
             planned_end_at=now + timedelta(minutes=1),
         )
@@ -184,7 +191,7 @@ async def test_decommission_worker_rejects_active_attack_without_partial_changes
                 attack_run_id=run.id,
                 domain_id=domain.id,
                 worker_id=worker.id,
-                status="running",
+                status=task_status,
             )
         )
         await session.commit()
@@ -210,6 +217,46 @@ async def test_decommission_worker_rejects_active_maintenance(session_factory):
 
         with pytest.raises(WorkerDecommissionConflictError, match="active maintenance"):
             await decommission_worker(session, worker.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["queued", "claimed", "uncertain"])
+async def test_decommission_rejects_control_reservation_without_clearing_credentials(
+    session_factory,
+    state,
+):
+    async with session_factory() as session:
+        worker, _, _, access_key = await seed_vpn_node(session)
+        session.add(
+            VpnControlOperation(
+                id="60000000-0000-4000-8000-000000000001",
+                access_key_id=access_key.id,
+                worker_id=worker.id,
+                endpoint_id=1,
+                generation=1,
+                action="revoke",
+                request_snapshot={},
+                request_digest="1" * 64,
+                state=state,
+                claim_token=(
+                    "70000000-0000-4000-8000-000000000001"
+                    if state in {"claimed", "uncertain"}
+                    else None
+                ),
+            )
+        )
+        await session.commit()
+
+        with pytest.raises(WorkerDecommissionConflictError, match="VPN control operation"):
+            await decommission_worker(session, worker.id)
+        await session.rollback()
+
+        await session.refresh(worker)
+        assert worker.archived_at is None
+        assert worker.control_token == "worker-token"
+        assert worker.ssh_password == "ssh-secret"
+        assert worker.ssh_key_path == "/root/.ssh/id_ed25519"
+        assert worker.vpn_panel_password == "panel-secret"
 
 
 @pytest.mark.asyncio
@@ -255,7 +302,13 @@ async def test_delete_worker_archives_and_hides_it_from_active_apis(
 
 
 @pytest.mark.asyncio
-async def test_delete_worker_returns_409_for_active_attack(api_client, session_factory):
+@pytest.mark.parametrize("run_status,task_status", [
+    ("running", "running"), ("planned", "planned"),
+    ("verifying", "cancelled"), ("verifying", "succeeded"),
+])
+async def test_delete_worker_returns_409_for_active_attack(
+    api_client, session_factory, run_status, task_status,
+):
     async with session_factory() as session:
         worker, _, _, access_key = await seed_vpn_node(session)
         worker_id = worker.id
@@ -266,7 +319,7 @@ async def test_delete_worker_returns_409_for_active_attack(api_client, session_f
         await session.flush()
         run = AttackRun(
             domain_id=domain.id,
-            status="running",
+            status=run_status,
             planned_start_at=now,
             planned_end_at=now + timedelta(minutes=1),
         )
@@ -277,7 +330,7 @@ async def test_delete_worker_returns_409_for_active_attack(api_client, session_f
                 attack_run_id=run.id,
                 domain_id=domain.id,
                 worker_id=worker_id,
-                status="running",
+                status=task_status,
             )
         )
         await session.commit()
@@ -310,3 +363,127 @@ async def test_archived_worker_cannot_be_updated_or_maintained(api_client, sessi
     assert update.status_code == 404
     assert maintenance.status_code == 404
     assert setup.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_sensitive_worker_update_rejects_control_reservation_without_clearing_secret(
+    api_client,
+    session_factory,
+):
+    async with session_factory() as session:
+        worker, _, _, access_key = await seed_vpn_node(session)
+        worker_id = worker.id
+        session.add(
+            VpnControlOperation(
+                id="80000000-0000-4000-8000-000000000001",
+                access_key_id=access_key.id,
+                worker_id=worker.id,
+                endpoint_id=1,
+                generation=1,
+                action="revoke",
+                request_snapshot={},
+                request_digest="2" * 64,
+                state="queued",
+            )
+        )
+        await session.commit()
+
+    response = await api_client.patch(
+        f"/control/workers/{worker_id}",
+        json={"ssh_password": None},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Worker has an active VPN control operation"
+    async with session_factory() as session:
+        worker = await session.get(WorkerNode, worker_id)
+        assert worker is not None
+        assert worker.ssh_password == "ssh-secret"
+
+
+@pytest.mark.asyncio
+async def test_single_vpn_maintenance_rejects_control_reservation(
+    api_client,
+    session_factory,
+    monkeypatch,
+):
+    async def fake_run(_job_id):
+        return None
+
+    monkeypatch.setattr("app.api.routes.control.run_worker_maintenance_job", fake_run)
+    async with session_factory() as session:
+        worker, _, _, access_key = await seed_vpn_node(session)
+        worker_id = worker.id
+        session.add(
+            VpnControlOperation(
+                id="80000000-0000-4000-8000-000000000002",
+                access_key_id=access_key.id,
+                worker_id=worker.id,
+                endpoint_id=1,
+                generation=1,
+                action="revoke",
+                request_snapshot={},
+                request_digest="3" * 64,
+                state="uncertain",
+                claim_token="90000000-0000-4000-8000-000000000002",
+            )
+        )
+        await session.commit()
+
+    response = await api_client.post(
+        f"/control/workers/{worker_id}/maintenance/vpn-update"
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Worker has an active VPN control operation"
+    async with session_factory() as session:
+        assert not (await session.scalars(select(WorkerMaintenanceJob))).all()
+
+
+@pytest.mark.asyncio
+async def test_bulk_vpn_maintenance_skips_control_reserved_worker(
+    api_client,
+    session_factory,
+    monkeypatch,
+):
+    async def fake_run(_job_id):
+        return None
+
+    monkeypatch.setattr("app.api.routes.control.run_worker_maintenance_job", fake_run)
+    async with session_factory() as session:
+        reserved, _, _, access_key = await seed_vpn_node(session)
+        free = WorkerNode(
+            name="free-vpn-node",
+            status="ready",
+            is_enabled=True,
+            ssh_host="203.0.113.11",
+            ssh_username="root",
+            ssh_password="free-secret",
+            vpn_role="vpn_node",
+            vpn_enabled=True,
+            vpn_runtime_status="ready",
+        )
+        session.add(free)
+        await session.flush()
+        session.add(
+            VpnControlOperation(
+                id="80000000-0000-4000-8000-000000000003",
+                access_key_id=access_key.id,
+                worker_id=reserved.id,
+                endpoint_id=1,
+                generation=1,
+                action="revoke",
+                request_snapshot={},
+                request_digest="4" * 64,
+                state="queued",
+            )
+        )
+        await session.commit()
+        reserved_id = reserved.id
+        free_id = free.id
+
+    response = await api_client.post("/control/workers/maintenance/vpn-update-all")
+
+    assert response.status_code == 202
+    assert response.json()["skipped_worker_ids"] == [reserved_id]
+    assert [job["worker_id"] for job in response.json()["jobs"]] == [free_id]

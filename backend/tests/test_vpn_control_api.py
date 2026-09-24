@@ -6,14 +6,291 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+from pydantic import ValidationError
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.api.deps import require_admin
 from app.api.routes.control import router as control_router
 from app.db.base import Base
-from app.db.models import AttackRun, DropDomain, VpnAccessKey, VpnSubscription, WorkerNode, WorkerTask
+from app.db.models import (
+    AdminAuditLog,
+    AttackRun,
+    DropDomain,
+    VpnAccessKey,
+    VpnCustomer,
+    VpnEndpoint,
+    VpnSubscription,
+    WorkerNode,
+    WorkerTask,
+)
 from app.db.session import get_db
+from app.schemas.control import (
+    VpnAccessKeyDisplayNameUpdateRequest,
+    VpnEndpointCapacityUpdateRequest,
+)
+
+
+def test_vpn_access_key_display_name_request_is_name_only_and_safe():
+    assert VpnAccessKeyDisplayNameUpdateRequest(
+        display_name="  Личный ноутбук  "
+    ).display_name == "Личный ноутбук"
+    for payload in (
+        {"display_name": ""},
+        {"display_name": "x" * 65},
+        {"display_name": "bad\x00name"},
+        {"display_name": "Phone", "config_uri": "vless://must-not-be-accepted"},
+    ):
+        with pytest.raises(ValidationError):
+            VpnAccessKeyDisplayNameUpdateRequest(**payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"max_active_profiles": 0, "capacity_warning_percent": 80},
+        {"max_active_profiles": -1, "capacity_warning_percent": 80},
+        {"max_active_profiles": 100_001, "capacity_warning_percent": 80},
+        {"max_active_profiles": 10, "capacity_warning_percent": 0},
+        {"max_active_profiles": 10, "capacity_warning_percent": 101},
+        {
+            "max_active_profiles": 10,
+            "capacity_warning_percent": 80,
+            "public_key": "must-not-be-accepted",
+        },
+    ),
+)
+def test_vpn_endpoint_capacity_request_rejects_invalid_or_secret_fields(payload):
+    with pytest.raises(ValidationError):
+        VpnEndpointCapacityUpdateRequest(**payload)
+
+
+@pytest.mark.asyncio
+async def test_vpn_endpoint_capacity_api_is_grouped_safe_and_audited():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
+        worker = WorkerNode(
+            name="capacity-node",
+            status="ready",
+            is_enabled=True,
+            vpn_role="vpn_node",
+            vpn_enabled=True,
+            vpn_runtime_status="ready",
+            vpn_public_host="worker-secret.example",
+            vpn_inbound_id=9,
+            ssh_host="10.0.0.9",
+            ssh_password="node-password",
+        )
+        customer = VpnCustomer(telegram_user_id="capacity-owner")
+        session.add_all([worker, customer])
+        await session.flush()
+        subscription = VpnSubscription(customer_id=customer.id, status="active", max_devices=5)
+        session.add(subscription)
+        await session.flush()
+        first = VpnEndpoint(
+            worker_id=worker.id,
+            inbound_id=91,
+            public_host="edge-1.example.net",
+            port=443,
+            security="reality",
+            public_key="reality-public-key-must-not-leak",
+            short_id="aabbccdd",
+            server_name="front-secret.example",
+            status="ready",
+            verified_at=datetime.now(UTC),
+            max_active_profiles=10,
+            capacity_warning_percent=80,
+        )
+        second = VpnEndpoint(
+            worker_id=worker.id,
+            inbound_id=92,
+            public_host="edge-2.example.net",
+            port=8443,
+            security="reality",
+            public_key="second-secret-key",
+            short_id="eeff0011",
+            status="draining",
+            verified_at=datetime.now(UTC),
+            max_active_profiles=None,
+            capacity_warning_percent=90,
+        )
+        session.add_all([first, second])
+        await session.flush()
+        session.add_all(
+            [
+                VpnAccessKey(
+                    subscription_id=subscription.id,
+                    worker_id=worker.id,
+                    endpoint_id=first.id,
+                    status="active",
+                ),
+                VpnAccessKey(
+                    subscription_id=subscription.id,
+                    worker_id=worker.id,
+                    endpoint_id=first.id,
+                    status="pending_suspend",
+                ),
+                VpnAccessKey(
+                    subscription_id=subscription.id,
+                    worker_id=worker.id,
+                    endpoint_id=first.id,
+                    status="revoked",
+                ),
+            ]
+        )
+        await session.commit()
+        first_id = first.id
+        second_id = second.id
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+    statements: list[str] = []
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement.lower())
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record_statement)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        listed = await client.get("/control/vpn/endpoints/capacity")
+        assert listed.status_code == 200
+        assert listed.json() == [
+            {
+                "endpoint_id": first_id,
+                "worker_id": 1,
+                "label": "edge-1.example.net:443",
+                "status": "ready",
+                "occupied_profiles": 2,
+                "max_active_profiles": 10,
+                "capacity_warning_percent": 80,
+            },
+            {
+                "endpoint_id": second_id,
+                "worker_id": 1,
+                "label": "edge-2.example.net:8443",
+                "status": "draining",
+                "occupied_profiles": 0,
+                "max_active_profiles": None,
+                "capacity_warning_percent": 90,
+            },
+        ]
+        serialized = listed.text
+        for secret in (
+            "reality-public-key-must-not-leak",
+            "second-secret-key",
+            "aabbccdd",
+            "eeff0011",
+            "node-password",
+            "front-secret.example",
+            "config_uri",
+        ):
+            assert secret not in serialized
+        list_queries = [statement for statement in statements if "vpn_endpoints" in statement]
+        assert len(list_queries) == 1
+        assert "group by vpn_access_keys.endpoint_id" in list_queries[0]
+
+        updated = await client.patch(
+            f"/control/vpn/endpoints/{first_id}/capacity",
+            json={"max_active_profiles": 50, "capacity_warning_percent": 75},
+        )
+        assert updated.status_code == 200
+        assert updated.json() == {
+            "endpoint_id": first_id,
+            "worker_id": 1,
+            "label": "edge-1.example.net:443",
+            "status": "ready",
+            "occupied_profiles": 2,
+            "max_active_profiles": 50,
+            "capacity_warning_percent": 75,
+        }
+
+        unlimited = await client.patch(
+            f"/control/vpn/endpoints/{first_id}/capacity",
+            json={"max_active_profiles": None, "capacity_warning_percent": 70},
+        )
+        assert unlimited.status_code == 200
+        assert unlimited.json()["max_active_profiles"] is None
+        assert unlimited.json()["occupied_profiles"] == 2
+
+        for payload in (
+            {"max_active_profiles": 0, "capacity_warning_percent": 80},
+            {"max_active_profiles": -1, "capacity_warning_percent": 80},
+            {"max_active_profiles": 100_001, "capacity_warning_percent": 80},
+            {"max_active_profiles": 10, "capacity_warning_percent": 0},
+            {"max_active_profiles": 10, "capacity_warning_percent": 101},
+            {
+                "max_active_profiles": 10,
+                "capacity_warning_percent": 80,
+                "short_id": "secret",
+            },
+        ):
+            invalid = await client.patch(
+                f"/control/vpn/endpoints/{first_id}/capacity",
+                json=payload,
+            )
+            assert invalid.status_code == 422
+        missing = await client.patch(
+            "/control/vpn/endpoints/999999/capacity",
+            json={"max_active_profiles": 10, "capacity_warning_percent": 80},
+        )
+        assert missing.status_code == 404
+
+    event.remove(engine.sync_engine, "before_cursor_execute", record_statement)
+    async with session_factory() as session:
+        audit_rows = list(
+            await session.scalars(
+                select(AdminAuditLog)
+                .where(AdminAuditLog.action == "vpn_endpoint_capacity_update")
+                .order_by(AdminAuditLog.id)
+            )
+        )
+        assert [row.details for row in audit_rows] == [
+            f"endpoint_id={first_id} max_active_profiles=50 capacity_warning_percent=75",
+            f"endpoint_id={first_id} max_active_profiles=null capacity_warning_percent=70",
+        ]
+        for row in audit_rows:
+            assert "edge-1" not in (row.details or "")
+            assert "key" not in (row.details or "")
+            assert "secret" not in (row.details or "")
+
+    unauthenticated_app = FastAPI()
+    unauthenticated_app.include_router(control_router)
+    unauthenticated_app.dependency_overrides[get_db] = override_get_db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=unauthenticated_app),
+        base_url="http://testserver",
+    ) as client:
+        assert (await client.get("/control/vpn/endpoints/capacity")).status_code == 401
+        assert (
+            await client.patch(
+                f"/control/vpn/endpoints/{first_id}/capacity",
+                json={"max_active_profiles": 10, "capacity_warning_percent": 80},
+            )
+        ).status_code == 401
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -66,7 +343,10 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key(monkey
         del db, subscription
         access_key.worker_id = worker.id
         access_key.status = "active"
-        access_key.config_uri = f"vless://test-{access_key.id}"
+        access_key.config_uri = (
+            f"vless://{access_key.external_uuid}@vpn.example:443"
+            "?type=tcp&security=tls#internal"
+        )
         return access_key
 
     async def fake_revoke(db, access_key, *, worker=None):
@@ -116,24 +396,95 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key(monkey
 
         key_response = await client.post(
             "/control/vpn/access-keys",
-            json={"subscription_id": subscription_id, "worker_id": 1, "public_name": "phone"},
+            json={
+                "subscription_id": subscription_id,
+                "worker_id": 1,
+                "public_name": "legacy-node-name",
+                "display_name": "Рабочий ноутбук",
+            },
         )
         assert key_response.status_code == 201
         key_payload = key_response.json()
         assert key_payload["status"] == "active"
         assert key_payload["external_uuid"]
         assert key_payload["worker_id"] == 1
+        assert key_payload["display_name"] == "Рабочий ноутбук"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%A0%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%B9" in key_payload["config_uri"]
+        assert "#internal" not in key_payload["config_uri"]
         key_id = key_payload["id"]
+
+        rename_response = await client.patch(
+            f"/control/vpn/access-keys/{key_id}/display-name",
+            json={"display_name": "  Личный ноутбук  "},
+        )
+        assert rename_response.status_code == 200
+        assert rename_response.json()["display_name"] == "Личный ноутбук"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%9B%D0%B8%D1%87%D0%BD%D1%8B%D0%B9" in rename_response.json()["config_uri"]
+
+        for invalid_payload in (
+            {"display_name": ""},
+            {"display_name": "x" * 65},
+            {"display_name": "Phone", "status": "revoked"},
+        ):
+            invalid = await client.patch(
+                f"/control/vpn/access-keys/{key_id}/display-name",
+                json=invalid_payload,
+            )
+            assert invalid.status_code == 422
+        missing = await client.patch(
+            "/control/vpn/access-keys/999999/display-name",
+            json={"display_name": "Missing"},
+        )
+        assert missing.status_code == 404
+
+        revoke_key_response = await client.post(f"/control/vpn/access-keys/{key_id}/revoke")
+        assert revoke_key_response.status_code == 200
+        assert revoke_key_response.json()["display_name"] == "Личный ноутбук"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%9B%D0%B8%D1%87%D0%BD%D1%8B%D0%B9" in revoke_key_response.json()["config_uri"]
 
         delete_key_response = await client.delete(f"/control/vpn/access-keys/{key_id}")
         assert delete_key_response.status_code == 200
         assert delete_key_response.json()["id"] == key_id
         assert delete_key_response.json()["status"] == "revoked"
+        assert delete_key_response.json()["display_name"] == "Личный ноутбук"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%9B%D0%B8%D1%87%D0%BD%D1%8B%D0%B9" in delete_key_response.json()["config_uri"]
+
+        async with session_factory() as session:
+            raw_key = await session.get(VpnAccessKey, key_id)
+            assert raw_key is not None
+            assert raw_key.public_name == "legacy-node-name"
+            assert raw_key.config_uri is not None and raw_key.config_uri.endswith("#internal")
+            assert raw_key.external_uuid == key_payload["external_uuid"]
+            rename_audit = await session.scalar(
+                select(AdminAuditLog).where(
+                    AdminAuditLog.action == "vpn_access_key_display_name_update"
+                )
+            )
+            assert rename_audit is not None
+            assert rename_audit.details == f"access_key_id={key_id}"
+            assert "Личный" not in (rename_audit.details or "")
+            malformed_key = VpnAccessKey(
+                subscription_id=subscription_id,
+                display_name="Повреждённый",
+                status="revoked",
+                config_uri="vless://not-valid",
+            )
+            session.add(malformed_key)
+            await session.commit()
+            malformed_key_id = malformed_key.id
 
         keys_after_delete_response = await client.get("/control/vpn/access-keys")
         assert keys_after_delete_response.status_code == 200
-        assert [item["id"] for item in keys_after_delete_response.json()] == [key_id]
-        assert keys_after_delete_response.json()[0]["status"] == "revoked"
+        by_id = {item["id"]: item for item in keys_after_delete_response.json()}
+        assert by_id[key_id]["status"] == "revoked"
+        assert by_id[key_id]["display_name"] == "Личный ноутбук"
+        assert "Veltrix%20VPN%20%C2%B7%20%D0%9B%D0%B8%D1%87%D0%BD%D1%8B%D0%B9" in by_id[key_id]["config_uri"]
+        assert by_id[malformed_key_id]["display_name"] == "Повреждённый"
+        assert by_id[malformed_key_id]["config_uri"] is None
+
+        async with session_factory() as session:
+            malformed_raw = await session.get(VpnAccessKey, malformed_key_id)
+            assert malformed_raw is not None and malformed_raw.config_uri == "vless://not-valid"
 
         overview_response = await client.get("/control/vpn/overview")
 
@@ -235,7 +586,10 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
         del db, subscription
         access_key.worker_id = worker.id
         access_key.status = "active"
-        access_key.config_uri = f"vless://test-{access_key.id}"
+        access_key.config_uri = (
+            f"vless://{access_key.external_uuid}@vpn.example:443"
+            "?type=tcp&security=tls#internal"
+        )
         return access_key
 
     revoke_attempts: list[int] = []
@@ -375,6 +729,8 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
         assert retry.status_code == 200
         assert retry.json()["worker_id"] == free_worker_id
         assert retry.json()["status"] == "active"
+        assert retry.json()["display_name"] == "waiting"
+        assert "Veltrix%20VPN%20%C2%B7%20waiting" in retry.json()["config_uri"]
 
     await engine.dispose()
 
@@ -429,7 +785,10 @@ async def test_vpn_lifecycle_endpoint_expires_subscription_and_marks_key_pending
         del db, subscription
         access_key.worker_id = worker.id
         access_key.status = "active"
-        access_key.config_uri = f"vless://test-{access_key.id}"
+        access_key.config_uri = (
+            f"vless://{access_key.external_uuid}@vpn.example:443"
+            "?type=tcp&security=tls#internal"
+        )
         return access_key
 
     async def fake_suspend(db, access_key, *, worker=None):

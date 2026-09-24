@@ -6,7 +6,7 @@ import json
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import Settings
@@ -15,7 +15,9 @@ from app.db.models import (
     AttackRun,
     DropDomain,
     VpnAccessKey,
+    VpnControlOperation,
     VpnCustomer,
+    VpnEndpoint,
     VpnNodeEvent,
     VpnSubscription,
     WorkerNode,
@@ -24,6 +26,7 @@ from app.db.models import (
 from app.services.app_settings import VPN_LIFECYCLE_LAST_RESULT_KEY, get_app_setting
 from app.services.control_runtime import ControlRuntimeOrchestrator
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
+from app.services.vpn_control_intents import stage_vpn_control_operation
 
 
 @pytest_asyncio.fixture
@@ -77,6 +80,240 @@ async def _subscription(
     session.add(subscription)
     await session.flush()
     return subscription
+
+
+async def _endpoint_bound_key(
+    session: AsyncSession,
+    *,
+    now: datetime,
+    subscription_status: str = "active",
+    subscription_expires_at: datetime | None = None,
+    key_status: str = "pending_sync",
+    config_uri: str | None = None,
+) -> tuple[VpnSubscription, VpnAccessKey]:
+    worker = _vpn_worker("strict")
+    session.add(worker)
+    await session.flush()
+    endpoint = VpnEndpoint(
+        worker_id=worker.id,
+        inbound_id=11,
+        public_host="vpn.example.test",
+        port=443,
+        protocol="vless",
+        transport="raw",
+        security="reality",
+        server_name="cdn.example.test",
+        public_key="A" * 43,
+        short_id="0123456789abcdef",
+        fingerprint="chrome",
+        flow="xtls-rprx-vision",
+        status="ready",
+        verified_at=now - timedelta(hours=1),
+    )
+    session.add(endpoint)
+    await session.flush()
+    subscription = await _subscription(
+        session,
+        status=subscription_status,
+        expires_at=subscription_expires_at or now + timedelta(days=1),
+    )
+    access_key = VpnAccessKey(
+        subscription_id=subscription.id,
+        worker_id=worker.id,
+        endpoint_id=endpoint.id,
+        verified_client_email="veltrix-beta-1",
+        panel_sub_id="stable-sub-id",
+        protocol="vless",
+        external_uuid="11111111-2222-4333-8444-555555555555",
+        config_uri=config_uri,
+        status=key_status,
+        issued_at=now - timedelta(days=1),
+    )
+    session.add(access_key)
+    await session.flush()
+    return subscription, access_key
+
+
+def _forbid_legacy_endpoint_helpers(monkeypatch) -> None:
+    async def forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("endpoint-bound lifecycle used a legacy helper")
+
+    for name in (
+        "provision_vpn_access_key",
+        "suspend_vpn_access_key",
+        "revoke_vpn_access_key",
+    ):
+        monkeypatch.setattr(f"app.services.vpn_lifecycle.{name}", forbidden)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_state", ["queued", "claimed", "uncertain", "failed"])
+async def test_endpoint_bound_lifecycle_reuses_or_stops_at_existing_same_action_operation(
+    session_factory,
+    monkeypatch,
+    operation_state,
+):
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    _forbid_legacy_endpoint_helpers(monkeypatch)
+    async with session_factory() as session:
+        _subscription_row, key = await _endpoint_bound_key(session, now=now)
+        await session.commit()
+        operation = await stage_vpn_control_operation(
+            session,
+            key.id,
+            "provision",
+            now=now,
+        )
+        if operation_state != "queued":
+            operation.state = operation_state
+            operation.error_code = {
+                "claimed": None,
+                "uncertain": "vpn_node_mutation_uncertain",
+                "failed": "vpn_node_preflight_failed",
+            }[operation_state]
+            if operation_state in {"claimed", "uncertain"}:
+                operation.claim_token = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+                operation.claimed_at = now
+        await session.commit()
+        key_id = key.id
+
+    async with session_factory() as session:
+        result = await run_vpn_lifecycle_maintenance(
+            session,
+            now=now + timedelta(minutes=1),
+        )
+        repeated = await run_vpn_lifecycle_maintenance(
+            session,
+            now=now + timedelta(minutes=2),
+        )
+        operations = (
+            await session.scalars(
+                select(VpnControlOperation)
+                .where(VpnControlOperation.access_key_id == key_id)
+                .order_by(VpnControlOperation.generation)
+            )
+        ).all()
+
+    assert result["checked_keys"] == 1
+    assert result["pending_sync_keys"] == 1
+    assert result["failed_keys"] == 0
+    assert repeated["checked_keys"] == 1
+    assert repeated["pending_sync_keys"] == 1
+    assert repeated["failed_keys"] == 0
+    assert [(item.generation, item.state) for item in operations] == [(1, operation_state)]
+
+
+@pytest.mark.asyncio
+async def test_endpoint_bound_expiry_and_extension_stage_reversible_actions(
+    session_factory,
+    monkeypatch,
+):
+    now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+    original_uri = "vless://stable-customer-uri"
+    original_uuid = "11111111-2222-4333-8444-555555555555"
+    _forbid_legacy_endpoint_helpers(monkeypatch)
+    async with session_factory() as session:
+        subscription, key = await _endpoint_bound_key(
+            session,
+            now=now,
+            subscription_expires_at=now - timedelta(minutes=1),
+            key_status="active",
+            config_uri=original_uri,
+        )
+        await session.commit()
+        subscription_id = subscription.id
+        key_id = key.id
+
+    async with session_factory() as session:
+        expired = await run_vpn_lifecycle_maintenance(session, now=now)
+        key = await session.get(VpnAccessKey, key_id)
+        subscription = await session.get(VpnSubscription, subscription_id)
+        assert key is not None and subscription is not None
+        assert expired["expired_subscriptions"] == 1
+        assert expired["pending_suspend_keys"] == 1
+        assert expired["failed_keys"] == 0
+        assert subscription.status == "expired"
+        assert key.status == "pending_suspend"
+        assert (key.external_uuid, key.config_uri) == (original_uuid, original_uri)
+        subscription.status = "active"
+        subscription.expires_at = now + timedelta(days=7)
+        await session.commit()
+
+    async with session_factory() as session:
+        restored = await run_vpn_lifecycle_maintenance(
+            session,
+            now=now + timedelta(minutes=1),
+        )
+        repeated = await run_vpn_lifecycle_maintenance(
+            session,
+            now=now + timedelta(minutes=2),
+        )
+        key = await session.get(VpnAccessKey, key_id)
+        operations = (
+            await session.scalars(
+                select(VpnControlOperation)
+                .where(VpnControlOperation.access_key_id == key_id)
+                .order_by(VpnControlOperation.generation)
+            )
+        ).all()
+
+    assert restored["pending_sync_keys"] == 1
+    assert repeated["pending_sync_keys"] == 1
+    assert restored["failed_keys"] == repeated["failed_keys"] == 0
+    assert key is not None
+    assert (key.external_uuid, key.config_uri) == (original_uuid, original_uri)
+    assert [(item.generation, item.action, item.state) for item in operations] == [
+        (1, "suspend", "superseded"),
+        (2, "provision", "queued"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("concurrent_change", ["extension", "cancellation"])
+async def test_expiration_rechecks_policy_after_candidate_selection(
+    session_factory, monkeypatch, concurrent_change,
+):
+    now = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
+    old_expiry = now - timedelta(minutes=1)
+    new_expiry = now + timedelta(days=7) if concurrent_change == "extension" else old_expiry
+    new_status = "active" if concurrent_change == "extension" else "cancelled"
+    async with session_factory() as seed:
+        subscription = await _subscription(seed, expires_at=old_expiry)
+        await seed.commit()
+        subscription_id = subscription.id
+
+    async with session_factory() as lifecycle:
+        # Keep an old ORM object alive: acquiring a lock alone does not refresh it.
+        stale = await lifecycle.get(VpnSubscription, subscription_id)
+        assert stale.status == "active"
+        original_scalars = lifecycle.scalars
+        changed = False
+
+        async def scalars_after_concurrent_edit(statement, *args, **kwargs):
+            nonlocal changed
+            result = await original_scalars(statement, *args, **kwargs)
+            if not changed and "vpn_subscriptions" in str(statement):
+                changed = True
+                async with session_factory() as editor:
+                    await editor.execute(
+                        update(VpnSubscription).where(VpnSubscription.id == subscription_id)
+                        .values(status=new_status, expires_at=new_expiry)
+                    )
+                    await editor.commit()
+            return result
+
+        monkeypatch.setattr(lifecycle, "scalars", scalars_after_concurrent_edit)
+        result = await run_vpn_lifecycle_maintenance(lifecycle, now=now)
+        assert changed
+        assert result["expired_subscriptions"] == 0
+        assert stale.status == new_status
+        assert stale.expires_at.replace(tzinfo=UTC) == new_expiry
+
+    async with session_factory() as verifier:
+        stored = await verifier.get(VpnSubscription, subscription_id)
+        assert stored.status == new_status
+        assert stored.expires_at.replace(tzinfo=UTC) == new_expiry
 
 
 @pytest.mark.asyncio
@@ -511,6 +748,97 @@ async def test_control_runtime_cancels_lifecycle_at_cycle_timeout(session_factor
 
 
 @pytest.mark.asyncio
+async def test_portal_cleanup_failure_does_not_prevent_key_maintenance(
+    session_factory,
+    monkeypatch,
+):
+    lifecycle_completed = asyncio.Event()
+
+    async def successful_lifecycle(db, *, now=None, batch_size=50, key_timeout_seconds=30):
+        del db, now, batch_size, key_timeout_seconds
+        lifecycle_completed.set()
+        return {}
+
+    async def failed_cleanup(db, *, now=None):
+        del db, now
+        raise RuntimeError("sensitive cleanup failure")
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.run_vpn_lifecycle_maintenance",
+        successful_lifecycle,
+    )
+    monkeypatch.setattr(
+        "app.services.control_runtime.cleanup_expired_portal_auth",
+        failed_cleanup,
+    )
+    orchestrator = ControlRuntimeOrchestrator(
+        session_factory,
+        settings=Settings(DISCOVERY_ENABLED=False, VPN_LIFECYCLE_ENABLED=True),
+    )
+
+    await orchestrator._run_vpn_lifecycle(datetime(2026, 9, 20, 12, 0, tzinfo=UTC))
+
+    assert lifecycle_completed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_stalled_portal_cleanup_commit_is_bounded_and_allows_next_lifecycle(
+    session_factory,
+    monkeypatch,
+):
+    lifecycle_runs = 0
+    session_calls = 0
+    stalled_commit_cancelled = asyncio.Event()
+
+    async def successful_lifecycle(db, *, now=None, batch_size=50, key_timeout_seconds=30):
+        nonlocal lifecycle_runs
+        del db, now, batch_size, key_timeout_seconds
+        lifecycle_runs += 1
+        return {}
+
+    async def successful_cleanup(db, *, now=None):
+        del db, now
+        return {}
+
+    def controlled_session_factory():
+        nonlocal session_calls
+        session_calls += 1
+        session = session_factory()
+        if session_calls == 2:
+            async def stalled_commit():
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    stalled_commit_cancelled.set()
+
+            session.commit = stalled_commit
+        return session
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.run_vpn_lifecycle_maintenance",
+        successful_lifecycle,
+    )
+    monkeypatch.setattr(
+        "app.services.control_runtime.cleanup_expired_portal_auth",
+        successful_cleanup,
+    )
+    monkeypatch.setattr(
+        "app.services.control_runtime.PORTAL_AUTH_CLEANUP_TIMEOUT_SECONDS",
+        0.05,
+    )
+    orchestrator = ControlRuntimeOrchestrator(
+        controlled_session_factory,
+        settings=Settings(DISCOVERY_ENABLED=False, VPN_LIFECYCLE_ENABLED=True),
+    )
+
+    await asyncio.wait_for(orchestrator._run_vpn_lifecycle(utcnow()), timeout=1)
+    await asyncio.wait_for(orchestrator._run_vpn_lifecycle(utcnow()), timeout=1)
+
+    assert stalled_commit_cancelled.is_set()
+    assert lifecycle_runs == 2
+
+
+@pytest.mark.asyncio
 async def test_cycle_timeout_preserves_completed_key_and_advances_queue(
     session_factory,
     monkeypatch,
@@ -540,15 +868,46 @@ async def test_cycle_timeout_preserves_completed_key_and_advances_queue(
         first_id = first.id
         second_id = second.id
 
+    first_checkpoint_completed = asyncio.Event()
     second_started = asyncio.Event()
+    second_cancelled = asyncio.Event()
+    release_cycle_timeout = asyncio.Event()
+    test_watchdog_seconds = 5
+
+    session_calls = 0
+
+    def delayed_checkpoint_session_factory():
+        nonlocal session_calls
+        session_calls += 1
+        session = session_factory()
+        if session_calls == 1:
+            original_commit = session.commit
+            commit_calls = 0
+
+            async def delayed_first_commit():
+                nonlocal commit_calls
+                commit_calls += 1
+                if commit_calls == 1:
+                    # Exceed the effective 0.1-second cycle deadline. The separate
+                    # cycle-timeout test covers enforcement of the real clock budget.
+                    await asyncio.sleep(0.15)
+                await original_commit()
+                if commit_calls == 1:
+                    first_checkpoint_completed.set()
+
+            session.commit = delayed_first_commit
+        return session
 
     async def provision_until_cycle_timeout(db, access_key, *, subscription=None, worker=None):
         del db, subscription
-        if access_key.id == second_id:
-            second_started.set()
-            await asyncio.Event().wait()
         access_key.worker_id = worker.id
         access_key.status = "active"
+        if access_key.id == second_id:
+            second_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                second_cancelled.set()
         return access_key
 
     monkeypatch.setattr(
@@ -560,13 +919,54 @@ async def test_cycle_timeout_preserves_completed_key_and_advances_queue(
         VPN_LIFECYCLE_ENABLED=True,
         VPN_LIFECYCLE_INTERVAL_SECONDS=60,
         VPN_LIFECYCLE_BATCH_SIZE=2,
-        VPN_LIFECYCLE_KEY_TIMEOUT_SECONDS=1,
+        VPN_LIFECYCLE_KEY_TIMEOUT_SECONDS=30,
         VPN_LIFECYCLE_CYCLE_TIMEOUT_SECONDS=0.05,
     )
-    orchestrator = ControlRuntimeOrchestrator(session_factory, settings=settings)
+    orchestrator = ControlRuntimeOrchestrator(delayed_checkpoint_session_factory, settings=settings)
 
-    await orchestrator._run_vpn_lifecycle(now)
-    assert second_started.is_set()
+    class ControlledCycleTimeout:
+        def __init__(self):
+            self.cycle_started = False
+
+        async def wait_for(self, awaitable, timeout):
+            if self.cycle_started:
+                return await asyncio.wait_for(awaitable, timeout=timeout)
+            self.cycle_started = True
+            lifecycle_task = asyncio.create_task(awaitable)
+            try:
+                assert timeout == pytest.approx(0.1)
+                await asyncio.wait_for(second_started.wait(), timeout=test_watchdog_seconds)
+                await asyncio.wait_for(
+                    release_cycle_timeout.wait(),
+                    timeout=test_watchdog_seconds,
+                )
+            finally:
+                lifecycle_task.cancel()
+                await asyncio.gather(lifecycle_task, return_exceptions=True)
+            raise TimeoutError
+
+    monkeypatch.setattr("app.services.control_runtime.asyncio", ControlledCycleTimeout())
+
+    cycle_task = asyncio.create_task(orchestrator._run_vpn_lifecycle(now))
+    try:
+        await asyncio.wait_for(second_started.wait(), timeout=test_watchdog_seconds)
+        assert first_checkpoint_completed.is_set()
+
+        async with session_factory() as session:
+            stored_first = await session.get(VpnAccessKey, first_id)
+            stored_second = await session.get(VpnAccessKey, second_id)
+        assert stored_first is not None and stored_first.status == "active"
+        assert stored_second is not None and stored_second.status == "pending_sync"
+
+        release_cycle_timeout.set()
+        await asyncio.wait_for(cycle_task, timeout=test_watchdog_seconds)
+    finally:
+        release_cycle_timeout.set()
+        if not cycle_task.done():
+            cycle_task.cancel()
+        await asyncio.gather(cycle_task, return_exceptions=True)
+
+    assert second_cancelled.is_set()
 
     async with session_factory() as session:
         stored_first = await session.get(VpnAccessKey, first_id)
@@ -614,7 +1014,7 @@ async def test_lifecycle_times_out_a_hung_key_without_blocking_batch(session_fac
             session,
             now=now,
             batch_size=1,
-            key_timeout_seconds=0.05,
+            key_timeout_seconds=1.0,
         )
         stored_key = await session.get(VpnAccessKey, key_id)
 

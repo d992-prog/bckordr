@@ -3,14 +3,35 @@ import shlex
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
-from app.db.models import WorkerNode
+from app.db.base import Base
+from app.db.models import WorkerMaintenanceJob, WorkerNode
 from app.services.worker_maintenance import (
     _build_vpn_create_inbound_command,
     apply_vpn_autoconfig_metadata,
     build_worker_maintenance_commands,
     parse_vpn_autoconfig_output,
+    run_worker_maintenance_job,
 )
+
+
+@pytest_asyncio.fixture
+async def maintenance_session_factory():
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        yield factory
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.parametrize('busy_ports', [set(), {8443}])
@@ -240,3 +261,66 @@ def test_apply_vpn_autoconfig_metadata_explains_create_error():
 
     assert worker.vpn_runtime_status == "needs_config"
     assert "HTTP 404" in (worker.vpn_last_error or "")
+
+
+@pytest.mark.asyncio
+async def test_vpn_mutation_rechecks_control_reservation_immediately_before_ssh(
+    maintenance_session_factory,
+    monkeypatch,
+):
+    async with maintenance_session_factory() as session:
+        worker = WorkerNode(
+            name="maintenance-node",
+            status="ready",
+            is_enabled=True,
+            ssh_host="192.0.2.20",
+            ssh_username="root",
+            ssh_password="secret",
+            vpn_enabled=True,
+            vpn_role="vpn_node",
+            vpn_runtime_status="ready",
+        )
+        session.add(worker)
+        await session.flush()
+        job = WorkerMaintenanceJob(worker_id=worker.id, action="vpn_update", status="queued")
+        session.add(job)
+        await session.commit()
+        worker_id = worker.id
+        job_id = job.id
+
+    reservation_calls = 0
+    ssh_calls = 0
+
+    async def control_reservations(_session):
+        nonlocal reservation_calls
+        reservation_calls += 1
+        return set() if reservation_calls == 1 else {worker_id}
+
+    async def no_attacks(_session):
+        return set()
+
+    async def forbidden_ssh(_worker, _commands):
+        nonlocal ssh_calls
+        ssh_calls += 1
+        return "unexpected"
+
+    monkeypatch.setattr(
+        "app.services.worker_maintenance.AsyncSessionLocal",
+        maintenance_session_factory,
+    )
+    monkeypatch.setattr(
+        "app.services.worker_maintenance.active_vpn_control_worker_ids",
+        control_reservations,
+    )
+    monkeypatch.setattr("app.services.worker_maintenance.active_attack_worker_ids", no_attacks)
+    monkeypatch.setattr("app.services.worker_maintenance.execute_worker_ssh_commands", forbidden_ssh)
+
+    await run_worker_maintenance_job(job_id)
+
+    async with maintenance_session_factory() as session:
+        job = await session.get(WorkerMaintenanceJob, job_id)
+        assert job is not None
+        assert job.status == "failed"
+        assert job.error_message == "Worker has an active VPN control operation"
+    assert reservation_calls == 2
+    assert ssh_calls == 0

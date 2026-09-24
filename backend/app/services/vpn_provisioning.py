@@ -10,6 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
 from app.db.models import VpnAccessKey, VpnNodeEvent, VpnSubscription, WorkerNode
+from app.services.vpn_endpoints import (
+    EndpointOperation,
+    VpnEndpointError,
+    require_bound_client_uuid,
+    resolve_recorded_endpoint,
+)
 from app.services.worker_maintenance import _bash, _shell_quote, execute_worker_ssh_commands
 
 
@@ -60,6 +66,8 @@ def build_vpn_client_email(access_key_id: int, public_name: str | None) -> str:
 
 
 def ensure_vpn_client_uuid(access_key: VpnAccessKey) -> UUID:
+    if access_key.endpoint_id is not None:
+        return require_bound_client_uuid(access_key)
     if access_key.external_uuid:
         try:
             return UUID(str(access_key.external_uuid))
@@ -68,6 +76,37 @@ def ensure_vpn_client_uuid(access_key: VpnAccessKey) -> UUID:
     client_uuid = uuid4()
     access_key.external_uuid = str(client_uuid)
     return client_uuid
+
+
+async def _hold_bound_key_for_endpoint_adapter(
+    db: AsyncSession,
+    access_key: VpnAccessKey,
+    worker: WorkerNode | None,
+    operation: EndpointOperation,
+) -> bool:
+    """Keep bound profiles out of legacy scripts until a scoped remote adapter exists."""
+    if access_key.endpoint_id is None:
+        return False
+
+    error_code = "vpn_endpoint_remote_adapter_required"
+    try:
+        await resolve_recorded_endpoint(
+            db,
+            access_key,
+            worker=worker,
+            operation=operation,
+        )
+    except VpnEndpointError as exc:
+        error_code = exc.code
+
+    access_key.status = {
+        "provision": "pending_sync",
+        "suspend": "pending_suspend",
+        "revoke": "pending_revoke",
+    }[operation]
+    access_key.last_error = error_code
+    access_key.updated_at = utcnow()
+    return True
 
 
 def parse_vpn_client_provision_output(log: str) -> dict[str, str]:
@@ -484,7 +523,8 @@ def sync_client_inbounds_table(conn, client_pk):
     if "flow_override" in columns:
         values["flow_override"] = ""
     if "created_at" in columns:
-        values["created_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        timestamp_info = column_info_by_name(conn, "client_inbounds")["created_at"]
+        values["created_at"] = default_column_value("created_at", timestamp_info.get("type"))
     if not {"client_id", "inbound_id"}.issubset(values):
         return "client_inbounds unsupported columns"
     existing = []
@@ -1073,6 +1113,8 @@ def build_vpn_client_provision_command(worker: WorkerNode, payload: VpnClientPro
 
 
 def build_vpn_client_revoke_command(worker: WorkerNode, access_key: VpnAccessKey) -> str:
+    if access_key.endpoint_id is not None:
+        raise VpnEndpointError("vpn_endpoint_remote_adapter_required")
     remote_payload = {
         "client_uuid": access_key.external_uuid or "",
         "client_email": build_vpn_client_email(access_key.id, access_key.public_name),
@@ -1092,6 +1134,8 @@ def build_vpn_client_revoke_command(worker: WorkerNode, access_key: VpnAccessKey
 
 
 def build_vpn_client_suspend_command(worker: WorkerNode, access_key: VpnAccessKey) -> str:
+    if access_key.endpoint_id is not None:
+        raise VpnEndpointError("vpn_endpoint_remote_adapter_required")
     remote_payload = {
         "client_uuid": access_key.external_uuid or "",
         "client_email": build_vpn_client_email(access_key.id, access_key.public_name),
@@ -1117,6 +1161,13 @@ async def suspend_vpn_access_key(
     worker: WorkerNode | None = None,
 ) -> VpnAccessKey:
     worker = worker or (await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None)
+    if access_key.endpoint_id is not None and (
+        access_key.status in ("revoked", "pending_revoke") or access_key.revoked_at is not None
+    ):
+        return access_key
+    if await _hold_bound_key_for_endpoint_adapter(db, access_key, worker, "suspend"):
+        return access_key
+
     now = utcnow()
     access_key.status = "pending_suspend"
     access_key.last_synced_at = now
@@ -1177,6 +1228,15 @@ async def provision_vpn_access_key(
     now = utcnow()
     subscription = subscription or await db.get(VpnSubscription, access_key.subscription_id)
     worker = worker or (await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None)
+    if access_key.endpoint_id is not None and (
+        access_key.status in ("revoked", "pending_revoke") or access_key.revoked_at is not None
+    ):
+        access_key.last_error = "vpn_endpoint_key_revoked"
+        access_key.updated_at = utcnow()
+        return access_key
+    if await _hold_bound_key_for_endpoint_adapter(db, access_key, worker, "provision"):
+        return access_key
+
     access_key.last_synced_at = now
     access_key.updated_at = now
     if subscription is None:
@@ -1272,6 +1332,9 @@ async def revoke_vpn_access_key(
         return access_key
 
     worker = worker or (await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None)
+    if await _hold_bound_key_for_endpoint_adapter(db, access_key, worker, "revoke"):
+        return access_key
+
     if worker is None or not worker.ssh_access_configured or not worker.vpn_inbound_id:
         now = utcnow()
         access_key.status = "pending_revoke"

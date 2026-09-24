@@ -94,6 +94,40 @@ def table_snapshot(conn):
     return {table: [dict(item) for item in conn.execute(f'select * from "{table}" order by id')] for table in tables}
 
 
+@pytest.mark.parametrize("timestamp_type", ["INTEGER", "BIGINT", "TEXT"])
+def test_new_client_attachment_uses_declared_timestamp_storage(timestamp_type):
+    namespace, _ = remote_program()
+    namespace["time"] = SimpleNamespace(
+        time=lambda: 1_790_000_000.125,
+        strftime=lambda _: "2026-09-21 12:34:56",
+    )
+    with sqlite3.connect(":memory:") as connection:
+        connection.execute(
+            "CREATE TABLE client_inbounds (client_id INTEGER, inbound_id INTEGER, "
+            "flow_override TEXT, created_at " + timestamp_type + ", PRIMARY KEY(client_id,inbound_id))"
+        )
+        namespace["sync_client_inbounds_table"](connection, 5)
+        observed = connection.execute(
+            "SELECT client_id,inbound_id,flow_override,created_at,typeof(created_at) FROM client_inbounds"
+        ).fetchone()
+        expected_time = "2026-09-21 12:34:56" if timestamp_type == "TEXT" else 1_790_000_000_125
+        expected_type = "text" if timestamp_type == "TEXT" else "integer"
+        assert observed == (5, 1, "", expected_time, expected_type)
+
+
+def test_existing_client_attachment_timestamp_is_not_repaired_implicitly():
+    namespace, _ = remote_program()
+    with sqlite3.connect(":memory:") as connection:
+        connection.execute(
+            "CREATE TABLE client_inbounds (client_id INTEGER, inbound_id INTEGER, "
+            "flow_override TEXT, created_at INTEGER, PRIMARY KEY(client_id,inbound_id))"
+        )
+        original = (5, 1, "keep-flow", "2026-01-01 00:00:00")
+        connection.execute("INSERT INTO client_inbounds VALUES (?,?,?,?)", original)
+        namespace["sync_client_inbounds_table"](connection, 5)
+        assert connection.execute("SELECT * FROM client_inbounds").fetchone() == original
+
+
 def execute_main(namespace, main, conn, restart_ok=True, active=True):
     class ConnectionProxy:
         row_factory = sqlite3.Row

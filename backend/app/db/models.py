@@ -4,16 +4,21 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Integer,
     JSON,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -671,6 +676,9 @@ class VpnCustomer(Base):
     last_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active", server_default="active")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trial_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utcnow,
@@ -685,6 +693,37 @@ class VpnCustomer(Base):
 
     subscriptions: Mapped[list["VpnSubscription"]] = relationship(back_populates="customer")
     telegram_updates: Mapped[list["VpnTelegramUpdate"]] = relationship(back_populates="customer")
+
+
+class VpnCustomerSession(Base):
+    __tablename__ = "vpn_customer_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("vpn_customers.id", ondelete="CASCADE"), index=True)
+    telegram_user_id: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VpnPortalLoginAttempt(Base):
+    __tablename__ = "vpn_portal_login_attempts"
+
+    state_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    binding_hash: Mapped[str] = mapped_column(String(64))
+    code_verifier: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VpnPortalMiniAppExchange(Base):
+    __tablename__ = "vpn_portal_mini_app_exchanges"
+
+    digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("vpn_customers.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class VpnSubscription(Base):
@@ -720,8 +759,92 @@ class VpnSubscription(Base):
     access_keys: Mapped[list["VpnAccessKey"]] = relationship(back_populates="subscription")
 
 
+class VpnEndpoint(Base):
+    __tablename__ = "vpn_endpoints"
+    __table_args__ = (
+        UniqueConstraint("worker_id", "inbound_id", name="uq_vpn_endpoint_worker_inbound"),
+        UniqueConstraint("id", "worker_id", name="uq_vpn_endpoint_id_worker"),
+        CheckConstraint("inbound_id > 0", name="ck_vpn_endpoint_inbound"),
+        CheckConstraint("port BETWEEN 1 AND 65535", name="ck_vpn_endpoint_port"),
+        CheckConstraint(
+            "max_active_profiles IS NULL OR max_active_profiles > 0",
+            name="ck_vpn_endpoint_capacity",
+        ),
+        CheckConstraint(
+            "capacity_warning_percent BETWEEN 1 AND 100",
+            name="ck_vpn_endpoint_capacity_warning",
+        ),
+        CheckConstraint(
+            "status IN ('staged','ready','draining','disabled')",
+            name="ck_vpn_endpoint_status",
+        ),
+        CheckConstraint(
+            "security IN ('none','tls','reality')",
+            name="ck_vpn_endpoint_security",
+        ),
+        CheckConstraint(
+            "status <> 'ready' OR (security IN ('tls','reality') AND verified_at IS NOT NULL)",
+            name="ck_vpn_endpoint_ready",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    worker_id: Mapped[int] = mapped_column(
+        ForeignKey("worker_nodes.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    inbound_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    public_host: Mapped[str] = mapped_column(String(255), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol: Mapped[str] = mapped_column(String(32), default="vless", server_default="vless")
+    transport: Mapped[str] = mapped_column(String(32), default="tcp", server_default="tcp")
+    security: Mapped[str] = mapped_column(String(32), default="none", server_default="none")
+    server_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    public_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    short_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    flow: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="staged", server_default="staged", index=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    max_active_profiles: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    capacity_warning_percent: Mapped[int] = mapped_column(
+        Integer, default=80, server_default="80", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class VpnAccessKey(Base):
     __tablename__ = "vpn_access_keys"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["endpoint_id", "worker_id"],
+            ["vpn_endpoints.id", "vpn_endpoints.worker_id"],
+            name="fk_vpn_access_key_endpoint_worker",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "endpoint_id IS NULL OR worker_id IS NOT NULL",
+            name="ck_vpn_access_key_endpoint_worker",
+        ),
+        CheckConstraint(
+            "operation_generation >= 0",
+            name="ck_vpn_access_key_operation_generation",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     subscription_id: Mapped[int] = mapped_column(ForeignKey("vpn_subscriptions.id", ondelete="CASCADE"), index=True)
@@ -730,8 +853,22 @@ class VpnAccessKey(Base):
         nullable=True,
         index=True,
     )
+    endpoint_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    operation_generation: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
+    revoke_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    verified_client_email: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    panel_sub_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     protocol: Mapped[str] = mapped_column(String(32), default="vless", server_default="vless")
     public_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     external_uuid: Mapped[str | None] = mapped_column(String(128), unique=True, index=True, nullable=True)
     config_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active", server_default="active", index=True)
@@ -739,6 +876,11 @@ class VpnAccessKey(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ready_notice_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ready_notice_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    ready_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -754,6 +896,111 @@ class VpnAccessKey(Base):
 
     subscription: Mapped[VpnSubscription] = relationship(back_populates="access_keys")
     worker: Mapped[WorkerNode | None] = relationship(back_populates="vpn_access_keys")
+
+
+class VpnFriendInvitation(Base):
+    __tablename__ = "vpn_friend_invitations"
+    __table_args__ = (
+        CheckConstraint("slot BETWEEN 1 AND 10", name="ck_vpn_friend_invitation_slot"),
+        CheckConstraint(
+            "(redeemed_at IS NULL AND telegram_user_id IS NULL AND access_key_id IS NULL) OR "
+            "(redeemed_at IS NOT NULL AND telegram_user_id IS NOT NULL AND access_key_id IS NOT NULL)",
+            name="ck_vpn_friend_invitation_redemption",
+        ),
+        UniqueConstraint("access_key_id", name="uq_vpn_friend_invitation_access_key"),
+    )
+
+    slot: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, server_default=func.now()
+    )
+    redeem_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    telegram_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    access_key_id: Mapped[int | None] = mapped_column(
+        ForeignKey("vpn_access_keys.id", ondelete="RESTRICT"), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VpnControlOperation(Base):
+    __tablename__ = "vpn_control_operations"
+    __table_args__ = (
+        UniqueConstraint(
+            "access_key_id",
+            "generation",
+            name="uq_vpn_control_operation_key_generation",
+        ),
+        ForeignKeyConstraint(
+            ["endpoint_id", "worker_id"],
+            ["vpn_endpoints.id", "vpn_endpoints.worker_id"],
+            name="fk_vpn_control_operation_endpoint_worker",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("generation > 0", name="ck_vpn_control_operation_generation"),
+        CheckConstraint(
+            "action IN ('provision','suspend','revoke')",
+            name="ck_vpn_control_operation_action",
+        ),
+        CheckConstraint(
+            "state IN ('queued','claimed','uncertain','succeeded','failed','superseded')",
+            name="ck_vpn_control_operation_state",
+        ),
+        Index("ix_vpn_control_operations_state", "state"),
+        Index("ix_vpn_control_operations_worker_id", "worker_id"),
+        Index("ix_vpn_control_operations_access_key_id", "access_key_id"),
+        Index(
+            "uq_vpn_control_operations_claim_token",
+            "claim_token",
+            unique=True,
+        ),
+        Index(
+            "uq_vpn_control_operations_worker_reserved",
+            "worker_id",
+            unique=True,
+            postgresql_where=text("state IN ('claimed','uncertain')"),
+            sqlite_where=text("state IN ('claimed','uncertain')"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    access_key_id: Mapped[int] = mapped_column(
+        ForeignKey("vpn_access_keys.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    worker_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    endpoint_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    request_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(16),
+        default="queued",
+        server_default="queued",
+        nullable=False,
+    )
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class VpnNodeEvent(Base):

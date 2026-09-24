@@ -458,6 +458,46 @@ export type VpnOverview = {
   active_keys: number;
 };
 
+export type VpnEndpointCapacity = {
+  endpoint_id: number;
+  worker_id: number;
+  label: string;
+  status: string;
+  occupied_profiles: number;
+  max_active_profiles: number | null;
+  capacity_warning_percent: number;
+};
+
+export type VpnEndpointCapacityUpdate = {
+  max_active_profiles: number | null;
+  capacity_warning_percent: number;
+};
+
+export type VpnFriendInvitation = {
+  slot: number;
+  invite_state:
+    | "unused"
+    | "preparing"
+    | "active"
+    | "failed"
+    | "needs_verification"
+    | "expired"
+    | "disabled";
+  telegram_user_id: string | null;
+  telegram_username: string | null;
+  display_name: string | null;
+  subscription_expires_at: string | null;
+  provisioning_error_code: string | null;
+  can_rotate: boolean;
+  can_retry: boolean;
+  can_disable: boolean;
+};
+
+export type VpnFriendInvitationIssued = {
+  invitation: VpnFriendInvitation;
+  invite_link: string;
+};
+
 export type VpnPlan = {
   id: number;
   slug: string;
@@ -512,6 +552,7 @@ export type VpnAccessKey = {
   worker_id: number | null;
   protocol: string;
   public_name: string | null;
+  display_name: string;
   external_uuid: string | null;
   config_uri: string | null;
   status: string;
@@ -522,6 +563,14 @@ export type VpnAccessKey = {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type VpnAccessKeyCreatePayload = {
+  subscription_id: number;
+  worker_id: number | null;
+  protocol: string;
+  display_name?: string;
+  public_name?: string | null;
 };
 
 export type VpnNodeEligibility = {
@@ -988,6 +1037,33 @@ export const api = {
   deleteWorker: (id: number) => request<{ detail: string }>(`/control/workers/${id}`, { method: "DELETE" }),
 
   getVpnOverview: () => request<VpnOverview>("/control/vpn/overview"),
+  getVpnEndpointCapacities: () =>
+    request<VpnEndpointCapacity[]>("/control/vpn/endpoints/capacity"),
+  updateVpnEndpointCapacity: (id: number, payload: VpnEndpointCapacityUpdate) =>
+    request<VpnEndpointCapacity>(`/control/vpn/endpoints/${id}/capacity`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  getVpnFriendInvitations: () =>
+    request<VpnFriendInvitation[]>("/control/vpn/friend-invitations"),
+  issueVpnFriendInvitation: () =>
+    request<VpnFriendInvitationIssued>("/control/vpn/friend-invitations", {
+      method: "POST",
+      cache: "no-store",
+    }),
+  rotateVpnFriendInvitation: (slot: number) =>
+    request<VpnFriendInvitationIssued>(`/control/vpn/friend-invitations/${slot}/rotate`, {
+      method: "POST",
+      cache: "no-store",
+    }),
+  retryVpnFriendInvitation: (slot: number) =>
+    request<VpnFriendInvitation>(`/control/vpn/friend-invitations/${slot}/retry`, {
+      method: "POST",
+    }),
+  disableVpnFriendInvitation: (slot: number) =>
+    request<VpnFriendInvitation>(`/control/vpn/friend-invitations/${slot}/disable`, {
+      method: "POST",
+    }),
   getVpnPlans: () => request<VpnPlan[]>("/control/vpn/plans"),
   createVpnPlan: (payload: Record<string, unknown>) =>
     request<VpnPlan>("/control/vpn/plans", {
@@ -1027,7 +1103,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getVpnAccessKeys: () => request<VpnAccessKey[]>("/control/vpn/access-keys"),
-  createVpnAccessKey: (payload: Record<string, unknown>) =>
+  createVpnAccessKey: (payload: VpnAccessKeyCreatePayload) =>
     request<VpnAccessKey>("/control/vpn/access-keys", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -1036,6 +1112,11 @@ export const api = {
     request<VpnAccessKey>(`/control/vpn/access-keys/${id}/provision`, { method: "POST" }),
   revokeVpnAccessKey: (id: number) =>
     request<VpnAccessKey>(`/control/vpn/access-keys/${id}/revoke`, { method: "POST" }),
+  renameVpnAccessKey: (id: number, displayName: string) =>
+    request<VpnAccessKey>(`/control/vpn/access-keys/${id}/display-name`, {
+      method: "PATCH",
+      body: JSON.stringify({ display_name: displayName }),
+    }),
   getVpnLifecycleStatus: () => request<VpnLifecycleStatus>("/control/vpn/lifecycle/status"),
   runVpnLifecycleMaintenance: () =>
     request<VpnLifecycleStatus>("/control/vpn/lifecycle/run", { method: "POST" }),

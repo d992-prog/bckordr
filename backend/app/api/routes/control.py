@@ -30,6 +30,7 @@ from app.db.models import (
     User,
     VpnAccessKey,
     VpnCustomer,
+    VpnEndpoint,
     VpnNodeEvent,
     VpnPlan,
     VpnSubscription,
@@ -92,11 +93,16 @@ from app.schemas.control import (
     RegistrarAccountUpdateRequest,
     RegistrarAccountValidateResponse,
     VpnAccessKeyCreateRequest,
+    VpnAccessKeyDisplayNameUpdateRequest,
     VpnAccessKeyResponse,
     VpnCustomerCreateRequest,
     VpnCustomerArchiveResponse,
     VpnCustomerResponse,
     VpnCustomerUpdateRequest,
+    VpnEndpointCapacityResponse,
+    VpnEndpointCapacityUpdateRequest,
+    VpnFriendInvitationIssuedResponse,
+    VpnFriendInvitationResponse,
     VpnLifecycleStatusResponse,
     VpnNodeEventResponse,
     VpnNodeEligibilityResponse,
@@ -155,7 +161,24 @@ from app.services.discovery import (
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
+from app.services.vpn_control_intents import active_vpn_control_worker_ids
+from app.services.vpn_friend_invitations import (
+    FriendInvitationConflict,
+    FriendInvitationUnavailable,
+    FriendInvitationView,
+    disable_friend_invitation,
+    issue_friend_invitation,
+    list_friend_invitations,
+    retry_friend_invitation,
+    rotate_friend_invitation,
+)
 from app.services.vpn_mutations import serialize_vpn_mutation
+from app.services.vpn_profile_names import (
+    initial_display_name,
+    initialize_customer_names,
+)
+from app.services.vpn_customer_view import profile_display_name
+from app.services.vpn_display import InvalidVpnDisplay, display_uri
 from app.services.vpn_subscription_sync import (
     SubscriptionPolicyConflict,
     SubscriptionPolicyError,
@@ -167,6 +190,7 @@ from app.services.vpn_customer_lifecycle import (
     stage_vpn_customer_archive,
 )
 from app.services.vpn_policy import (
+    NODE_CAPACITY_STATUSES,
     VPN_MUTATION_ACTIONS,
     active_attack_worker_ids,
     count_device_slots,
@@ -211,6 +235,30 @@ from app.core.config import get_settings
 
 router = APIRouter(prefix="/control", tags=["control"])
 ONLINE_WORKER_MAX_AGE_SECONDS = 120
+VPN_CONTROL_SENSITIVE_WORKER_FIELDS = {
+    "control_token",
+    "status",
+    "is_enabled",
+    "ip_address",
+    "ssh_host",
+    "ssh_port",
+    "ssh_username",
+    "ssh_password",
+    "ssh_key_path",
+    "vpn_role",
+    "vpn_enabled",
+    "vpn_runtime_status",
+    "vpn_public_host",
+    "vpn_panel_url",
+    "vpn_panel_username",
+    "vpn_panel_password",
+    "vpn_inbound_id",
+    "vpn_inbound_port",
+    "vpn_inbound_protocol",
+    "vpn_inbound_transport",
+    "vpn_inbound_security",
+    "vpn_listener_status",
+}
 
 
 def _worker_is_online(worker: WorkerNode, now: datetime) -> bool:
@@ -2472,6 +2520,7 @@ async def start_all_worker_updates(
             select(WorkerNode)
             .where(WorkerNode.is_enabled.is_(True))
             .order_by(WorkerNode.id.asc())
+            .with_for_update()
         )
     ).scalars().all()
     active_job_worker_ids = set(
@@ -2534,6 +2583,7 @@ async def start_all_vpn_node_updates(
                 WorkerNode.vpn_role != "none",
             )
             .order_by(WorkerNode.id.asc())
+            .with_for_update()
         )
     ).scalars().all()
     active_job_worker_ids = set(
@@ -2546,6 +2596,7 @@ async def start_all_vpn_node_updates(
         ).scalars().all()
     )
     busy_worker_ids = await active_attack_worker_ids(db)
+    control_worker_ids = await active_vpn_control_worker_ids(db)
 
     jobs: list[WorkerMaintenanceJob] = []
     skipped_worker_ids: list[int] = []
@@ -2554,6 +2605,7 @@ async def start_all_vpn_node_updates(
             not worker.ssh_access_configured
             or worker.id in active_job_worker_ids
             or worker.id in busy_worker_ids
+            or worker.id in control_worker_ids
         ):
             skipped_worker_ids.append(worker.id)
             continue
@@ -2601,6 +2653,7 @@ async def start_all_vpn_node_autoconfigs(
                 WorkerNode.vpn_role != "none",
             )
             .order_by(WorkerNode.id.asc())
+            .with_for_update()
         )
     ).scalars().all()
     active_job_worker_ids = set(
@@ -2613,6 +2666,7 @@ async def start_all_vpn_node_autoconfigs(
         ).scalars().all()
     )
     busy_worker_ids = await active_attack_worker_ids(db)
+    control_worker_ids = await active_vpn_control_worker_ids(db)
 
     jobs: list[WorkerMaintenanceJob] = []
     skipped_worker_ids: list[int] = []
@@ -2621,6 +2675,7 @@ async def start_all_vpn_node_autoconfigs(
             not worker.ssh_access_configured
             or worker.id in active_job_worker_ids
             or worker.id in busy_worker_ids
+            or worker.id in control_worker_ids
         ):
             skipped_worker_ids.append(worker.id)
             continue
@@ -2685,6 +2740,11 @@ async def _start_worker_maintenance_job(
     if action.startswith("vpn_") and (not worker.vpn_enabled or worker.vpn_role == "none"):
         raise HTTPException(status_code=400, detail="Worker is not configured as a VPN node")
     if action in VPN_MUTATION_ACTIONS:
+        if worker.id in await active_vpn_control_worker_ids(db):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Worker has an active VPN control operation",
+            )
         eligibility = await evaluate_vpn_node(db, worker)
         active_attack_reason = next(
             (reason for reason in eligibility.reasons if "active domain attack" in reason),
@@ -2766,7 +2826,16 @@ async def update_worker(
     worker = await lock_vpn_worker(db, worker_id)
     if worker is None or worker.archived_at is not None:
         raise HTTPException(status_code=404, detail="Worker not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if (
+        changes.keys() & VPN_CONTROL_SENSITIVE_WORKER_FIELDS
+        and worker.id in await active_vpn_control_worker_ids(db)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Worker has an active VPN control operation",
+        )
+    for field, value in changes.items():
         setattr(worker, field, value)
     worker.updated_at = utcnow()
     await add_audit_log(
@@ -2804,6 +2873,264 @@ async def delete_worker(
     await db.commit()
     await sync_worker_runtime_allowlist(db, get_settings())
     return MessageResponse(detail="Worker decommissioned")
+
+
+def _friend_invitation_response(
+    invitation: FriendInvitationView,
+) -> VpnFriendInvitationResponse:
+    return VpnFriendInvitationResponse.model_validate(
+        invitation,
+        from_attributes=True,
+    )
+
+
+def _vpn_endpoint_capacity_response(
+    endpoint: VpnEndpoint,
+    occupied_profiles: int,
+) -> VpnEndpointCapacityResponse:
+    return VpnEndpointCapacityResponse(
+        endpoint_id=endpoint.id,
+        worker_id=endpoint.worker_id,
+        label=f"{endpoint.public_host}:{endpoint.port}",
+        status=endpoint.status,
+        occupied_profiles=occupied_profiles,
+        max_active_profiles=endpoint.max_active_profiles,
+        capacity_warning_percent=endpoint.capacity_warning_percent,
+    )
+
+
+@router.get(
+    "/vpn/endpoints/capacity",
+    response_model=list[VpnEndpointCapacityResponse],
+)
+async def list_vpn_endpoint_capacities(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnEndpointCapacityResponse]:
+    del admin
+    occupancy = (
+        select(
+            VpnAccessKey.endpoint_id.label("endpoint_id"),
+            func.count(VpnAccessKey.id).label("occupied_profiles"),
+        )
+        .where(
+            VpnAccessKey.endpoint_id.is_not(None),
+            VpnAccessKey.status.in_(NODE_CAPACITY_STATUSES),
+        )
+        .group_by(VpnAccessKey.endpoint_id)
+        .subquery()
+    )
+    rows = (
+        await db.execute(
+            select(
+                VpnEndpoint,
+                func.coalesce(occupancy.c.occupied_profiles, 0),
+            )
+            .outerjoin(occupancy, occupancy.c.endpoint_id == VpnEndpoint.id)
+            .order_by(VpnEndpoint.id.asc())
+        )
+    ).all()
+    return [
+        _vpn_endpoint_capacity_response(endpoint, int(occupied_profiles))
+        for endpoint, occupied_profiles in rows
+    ]
+
+
+@router.patch(
+    "/vpn/endpoints/{endpoint_id}/capacity",
+    response_model=VpnEndpointCapacityResponse,
+)
+async def update_vpn_endpoint_capacity(
+    endpoint_id: int,
+    payload: VpnEndpointCapacityUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnEndpointCapacityResponse:
+    endpoint = await db.scalar(
+        select(VpnEndpoint)
+        .where(VpnEndpoint.id == endpoint_id)
+        .with_for_update()
+    )
+    if endpoint is None:
+        raise HTTPException(status_code=404, detail="VPN endpoint not found")
+    endpoint.max_active_profiles = payload.max_active_profiles
+    endpoint.capacity_warning_percent = payload.capacity_warning_percent
+    occupied_profiles = int(
+        await db.scalar(
+            select(func.count(VpnAccessKey.id)).where(
+                VpnAccessKey.endpoint_id == endpoint.id,
+                VpnAccessKey.status.in_(NODE_CAPACITY_STATUSES),
+            )
+        )
+        or 0
+    )
+    limit = "null" if payload.max_active_profiles is None else str(payload.max_active_profiles)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_endpoint_capacity_update",
+        details=(
+            f"endpoint_id={endpoint.id} max_active_profiles={limit} "
+            f"capacity_warning_percent={payload.capacity_warning_percent}"
+        ),
+    )
+    await db.commit()
+    return _vpn_endpoint_capacity_response(endpoint, occupied_profiles)
+
+
+def _friend_invitation_http_error(
+    error: FriendInvitationConflict | FriendInvitationUnavailable,
+) -> HTTPException:
+    if isinstance(error, FriendInvitationConflict):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Friend invitation cannot be changed",
+            headers={"Cache-Control": "no-store"},
+        )
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Friend invitations are temporarily unavailable",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    "/vpn/friend-invitations",
+    response_model=list[VpnFriendInvitationResponse],
+)
+async def get_vpn_friend_invitations(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> list[VpnFriendInvitationResponse]:
+    del admin
+    invitations = await list_friend_invitations(db, utcnow())
+    return [_friend_invitation_response(invitation) for invitation in invitations]
+
+
+@router.post(
+    "/vpn/friend-invitations",
+    response_model=VpnFriendInvitationIssuedResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(serialize_vpn_mutation)],
+)
+async def create_vpn_friend_invitation(
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnFriendInvitationIssuedResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        issued = await issue_friend_invitation(
+            db,
+            get_settings(),
+            admin.id,
+            utcnow(),
+        )
+    except (FriendInvitationConflict, FriendInvitationUnavailable) as error:
+        raise _friend_invitation_http_error(error) from None
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_friend_invitation_issue",
+        details=f"slot={issued.view.slot}",
+    )
+    await db.commit()
+    return VpnFriendInvitationIssuedResponse(
+        invitation=_friend_invitation_response(issued.view),
+        invite_link=issued.link,
+    )
+
+
+@router.post(
+    "/vpn/friend-invitations/{slot}/rotate",
+    response_model=VpnFriendInvitationIssuedResponse,
+    dependencies=[Depends(serialize_vpn_mutation)],
+)
+async def rotate_vpn_friend_invitation(
+    slot: int,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnFriendInvitationIssuedResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        issued = await rotate_friend_invitation(
+            db,
+            get_settings(),
+            slot,
+            admin.id,
+            utcnow(),
+        )
+    except (FriendInvitationConflict, FriendInvitationUnavailable) as error:
+        raise _friend_invitation_http_error(error) from None
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_friend_invitation_rotate",
+        details=f"slot={slot}",
+    )
+    await db.commit()
+    return VpnFriendInvitationIssuedResponse(
+        invitation=_friend_invitation_response(issued.view),
+        invite_link=issued.link,
+    )
+
+
+@router.post(
+    "/vpn/friend-invitations/{slot}/retry",
+    response_model=VpnFriendInvitationResponse,
+    dependencies=[Depends(serialize_vpn_mutation)],
+)
+async def retry_vpn_friend_invitation(
+    slot: int,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnFriendInvitationResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        invitation = await retry_friend_invitation(db, slot, utcnow())
+    except (FriendInvitationConflict, FriendInvitationUnavailable) as error:
+        raise _friend_invitation_http_error(error) from None
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_friend_invitation_retry",
+        details=f"slot={slot}",
+    )
+    await db.commit()
+    return _friend_invitation_response(invitation)
+
+
+@router.post(
+    "/vpn/friend-invitations/{slot}/disable",
+    response_model=VpnFriendInvitationResponse,
+    dependencies=[Depends(serialize_vpn_mutation)],
+)
+async def disable_vpn_friend_invitation(
+    slot: int,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnFriendInvitationResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        invitation = await disable_friend_invitation(db, slot, utcnow())
+    except (FriendInvitationConflict, FriendInvitationUnavailable) as error:
+        raise _friend_invitation_http_error(error) from None
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_friend_invitation_disable",
+        details=f"slot={slot}",
+    )
+    await db.commit()
+    return _friend_invitation_response(invitation)
 
 
 @router.get("/vpn/overview", response_model=VpnOverviewResponse)
@@ -3151,7 +3478,23 @@ async def list_vpn_access_keys(
 ) -> list[VpnAccessKeyResponse]:
     del admin
     result = await db.execute(select(VpnAccessKey).order_by(VpnAccessKey.id.desc()).limit(1000))
-    return [VpnAccessKeyResponse.model_validate(access_key) for access_key in result.scalars().all()]
+    return [_vpn_access_key_response(access_key) for access_key in result.scalars().all()]
+
+
+def _vpn_access_key_response(access_key: VpnAccessKey) -> VpnAccessKeyResponse:
+    display_name = profile_display_name(access_key)
+    labelled_uri = None
+    if access_key.config_uri:
+        try:
+            labelled_uri = display_uri(access_key.config_uri, display_name)
+        except InvalidVpnDisplay:
+            pass
+    payload = {
+        field_name: getattr(access_key, field_name)
+        for field_name in VpnAccessKeyResponse.model_fields
+    }
+    payload.update(display_name=display_name, config_uri=labelled_uri)
+    return VpnAccessKeyResponse.model_validate(payload)
 
 
 async def _validate_vpn_key_issue(
@@ -3226,9 +3569,28 @@ async def create_vpn_access_key(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> VpnAccessKeyResponse:
+    customer_id = await db.scalar(
+        select(VpnSubscription.customer_id).where(
+            VpnSubscription.id == payload.subscription_id
+        )
+    )
+    if customer_id is None:
+        raise HTTPException(status_code=404, detail="VPN subscription not found")
+    customer = await db.scalar(
+        select(VpnCustomer)
+        .where(VpnCustomer.id == customer_id)
+        .with_for_update()
+    )
+    if customer is None:
+        raise HTTPException(status_code=404, detail="VPN customer not found")
     subscription = await lock_vpn_subscription(db, payload.subscription_id)
     if subscription is None:
         raise HTTPException(status_code=404, detail="VPN subscription not found")
+    if subscription.customer_id != customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="VPN subscription customer changed",
+        )
     await _validate_vpn_key_issue(db, subscription)
     worker = await _resolve_vpn_key_worker(db, payload.worker_id)
     now = utcnow()
@@ -3243,6 +3605,12 @@ async def create_vpn_access_key(
         expires_at=subscription.expires_at,
         last_error=None if worker is not None else "No safe VPN node is currently available",
     )
+    next_ordinal = await initialize_customer_names(db, subscription.customer_id)
+    access_key.display_name = (
+        payload.display_name
+        if payload.display_name is not None
+        else initial_display_name(payload.public_name, next_ordinal)
+    )
     db.add(access_key)
     await db.flush()
     if worker is not None:
@@ -3256,7 +3624,39 @@ async def create_vpn_access_key(
     )
     await db.commit()
     await db.refresh(access_key)
-    return VpnAccessKeyResponse.model_validate(access_key)
+    return _vpn_access_key_response(access_key)
+
+
+@router.patch(
+    "/vpn/access-keys/{access_key_id}/display-name",
+    response_model=VpnAccessKeyResponse,
+)
+async def update_vpn_access_key_display_name(
+    access_key_id: int,
+    payload: VpnAccessKeyDisplayNameUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnAccessKeyResponse:
+    access_key = await db.scalar(
+        select(VpnAccessKey)
+        .where(VpnAccessKey.id == access_key_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if access_key is None:
+        raise HTTPException(status_code=404, detail="VPN access key not found")
+    access_key.display_name = payload.display_name
+    access_key.updated_at = utcnow()
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_access_key_display_name_update",
+        details=f"access_key_id={access_key_id}",
+    )
+    await db.commit()
+    await db.refresh(access_key)
+    return _vpn_access_key_response(access_key)
 
 
 @router.post("/vpn/access-keys/{access_key_id}/provision", response_model=VpnAccessKeyResponse, dependencies=[Depends(serialize_vpn_mutation)])
@@ -3292,7 +3692,7 @@ async def provision_existing_vpn_access_key(
     )
     await db.commit()
     await db.refresh(access_key)
-    return VpnAccessKeyResponse.model_validate(access_key)
+    return _vpn_access_key_response(access_key)
 
 
 @router.post("/vpn/access-keys/{access_key_id}/revoke", response_model=VpnAccessKeyResponse, dependencies=[Depends(serialize_vpn_mutation)])
@@ -3316,7 +3716,7 @@ async def revoke_existing_vpn_access_key(
     )
     await db.commit()
     await db.refresh(access_key)
-    return VpnAccessKeyResponse.model_validate(access_key)
+    return _vpn_access_key_response(access_key)
 
 
 @router.get("/vpn/lifecycle/status", response_model=VpnLifecycleStatusResponse)
@@ -3370,7 +3770,7 @@ async def delete_vpn_access_key(
     )
     await db.commit()
     await db.refresh(access_key)
-    return VpnAccessKeyResponse.model_validate(access_key)
+    return _vpn_access_key_response(access_key)
 
 
 @router.get("/vpn/node-events", response_model=list[VpnNodeEventResponse])

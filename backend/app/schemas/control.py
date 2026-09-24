@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.services.vpn_display import validate_display_name
 
 
 class CapacitySummaryResponse(BaseModel):
@@ -540,6 +543,23 @@ class VpnNodeEligibilityResponse(BaseModel):
     blocked_reasons: list[str]
 
 
+class VpnEndpointCapacityUpdateRequest(BaseModel):
+    max_active_profiles: int | None = Field(default=None, ge=1, le=100_000)
+    capacity_warning_percent: int = Field(default=80, ge=1, le=100)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class VpnEndpointCapacityResponse(BaseModel):
+    endpoint_id: int
+    worker_id: int
+    label: str
+    status: str
+    occupied_profiles: int
+    max_active_profiles: int | None
+    capacity_warning_percent: int
+
+
 class VpnPlanBase(BaseModel):
     slug: str = Field(min_length=2, max_length=64)
     name: str = Field(min_length=2, max_length=128)
@@ -655,6 +675,7 @@ class VpnAccessKeyCreateRequest(BaseModel):
     worker_id: int | None = None
     protocol: str = Field(default="vless", min_length=2, max_length=32)
     public_name: str | None = Field(default=None, max_length=128)
+    display_name: str | None = None
 
     @field_validator("protocol")
     @classmethod
@@ -664,6 +685,13 @@ class VpnAccessKeyCreateRequest(BaseModel):
             raise ValueError("protocol must be vless or vmess")
         return protocol
 
+    @field_validator("display_name")
+    @classmethod
+    def validate_optional_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_display_name(value)
+
 
 class VpnAccessKeyResponse(BaseModel):
     id: int
@@ -671,6 +699,7 @@ class VpnAccessKeyResponse(BaseModel):
     worker_id: int | None
     protocol: str
     public_name: str | None
+    display_name: str
     external_uuid: str | None
     config_uri: str | None
     status: str
@@ -683,6 +712,17 @@ class VpnAccessKeyResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class VpnAccessKeyDisplayNameUpdateRequest(BaseModel):
+    display_name: str
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_required_display_name(cls, value: str) -> str:
+        return validate_display_name(value)
 
 
 class VpnNodeEventResponse(BaseModel):
@@ -728,6 +768,32 @@ class VpnTelegramUpdateResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class VpnFriendInvitationResponse(BaseModel):
+    slot: int
+    invite_state: Literal[
+        "unused",
+        "preparing",
+        "active",
+        "failed",
+        "needs_verification",
+        "expired",
+        "disabled",
+    ]
+    telegram_user_id: str | None
+    telegram_username: str | None
+    display_name: str | None
+    subscription_expires_at: datetime | None
+    provisioning_error_code: str | None
+    can_rotate: bool
+    can_retry: bool
+    can_disable: bool
+
+
+class VpnFriendInvitationIssuedResponse(BaseModel):
+    invitation: VpnFriendInvitationResponse
+    invite_link: str
 
 
 class DiscoveryRuntimeSettingsResponse(BaseModel):
