@@ -27,6 +27,10 @@ still intentionally absent and remain the final integration stage.
   browser makes one status request at a time every two seconds for at most 30
   attempts; manual refresh remains available.
   A session-generation guard prevents an old poll from updating a new session.
+  Turning the admission flag off denies fresh identities without stranding an
+  existing, unexpired and non-revoked public trial while its valid release ID
+  remains configured. OIDC admission is locked and rechecked before a session
+  is issued.
 - Activation atomically creates the existing seven-day subscription, one
   endpoint-bound VLESS key and one durable strict-dispatcher provision operation.
   The profile remains `preparing` until that operation succeeded and the active
@@ -44,6 +48,11 @@ still intentionally absent and remain the final integration stage.
   Selection is deterministic by lowest utilization and endpoint ID. Activation
   locks the worker and endpoint in that order and revalidates health and capacity
   before commit, so concurrent users cannot oversubscribe a one-slot endpoint.
+  Friend-invitation redemption uses the same locked selector and capacity pool.
+- The strict dispatcher can run for a public-only release when the public flag,
+  valid release ID and exact public readiness marker are present; it does not
+  require the friend-beta flag. It still fails closed unless dispatch is enabled,
+  public portal access is closed and an enabled release path has its exact marker.
 - The admin VPN workspace lists occupancy and permits only the capacity limit
   and warning percentage to be edited. Limits are validated as 1..100000 or
   unset; warnings are 1..100. Changes produce numeric audit details and do not
@@ -102,6 +111,16 @@ ready-notification flags remain off; this checkpoint performs no rollout.
   Ruff passed for the complete backend application and test tree. The frontend
   recorded 72/72 passing tests, and the production Vite build produced both the
   admin and cabinet entries. `git diff --check` passed.
+- Post-integrated-review verification was focused real PostgreSQL plus a fresh
+  full local run, not another uninterrupted full environment run, so the honest
+  composite evidence above remains unchanged. The complete public-trial
+  PostgreSQL file passed 7/7 with no skip in 203.24 seconds, including public
+  versus friend contention for one capacity slot. Independent cleanup confirmed
+  the tunnel port closed, no matching temporary cluster directory and the
+  control service active. The refreshed local backend passed 2,256 tests and
+  skipped 80: 75 real-PostgreSQL cases, four unavailable Windows symlink cases
+  and the POSIX-only ownership/mode check. Full Ruff, all 72 frontend tests, the
+  two-entry Vite production build and `git diff --check` passed.
 - Every disposable PostgreSQL run used a loopback-only remote listener through
   the SSH tunnel. After the transport reset, the single abandoned cluster was
   stopped and removed only after its directory, pidfile, port and process were

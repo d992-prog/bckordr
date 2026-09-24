@@ -53,7 +53,10 @@ below is required at the same time:
   the public flag is enabled. Status uses the existing authenticated portal
   session; activation additionally requires its CSRF token. The card exposes the
   bounded states `disabled`, `available`, `capacity_paused`, `preparing`,
-  `active` and `used`.
+  `active` and `used`. Disabling the admission flag denies fresh identities but
+  does not strand an existing, unexpired and non-revoked public trial while its
+  valid release ID remains configured. OIDC admission is locked and rechecked
+  before session issue.
 - Preparing status polls serially every two seconds for no more than 30 attempts.
   The customer can continue with manual refresh after polling stops. Logout or a
   new session invalidates stale polling work.
@@ -65,7 +68,15 @@ Capacity includes keys in `pending_sync`, `syncing`, `active`,
 excluded. Eligible endpoints are ranked by utilization and then ID. Activation
 locks the worker and endpoint and rechecks eligibility and occupancy before
 commit. If no slot survives that check, the customer keeps the unused trial
-right and sees `capacity_paused`.
+right and sees `capacity_paused`. Friend-invitation redemption uses the same
+locked selector and capacity pool, so public and invited identities cannot both
+consume a one-slot endpoint.
+
+The strict dispatcher supports a public-only release gate: the friend-beta flag
+is not required when the public flag, valid public release ID and exact matching
+`vpn_public_release_ready_v1` marker are present. Dispatch still fails closed
+unless dispatch is enabled, public portal access is closed and an enabled
+release path has its exact readiness marker.
 
 The admin capacity editor changes only `max_active_profiles` and
 `capacity_warning_percent`. Capacity may be unset or 1..100000; warning is
@@ -110,6 +121,17 @@ cases and the same POSIX-only check. Full Ruff, all 72 frontend tests, the
 two-entry Vite production build and `git diff --check` passed. Final independent
 cleanup verification found the temporary PostgreSQL port closed, no temporary
 cluster directory and the existing control service active.
+
+Post-integrated-review verification was focused real PostgreSQL plus a fresh
+full local run, not another uninterrupted full environment run, so the composite
+above remains the broad database evidence. The complete public-trial PostgreSQL
+file passed 7/7 with no skip in 203.24 seconds, including public-versus-friend
+contention for one capacity slot. Independent cleanup again found the tunnel port
+closed, no matching temporary cluster directory and the control service active.
+The refreshed local backend passed 2,256 tests and skipped 80: 75
+real-PostgreSQL cases, four unavailable Windows symlink cases and the POSIX-only
+ownership/mode check. Full Ruff, all 72 frontend tests, the two-entry Vite build
+and `git diff --check` passed.
 
 ## Safe Node Rollout
 
