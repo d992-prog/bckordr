@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from io import StringIO
 import json
 from pathlib import Path
@@ -101,6 +101,8 @@ from app.schemas.control import (
     VpnCustomerUpdateRequest,
     VpnEndpointCapacityResponse,
     VpnEndpointCapacityUpdateRequest,
+    VpnEndpointExternalVerificationRequest,
+    VpnEndpointExternalVerificationResponse,
     VpnFriendInvitationIssuedResponse,
     VpnFriendInvitationResponse,
     VpnLifecycleStatusResponse,
@@ -110,6 +112,7 @@ from app.schemas.control import (
     VpnPlanCreateRequest,
     VpnPlanResponse,
     VpnPlanUpdateRequest,
+    VpnReleaseReadinessResponse,
     VpnSubscriptionCreateRequest,
     VpnSubscriptionResponse,
     VpnSubscriptionUpdateRequest,
@@ -172,7 +175,8 @@ from app.services.vpn_friend_invitations import (
     retry_friend_invitation,
     rotate_friend_invitation,
 )
-from app.services.vpn_mutations import serialize_vpn_mutation
+from app.services.vpn_endpoint_types import VpnEndpointTarget, public_endpoint_fingerprint
+from app.services.vpn_mutations import serialize_vpn_mutation, vpn_mutation_lock
 from app.services.vpn_profile_names import (
     initial_display_name,
     initialize_customer_names,
@@ -206,6 +210,14 @@ from app.services.app_settings import (
     get_discovery_runtime_settings,
     get_vpn_lifecycle_last_result,
     set_discovery_runtime_settings,
+    set_vpn_public_release_ready,
+)
+from app.services.vpn_release_readiness import (
+    BackupObservation,
+    OperationalObservations,
+    ReleaseReadiness,
+    evaluate_release_readiness,
+    load_release_readiness_snapshot,
 )
 from app.services.strategy_runtime import (
     evaluate_domain_readiness,
@@ -231,7 +243,7 @@ from app.services.zone_scanner import (
     set_allzonefiles_token,
     test_allzonefiles_connection,
 )
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 
 router = APIRouter(prefix="/control", tags=["control"])
 ONLINE_WORKER_MAX_AGE_SECONDS = 120
@@ -2977,6 +2989,206 @@ async def update_vpn_endpoint_capacity(
     )
     await db.commit()
     return _vpn_endpoint_capacity_response(endpoint, occupied_profiles)
+
+
+def _release_readiness_observations() -> tuple[
+    OperationalObservations | None,
+    BackupObservation | None,
+]:
+    return None, None
+
+
+async def _load_vpn_release_readiness_report(
+    db: AsyncSession,
+    settings: Settings,
+) -> ReleaseReadiness:
+    operational, backup = _release_readiness_observations()
+    snapshot = await load_release_readiness_snapshot(
+        db,
+        settings,
+        operational=operational,
+        backup=backup,
+        payment_enabled=False,
+    )
+    return evaluate_release_readiness(snapshot, now=utcnow())
+
+
+def _external_verification_target(
+    endpoint: VpnEndpoint,
+    *,
+    now: datetime,
+    health_max_age_seconds: int,
+) -> VpnEndpointTarget | None:
+    verified_at = endpoint.verified_at
+    if verified_at is not None:
+        verified_at = (
+            verified_at.replace(tzinfo=UTC)
+            if verified_at.tzinfo is None
+            else verified_at.astimezone(UTC)
+        )
+    if (
+        endpoint.status != "ready"
+        or endpoint.security != "reality"
+        or verified_at is None
+        or not now - timedelta(seconds=max(health_max_age_seconds, 1))
+        <= verified_at
+        <= now
+        or endpoint.protocol != "vless"
+        or endpoint.transport not in {"tcp", "raw"}
+        or type(endpoint.inbound_id) is not int
+        or endpoint.inbound_id <= 0
+        or type(endpoint.port) is not int
+        or not 1 <= endpoint.port <= 65535
+    ):
+        return None
+    required_strings = (
+        endpoint.public_host,
+        endpoint.server_name,
+        endpoint.public_key,
+        endpoint.short_id,
+        endpoint.fingerprint,
+        endpoint.flow,
+    )
+    if any(
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or any(character.isspace() for character in value)
+        for value in required_strings
+    ):
+        return None
+    if (
+        endpoint.public_host != endpoint.public_host.lower()
+        or endpoint.public_host.endswith(".")
+        or len(endpoint.public_host) > 253
+        or any(character in endpoint.public_host for character in "/\\?#@")
+    ):
+        return None
+    return VpnEndpointTarget(
+        endpoint_id=endpoint.id,
+        worker_id=endpoint.worker_id,
+        inbound_id=endpoint.inbound_id,
+        public_host=endpoint.public_host,
+        port=endpoint.port,
+        protocol=endpoint.protocol,
+        transport=endpoint.transport,
+        security=endpoint.security,
+        server_name=endpoint.server_name,
+        public_key=endpoint.public_key,
+        short_id=endpoint.short_id,
+        fingerprint=endpoint.fingerprint,
+        flow=endpoint.flow,
+    )
+
+
+@router.get(
+    "/vpn/release-readiness",
+    response_model=VpnReleaseReadinessResponse,
+)
+async def get_vpn_release_readiness(
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnReleaseReadinessResponse:
+    del admin
+    report = await _load_vpn_release_readiness_report(db, get_settings())
+    response.headers["Cache-Control"] = "no-store"
+    return VpnReleaseReadinessResponse.model_validate(report)
+
+
+@router.post(
+    "/vpn/endpoints/{endpoint_id}/external-verification",
+    response_model=VpnEndpointExternalVerificationResponse,
+)
+async def confirm_vpn_endpoint_external_verification(
+    endpoint_id: int,
+    payload: VpnEndpointExternalVerificationRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnEndpointExternalVerificationResponse:
+    del payload
+    endpoint = await db.scalar(
+        select(VpnEndpoint)
+        .where(VpnEndpoint.id == endpoint_id)
+        .with_for_update()
+    )
+    if endpoint is None:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="VPN endpoint not found",
+            headers={"Cache-Control": "no-store"},
+        )
+    confirmed_at = utcnow()
+    target = _external_verification_target(
+        endpoint,
+        now=confirmed_at,
+        health_max_age_seconds=get_settings().vpn_endpoint_health_max_age_seconds,
+    )
+    if target is None:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="VPN endpoint is not eligible for confirmation",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    endpoint.external_verified_at = confirmed_at
+    endpoint.external_config_fingerprint = public_endpoint_fingerprint(target)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_endpoint_external_verification",
+        details=f"endpoint_id={endpoint.id}",
+    )
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+    return VpnEndpointExternalVerificationResponse(
+        endpoint_id=endpoint.id,
+        confirmed_at=confirmed_at,
+    )
+
+
+@router.post(
+    "/vpn/release-readiness/commit",
+    response_model=MessageResponse,
+)
+async def commit_vpn_release_readiness(
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> MessageResponse:
+    settings = get_settings()
+    async with vpn_mutation_lock():
+        try:
+            report = await _load_vpn_release_readiness_report(db, settings)
+            if not report.ready:
+                await db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="VPN release is not ready",
+                    headers={"Cache-Control": "no-store"},
+                )
+            await set_vpn_public_release_ready(
+                db,
+                settings.vpn_public_trial_release_id,
+            )
+            await add_audit_log(
+                db,
+                actor_user_id=admin.id,
+                target_user_id=None,
+                action="vpn_release_readiness_commit",
+            )
+            await db.commit()
+        except HTTPException:
+            raise
+        except Exception:
+            await db.rollback()
+            raise
+    return MessageResponse(detail="VPN release readiness committed")
 
 
 def _friend_invitation_http_error(

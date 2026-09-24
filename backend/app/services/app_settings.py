@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +47,13 @@ async def set_app_setting(session: AsyncSession, key: str, value: str | None) ->
         setting.value = value
     await session.flush()
     return setting
+
+
+async def set_vpn_public_release_ready(
+    session: AsyncSession,
+    release_id: str,
+) -> AppSetting:
+    return await set_app_setting(session, _VPN_PUBLIC_RELEASE_READY_KEY, release_id)
 
 
 async def get_vpn_lifecycle_last_result(session: AsyncSession) -> dict[str, object]:

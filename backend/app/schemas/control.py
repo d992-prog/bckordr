@@ -560,6 +560,36 @@ class VpnEndpointCapacityResponse(BaseModel):
     capacity_warning_percent: int
 
 
+class VpnReleaseCheckResponse(BaseModel):
+    code: str = Field(max_length=64)
+    state: Literal["pass", "warn", "fail"]
+    message: str = Field(max_length=128)
+    entity_id: int | None = None
+    observed_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VpnReleaseReadinessResponse(BaseModel):
+    ready: bool
+    checked_at: datetime
+    checks: list[VpnReleaseCheckResponse]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VpnEndpointExternalVerificationRequest(BaseModel):
+    confirmed: Literal[True]
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class VpnEndpointExternalVerificationResponse(BaseModel):
+    endpoint_id: int
+    confirmed: Literal[True] = True
+    confirmed_at: datetime
+
+
 class VpnPlanBase(BaseModel):
     slug: str = Field(min_length=2, max_length=64)
     name: str = Field(min_length=2, max_length=128)
