@@ -240,7 +240,7 @@ async def seed_friend_invitation(
                 fingerprint="chrome",
                 flow="xtls-rprx-vision",
                 status="ready",
-                verified_at=now - timedelta(hours=1),
+                verified_at=now,
                 max_active_profiles=10,
             )
         )

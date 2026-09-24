@@ -11,10 +11,6 @@ from typing import ClassVar
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
-
 from app.db.base import Base
 from app.db.models import (
     VpnAccessKey,
@@ -38,6 +34,9 @@ from app.services.vpn_fleet_health import (
 from app.services.vpn_node_health import VpnNodeHealthReceipt, VpnNodeHealthRequest
 from app.services.vpn_node_transport import VpnNodeTransportError
 from app.services.vpn_policy import VPN_MUTATION_ACTIONS
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
 NOW = datetime(2026, 9, 24, 12, tzinfo=UTC)
 PUBLIC_KEY = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
