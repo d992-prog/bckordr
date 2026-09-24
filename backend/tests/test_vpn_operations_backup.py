@@ -25,6 +25,10 @@ from app.operations.backup import (
 NOW = datetime(2026, 9, 24, 3, 10, 11, tzinfo=timezone.utc)
 NONCE = "abcdef0123456789"
 PASSWORD = "never-print-this-password"
+POSIX_SNAPSHOT_ONLY = pytest.mark.skipif(
+    not backup_module._DIR_FD_SUPPORTED,
+    reason="descriptor-anchored snapshot inspection is POSIX-only",
+)
 
 
 def _copy_test_file(
@@ -135,7 +139,7 @@ def _allow_test_platform(
     ):
         @contextmanager
         def bound_test_root(path: Path):
-            yield backup_module._validated_root(path), lambda: None
+            yield backup_module._validated_root(path), -1, lambda: None
 
         monkeypatch.setattr(backup_module, "_require_secure_platform", lambda: None)
         monkeypatch.setattr(backup_module, "_bound_backup_root", bound_test_root)
@@ -248,6 +252,7 @@ def _write_success(root: Path, name: str) -> Path:
     return directory
 
 
+@POSIX_SNAPSHOT_ONLY
 def test_validated_latest_success_returns_utc_without_mutation(tmp_path: Path) -> None:
     config = _config(tmp_path)
     success = _write_success(
@@ -269,6 +274,7 @@ def test_validated_latest_success_returns_utc_without_mutation(tmp_path: Path) -
     assert not (config.backup_root / ".backup.lock").exists()
 
 
+@POSIX_SNAPSHOT_ONLY
 def test_validated_latest_success_returns_none_when_marker_is_missing(
     tmp_path: Path,
 ) -> None:
@@ -277,6 +283,7 @@ def test_validated_latest_success_returns_none_when_marker_is_missing(
     assert backup_module.validated_latest_success_at(config.backup_root) is None
 
 
+@POSIX_SNAPSHOT_ONLY
 def test_validated_latest_success_returns_future_timestamp_for_caller_policy(
     tmp_path: Path,
 ) -> None:
@@ -296,6 +303,7 @@ def test_validated_latest_success_returns_future_timestamp_for_caller_policy(
     "tamper",
     ["forged", "oversized", "failed", "mismatched", "partial"],
 )
+@POSIX_SNAPSHOT_ONLY
 def test_validated_latest_success_rejects_untrusted_marker_or_set(
     tmp_path: Path, tamper: str
 ) -> None:
@@ -329,6 +337,7 @@ def test_validated_latest_success_rejects_untrusted_marker_or_set(
     assert backup_module.validated_latest_success_at(config.backup_root) is None
 
 
+@POSIX_SNAPSHOT_ONLY
 def test_validated_latest_success_rejects_unstable_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -361,10 +370,7 @@ def test_validated_latest_success_rejects_unstable_marker(
     assert changed
 
 
-@pytest.mark.skipif(
-    os.name != "posix" or not hasattr(os, "O_DIRECTORY"),
-    reason="retained root descriptors are a POSIX guarantee",
-)
+@POSIX_SNAPSHOT_ONLY
 def test_validated_latest_success_rejects_root_swap_during_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -375,25 +381,31 @@ def test_validated_latest_success_rejects_root_swap_during_read(
     marker = config.backup_root / "latest-success.json"
     marker.write_bytes((success / "backup.json").read_bytes())
     original = config.backup_root.with_name("backups-original")
-    real_read_marker = backup_module._read_existing_marker
     swapped = False
 
-    def swapping_read_marker(path: Path, root: Path) -> bytes | None:
-        nonlocal swapped
-        if not swapped:
-            swapped = True
-            root.rename(original)
-            shutil.copytree(original, root)
-        return real_read_marker(path, root)
+    real_read_file = backup_module._read_bounded_file_at
 
-    monkeypatch.setattr(backup_module, "_read_existing_marker", swapping_read_marker)
+    def swapping_read_file(
+        directory_fd: int, name: str, limit: int
+    ) -> bytes:
+        nonlocal swapped
+        raw = real_read_file(directory_fd, name, limit)
+        if name == "latest-success.json" and not swapped:
+            swapped = True
+            config.backup_root.rename(original)
+            shutil.copytree(original, config.backup_root)
+        return raw
+
+    monkeypatch.setattr(
+        backup_module, "_read_bounded_file_at", swapping_read_file, raising=False
+    )
 
     assert backup_module.validated_latest_success_at(config.backup_root) is None
     assert swapped
 
 
 @pytest.mark.parametrize("symlink_kind", ["marker", "set"])
-@pytest.mark.skipif(os.name != "posix", reason="symlink trust is POSIX-only")
+@POSIX_SNAPSHOT_ONLY
 def test_validated_latest_success_rejects_symlinked_marker_and_set(
     tmp_path: Path, symlink_kind: str
 ) -> None:
@@ -411,6 +423,159 @@ def test_validated_latest_success_rejects_symlinked_marker_and_set(
         )
 
     assert backup_module.validated_latest_success_at(config.backup_root) is None
+
+
+def test_trusted_snapshot_parser_validates_exact_metadata_and_manifest(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "backups"
+    root.mkdir()
+    success = _write_success(root, "20260924T031011.000000Z-aaaaaaaa")
+    metadata = (success / "backup.json").read_bytes()
+    manifest = (success / "manifest.json").read_bytes()
+
+    snapshot = backup_module._parse_snapshot_metadata(metadata)
+    created_at = backup_module._validated_snapshot_timestamp(
+        snapshot, metadata, metadata, manifest
+    )
+
+    assert created_at == datetime(2026, 9, 24, 3, 10, 11, tzinfo=timezone.utc)
+    with pytest.raises(BackupError, match="^backup_snapshot_invalid$"):
+        backup_module._validated_snapshot_timestamp(
+            snapshot, metadata, metadata + b" ", manifest
+        )
+    with pytest.raises(BackupError, match="^backup_snapshot_invalid$"):
+        backup_module._validated_snapshot_timestamp(
+            snapshot, metadata, metadata, manifest + b" "
+        )
+
+
+@pytest.mark.parametrize(
+    ("file_name", "mutation"),
+    [
+        ("backup.json", "grow"),
+        ("backup.json", "replace"),
+        ("manifest.json", "grow"),
+        ("manifest.json", "replace"),
+    ],
+)
+@POSIX_SNAPSHOT_ONLY
+def test_validated_latest_success_rejects_file_race_during_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    file_name: str,
+    mutation: str,
+) -> None:
+    config = _config(tmp_path)
+    success = _write_success(
+        config.backup_root, "20260924T031011.000000Z-aaaaaaaa"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((success / "backup.json").read_bytes())
+    target = success / file_name
+    identity = backup_module._file_identity(target.stat())
+    original = target.read_bytes()
+    real_read = os.read
+    mutated = False
+
+    def racing_read(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        chunk = real_read(descriptor, size)
+        if (
+            chunk
+            and not mutated
+            and backup_module._file_identity(os.fstat(descriptor)) == identity
+        ):
+            mutated = True
+            if mutation == "grow":
+                with target.open("ab") as stream:
+                    stream.write(b" ")
+            else:
+                replacement = target.with_name(f".{target.name}.replacement")
+                replacement.write_bytes(original)
+                os.replace(replacement, target)
+        return chunk
+
+    monkeypatch.setattr(backup_module.os, "read", racing_read)
+
+    assert backup_module.validated_latest_success_at(config.backup_root) is None
+    assert mutated
+
+
+@POSIX_SNAPSHOT_ONLY
+def test_validated_latest_success_does_not_walk_backup_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    success = _write_success(
+        config.backup_root, "20260924T031011.000000Z-aaaaaaaa"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((success / "backup.json").read_bytes())
+
+    def reject_tree_walk(*_args: object, **_kwargs: object):
+        raise AssertionError("snapshot inspection must not walk the backup tree")
+
+    monkeypatch.setattr(backup_module, "_trusted_success", reject_tree_walk)
+    monkeypatch.setattr(backup_module.os, "walk", reject_tree_walk)
+
+    assert backup_module.validated_latest_success_at(config.backup_root) == datetime(
+        2026, 9, 24, 3, 10, 11, tzinfo=timezone.utc
+    )
+
+
+@pytest.mark.parametrize("swap", ["root", "set"])
+@POSIX_SNAPSHOT_ONLY
+def test_validated_latest_success_is_anchored_during_transient_path_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, swap: str
+) -> None:
+    config = _config(tmp_path)
+    success = _write_success(
+        config.backup_root, "20260924T031011.000000Z-aaaaaaaa"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((success / "backup.json").read_bytes())
+    parked_root = config.backup_root.with_name("backups-parked")
+    parked_set = success.with_name(f"{success.name}.parked")
+    real_read_file = backup_module._read_bounded_file_at
+    swapped = False
+    restored = False
+
+    def swapping_read_file(directory_fd: int, name: str, limit: int) -> bytes:
+        nonlocal swapped, restored
+        raw = real_read_file(directory_fd, name, limit)
+        if not swapped and (
+            (swap == "root" and name == "latest-success.json")
+            or (swap == "set" and name == "backup.json")
+        ):
+            swapped = True
+            if swap == "root":
+                config.backup_root.rename(parked_root)
+                config.backup_root.mkdir(mode=0o700)
+            else:
+                success.rename(parked_set)
+                success.mkdir(mode=0o700)
+        elif swapped and not restored and name == "manifest.json":
+            restored = True
+            if swap == "root":
+                config.backup_root.rmdir()
+                parked_root.rename(config.backup_root)
+            else:
+                success.rmdir()
+                parked_set.rename(success)
+        return raw
+
+    monkeypatch.setattr(backup_module, "_read_bounded_file_at", swapping_read_file)
+
+    created_at = backup_module.validated_latest_success_at(config.backup_root)
+
+    expected = (
+        datetime(2026, 9, 24, 3, 10, 11, tzinfo=timezone.utc)
+        if swap == "root"
+        else None
+    )
+    assert created_at == expected
+    assert swapped and restored
 
 
 def test_success_uses_exact_bounded_commands_and_private_pg_environment(

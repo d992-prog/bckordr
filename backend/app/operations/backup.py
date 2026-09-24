@@ -42,6 +42,7 @@ _HEX_DIGEST = re.compile(r"\A[0-9a-f]{64}\Z")
 _HOSTNAME = re.compile(r"\A[0-9A-Za-z._:-]+\Z")
 _REPARSE_POINT = 0x400
 _CHUNK_SIZE = 1024 * 1024
+_MAX_METADATA_BYTES = 16 * 1024
 _MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 
 
@@ -97,6 +98,13 @@ class BackupResult:
     created_at: str
     manifest_sha256: str
     deleted_sets: int
+
+
+@dataclass(frozen=True, slots=True)
+class _SnapshotMetadata:
+    set_name: str
+    created_at: datetime
+    manifest_sha256: str
 
 
 @dataclass(slots=True)
@@ -260,7 +268,7 @@ def _bound_backup_root(path: Path):
     except OSError:
         raise BackupError("backup_root_invalid") from None
     try:
-        yield root, validate
+        yield root, descriptor, validate
     finally:
         if descriptor >= 0:
             try:
@@ -927,7 +935,7 @@ def _read_existing_marker(path: Path, root: Path) -> bytes | None:
     if (
         _is_reparse(before)
         or not stat.S_ISREG(before.st_mode)
-        or before.st_size > 16_384
+        or before.st_size > _MAX_METADATA_BYTES
     ):
         raise BackupError("backup_publish_failed")
     try:
@@ -940,10 +948,12 @@ def _read_existing_marker(path: Path, root: Path) -> bytes | None:
             raise BackupError("backup_publish_failed")
         chunks: list[bytes] = []
         size = 0
-        while chunk := os.read(descriptor, min(_CHUNK_SIZE, 16_385 - size)):
+        while chunk := os.read(
+            descriptor, min(_CHUNK_SIZE, _MAX_METADATA_BYTES + 1 - size)
+        ):
             chunks.append(chunk)
             size += len(chunk)
-            if size > 16_384:
+            if size > _MAX_METADATA_BYTES:
                 raise BackupError("backup_publish_failed")
         if size != opened.st_size or not _matches_stable_file(path.lstat(), opened):
             raise BackupError("backup_publish_failed")
@@ -1082,7 +1092,7 @@ def _trusted_success(directory: Path, root: Path) -> bool:
             if _is_reparse(file_info) or not stat.S_ISREG(file_info.st_mode):
                 return False
         if (
-            metadata_path.stat().st_size > 16_384
+            metadata_path.stat().st_size > _MAX_METADATA_BYTES
             or manifest_path.stat().st_size > _MAX_MANIFEST_BYTES
         ):
             return False
@@ -1112,35 +1122,153 @@ def _trusted_success(directory: Path, root: Path) -> bool:
         return False
 
 
+def _read_bounded_file_at(directory_fd: int, name: str, limit: int) -> bytes:
+    descriptor = -1
+    try:
+        before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if (
+            _is_reparse(before)
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_size > limit
+        ):
+            raise BackupError("backup_snapshot_invalid")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=directory_fd,
+        )
+        opened = os.fstat(descriptor)
+        if not _matches_stable_file(opened, before) or opened.st_size > limit:
+            raise BackupError("backup_snapshot_invalid")
+        raw = bytearray()
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(_CHUNK_SIZE, limit + 1 - len(raw)),
+            )
+            if not chunk:
+                break
+            raw.extend(chunk)
+            if len(raw) > limit:
+                raise BackupError("backup_snapshot_invalid")
+        after = os.fstat(descriptor)
+        linked = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if (
+            len(raw) != opened.st_size
+            or not _matches_stable_file(after, opened)
+            or not _matches_stable_file(linked, opened)
+        ):
+            raise BackupError("backup_snapshot_invalid")
+        return bytes(raw)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _parse_snapshot_metadata(raw: bytes) -> _SnapshotMetadata:
+    try:
+        metadata = json.loads(raw)
+        set_name = metadata.get("set_name")
+        created_raw = metadata.get("created_at")
+        manifest_sha256 = metadata.get("manifest_sha256")
+        if (
+            set(metadata)
+            != {"created_at", "manifest_sha256", "set_name", "status", "version"}
+            or not isinstance(set_name, str)
+            or _SET_NAME.fullmatch(set_name) is None
+            or not isinstance(created_raw, str)
+            or not isinstance(manifest_sha256, str)
+            or _HEX_DIGEST.fullmatch(manifest_sha256) is None
+            or metadata.get("status") != "successful"
+            or type(metadata.get("version")) is not int
+            or metadata.get("version") != 1
+        ):
+            raise ValueError
+        created_at = datetime.strptime(created_raw, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+        if created_at.strftime("%Y%m%dT%H%M%S") != set_name[:15]:
+            raise ValueError
+        return _SnapshotMetadata(set_name, created_at, manifest_sha256)
+    except (
+        UnicodeError,
+        ValueError,
+        json.JSONDecodeError,
+        AttributeError,
+        TypeError,
+    ):
+        raise BackupError("backup_snapshot_invalid") from None
+
+
+def _validated_snapshot_timestamp(
+    snapshot: _SnapshotMetadata,
+    marker: bytes,
+    metadata: bytes,
+    manifest: bytes,
+) -> datetime:
+    if (
+        marker != metadata
+        or hashlib.sha256(manifest).hexdigest() != snapshot.manifest_sha256
+    ):
+        raise BackupError("backup_snapshot_invalid")
+    return snapshot.created_at
+
+
+def _inspect_latest_success_fd(root_fd: int) -> datetime | None:
+    try:
+        marker = _read_bounded_file_at(
+            root_fd, "latest-success.json", _MAX_METADATA_BYTES
+        )
+    except FileNotFoundError:
+        return None
+    snapshot = _parse_snapshot_metadata(marker)
+    set_descriptor = -1
+    try:
+        before = os.stat(
+            snapshot.set_name,
+            dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+        if _is_reparse(before) or not stat.S_ISDIR(before.st_mode):
+            raise BackupError("backup_snapshot_invalid")
+        set_descriptor = os.open(
+            snapshot.set_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=root_fd,
+        )
+        opened = os.fstat(set_descriptor)
+        if not _matches_identity(opened, before, directory=True):
+            raise BackupError("backup_snapshot_invalid")
+        metadata = _read_bounded_file_at(
+            set_descriptor, "backup.json", _MAX_METADATA_BYTES
+        )
+        manifest = _read_bounded_file_at(
+            set_descriptor, "manifest.json", _MAX_MANIFEST_BYTES
+        )
+        after = os.fstat(set_descriptor)
+        linked = os.stat(
+            snapshot.set_name,
+            dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+        if not _matches_identity(
+            after, opened, directory=True
+        ) or not _matches_identity(linked, opened, directory=True):
+            raise BackupError("backup_snapshot_invalid")
+        return _validated_snapshot_timestamp(snapshot, marker, metadata, manifest)
+    finally:
+        if set_descriptor >= 0:
+            os.close(set_descriptor)
+
+
 def validated_latest_success_at(root: Path) -> datetime | None:
-    """Return the trusted latest backup timestamp, or None on any trust failure."""
+    """Return one descriptor-anchored backup timestamp, or None if untrusted."""
     try:
         _require_secure_platform()
-        with _bound_backup_root(root) as (bound_root, validate_root):
+        with _bound_backup_root(root) as (_bound_root, root_fd, validate_root):
             validate_root()
             try:
-                marker = _read_existing_marker(
-                    bound_root / "latest-success.json", bound_root
-                )
-                validate_root()
-                if marker is None:
-                    return None
-                metadata = json.loads(marker)
-                set_name = metadata.get("set_name")
-                if not isinstance(set_name, str) or not _SET_NAME.fullmatch(set_name):
-                    return None
-                target = bound_root / set_name
-                if not _trusted_success(target, bound_root):
-                    return None
-                target_metadata = _read_existing_marker(
-                    target / "backup.json", bound_root
-                )
-                validate_root()
-                if target_metadata is None or marker != target_metadata:
-                    return None
-                return datetime.strptime(
-                    str(metadata.get("created_at")), "%Y-%m-%dT%H:%M:%SZ"
-                ).replace(tzinfo=timezone.utc)
+                return _inspect_latest_success_fd(root_fd)
             finally:
                 validate_root()
     except (
@@ -1246,7 +1374,7 @@ def create_validated_backup(
     database, pg_environment = _postgres_environment(db_url)
     _require_secure_platform()
     with (
-        _bound_backup_root(config.backup_root) as (root, validate_root),
+        _bound_backup_root(config.backup_root) as (root, _root_fd, validate_root),
         _exclusive_backup_root(root),
     ):
         validate_root()
