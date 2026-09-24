@@ -11,7 +11,19 @@ from typing import Annotated
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -113,6 +125,7 @@ from app.schemas.control import (
     VpnPlanCreateRequest,
     VpnPlanResponse,
     VpnPlanUpdateRequest,
+    VpnReleaseReadinessCommitRequest,
     VpnReleaseReadinessResponse,
     VpnSubscriptionCreateRequest,
     VpnSubscriptionResponse,
@@ -3060,6 +3073,16 @@ def _external_verification_target(
     return target if is_valid_vpn_endpoint_target(target) else None
 
 
+def _require_same_origin(request: Request) -> None:
+    expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if request.headers.get("origin") != expected_origin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Same-origin request required",
+            headers={"Cache-Control": "no-store"},
+        )
+
+
 @router.get(
     "/vpn/release-readiness",
     response_model=VpnReleaseReadinessResponse,
@@ -3082,10 +3105,12 @@ async def get_vpn_release_readiness(
 async def confirm_vpn_endpoint_external_verification(
     endpoint_id: int,
     payload: VpnEndpointExternalVerificationRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     admin: Annotated[User, Depends(require_admin)],
 ) -> VpnEndpointExternalVerificationResponse:
     del payload
+    _require_same_origin(request)
     endpoint = await db.scalar(
         select(VpnEndpoint)
         .where(VpnEndpoint.id == endpoint_id)
@@ -3137,9 +3162,13 @@ async def confirm_vpn_endpoint_external_verification(
     response_model=MessageResponse,
 )
 async def commit_vpn_release_readiness(
+    payload: VpnReleaseReadinessCommitRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     admin: Annotated[User, Depends(require_admin)],
 ) -> MessageResponse:
+    del payload
+    _require_same_origin(request)
     settings = get_settings()
     async with vpn_mutation_lock():
         try:

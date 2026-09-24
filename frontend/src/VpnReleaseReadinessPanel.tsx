@@ -1,17 +1,23 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { api, type VpnReleaseReadiness } from "./api";
 import {
   VPN_RELEASE_STATUS_LABELS,
+  VPN_RELEASE_COMMIT_PHRASE,
   canConfirmVpnExternalProof,
   formatVpnReleaseCheckLabel,
   formatVpnReleaseCheckedAt,
   formatVpnReleaseEntityLabel,
   groupVpnReleaseChecks,
+  isVpnReleaseCommitConfirmationValid,
   summarizeVpnRelease,
+  type VpnReleaseCommitConfirmation,
 } from "./vpnReleaseReadiness";
 
-const RELEASE_COMMIT_PHRASE = "ГОТОВО К РЕЛИЗУ";
+const EMPTY_COMMIT_CONFIRMATION: VpnReleaseCommitConfirmation = {
+  phrase: "",
+  checkedAt: null,
+};
 
 type Props = {
   report: VpnReleaseReadiness | null;
@@ -29,7 +35,12 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [commitPhrase, setCommitPhrase] = useState("");
+  const [commitConfirmation, setCommitConfirmation] = useState(EMPTY_COMMIT_CONFIRMATION);
+  const canCommit = report ? summarizeVpnRelease(report).canCommit : false;
+
+  useEffect(() => {
+    setCommitConfirmation(EMPTY_COMMIT_CONFIRMATION);
+  }, [report?.checked_at, canCommit]);
 
   async function confirmExternal(endpointId: number) {
     const accepted = window.confirm(
@@ -53,7 +64,7 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
   }
 
   async function commitRelease() {
-    if (commitPhrase !== RELEASE_COMMIT_PHRASE) {
+    if (!isVpnReleaseCommitConfirmationValid(commitConfirmation, report)) {
       return;
     }
     const accepted = window.confirm(
@@ -62,12 +73,12 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
     if (!accepted) {
       return;
     }
+    setCommitConfirmation(EMPTY_COMMIT_CONFIRMATION);
     setActionInFlight("commit");
     setActionError(null);
     setSuccess(null);
     try {
       await api.commitVpnReleaseReadiness();
-      setCommitPhrase("");
       await onRefresh();
       setSuccess("Маркер релизной готовности сохранён. Оплата и пробный доступ не включены.");
     } catch (caught) {
@@ -95,6 +106,7 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
   }
 
   const summary = summarizeVpnRelease(report);
+  const commitConfirmed = isVpnReleaseCommitConfirmationValid(commitConfirmation, report);
   const tone = summary.fail > 0 ? "fail" : summary.warn > 0 || !report.ready ? "warn" : "pass";
   const groups = groupVpnReleaseChecks(report.checks);
 
@@ -179,10 +191,13 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
             </p>
           </div>
           <label>
-            <span>Введите точную фразу «{RELEASE_COMMIT_PHRASE}»</span>
+            <span>Введите точную фразу «{VPN_RELEASE_COMMIT_PHRASE}»</span>
             <input
-              value={commitPhrase}
-              onChange={(event) => setCommitPhrase(event.target.value)}
+              value={commitConfirmation.phrase}
+              onChange={(event) => setCommitConfirmation({
+                phrase: event.target.value,
+                checkedAt: report.checked_at,
+              })}
               autoComplete="off"
               disabled={actionInFlight !== null || loading}
             />
@@ -190,7 +205,7 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
           <button
             type="button"
             onClick={() => void commitRelease()}
-            disabled={commitPhrase !== RELEASE_COMMIT_PHRASE || actionInFlight !== null || loading}
+            disabled={!commitConfirmed || actionInFlight !== null || loading}
           >
             {actionInFlight === "commit" ? "Сохраняем…" : "Зафиксировать готовность"}
           </button>

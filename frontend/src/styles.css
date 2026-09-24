@@ -348,6 +348,13 @@ button {
   outline-offset: 2px;
 }
 
+#vpn-nodes-section:focus,
+#vpn-capacity-section:focus,
+#vpn-maintenance-section:focus {
+  outline: 3px solid rgba(183, 93, 45, 0.45);
+  outline-offset: 4px;
+}
+
 .grid {
   display: grid;
   gap: 20px;

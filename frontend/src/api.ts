@@ -1071,6 +1071,7 @@ export const api = {
   commitVpnReleaseReadiness: () =>
     request<{ detail: string }>("/control/vpn/release-readiness/commit", {
       method: "POST",
+      body: JSON.stringify({ confirmation: "ГОТОВО К РЕЛИЗУ" }),
     }),
   getVpnFriendInvitations: () =>
     request<VpnFriendInvitation[]>("/control/vpn/friend-invitations"),

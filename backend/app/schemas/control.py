@@ -590,6 +590,12 @@ class VpnEndpointExternalVerificationResponse(BaseModel):
     confirmed_at: datetime
 
 
+class VpnReleaseReadinessCommitRequest(BaseModel):
+    confirmation: Literal["ГОТОВО К РЕЛИЗУ"]
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class VpnPlanBase(BaseModel):
     slug: str = Field(min_length=2, max_length=64)
     name: str = Field(min_length=2, max_length=128)

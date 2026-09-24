@@ -28,7 +28,7 @@ test("groups release checks in the fixed operational order with a safe fallback"
     check("z_unknown"),
     check("dispatch"),
     check("endpoint_health", "warn", 9),
-    check("system"),
+    check("system_health"),
     check("payment_disabled"),
     check("aggregate_capacity"),
     check("worker_active", "pass", 3),
@@ -43,7 +43,7 @@ test("groups release checks in the fixed operational order with a safe fallback"
       codes: checks.map((item) => item.code),
     })),
     [
-      { key: "infrastructure", title: "Инфраструктура", codes: ["system"] },
+      { key: "infrastructure", title: "Инфраструктура", codes: ["system_health"] },
       {
         key: "nodes",
         title: "Ноды",
@@ -168,8 +168,71 @@ test("readiness types expose no sensitive fields", async () => {
 test("maps readiness codes to fixed Russian labels with a safe fallback", () => {
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("system_health"), "Состояние системы");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_external_proof"), "Внешняя проверка подключения");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_capacity"), "Ёмкость VPN-точки");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("public_trial_plan"), "Тариф пробного доступа");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("system"), "Проверка");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("unexpected_code"), "Проверка");
+});
+
+test("request gate rejects late readiness responses after logout or account switch", async () => {
+  const gate = releaseHelpers.createVpnReleaseRequestGate();
+  let resolveResponse;
+  const pendingResponse = new Promise((resolve) => {
+    resolveResponse = resolve;
+  });
+  const logoutToken = gate.begin();
+  const appliedAfterLogout = pendingResponse.then((value) => (
+    gate.isCurrent(logoutToken) ? value : null
+  ));
+
+  gate.invalidate();
+  resolveResponse("old-user-report");
+  assert.equal(await appliedAfterLogout, null);
+
+  const accountSwitchToken = gate.begin();
+  gate.invalidate();
+  assert.equal(gate.isCurrent(accountSwitchToken), false);
+  assert.equal(gate.isCurrent(gate.begin()), true);
+});
+
+test("commit confirmation is valid only for the snapshot where it was typed", () => {
+  const report = {
+    ready: true,
+    checked_at: "2026-09-24T10:00:00Z",
+    checks: [check("system_health")],
+  };
+  const confirmation = {
+    phrase: releaseHelpers.VPN_RELEASE_COMMIT_PHRASE,
+    checkedAt: report.checked_at,
+  };
+
+  assert.equal(releaseHelpers.isVpnReleaseCommitConfirmationValid(confirmation, report), true);
+  assert.equal(
+    releaseHelpers.isVpnReleaseCommitConfirmationValid(
+      confirmation,
+      { ...report, checked_at: "2026-09-24T10:00:01Z" },
+    ),
+    false,
+  );
+  assert.equal(
+    releaseHelpers.isVpnReleaseCommitConfirmationValid(confirmation, { ...report, ready: false }),
+    false,
+  );
+});
+
+test("maps readiness navigation to its rendered tab and focus destination", () => {
+  assert.deepEqual(releaseHelpers.getVpnReleaseNavigationDestination("nodes"), {
+    tab: "workers",
+    elementId: "vpn-nodes-section",
+  });
+  assert.deepEqual(releaseHelpers.getVpnReleaseNavigationDestination("maintenance"), {
+    tab: "workers",
+    elementId: "vpn-maintenance-section",
+  });
+  assert.deepEqual(releaseHelpers.getVpnReleaseNavigationDestination("capacity"), {
+    tab: "vpn",
+    elementId: "vpn-capacity-section",
+  });
 });
 
 test("readiness API uses exact methods, paths, and confirmation body", async () => {
@@ -204,7 +267,11 @@ test("readiness API uses exact methods, paths, and confirmation body", async () 
         "POST",
         JSON.stringify({ confirmed: true }),
       ],
-      ["/api/control/vpn/release-readiness/commit", "POST", null],
+      [
+        "/api/control/vpn/release-readiness/commit",
+        "POST",
+        JSON.stringify({ confirmation: "ГОТОВО К РЕЛИЗУ" }),
+      ],
     ],
   );
 });
@@ -218,12 +285,11 @@ test("release panel guards both mutations and does not duplicate node operations
   assert.match(source, /canConfirmVpnExternalProof/);
   assert.match(source, /Подтвердить внешний тест/);
   assert.match(source, /window\.confirm/);
-  assert.match(source, /ГОТОВО К РЕЛИЗУ/);
-  assert.match(source, /commitPhrase !== RELEASE_COMMIT_PHRASE/);
-  assert.match(
-    source,
-    /disabled=\{commitPhrase !== RELEASE_COMMIT_PHRASE \|\| actionInFlight !== null \|\| loading\}/,
-  );
+  assert.match(source, /VPN_RELEASE_COMMIT_PHRASE/);
+  assert.match(source, /isVpnReleaseCommitConfirmationValid/);
+  assert.match(source, /useEffect/);
+  assert.match(source, /report\?\.checked_at/);
+  assert.match(source, /setCommitConfirmation/);
   assert.match(source, /disabled=\{actionInFlight !== null \|\| loading\}/);
   assert.match(source, /api\.confirmVpnEndpointExternalVerification/);
   assert.match(source, /Внешний тест для VPN-точки #\$\{endpointId\} подтверждён\./);
@@ -251,8 +317,8 @@ test("VPN workspace starts readiness outside the shared admin Promise.all", asyn
   const loadSource = source.slice(loadStart, nextFunction);
 
   assert.match(refreshSource, /api\.getVpnReleaseReadiness\(\)/);
-  assert.match(refreshSource, /vpnReadinessRequestGenerationRef/);
-  assert.match(refreshSource, /readinessGeneration === vpnReadinessRequestGenerationRef\.current/);
+  assert.match(refreshSource, /vpnReadinessRequestGateRef\.current\.begin\(\)/);
+  assert.match(refreshSource, /vpnReadinessRequestGateRef\.current\.isCurrent/);
   assert.match(loadSource, /void refreshVpnReadiness\(\{ silent: options\?\.silent \}\)/);
   assert.doesNotMatch(loadSource, /api\.getVpnReleaseReadiness/);
   assert.doesNotMatch(loadSource, /setVpn(?:ReleaseReadiness|ReadinessLoading|ReadinessError)/);
@@ -278,9 +344,29 @@ test("VPN workspace renders readiness and refreshes it after capacity changes", 
     source,
     /onUpdated=\{\(updated\)[\s\S]*?refreshVpnReadiness/,
   );
-  assert.match(source, /id="vpn-nodes-section"/);
-  assert.match(source, /id="vpn-capacity-section"/);
-  assert.match(source, /id="vpn-maintenance-section"/);
+  assert.match(source, /<h2 id="vpn-nodes-section" tabIndex=\{-1\}>/);
+  assert.match(source, /<h2 id="vpn-capacity-section" tabIndex=\{-1\}>/);
+  assert.match(source, /<h2 id="vpn-maintenance-section" tabIndex=\{-1\}>/);
+  assert.match(source, /destination\.focus\(\);[\s\S]*destination\.scrollIntoView/);
   assert.match(css, /\.vpn-release-readiness\s*\{/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.vpn-release/);
+});
+
+test("VPN workspace invalidates readiness and clears its UI on session identity changes", async () => {
+  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const resetStart = source.indexOf("function resetVpnReadinessState");
+  const refreshStart = source.indexOf("async function refreshVpnReadiness");
+  const resetSource = source.slice(resetStart, refreshStart);
+  const logoutStart = source.indexOf("async function logout");
+  const logoutEnd = source.indexOf("function renderAuth", logoutStart);
+  const logoutSource = source.slice(logoutStart, logoutEnd);
+
+  assert.ok(resetStart >= 0);
+  assert.match(resetSource, /vpnReadinessRequestGateRef\.current\.invalidate\(\)/);
+  assert.match(resetSource, /setVpnReleaseReadiness\(null\)/);
+  assert.match(resetSource, /setVpnReadinessLoading\(false\)/);
+  assert.match(resetSource, /setVpnReadinessError\(null\)/);
+  assert.match(resetSource, /setVpnReadinessUiGeneration/);
+  assert.match(source, /key=\{vpnReadinessUiGeneration\}/);
+  assert.match(logoutSource, /resetVpnReadinessState\(\)[\s\S]*await api\.logout\(\)/);
 });

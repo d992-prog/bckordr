@@ -6,20 +6,43 @@ export const VPN_RELEASE_STATUS_LABELS: Record<VpnReleaseCheck["state"], string>
   fail: "Ошибка",
 };
 
+export const VPN_RELEASE_COMMIT_PHRASE = "ГОТОВО К РЕЛИЗУ";
+
+export type VpnReleaseCommitConfirmation = {
+  phrase: string;
+  checkedAt: string | null;
+};
+
+export type VpnReleaseNavigationTarget = "nodes" | "capacity" | "maintenance";
+
+const VPN_RELEASE_NAVIGATION_DESTINATIONS = {
+  nodes: { tab: "workers", elementId: "vpn-nodes-section" },
+  capacity: { tab: "vpn", elementId: "vpn-capacity-section" },
+  maintenance: { tab: "workers", elementId: "vpn-maintenance-section" },
+} as const;
+
+export function createVpnReleaseRequestGate() {
+  let generation = 0;
+  return {
+    begin: () => ++generation,
+    invalidate: () => {
+      generation += 1;
+    },
+    isCurrent: (requestGeneration: number) => requestGeneration === generation,
+  };
+}
+
+export function getVpnReleaseNavigationDestination(target: VpnReleaseNavigationTarget) {
+  return VPN_RELEASE_NAVIGATION_DESTINATIONS[target];
+}
+
 const VPN_RELEASE_CHECK_LABELS: Readonly<Record<string, string>> = {
-  system: "Состояние системы",
   system_health: "Состояние системы",
-  control: "Служба управления",
   control_health: "Служба управления",
-  local: "Локальный контур",
   local_health: "Локальный контур",
-  public: "Публичный контур",
   public_health: "Публичный контур",
-  cabinet: "Кабинет клиента",
   cabinet_health: "Кабинет клиента",
-  disk: "Дисковое пространство",
   disk_health: "Дисковое пространство",
-  backup: "Резервное копирование",
   backup_health: "Резервное копирование",
   known_hosts: "Доверенные SSH-узлы",
   worker_active: "Активность воркера",
@@ -28,7 +51,7 @@ const VPN_RELEASE_CHECK_LABELS: Readonly<Record<string, string>> = {
   endpoint_health: "Состояние точки доступа",
   endpoint_external_proof: "Внешняя проверка подключения",
   endpoint_redundancy: "Резервирование нод",
-  endpoint_capacity: "Ёмкость ноды",
+  endpoint_capacity: "Ёмкость VPN-точки",
   aggregate_capacity: "Общая ёмкость",
   control_operations: "Операции управления",
   maintenance: "Обслуживание",
@@ -51,19 +74,12 @@ const SECTION_DEFINITIONS = [
     key: "infrastructure",
     title: "Инфраструктура",
     codes: [
-      "system",
       "system_health",
-      "control",
       "control_health",
-      "local",
       "local_health",
-      "public",
       "public_health",
-      "cabinet",
       "cabinet_health",
-      "disk",
       "disk_health",
-      "backup",
       "backup_health",
       "known_hosts",
     ],
@@ -157,6 +173,16 @@ export function summarizeVpnRelease(report: VpnReleaseReadiness) {
     ...counts,
     canCommit: report.ready && counts.fail === 0,
   };
+}
+
+export function isVpnReleaseCommitConfirmationValid(
+  confirmation: VpnReleaseCommitConfirmation,
+  report: VpnReleaseReadiness | null,
+): boolean {
+  return report !== null
+    && confirmation.phrase === VPN_RELEASE_COMMIT_PHRASE
+    && confirmation.checkedAt === report.checked_at
+    && summarizeVpnRelease(report).canCommit;
 }
 
 export function formatVpnReleaseCheckedAt(value: string | null): string {

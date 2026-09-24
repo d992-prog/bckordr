@@ -49,6 +49,11 @@ import { shouldApplyLoadGeneration } from "./vpnCustomerWorkspace";
 import { VpnEndpointCapacityPanel } from "./VpnEndpointCapacityPanel";
 import { replaceVpnEndpointCapacity } from "./vpnEndpointCapacity";
 import { VpnReleaseReadinessPanel } from "./VpnReleaseReadinessPanel";
+import {
+  createVpnReleaseRequestGate,
+  getVpnReleaseNavigationDestination,
+  type VpnReleaseNavigationTarget,
+} from "./vpnReleaseReadiness";
 
 type Toast = { type: "success" | "error"; text: string } | null;
 type Tab =
@@ -1064,6 +1069,7 @@ export default function App() {
   const [vpnReleaseReadiness, setVpnReleaseReadiness] = useState<VpnReleaseReadiness | null>(null);
   const [vpnReadinessLoading, setVpnReadinessLoading] = useState(false);
   const [vpnReadinessError, setVpnReadinessError] = useState<string | null>(null);
+  const [vpnReadinessUiGeneration, setVpnReadinessUiGeneration] = useState(0);
   const [vpnPlans, setVpnPlans] = useState<VpnPlan[]>([]);
   const [vpnCustomers, setVpnCustomers] = useState<VpnCustomer[]>([]);
   const [vpnSubscriptions, setVpnSubscriptions] = useState<VpnSubscription[]>([]);
@@ -1072,7 +1078,7 @@ export default function App() {
   const loadAllGenerationRef = useRef(0);
   const lastAppliedLoadGenerationRef = useRef(0);
   const vpnCapacityMutationGenerationRef = useRef(0);
-  const vpnReadinessRequestGenerationRef = useRef(0);
+  const vpnReadinessRequestGateRef = useRef(createVpnReleaseRequestGate());
   const [vpnNodeEvents, setVpnNodeEvents] = useState<VpnNodeEvent[]>([]);
   const [vpnLifecycleStatus, setVpnLifecycleStatus] = useState<VpnLifecycleStatus | null>(null);
   const [vpnNodeEligibility, setVpnNodeEligibility] = useState<Record<number, VpnNodeEligibility>>({});
@@ -1284,7 +1290,7 @@ export default function App() {
         if (!mounted) {
           return;
         }
-        setSession(payload);
+        replaceAdminSession(payload);
         setTelegramForm({
           telegram_token: payload.user.telegram_token ?? "",
           telegram_chat_id: payload.user.telegram_chat_id ?? "",
@@ -1292,7 +1298,7 @@ export default function App() {
       })
       .catch(() => {
         if (mounted) {
-          setSession(null);
+          replaceAdminSession(null);
         }
       })
       .finally(() => {
@@ -1392,35 +1398,56 @@ export default function App() {
     void loadDomainOverrideDetails(selectedOverrideDomainId, previewDate);
   }, [previewDate, selectedOverrideDomainId, session?.user.id]);
 
+  function resetVpnReadinessState() {
+    vpnReadinessRequestGateRef.current.invalidate();
+    setVpnReleaseReadiness(null);
+    setVpnReadinessLoading(false);
+    setVpnReadinessError(null);
+    setVpnReadinessUiGeneration((generation) => generation + 1);
+  }
+
+  function replaceAdminSession(nextSession: SessionResponse | null) {
+    if ((session?.user.id ?? null) !== (nextSession?.user.id ?? null)) {
+      resetVpnReadinessState();
+    }
+    setSession(nextSession);
+  }
+
   async function refreshVpnReadiness(options?: { silent?: boolean }) {
-    const readinessGeneration = ++vpnReadinessRequestGenerationRef.current;
+    const readinessGeneration = vpnReadinessRequestGateRef.current.begin();
     setVpnReadinessLoading(true);
     if (!options?.silent) {
       setVpnReadinessError(null);
     }
     try {
       const report = await api.getVpnReleaseReadiness();
-      if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
+      if (vpnReadinessRequestGateRef.current.isCurrent(readinessGeneration)) {
         setVpnReleaseReadiness(report);
         setVpnReadinessError(null);
       }
     } catch (caught) {
-      if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
+      if (vpnReadinessRequestGateRef.current.isCurrent(readinessGeneration)) {
         setVpnReadinessError(
           (caught instanceof Error ? caught.message : "Не удалось загрузить готовность к релизу.").slice(0, 180),
         );
       }
     } finally {
-      if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
+      if (vpnReadinessRequestGateRef.current.isCurrent(readinessGeneration)) {
         setVpnReadinessLoading(false);
       }
     }
   }
 
-  function navigateVpnReadiness(target: "nodes" | "capacity" | "maintenance") {
-    setTab(target === "capacity" ? "vpn" : "workers");
+  function navigateVpnReadiness(target: VpnReleaseNavigationTarget) {
+    const navigation = getVpnReleaseNavigationDestination(target);
+    setTab(navigation.tab);
     window.setTimeout(() => {
-      document.getElementById(`vpn-${target}-section`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      const destination = document.getElementById(navigation.elementId);
+      if (!destination) {
+        return;
+      }
+      destination.focus();
+      destination.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 0);
   }
 
@@ -1622,7 +1649,7 @@ export default function App() {
     event.preventDefault();
     try {
       const payload = await api.login(loginForm);
-      setSession(payload);
+      replaceAdminSession(payload);
       setTelegramForm({
         telegram_token: payload.user.telegram_token ?? "",
         telegram_chat_id: payload.user.telegram_chat_id ?? "",
@@ -1635,6 +1662,7 @@ export default function App() {
   }
 
   async function logout() {
+    resetVpnReadinessState();
     await api.logout();
     setSession(null);
     setOverview(null);
@@ -2474,7 +2502,7 @@ export default function App() {
     event.preventDefault();
     try {
       const payload = await api.updateTelegram(telegramForm);
-      setSession(payload);
+      replaceAdminSession(payload);
       setToast({ type: "success", text: "Личный Telegram обновлен" });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка сохранения Telegram" });
@@ -2496,7 +2524,7 @@ export default function App() {
     event.preventDefault();
     try {
       const payload = await api.changePassword(passwordForm);
-      setSession(payload);
+      replaceAdminSession(payload);
       setPasswordForm({ current_password: "", new_password: "" });
       setToast({ type: "success", text: "Пароль изменен" });
     } catch (error) {
@@ -4118,10 +4146,10 @@ export default function App() {
           </div>
         ) : null}
 
-        <div className="card full-span" id="vpn-nodes-section">
+        <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>Воркеры</h2>
+              <h2 id="vpn-nodes-section" tabIndex={-1}>Воркеры</h2>
               <p className="muted">Показано {visibleWorkers.length} из {filteredWorkers.length}; всего воркеров {workers.length}.</p>
             </div>
             <div className="actions">
@@ -4306,10 +4334,10 @@ export default function App() {
           </div>
         </div>
 
-        <div className="card full-span" id="vpn-maintenance-section">
+        <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>Обслуживание серверов</h2>
+              <h2 id="vpn-maintenance-section" tabIndex={-1}>Обслуживание серверов</h2>
               <p className="muted">Показано {visibleMaintenanceJobs.length} из {filteredMaintenanceJobs.length}; всего задач {workerMaintenanceJobs.length}.</p>
             </div>
             <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
@@ -4428,6 +4456,7 @@ export default function App() {
         </div>
 
         <VpnReleaseReadinessPanel
+          key={vpnReadinessUiGeneration}
           report={vpnReleaseReadiness}
           loading={vpnReadinessLoading}
           error={vpnReadinessError}
@@ -4457,10 +4486,10 @@ export default function App() {
           </div>
         </div>
 
-        <div className="card full-span" id="vpn-capacity-section">
+        <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>Ёмкость VPN endpoint’ов</h2>
+              <h2 id="vpn-capacity-section" tabIndex={-1}>Ёмкость VPN endpoint’ов</h2>
               <p className="muted">Ограничивает число выданных профилей. Пустой лимит означает, что публичная автовыдача на endpoint отключена.</p>
             </div>
           </div>
