@@ -6,12 +6,16 @@ import json
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError, asdict, dataclass, replace
+from functools import partial
 from pathlib import Path
 from traceback import format_exception
 
 import pytest
 
-from app.services.vpn_endpoint_types import VpnEndpointTarget
+from app.services.vpn_endpoint_types import (
+    VpnEndpointTarget,
+    is_valid_vpn_endpoint_target,
+)
 
 NOW_MS = 1_700_000_000_000
 SECRET = "private-panel-token-must-never-escape"
@@ -135,6 +139,24 @@ def test_request_projects_only_declared_target_fields(api, target):
     assert parsed == replace(request, target=target)
 
 
+def test_request_serializer_rejects_oversized_canonical_payload(api, health_request):
+    idna_ignored = chr(0x034F)
+    oversized = replace(
+        health_request,
+        target=replace(
+            health_request.target,
+            public_host=f"{SECRET}{idna_ignored * 3_000}.test",
+        ),
+    )
+    assert is_valid_vpn_endpoint_target(oversized.target)
+
+    with pytest.raises(api.VpnNodeHealthError) as caught:
+        api.serialize_node_health_request(oversized, now_ms=NOW_MS)
+    assert caught.value.code == "vpn_node_health_invalid"
+    assert caught.value.__context__ is None
+    assert SECRET not in "".join(format_exception(caught.value))
+
+
 def test_request_uses_current_time_when_now_is_not_supplied(
     api, health_request, monkeypatch
 ):
@@ -164,7 +186,7 @@ def test_envelopes_reject_unknown_missing_duplicate_and_noncanonical_fields(
 ):
     if message == "request":
         raw = api.serialize_node_health_request(health_request, now_ms=NOW_MS)
-        parse = lambda value: api.parse_node_health_request(value, now_ms=NOW_MS)
+        parse = partial(api.parse_node_health_request, now_ms=NOW_MS)
     else:
         raw = api.serialize_node_health_receipt(receipt)
         parse = api.parse_node_health_receipt
@@ -221,7 +243,7 @@ def test_target_rejects_unknown_missing_and_duplicate_fields(
 )
 def test_parsers_reject_invalid_bytes_utf8_json_and_nonobjects(api, message, raw):
     parse = (
-        (lambda value: api.parse_node_health_request(value, now_ms=NOW_MS))
+        partial(api.parse_node_health_request, now_ms=NOW_MS)
         if message == "request"
         else api.parse_node_health_receipt
     )
@@ -233,7 +255,7 @@ def test_parsers_reject_invalid_bytes_utf8_json_and_nonobjects(api, message, raw
 def test_parsers_reject_payloads_over_16_kib(api, message):
     raw = b"{" + b" " * (16 * 1024) + b"}"
     parse = (
-        (lambda value: api.parse_node_health_request(value, now_ms=NOW_MS))
+        partial(api.parse_node_health_request, now_ms=NOW_MS)
         if message == "request"
         else api.parse_node_health_receipt
     )

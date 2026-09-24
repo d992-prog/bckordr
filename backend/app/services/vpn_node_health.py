@@ -82,14 +82,17 @@ def _positive_integer(value: object) -> bool:
     return type(value) is int and 1 <= value <= 2**63 - 1
 
 
-def _canonical(value: object) -> bytes:
-    return json.dumps(
+def _encode(value: object) -> bytes:
+    encoded = json.dumps(
         value,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,
         allow_nan=False,
     ).encode("utf-8")
+    if len(encoded) > MAX_HEALTH_PAYLOAD_BYTES:
+        _invalid()
+    return encoded
 
 
 def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -114,7 +117,7 @@ def _decode(raw: bytes) -> dict[str, object]:
             object_pairs_hook=_strict_object,
             parse_constant=_reject_constant,
         )
-        if type(value) is not dict or _canonical(value) != raw:
+        if type(value) is not dict or _encode(value) != raw:
             raise _MalformedPayload
         return value
     except (
@@ -169,7 +172,7 @@ def serialize_node_health_request(
     now_ms: int | None = None,
 ) -> bytes:
     _validate_request(request, now_ms)
-    return _canonical(
+    return _encode(
         {
             "version": VPN_NODE_HEALTH_VERSION,
             "worker_id": request.worker_id,
@@ -208,7 +211,7 @@ def parse_node_health_request(
 
 def serialize_node_health_receipt(receipt: VpnNodeHealthReceipt) -> bytes:
     _validate_receipt(receipt)
-    return _canonical(
+    return _encode(
         {
             "version": VPN_NODE_HEALTH_VERSION,
             "state": receipt.state,
