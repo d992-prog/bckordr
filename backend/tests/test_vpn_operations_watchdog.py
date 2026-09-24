@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 import pytest
+
 from app.operations import watchdog
 from app.operations.watchdog import AlertState
 
