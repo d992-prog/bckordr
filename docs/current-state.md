@@ -49,10 +49,13 @@ still intentionally absent and remain the final integration stage.
   locks the worker and endpoint in that order and revalidates health and capacity
   before commit, so concurrent users cannot oversubscribe a one-slot endpoint.
   Friend-invitation redemption uses the same locked selector and capacity pool.
-- The strict dispatcher can run for a public-only release when the public flag,
-  valid release ID and exact public readiness marker are present; it does not
-  require the friend-beta flag. It still fails closed unless dispatch is enabled,
-  public portal access is closed and an enabled release path has its exact marker.
+- `VPN_PUBLIC_TRIAL_ENABLED` gates new admission and activation, not queue drain.
+  After it is turned off, the strict dispatcher can finish existing queued
+  provision, suspend, revoke and expiry work only while its master switch is
+  enabled, legacy public portal access is false, the configured public release
+  ID is valid and `vpn_public_release_ready_v1` matches it exactly. An empty
+  release ID keeps the dispatcher off and fail closed; new activation also
+  rejects `VPN_PORTAL_PUBLIC_ACCESS=true`.
 - The admin VPN workspace lists occupancy and permits only the capacity limit
   and warning percentage to be edited. Limits are validated as 1..100000 or
   unset; warnings are 1..100. Changes produce numeric audit details and do not

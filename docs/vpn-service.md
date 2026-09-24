@@ -72,11 +72,13 @@ right and sees `capacity_paused`. Friend-invitation redemption uses the same
 locked selector and capacity pool, so public and invited identities cannot both
 consume a one-slot endpoint.
 
-The strict dispatcher supports a public-only release gate: the friend-beta flag
-is not required when the public flag, valid public release ID and exact matching
-`vpn_public_release_ready_v1` marker are present. Dispatch still fails closed
-unless dispatch is enabled, public portal access is closed and an enabled
-release path has its exact readiness marker.
+`VPN_PUBLIC_TRIAL_ENABLED` gates new admission and activation, not queue drain.
+After it is turned off, the strict dispatcher can finish existing queued
+provision, suspend, revoke and expiry work only while its master switch is
+enabled, legacy public portal access is false, the configured public release ID
+is valid and `vpn_public_release_ready_v1` matches it exactly. An empty release
+ID keeps the dispatcher off and fail closed; new activation also rejects
+`VPN_PORTAL_PUBLIC_ACCESS=true`.
 
 The admin capacity editor changes only `max_active_profiles` and
 `capacity_warning_percent`. Capacity may be unset or 1..100000; warning is
