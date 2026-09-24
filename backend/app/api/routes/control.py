@@ -7,6 +7,7 @@ from io import StringIO
 import json
 from pathlib import Path
 import shlex
+from typing import Annotated
 from uuid import uuid4
 
 import httpx
@@ -3087,8 +3088,8 @@ def _external_verification_target(
 )
 async def get_vpn_release_readiness(
     response: Response,
-    db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin)],
 ) -> VpnReleaseReadinessResponse:
     del admin
     report = await _load_vpn_release_readiness_report(db, get_settings())
@@ -3103,8 +3104,8 @@ async def get_vpn_release_readiness(
 async def confirm_vpn_endpoint_external_verification(
     endpoint_id: int,
     payload: VpnEndpointExternalVerificationRequest,
-    db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin)],
 ) -> VpnEndpointExternalVerificationResponse:
     del payload
     endpoint = await db.scalar(
@@ -3158,8 +3159,8 @@ async def confirm_vpn_endpoint_external_verification(
     response_model=MessageResponse,
 )
 async def commit_vpn_release_readiness(
-    db: AsyncSession = Depends(get_db),
-    admin: User = Depends(require_admin),
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin)],
 ) -> MessageResponse:
     settings = get_settings()
     async with vpn_mutation_lock():
