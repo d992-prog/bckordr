@@ -1392,14 +1392,17 @@ export default function App() {
     void loadDomainOverrideDetails(selectedOverrideDomainId, previewDate);
   }, [previewDate, selectedOverrideDomainId, session?.user.id]);
 
-  async function refreshVpnReleaseReadiness() {
+  async function refreshVpnReadiness(options?: { silent?: boolean }) {
     const readinessGeneration = ++vpnReadinessRequestGenerationRef.current;
     setVpnReadinessLoading(true);
-    setVpnReadinessError(null);
+    if (!options?.silent) {
+      setVpnReadinessError(null);
+    }
     try {
       const report = await api.getVpnReleaseReadiness();
       if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
         setVpnReleaseReadiness(report);
+        setVpnReadinessError(null);
       }
     } catch (caught) {
       if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
@@ -1422,12 +1425,9 @@ export default function App() {
   }
 
   async function loadAll(options?: { silent?: boolean; throwOnError?: boolean }) {
+    void refreshVpnReadiness({ silent: options?.silent });
     const generation = ++loadAllGenerationRef.current;
     const capacityMutationGeneration = vpnCapacityMutationGenerationRef.current;
-    const readinessGeneration = ++vpnReadinessRequestGenerationRef.current;
-    if (!options?.silent) {
-      setVpnReadinessLoading(true);
-    }
     try {
       const [
         overviewData,
@@ -1448,7 +1448,6 @@ export default function App() {
         eventsData,
         vpnOverviewData,
         vpnEndpointCapacitiesData,
-        vpnReleaseReadinessResult,
         vpnPlansData,
         vpnCustomersData,
         vpnSubscriptionsData,
@@ -1478,12 +1477,6 @@ export default function App() {
         api.getEvents(),
         api.getVpnOverview(),
         api.getVpnEndpointCapacities(),
-        api.getVpnReleaseReadiness()
-          .then((report) => ({ report, error: null }))
-          .catch((caught) => ({
-            report: null,
-            error: (caught instanceof Error ? caught.message : "Не удалось загрузить готовность к релизу.").slice(0, 180),
-          })),
         api.getVpnPlans(),
         api.getVpnCustomers(),
         api.getVpnSubscriptions(),
@@ -1520,13 +1513,6 @@ export default function App() {
       if (capacityMutationGeneration === vpnCapacityMutationGenerationRef.current) {
         setVpnEndpointCapacities(vpnEndpointCapacitiesData);
       }
-      if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
-        setVpnReadinessLoading(false);
-        setVpnReadinessError(vpnReleaseReadinessResult.error);
-        if (vpnReleaseReadinessResult.report) {
-          setVpnReleaseReadiness(vpnReleaseReadinessResult.report);
-        }
-      }
       setVpnPlans(vpnPlansData);
       setVpnCustomers(vpnCustomersData);
       setVpnSubscriptions(vpnSubscriptionsData);
@@ -1540,9 +1526,6 @@ export default function App() {
       setVpnTelegramUpdates(vpnTelegramUpdatesData);
       setDiagnosticTelegram(diagnosticData);
     } catch (error) {
-      if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
-        setVpnReadinessLoading(false);
-      }
       const stale = generation < lastAppliedLoadGenerationRef.current;
       if (!options?.silent && !stale) {
         setToast({ type: "error", text: error instanceof Error ? error.message : "Не удалось загрузить данные control-панели" });
@@ -4448,7 +4431,7 @@ export default function App() {
           report={vpnReleaseReadiness}
           loading={vpnReadinessLoading}
           error={vpnReadinessError}
-          onRefresh={refreshVpnReleaseReadiness}
+          onRefresh={refreshVpnReadiness}
           onNavigate={navigateVpnReadiness}
         />
 
@@ -4486,7 +4469,7 @@ export default function App() {
             onUpdated={(updated) => {
               vpnCapacityMutationGenerationRef.current += 1;
               setVpnEndpointCapacities((current) => replaceVpnEndpointCapacity(current, updated));
-              void refreshVpnReleaseReadiness();
+              void refreshVpnReadiness();
             }}
           />
         </div>

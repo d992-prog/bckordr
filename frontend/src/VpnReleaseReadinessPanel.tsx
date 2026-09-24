@@ -3,6 +3,8 @@ import { useState } from "react";
 import { api, type VpnReleaseReadiness } from "./api";
 import {
   VPN_RELEASE_STATUS_LABELS,
+  canConfirmVpnExternalProof,
+  formatVpnReleaseCheckLabel,
   formatVpnReleaseCheckedAt,
   formatVpnReleaseEntityLabel,
   groupVpnReleaseChecks,
@@ -100,7 +102,7 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
     <section className={`card full-span vpn-release-readiness is-${tone}`} aria-busy={loading}>
       <div className="vpn-release-summary">
         <div>
-          <p className="eyebrow">Release gate</p>
+          <p className="eyebrow">Релизный контур</p>
           <h2>Готовность VPN к релизу</h2>
           <p className="muted">Проверено: {formatVpnReleaseCheckedAt(report.checked_at)}</p>
         </div>
@@ -130,33 +132,34 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
             <h3>{group.title}</h3>
             <div className="vpn-release-checks">
               {group.checks.map((check, index) => {
-                const entityLabel = formatVpnReleaseEntityLabel(check.entity_id);
-                const canConfirm = check.code === "endpoint_external_proof"
-                  && check.state === "fail"
-                  && check.entity_id !== null
-                  && Number.isInteger(check.entity_id);
+                const checkLabel = formatVpnReleaseCheckLabel(check.code);
+                const entityLabel = formatVpnReleaseEntityLabel(check);
+                const confirmEndpointId = canConfirmVpnExternalProof(check) ? check.entity_id : null;
                 return (
-                  <article className="vpn-release-check" key={`${check.code}-${check.entity_id ?? "global"}-${index}`}>
+                  <article className="vpn-release-check" key={`${group.key}-${check.entity_id ?? "global"}-${index}`}>
                     <div className="vpn-release-check-head">
                       <div>
-                        <strong>{check.message}</strong>
-                        <div className="row-hint">
-                          {check.code}{entityLabel ? ` · ${entityLabel}` : ""}
-                          {check.observed_at ? ` · ${formatVpnReleaseCheckedAt(check.observed_at)}` : ""}
-                        </div>
+                        <strong>{checkLabel}</strong>
+                        <div className="row-hint">{check.message}</div>
+                        {entityLabel || check.observed_at ? (
+                          <div className="row-hint">
+                            {entityLabel ?? ""}
+                            {check.observed_at ? `${entityLabel ? " · " : ""}${formatVpnReleaseCheckedAt(check.observed_at)}` : ""}
+                          </div>
+                        ) : null}
                       </div>
                       <span className={`status ${statusClass(check.state)}`}>
                         {VPN_RELEASE_STATUS_LABELS[check.state]}
                       </span>
                     </div>
-                    {canConfirm ? (
+                    {confirmEndpointId !== null ? (
                       <button
                         type="button"
                         className="ghost"
-                        onClick={() => void confirmExternal(check.entity_id!)}
+                        onClick={() => void confirmExternal(confirmEndpointId)}
                         disabled={actionInFlight !== null || loading}
                       >
-                        {actionInFlight === `external-${check.entity_id}` ? "Подтверждаем…" : "Подтвердить внешний тест"}
+                        {actionInFlight === `external-${confirmEndpointId}` ? "Подтверждаем…" : "Подтвердить внешний тест"}
                       </button>
                     ) : null}
                   </article>

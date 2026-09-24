@@ -3,13 +3,15 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import { api } from "../src/api.ts";
-import {
+import * as releaseHelpers from "../src/vpnReleaseReadiness.ts";
+
+const {
   VPN_RELEASE_STATUS_LABELS,
   formatVpnReleaseCheckedAt,
   formatVpnReleaseEntityLabel,
   groupVpnReleaseChecks,
   summarizeVpnRelease,
-} from "../src/vpnReleaseReadiness.ts";
+} = releaseHelpers;
 
 const originalFetch = globalThis.fetch;
 
@@ -114,10 +116,38 @@ test("counts every state and permits commit only for a ready report without fail
   );
 });
 
-test("builds only an integer node label and exposes no sensitive readiness fields", async () => {
-  assert.equal(formatVpnReleaseEntityLabel(42), "Нода #42");
-  assert.equal(formatVpnReleaseEntityLabel(4.2), null);
-  assert.equal(formatVpnReleaseEntityLabel(null), null);
+test("uses code-aware labels only for positive safe entity identifiers", () => {
+  assert.equal(formatVpnReleaseEntityLabel(check("worker_health", "pass", 42)), "Нода #42");
+  assert.equal(formatVpnReleaseEntityLabel(check("endpoint_capacity", "pass", 7)), "Нода #7");
+  assert.equal(formatVpnReleaseEntityLabel(check("maintenance", "pass", 3)), "Нода #3");
+  assert.equal(formatVpnReleaseEntityLabel(check("public_trial_plan", "pass", 9)), "Тариф #9");
+  assert.equal(formatVpnReleaseEntityLabel(check("release_id", "pass", 2)), null);
+
+  for (const entityId of [null, 0, -1, 4.2, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(
+      formatVpnReleaseEntityLabel(check("endpoint_health", "pass", entityId)),
+      null,
+    );
+  }
+});
+
+test("external proof confirmation accepts only a positive safe endpoint id", () => {
+  assert.equal(
+    releaseHelpers.canConfirmVpnExternalProof(check("endpoint_external_proof", "fail", 11)),
+    true,
+  );
+  for (const candidate of [
+    check("endpoint_external_proof", "pass", 11),
+    check("endpoint_health", "fail", 11),
+    check("endpoint_external_proof", "fail", 0),
+    check("endpoint_external_proof", "fail", -1),
+    check("endpoint_external_proof", "fail", Number.MAX_SAFE_INTEGER + 1),
+  ]) {
+    assert.equal(releaseHelpers.canConfirmVpnExternalProof(candidate), false);
+  }
+});
+
+test("readiness types expose no sensitive fields", async () => {
 
   const source = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
   const readinessTypes = source.match(
@@ -126,6 +156,13 @@ test("builds only an integer node label and exposes no sensitive readiness field
   assert.match(readinessTypes, /entity_id: number \| null/);
   assert.match(readinessTypes, /observed_at: string \| null/);
   assert.doesNotMatch(readinessTypes, /fingerprint|config_uri|public_host|panel_url/i);
+});
+
+test("maps readiness codes to fixed Russian labels with a safe fallback", () => {
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("system_health"), "Состояние системы");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_external_proof"), "Внешняя проверка подключения");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("public_trial_plan"), "Тариф пробного доступа");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("unexpected_code"), "Проверка");
 });
 
 test("readiness API uses exact methods, paths, and confirmation body", async () => {
@@ -171,7 +208,7 @@ test("release panel guards both mutations and does not duplicate node operations
     "utf8",
   );
 
-  assert.match(source, /endpoint_external_proof/);
+  assert.match(source, /canConfirmVpnExternalProof/);
   assert.match(source, /Подтвердить внешний тест/);
   assert.match(source, /window\.confirm/);
   assert.match(source, /ГОТОВО К РЕЛИЗУ/);
@@ -185,22 +222,52 @@ test("release panel guards both mutations and does not duplicate node operations
   assert.match(source, /api\.commitVpnReleaseReadiness/);
   assert.match(source, /НЕ включает оплату и пробный доступ/);
   assert.doesNotMatch(source, /dangerouslySetInnerHTML/);
+  assert.match(source, /Релизный контур/);
+  assert.match(source, /\{check\.message\}/);
+  assert.doesNotMatch(source, /Release gate/);
+  assert.doesNotMatch(source, /\{check\.code\}/);
   assert.doesNotMatch(source, /updateWorkerVpn|checkWorkerVpn|vpn-update|\/health/);
   assert.doesNotMatch(source, /fingerprint|config_uri|public_host|panel_url/i);
 });
 
-test("VPN workspace loads readiness independently and refreshes after capacity changes", async () => {
+test("VPN workspace starts readiness outside the shared admin Promise.all", async () => {
+  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const refreshStart = source.indexOf("async function refreshVpnReadiness");
+  const loadStart = source.indexOf("async function loadAll");
+  const nextFunction = source.indexOf("async function loadStrategyDetails", loadStart);
+
+  assert.ok(refreshStart >= 0);
+  assert.ok(loadStart > refreshStart);
+  const refreshSource = source.slice(refreshStart, loadStart);
+  const loadSource = source.slice(loadStart, nextFunction);
+
+  assert.match(refreshSource, /api\.getVpnReleaseReadiness\(\)/);
+  assert.match(refreshSource, /vpnReadinessRequestGenerationRef/);
+  assert.match(refreshSource, /readinessGeneration === vpnReadinessRequestGenerationRef\.current/);
+  assert.match(loadSource, /void refreshVpnReadiness\(\{ silent: options\?\.silent \}\)/);
+  assert.doesNotMatch(loadSource, /api\.getVpnReleaseReadiness/);
+  assert.doesNotMatch(loadSource, /setVpn(?:ReleaseReadiness|ReadinessLoading|ReadinessError)/);
+});
+
+test("silent readiness refresh still owns the loading guard", async () => {
+  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const refreshStart = source.indexOf("async function refreshVpnReadiness");
+  const loadStart = source.indexOf("async function loadAll");
+  const refreshSource = source.slice(refreshStart, loadStart);
+
+  assert.match(refreshSource, /setVpnReadinessLoading\(true\)/);
+  assert.match(refreshSource, /finally[\s\S]*setVpnReadinessLoading\(false\)/);
+  assert.match(refreshSource, /if \(!options\?\.silent\)[\s\S]*setVpnReadinessError\(null\)/);
+});
+
+test("VPN workspace renders readiness and refreshes it after capacity changes", async () => {
   const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   const css = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 
   assert.match(source, /<VpnReleaseReadinessPanel/);
-  assert.match(source, /api\.getVpnReleaseReadiness\(\)/);
-  assert.match(source, /vpnReadinessRequestGenerationRef/);
-  assert.match(source, /readinessGeneration === vpnReadinessRequestGenerationRef\.current/);
-  assert.match(source, /getVpnReleaseReadiness\(\)[\s\S]*?\.catch/);
   assert.match(
     source,
-    /onUpdated=\{\(updated\)[\s\S]*?refreshVpnReleaseReadiness/,
+    /onUpdated=\{\(updated\)[\s\S]*?refreshVpnReadiness/,
   );
   assert.match(source, /id="vpn-nodes-section"/);
   assert.match(source, /id="vpn-capacity-section"/);

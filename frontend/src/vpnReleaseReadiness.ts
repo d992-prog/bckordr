@@ -6,6 +6,46 @@ export const VPN_RELEASE_STATUS_LABELS: Record<VpnReleaseCheck["state"], string>
   fail: "Ошибка",
 };
 
+const VPN_RELEASE_CHECK_LABELS: Readonly<Record<string, string>> = {
+  system: "Состояние системы",
+  system_health: "Состояние системы",
+  control: "Служба управления",
+  control_health: "Служба управления",
+  local: "Локальный контур",
+  local_health: "Локальный контур",
+  public: "Публичный контур",
+  public_health: "Публичный контур",
+  cabinet: "Кабинет клиента",
+  cabinet_health: "Кабинет клиента",
+  disk: "Дисковое пространство",
+  disk_health: "Дисковое пространство",
+  backup: "Резервное копирование",
+  backup_health: "Резервное копирование",
+  known_hosts: "Доверенные SSH-узлы",
+  worker_active: "Активность воркера",
+  worker_health: "Состояние воркера",
+  endpoint_configuration: "Конфигурация точки доступа",
+  endpoint_health: "Состояние точки доступа",
+  endpoint_external_proof: "Внешняя проверка подключения",
+  endpoint_redundancy: "Резервирование нод",
+  endpoint_capacity: "Ёмкость ноды",
+  aggregate_capacity: "Общая ёмкость",
+  control_operations: "Операции управления",
+  maintenance: "Обслуживание",
+  dispatch: "Диспетчеризация",
+  release_id: "Идентификатор релиза",
+  payment_disabled: "Оплата отключена",
+  public_trial_disabled: "Пробный доступ отключён",
+  public_trial_plan: "Тариф пробного доступа",
+  portal_public_access: "Публичный доступ к кабинету",
+};
+
+export function formatVpnReleaseCheckLabel(code: string): string {
+  return Object.prototype.hasOwnProperty.call(VPN_RELEASE_CHECK_LABELS, code)
+    ? VPN_RELEASE_CHECK_LABELS[code]
+    : "Проверка";
+}
+
 const SECTION_DEFINITIONS = [
   {
     key: "infrastructure",
@@ -139,6 +179,40 @@ export function formatVpnReleaseCheckedAt(value: string | null): string {
   return `${formatted} MSK`;
 }
 
-export function formatVpnReleaseEntityLabel(entityId: number | null): string | null {
-  return Number.isInteger(entityId) ? `Нода #${entityId}` : null;
+const NODE_ENTITY_CODES = new Set([
+  "worker_active",
+  "worker_health",
+  "endpoint_configuration",
+  "endpoint_health",
+  "endpoint_external_proof",
+  "endpoint_redundancy",
+  "endpoint_capacity",
+  "aggregate_capacity",
+  "control_operations",
+  "maintenance",
+  "dispatch",
+]);
+
+export function isSafeVpnReleaseEntityId(value: number | null): value is number {
+  return Number.isSafeInteger(value) && value !== null && value > 0;
+}
+
+export function formatVpnReleaseEntityLabel(
+  check: Pick<VpnReleaseCheck, "code" | "entity_id">,
+): string | null {
+  if (!isSafeVpnReleaseEntityId(check.entity_id)) {
+    return null;
+  }
+  if (check.code === "public_trial_plan") {
+    return `Тариф #${check.entity_id}`;
+  }
+  return NODE_ENTITY_CODES.has(check.code) ? `Нода #${check.entity_id}` : null;
+}
+
+export function canConfirmVpnExternalProof(
+  check: Pick<VpnReleaseCheck, "code" | "state" | "entity_id">,
+): boolean {
+  return check.code === "endpoint_external_proof"
+    && check.state === "fail"
+    && isSafeVpnReleaseEntityId(check.entity_id);
 }
