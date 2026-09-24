@@ -3049,6 +3049,7 @@ def _external_verification_target(
     if (
         endpoint.status != "ready"
         or endpoint.security != "reality"
+        or bool(endpoint.last_error_code)
         or verified_at is None
         or not now - timedelta(seconds=max(health_max_age_seconds, 1))
         <= verified_at

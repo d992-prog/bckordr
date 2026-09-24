@@ -126,6 +126,7 @@ class EndpointSnapshot:
     target: VpnEndpointTarget
     status: str
     verified_at: datetime | None
+    last_error_code: str | None
     external_verified_at: datetime | None
     external_config_fingerprint: str | None
     max_active_profiles: int | None
@@ -419,7 +420,10 @@ def evaluate_release_readiness(
             and item.target.worker_id == item.worker.entity_id
             and is_valid_vpn_endpoint_target(item.target)
         )
-        endpoint_fresh = _fresh(item.verified_at, checked_at, max_age_seconds)
+        endpoint_fresh = bool(
+            _fresh(item.verified_at, checked_at, max_age_seconds)
+            and not item.last_error_code
+        )
         external_proof = bool(
             (external_verified_at := _as_utc(item.external_verified_at)) is not None
             and external_verified_at <= checked_at
@@ -607,6 +611,7 @@ async def load_release_readiness_snapshot(
                 target=endpoint_target,
                 status=endpoint_row.status,
                 verified_at=endpoint_row.verified_at,
+                last_error_code=endpoint_row.last_error_code,
                 external_verified_at=endpoint_row.external_verified_at,
                 external_config_fingerprint=endpoint_row.external_config_fingerprint,
                 max_active_profiles=endpoint_row.max_active_profiles,

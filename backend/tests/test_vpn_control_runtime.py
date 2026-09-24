@@ -44,6 +44,33 @@ def _settings(**overrides: object) -> Settings:
     return Settings(_env_file=None, **values)
 
 
+def test_vpn_fleet_health_settings_are_disabled_and_bounded_by_default() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.vpn_fleet_health_enabled is False
+    assert settings.vpn_fleet_health_interval_seconds == 120.0
+
+
+@pytest.mark.parametrize("value", [30.0, 3600.0])
+def test_vpn_fleet_health_settings_accept_aliases_and_exact_bounds(value: float) -> None:
+    settings = Settings(
+        _env_file=None,
+        VPN_FLEET_HEALTH_ENABLED=True,
+        VPN_FLEET_HEALTH_INTERVAL_SECONDS=value,
+    )
+
+    assert settings.vpn_fleet_health_enabled is True
+    assert settings.vpn_fleet_health_interval_seconds == value
+
+
+@pytest.mark.parametrize("value", [29.999, 3600.001, math.nan, math.inf, -math.inf])
+def test_vpn_fleet_health_interval_rejects_out_of_bounds_or_non_finite(
+    value: float,
+) -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, VPN_FLEET_HEALTH_INTERVAL_SECONDS=value)
+
+
 def test_vpn_control_postgres_engine_options_are_bounded() -> None:
     settings = _settings(DB_URL="postgresql+asyncpg://test:test@localhost/test")
 

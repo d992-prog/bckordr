@@ -473,6 +473,13 @@ async def test_external_verification_is_server_computed_safe_and_audited(
             now=api_context.now - timedelta(seconds=301),
             externally_verified=False,
         )
+        unhealthy = await _add_ready_endpoint(
+            session,
+            index=6,
+            now=api_context.now,
+            externally_verified=False,
+        )
+        unhealthy.last_error_code = "vpn_node_health_endpoint_mismatch"
         unsuitable = VpnEndpoint(
             worker_id=endpoint.worker_id,
             inbound_id=999,
@@ -532,6 +539,7 @@ async def test_external_verification_is_server_computed_safe_and_audited(
         await session.commit()
         endpoint_id = endpoint.id
         stale_id = stale.id
+        unhealthy_id = unhealthy.id
         unsuitable_id = unsuitable.id
         access_key_id = access_key.id
 
@@ -564,12 +572,20 @@ async def test_external_verification_is_server_computed_safe_and_audited(
             f"/control/vpn/endpoints/{stale_id}/external-verification",
             json={"confirmed": True},
         )
+        unhealthy_response = await client.post(
+            f"/control/vpn/endpoints/{unhealthy_id}/external-verification",
+            json={"confirmed": True},
+        )
         assert missing.status_code == 404
         assert missing.json() == {"detail": "VPN endpoint not found"}
         assert unsuitable_response.status_code == 409
         assert unsuitable_response.json() == {"detail": "VPN endpoint is not eligible for confirmation"}
         assert stale_response.status_code == 409
         assert stale_response.json() == {"detail": "VPN endpoint is not eligible for confirmation"}
+        assert unhealthy_response.status_code == 409
+        assert unhealthy_response.json() == {
+            "detail": "VPN endpoint is not eligible for confirmation"
+        }
 
         confirmed = await client.post(
             f"/control/vpn/endpoints/{endpoint_id}/external-verification",

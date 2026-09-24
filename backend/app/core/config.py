@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     vpn_endpoint_health_max_age_seconds: int = Field(
         default=300, alias="VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS"
     )
+    vpn_fleet_health_enabled: bool = Field(
+        default=False, alias="VPN_FLEET_HEALTH_ENABLED"
+    )
+    vpn_fleet_health_interval_seconds: float = Field(
+        default=120.0,
+        ge=30.0,
+        le=3600.0,
+        allow_inf_nan=False,
+        alias="VPN_FLEET_HEALTH_INTERVAL_SECONDS",
+    )
     vpn_ready_notifications_enabled: bool = Field(
         default=False, alias="VPN_READY_NOTIFICATIONS_ENABLED"
     )

@@ -115,6 +115,7 @@ def endpoint(endpoint_id: int, worker_id: int, **changes) -> EndpointSnapshot:
         "target": endpoint_target,
         "status": "ready",
         "verified_at": NOW,
+        "last_error_code": None,
         "external_verified_at": NOW,
         "external_config_fingerprint": public_endpoint_fingerprint(endpoint_target),
         "max_active_profiles": 10,
@@ -315,6 +316,27 @@ def test_stale_or_inactive_fleet_member_is_a_hard_failure(
 
     assert result.ready is False
     assert "fail" in states(result, code)
+
+
+def test_endpoint_health_error_code_is_a_hard_failure_even_when_fresh() -> None:
+    result = evaluate_release_readiness(
+        ready_snapshot(
+            endpoints=(
+                endpoint(10, 1, last_error_code="vpn_node_health_endpoint_mismatch"),
+                endpoint(20, 2),
+            )
+        ),
+        now=NOW,
+    )
+
+    check = next(
+        item
+        for item in result.checks
+        if item.code == "endpoint_health" and item.entity_id == 10
+    )
+    assert result.ready is False
+    assert check.state == "fail"
+    assert check.observed_at == NOW
 
 
 @pytest.mark.parametrize(
@@ -825,6 +847,7 @@ async def test_loader_uses_grouped_queries_and_policy_occupancy_statuses(
             flow="xtls-rprx-vision",
             status="ready",
             verified_at=NOW,
+            last_error_code="vpn_node_health_listener_unavailable",
             external_verified_at=NOW,
             max_active_profiles=10,
         )
@@ -911,6 +934,7 @@ async def test_loader_uses_grouped_queries_and_policy_occupancy_statuses(
     assert selects == 6
     assert snapshot.plan == PlanSnapshot(plan.id, "trial-7d", True, 7, 1)
     assert snapshot.endpoints[0].occupied_profiles == 1
+    assert snapshot.endpoints[0].last_error_code == "vpn_node_health_listener_unavailable"
     assert snapshot.control_operations == (
         ControlOperationSnapshot(node.id, "running"),
     )

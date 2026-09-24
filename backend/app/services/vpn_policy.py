@@ -220,7 +220,7 @@ async def select_public_vpn_endpoint(
             worker is not None
             and worker.archived_at is None
             and (checked_at := _as_utc(worker.vpn_last_checked_at)) is not None
-            and checked_at >= healthy_since
+            and healthy_since <= checked_at <= current_time
             and (await evaluate_vpn_node(session, worker)).eligible
         )
 
@@ -232,7 +232,11 @@ async def select_public_vpn_endpoint(
         if (
             endpoint.status != "ready"
             or endpoint.security != "reality"
-            or endpoint.verified_at is None
+            or not (
+                (verified_at := _as_utc(endpoint.verified_at)) is not None
+                and healthy_since <= verified_at <= current_time
+            )
+            or bool(endpoint.last_error_code)
             or limit is None
             or limit <= 0
         ):
