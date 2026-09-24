@@ -39,6 +39,45 @@ below is required at the same time:
 7. Ready notifications are enabled separately only after Telegram delivery and
    retry monitoring are accepted.
 
+### Release-readiness gate
+
+The admin panel and `GET /api/control/vpn/release-readiness` use the same
+authoritative evaluator. It is fail closed: any failed prerequisite keeps the
+release unready. Missing operational/watchdog or backup observations are shown
+in red and block the marker; this is expected until the later operations tasks
+wire those observations.
+
+External endpoint confirmation is evidence that a real client used the VPN from
+outside the control network. The server stores the confirmation time and a hash
+of the endpoint's public identity. Any change to that identity invalidates the
+evidence and requires a new external test. The readiness response and admin
+panel expose only fixed check text, state, timestamps and numeric entity IDs;
+they never expose a VPN URI, UUID, public host or configuration fingerprint.
+
+All readiness routes are admin-only. State-changing requests additionally
+require an exact same-origin `Origin` header and an exact JSON body with no extra
+fields: `{"confirmed":true}` for an external test and
+`{"confirmation":"ГОТОВО К РЕЛИЗУ"}` for the release marker.
+`Зафиксировать готовность` takes the VPN mutation and database table locks,
+reloads and re-evaluates the authoritative state, and writes only the database
+marker `vpn_public_release_ready_v1` for the configured lowercase 64-hex release
+ID (with the normal admin audit record). It does **not** edit `.env`, enable
+`VPN_PUBLIC_TRIAL_ENABLED`, enable payment, provision or revoke profiles, or
+restart VPN services.
+
+Operator flow after the remaining observation collectors exist:
+
+1. Set explicit positive capacity for each release endpoint.
+2. Obtain fresh strict worker and endpoint health for the complete release fleet.
+3. Test each endpoint from an external client and confirm that test in the panel.
+4. Inspect every panel check; do not continue while any item is red.
+5. Type the exact phrase `ГОТОВО К РЕЛИЗУ` and press
+   `Зафиксировать готовность` to commit the marker.
+
+Enabling the public trial is a separate release. Take a fresh reviewed backup
+and fresh operational observations before that release; do not treat a stored
+readiness marker as permission to turn on the flag later.
+
 ### Customer-facing behavior
 
 - The one-time right is shared by the bot, cabinet and friend-invitation

@@ -82,6 +82,35 @@ VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS=300
 VPN_READY_NOTIFICATIONS_ENABLED=false
 ```
 
+### Release-readiness gate (implemented locally)
+
+- The backend now has one authoritative fail-closed readiness evaluator, exposed
+  through an admin-only API and the Russian admin panel. The report groups fixed,
+  bounded checks for configuration, strict fleet health, endpoint capacity and
+  redundancy, active operations, external proof, operational health and backup.
+- An admin can record an external client test only for a fresh, valid REALITY
+  endpoint. The stored hash covers its public identity, so a public-identity
+  change invalidates the proof. API/UI responses never include a connection URI,
+  UUID, public host or the stored fingerprint.
+- State-changing readiness calls require an exact same-origin `Origin` and exact
+  JSON confirmation. `Зафиксировать готовность` serializes with VPN mutations,
+  locks the relevant PostgreSQL tables and rechecks readiness before writing only
+  `vpn_public_release_ready_v1` for the configured lowercase 64-hex release ID
+  (plus the admin audit record). It does not edit `.env`, enable the public trial
+  or payment, change profiles, or restart VPN.
+- Operational/watchdog and backup observation sources are intentionally not wired
+  in this slice. Their missing values remain red, so the current local panel is
+  expected to be unready and the marker cannot be committed yet.
+
+Remaining release work is to wire fresh operational/watchdog and backup evidence,
+bring the complete strict fleet to fresh health, add and externally verify the
+second production node, and then repeat the operator flow: set capacity, obtain
+strict health, run the external tests, inspect the panel, type the exact phrase
+`ГОТОВО К РЕЛИЗУ`, and commit the marker. Public-trial enablement
+remains a separate release requiring a fresh reviewed backup and observations.
+The public-trial and payment flags remain off; nothing in this checkpoint is
+deployed or green in production.
+
 Production enablement requires all of the following in addition to reviewed
 code: the exact `vpn_public_release_ready_v1` database marker matching a
 lowercase 64-hex release ID, an active `trial-7d` plan with a seven-day duration
