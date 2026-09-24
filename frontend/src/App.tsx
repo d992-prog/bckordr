@@ -1664,7 +1664,7 @@ export default function App() {
   async function logout() {
     resetVpnReadinessState();
     await api.logout();
-    setSession(null);
+    replaceAdminSession(null);
     setOverview(null);
     setStrategies([]);
     setDomains([]);

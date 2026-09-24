@@ -193,6 +193,18 @@ test("request gate rejects late readiness responses after logout or account swit
   gate.invalidate();
   assert.equal(gate.isCurrent(accountSwitchToken), false);
   assert.equal(gate.isCurrent(gate.begin()), true);
+
+  gate.invalidate();
+  const duringLogoutToken = gate.begin();
+  gate.invalidate();
+  assert.equal(gate.isCurrent(duringLogoutToken), false);
+});
+
+test("Vite preserves the browser host for same-origin mutation checks", async () => {
+  const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
+
+  assert.match(viteConfig, /changeOrigin:\s*false/);
+  assert.doesNotMatch(viteConfig, /changeOrigin:\s*true/);
 });
 
 test("commit confirmation is valid only for the snapshot where it was typed", () => {
@@ -369,4 +381,6 @@ test("VPN workspace invalidates readiness and clears its UI on session identity 
   assert.match(resetSource, /setVpnReadinessUiGeneration/);
   assert.match(source, /key=\{vpnReadinessUiGeneration\}/);
   assert.match(logoutSource, /resetVpnReadinessState\(\)[\s\S]*await api\.logout\(\)/);
+  assert.match(logoutSource, /await api\.logout\(\)[\s\S]*replaceAdminSession\(null\)/);
+  assert.doesNotMatch(logoutSource, /await api\.logout\(\)[\s\S]*setSession\(null\)/);
 });

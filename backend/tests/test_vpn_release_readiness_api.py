@@ -330,6 +330,52 @@ async def test_release_mutations_reject_missing_or_foreign_origin_without_writes
 
 
 @pytest.mark.asyncio
+async def test_release_mutation_accepts_origin_preserved_by_vite_proxy(api_context) -> None:
+    async with api_context.factory() as session:
+        accepted = await _add_ready_endpoint(
+            session,
+            index=4,
+            now=api_context.now,
+            externally_verified=False,
+        )
+        rejected = await _add_ready_endpoint(
+            session,
+            index=5,
+            now=api_context.now,
+            externally_verified=False,
+        )
+        await session.commit()
+        accepted_id = accepted.id
+        rejected_id = rejected.id
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api_context.app),
+        base_url="http://localhost:8000",
+        headers={"Host": "localhost:5173", "Origin": "http://localhost:5173"},
+    ) as client:
+        accepted_response = await client.post(
+            f"/control/vpn/endpoints/{accepted_id}/external-verification",
+            json={"confirmed": True},
+        )
+        rejected_response = await client.post(
+            f"/control/vpn/endpoints/{rejected_id}/external-verification",
+            json={"confirmed": True},
+            headers={"Origin": "https://foreign.example"},
+        )
+
+    assert accepted_response.status_code == 200
+    assert rejected_response.status_code == 403
+    assert rejected_response.json() == {"detail": "Same-origin request required"}
+    async with api_context.factory() as session:
+        accepted_endpoint = await session.get(VpnEndpoint, accepted_id)
+        rejected_endpoint = await session.get(VpnEndpoint, rejected_id)
+        assert accepted_endpoint is not None
+        assert accepted_endpoint.external_verified_at is not None
+        assert rejected_endpoint is not None
+        assert rejected_endpoint.external_verified_at is None
+
+
+@pytest.mark.asyncio
 async def test_release_commit_rejects_missing_or_wrong_confirmation(api_context) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api_context.app),
