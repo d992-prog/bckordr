@@ -118,7 +118,14 @@ test("counts every state and permits commit only for a ready report without fail
 
 test("uses code-aware labels only for positive safe entity identifiers", () => {
   assert.equal(formatVpnReleaseEntityLabel(check("worker_health", "pass", 42)), "Нода #42");
-  assert.equal(formatVpnReleaseEntityLabel(check("endpoint_capacity", "pass", 7)), "Нода #7");
+  for (const code of [
+    "endpoint_configuration",
+    "endpoint_health",
+    "endpoint_external_proof",
+    "endpoint_capacity",
+  ]) {
+    assert.equal(formatVpnReleaseEntityLabel(check(code, "pass", 7)), "VPN-точка #7");
+  }
   assert.equal(formatVpnReleaseEntityLabel(check("maintenance", "pass", 3)), "Нода #3");
   assert.equal(formatVpnReleaseEntityLabel(check("public_trial_plan", "pass", 9)), "Тариф #9");
   assert.equal(formatVpnReleaseEntityLabel(check("release_id", "pass", 2)), null);
@@ -219,6 +226,8 @@ test("release panel guards both mutations and does not duplicate node operations
   );
   assert.match(source, /disabled=\{actionInFlight !== null \|\| loading\}/);
   assert.match(source, /api\.confirmVpnEndpointExternalVerification/);
+  assert.match(source, /Внешний тест для VPN-точки #\$\{endpointId\} подтверждён\./);
+  assert.doesNotMatch(source, /Внешний тест для ноды/);
   assert.match(source, /api\.commitVpnReleaseReadiness/);
   assert.match(source, /НЕ включает оплату и пробный доступ/);
   assert.doesNotMatch(source, /dangerouslySetInnerHTML/);

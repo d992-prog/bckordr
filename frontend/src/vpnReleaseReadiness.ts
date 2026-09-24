@@ -182,15 +182,15 @@ export function formatVpnReleaseCheckedAt(value: string | null): string {
 const NODE_ENTITY_CODES = new Set([
   "worker_active",
   "worker_health",
+  "control_operations",
+  "maintenance",
+]);
+
+const VPN_ENDPOINT_ENTITY_CODES = new Set([
   "endpoint_configuration",
   "endpoint_health",
   "endpoint_external_proof",
-  "endpoint_redundancy",
   "endpoint_capacity",
-  "aggregate_capacity",
-  "control_operations",
-  "maintenance",
-  "dispatch",
 ]);
 
 export function isSafeVpnReleaseEntityId(value: number | null): value is number {
@@ -205,6 +205,9 @@ export function formatVpnReleaseEntityLabel(
   }
   if (check.code === "public_trial_plan") {
     return `Тариф #${check.entity_id}`;
+  }
+  if (VPN_ENDPOINT_ENTITY_CODES.has(check.code)) {
+    return `VPN-точка #${check.entity_id}`;
   }
   return NODE_ENTITY_CODES.has(check.code) ? `Нода #${check.entity_id}` : null;
 }
