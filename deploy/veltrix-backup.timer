@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Veltrix validated backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:10:00 UTC
+RandomizedDelaySec=20min
+AccuracySec=1min
+Persistent=true
+Unit=veltrix-backup.service
+
+[Install]
+WantedBy=timers.target

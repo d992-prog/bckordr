@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Veltrix release-readiness watchdog every five minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00 UTC
+RandomizedDelaySec=30s
+AccuracySec=30s
+Persistent=true
+Unit=veltrix-watchdog.service
+
+[Install]
+WantedBy=timers.target

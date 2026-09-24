@@ -1,0 +1,35 @@
+[Unit]
+Description=Veltrix validated backup
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/domain-drop-catcher/backend
+EnvironmentFile=/opt/domain-drop-catcher/backend/.env
+Environment=VPN_BACKUP_DIRECTORY=/var/backups/domain-drop-catcher VPN_BACKUP_ENV_FILE=/opt/domain-drop-catcher/backend/.env VPN_BACKUP_SYSTEMD_UNIT=/etc/systemd/system/domain-drop-control.service VPN_BACKUP_NGINX_DIRECTORY=/etc/nginx VPN_BACKUP_FRONTEND_DIST=/opt/domain-drop-catcher/frontend/dist
+ExecStart=/opt/domain-drop-catcher/backend/.venv/bin/python -m app.operations.backup
+UMask=0077
+RuntimeMaxSec=75min
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/opt/domain-drop-catcher/backend/.env /etc/systemd/system/domain-drop-control.service /etc/nginx /opt/domain-drop-catcher/frontend/dist
+ReadWritePaths=/var/backups/domain-drop-catcher
