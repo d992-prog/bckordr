@@ -16,6 +16,7 @@ VPN_ENDPOINT_MIGRATIONS = (
         flow VARCHAR(32) NULL,
         status VARCHAR(32) NOT NULL DEFAULT 'staged',
         verified_at TIMESTAMPTZ NULL,
+        health_checked_at TIMESTAMPTZ NULL,
         external_verified_at TIMESTAMPTZ NULL,
         external_config_fingerprint VARCHAR(64) NULL,
         last_error_code VARCHAR(64) NULL,
@@ -141,6 +142,7 @@ VPN_ENDPOINT_MIGRATIONS = (
     WHERE state IN ('claimed','uncertain')
     """,
     "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS external_verified_at TIMESTAMPTZ NULL",
+    "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS health_checked_at TIMESTAMPTZ NULL",
     "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS external_config_fingerprint VARCHAR(64) NULL",
     "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS max_active_profiles INTEGER NULL",
     "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS capacity_warning_percent INTEGER NOT NULL DEFAULT 80",

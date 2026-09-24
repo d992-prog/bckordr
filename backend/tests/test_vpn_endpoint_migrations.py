@@ -276,6 +276,10 @@ def test_task1_migrations_follow_the_existing_endpoint_schema() -> None:
         "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS "
         "external_config_fingerprint VARCHAR(64) NULL"
     ) in TASK1_MIGRATIONS
+    assert (
+        "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS "
+        "health_checked_at TIMESTAMPTZ NULL"
+    ) in TASK1_MIGRATIONS
 
 
 @pytest.mark.asyncio
@@ -348,7 +352,8 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
                 """
                 ALTER TABLE vpn_endpoints
                     DROP COLUMN IF EXISTS external_verified_at,
-                    DROP COLUMN IF EXISTS external_config_fingerprint
+                    DROP COLUMN IF EXISTS external_config_fingerprint,
+                    DROP COLUMN IF EXISTS health_checked_at
                 """
             )
         )
@@ -450,7 +455,7 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
                         SELECT id, worker_id, inbound_id, public_host, port,
                                protocol, transport, security, server_name,
                                public_key, short_id, fingerprint, flow, status,
-                               verified_at, external_verified_at,
+                               verified_at, health_checked_at, external_verified_at,
                                external_config_fingerprint, last_error_code,
                                created_at, updated_at
                         FROM vpn_endpoints
@@ -466,6 +471,8 @@ async def test_legacy_schema_upgrade_is_idempotent_and_enforces_endpoint_ownersh
         assert {
             key: upgraded_endpoint[key] for key in before_endpoint
         } == dict(before_endpoint)
+        assert upgraded_endpoint["verified_at"] == verified_at
+        assert upgraded_endpoint["health_checked_at"] is None
         assert upgraded_endpoint["external_verified_at"] is None
         assert upgraded_endpoint["external_config_fingerprint"] is None
         assert upgraded["operation_generation"] == 0
