@@ -1377,6 +1377,11 @@ def main(
 ) -> int:
     """Run one backup from the root-private systemd environment."""
     values = os.environ if environment is None else environment
+    enabled = values.get("VPN_BACKUP_ENABLED", "false").strip().lower()
+    if enabled in {"", "0", "false", "no", "off"}:
+        return 0
+    if enabled not in {"1", "true", "yes", "on"}:
+        return 1
     try:
         config = BackupConfig(
             backup_root=Path(values["VPN_BACKUP_DIRECTORY"]),

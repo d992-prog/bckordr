@@ -1410,6 +1410,7 @@ def test_main_builds_backup_from_explicit_environment_without_output(
 ) -> None:
     config = _config(tmp_path)
     environment = {
+        "VPN_BACKUP_ENABLED": "true",
         "DB_URL": f"postgresql://backup:{PASSWORD}@db.internal:5432/veltrix",
         "VPN_BACKUP_DIRECTORY": str(config.backup_root),
         "VPN_BACKUP_ENV_FILE": str(config.env_file),
@@ -1446,10 +1447,43 @@ def test_main_builds_backup_from_explicit_environment_without_output(
     assert capsys.readouterr() == ("", "")
 
 
+@pytest.mark.parametrize("enabled", [None, "", "false", "0", "off", "no"])
+def test_main_disabled_is_a_silent_noop(
+    enabled: str | None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    environment = {} if enabled is None else {"VPN_BACKUP_ENABLED": enabled}
+    called = False
+
+    def create(_config: BackupConfig, _db_url: str) -> object:
+        nonlocal called
+        called = True
+        return object()
+
+    assert main(environment, create=create) == 0
+    assert called is False
+    assert capsys.readouterr() == ("", "")
+
+
+def test_main_invalid_enabled_value_fails_closed_without_running(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    called = False
+
+    def create(_config: BackupConfig, _db_url: str) -> object:
+        nonlocal called
+        called = True
+        return object()
+
+    assert main({"VPN_BACKUP_ENABLED": "perhaps"}, create=create) == 1
+    assert called is False
+    assert capsys.readouterr() == ("", "")
+
+
 def test_main_fails_closed_without_echoing_invalid_environment(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    environment = {"DB_URL": PASSWORD}
+    environment = {"VPN_BACKUP_ENABLED": "true", "DB_URL": PASSWORD}
 
     assert main(environment) == 1
     output = capsys.readouterr()
@@ -1462,6 +1496,7 @@ def test_main_catches_unexpected_secret_exception_without_output(
 ) -> None:
     config = _config(tmp_path)
     environment = {
+        "VPN_BACKUP_ENABLED": "true",
         "DB_URL": PASSWORD,
         "VPN_BACKUP_DIRECTORY": str(config.backup_root),
         "VPN_BACKUP_ENV_FILE": str(config.env_file),
