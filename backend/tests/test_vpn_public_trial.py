@@ -429,6 +429,39 @@ async def test_trial_readiness_fails_closed_without_rows(session_factory, monkey
 
 
 @pytest.mark.asyncio
+async def test_legacy_public_access_blocks_status_and_activation_before_identity_creation(
+    session_factory,
+    monkeypatch,
+):
+    from app.services import vpn_public_trial as trial
+
+    monkeypatch.setattr(trial, "load_transport_snapshot", lambda *_: object())
+    async with session_factory() as db:
+        customer, _, _ = await seed_trial(db)
+        settings = trial_settings(VPN_PORTAL_PUBLIC_ACCESS=True)
+
+        assert (
+            await trial.public_trial_status(db, settings, customer, NOW)
+        ).state == "capacity_paused"
+        with pytest.raises(
+            trial.PublicTrialUnavailable,
+            match="^public_trial_unavailable$",
+        ):
+            await trial.activate_public_trial(
+                db,
+                settings,
+                TelegramIdentity("999"),
+                NOW,
+            )
+
+        assert await db.scalar(
+            select(VpnCustomer).where(VpnCustomer.telegram_user_id == "999")
+        ) is None
+        assert customer.trial_started_at is None
+        assert await trial_counts(db) == [0, 0, 0]
+
+
+@pytest.mark.asyncio
 async def test_trial_activation_copies_plan_and_replays_same_private_chain(session_factory, monkeypatch):
     from app.services import vpn_public_trial as trial
 

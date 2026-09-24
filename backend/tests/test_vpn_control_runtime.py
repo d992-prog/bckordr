@@ -246,7 +246,7 @@ async def _seed_runtime_readiness(
 
 
 @pytest.mark.asyncio
-async def test_public_only_release_gate_starts_control_dispatch(
+async def test_public_release_keeps_dispatch_draining_after_admission_kill_switch(
     runtime_database: tuple[async_sessionmaker[AsyncSession], object],
 ) -> None:
     factory, _engine = runtime_database
@@ -254,7 +254,7 @@ async def test_public_only_release_gate_starts_control_dispatch(
     settings = _runtime_settings(
         VPN_FRIEND_BETA_ENABLED=False,
         VPN_FRIEND_BETA_RELEASE_ID="",
-        VPN_PUBLIC_TRIAL_ENABLED=True,
+        VPN_PUBLIC_TRIAL_ENABLED=False,
         VPN_PUBLIC_TRIAL_RELEASE_ID=RELEASE_ID,
     )
     dispatch_calls: list[object] = []
@@ -296,7 +296,7 @@ async def test_public_only_release_gate_requires_exact_marker(
         _runtime_settings(
             VPN_FRIEND_BETA_ENABLED=False,
             VPN_FRIEND_BETA_RELEASE_ID="",
-            VPN_PUBLIC_TRIAL_ENABLED=True,
+            VPN_PUBLIC_TRIAL_ENABLED=False,
             VPN_PUBLIC_TRIAL_RELEASE_ID=RELEASE_ID,
         ),
         database_factory=lambda settings: database_calls.append(settings),
@@ -324,7 +324,7 @@ async def test_public_only_release_gate_requires_valid_release_id(
         _runtime_settings(
             VPN_FRIEND_BETA_ENABLED=False,
             VPN_FRIEND_BETA_RELEASE_ID="",
-            VPN_PUBLIC_TRIAL_ENABLED=True,
+            VPN_PUBLIC_TRIAL_ENABLED=False,
             VPN_PUBLIC_TRIAL_RELEASE_ID=release_id,
         ),
         database_factory=lambda settings: database_calls.append(settings),
@@ -339,7 +339,7 @@ async def test_public_only_release_gate_requires_valid_release_id(
 
 
 @pytest.mark.asyncio
-async def test_control_dispatch_stays_off_when_both_release_paths_are_disabled(
+async def test_control_dispatch_stays_off_without_any_configured_release(
     runtime_database: tuple[async_sessionmaker[AsyncSession], object],
 ) -> None:
     factory, _engine = runtime_database
@@ -350,6 +350,7 @@ async def test_control_dispatch_stays_off_when_both_release_paths_are_disabled(
         _runtime_settings(
             VPN_FRIEND_BETA_ENABLED=False,
             VPN_PUBLIC_TRIAL_ENABLED=False,
+            VPN_PUBLIC_TRIAL_RELEASE_ID="",
         ),
         database_factory=lambda settings: database_calls.append(settings),
         dispatcher=lambda *args, **kwargs: None,

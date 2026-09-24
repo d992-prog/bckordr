@@ -362,7 +362,7 @@ class ControlRuntimeOrchestrator:
                 settings.vpn_friend_beta_release_id,
             ),
             (
-                settings.vpn_public_trial_enabled,
+                bool(settings.vpn_public_trial_release_id),
                 _VPN_PUBLIC_RELEASE_READY_KEY,
                 settings.vpn_public_trial_release_id,
             ),

@@ -587,6 +587,51 @@ async def test_public_trial_unavailable_and_used_errors_are_static(portal_app):
 
 
 @pytest.mark.asyncio
+async def test_legacy_public_access_cannot_activate_public_trial(
+    portal_app,
+    monkeypatch,
+):
+    await seed_ready_public_trial(portal_app, monkeypatch)
+    portal_app.settings.vpn_portal_allowed_telegram_ids = ""
+    portal_app.settings.vpn_portal_public_access = True
+    fresh = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=portal_app.app),
+        base_url=PORTAL_ORIGIN,
+    )
+    try:
+        login = await fresh.post(
+            "/api/vpn-portal/auth/mini-app",
+            headers={"Origin": PORTAL_ORIGIN},
+            json={
+                "init_data": mini_app_data(
+                    407,
+                    portal_app.settings.vpn_telegram_bot_token,
+                )
+            },
+        )
+        response = await fresh.post(
+            "/api/vpn-portal/trial/activate",
+            headers={
+                "Origin": PORTAL_ORIGIN,
+                "X-CSRF-Token": login.json()["csrf_token"],
+            },
+        )
+        assert (response.status_code, response.json()) == (
+            409,
+            {"detail": "public_trial_capacity_unavailable"},
+        )
+        assert response.headers["cache-control"] == "no-store"
+        async with portal_app.factory() as session:
+            customer = await session.scalar(
+                select(VpnCustomer).where(VpnCustomer.telegram_user_id == "407")
+            )
+            assert customer is not None and customer.trial_started_at is None
+            assert await session.scalar(select(func.count(VpnControlOperation.id))) == 0
+    finally:
+        await fresh.aclose()
+
+
+@pytest.mark.asyncio
 async def test_disabled_public_trial_does_not_admit_fresh_mini_app_identity(portal_app):
     portal_app.settings.vpn_portal_allowed_telegram_ids = ""
     portal_app.settings.vpn_public_trial_enabled = False

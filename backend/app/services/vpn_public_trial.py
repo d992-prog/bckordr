@@ -151,6 +151,7 @@ async def _ready(db: AsyncSession, settings: Settings, now: datetime, *, lock: b
     if (
         not settings.vpn_public_trial_enabled
         or not settings.vpn_control_dispatch_enabled
+        or settings.vpn_portal_public_access
         or re.fullmatch(r"[0-9a-f]{64}", settings.vpn_public_trial_release_id) is None
     ):
         _unavailable()
@@ -214,6 +215,8 @@ async def activate_public_trial(
 ) -> PublicTrialView:
     """Stage exactly one trial; the caller owns commit and rollback."""
     current = _utc(now)
+    if settings.vpn_portal_public_access:
+        _unavailable()
     try:
         telegram_user_id(identity.user_id)
     except ValueError:
