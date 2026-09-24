@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import importlib
 import json
+import os
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -18,7 +21,6 @@ import pytest
 
 from app.services.vpn_endpoints import VpnEndpointError, VpnEndpointTarget
 from app.services.vpn_xui_node_http import NodePanelError, NodePanelSession
-
 
 SECRET = "synthetic_observation_secret_never_export"
 CLIENT_UUID = UUID("11111111-2222-4333-8444-555555555555")
@@ -194,6 +196,42 @@ def assert_error(observation, panel, data, code, error_type=VpnEndpointError):
     assert SECRET not in "".join(format_exception(caught.value))
 
 
+def test_endpoint_listener_probe_receives_selected_row_and_target(
+    observation, panel, data
+):
+    calls = []
+
+    def listener(row, target):
+        calls.append((row, target))
+        return True
+
+    result = observation.observe_node_endpoint(
+        panel,
+        target=data["target"],
+        database_path=data["database"],
+        listener_probe=listener,
+    )
+    assert result.listening is True
+    assert calls == [(data["inbounds"]["obj"][0], data["target"])]
+
+
+def test_default_endpoint_listener_uses_observed_bind(
+    observation, data, monkeypatch
+):
+    calls = []
+    row = data["inbounds"]["obj"][0]
+    row["listen"] = "203.0.113.10"
+
+    def listener(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(observation, "xray_public_listener_is_bound", listener)
+
+    assert observation.xray_endpoint_is_listening(row, data["target"]) is True
+    assert calls == [{"port": 443, "listen": "203.0.113.10"}]
+
+
 def test_complete_observation_is_small_frozen_and_read_only(
     observation, panel, data, capsys, caplog
 ):
@@ -259,6 +297,104 @@ def test_database_drift_between_reads_rejects(observation, panel, data):
 
     data["on_clients"] = drift
     assert_error(observation, panel, data, "vpn_xui_inventory_incomplete")
+
+
+def test_wal_database_is_rejected_without_changing_directory(
+    observation, panel, data
+):
+    connection = sqlite3.connect(data["database"])
+    try:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        connection.execute("INSERT INTO inbounds VALUES (8)")
+        connection.commit()
+        before = {
+            path.name: hashlib.sha256(path.read_bytes()).digest()
+            for path in data["database"].parent.iterdir()
+            if path.is_file()
+        }
+        events = list(data["events"])
+
+        assert_error(observation, panel, data, "vpn_xui_inventory_unavailable")
+
+        after = {
+            path.name: hashlib.sha256(path.read_bytes()).digest()
+            for path in data["database"].parent.iterdir()
+            if path.is_file()
+        }
+        assert after == before
+        assert data["events"] == events
+    finally:
+        connection.close()
+
+
+def test_rollback_database_snapshot_does_not_change_directory(observation, data):
+    with sqlite3.connect(data["database"]) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+    before = {
+        path.name: hashlib.sha256(path.read_bytes()).digest()
+        for path in data["database"].parent.iterdir()
+        if path.is_file()
+    }
+
+    assert observation._local_inbound_ids(data["database"]) == (2, 7)
+
+    after = {
+        path.name: hashlib.sha256(path.read_bytes()).digest()
+        for path in data["database"].parent.iterdir()
+        if path.is_file()
+    }
+    assert after == before
+
+
+@pytest.mark.parametrize("failure", ["wal_header", "rollback_sidecar"])
+def test_unsupported_database_state_fails_closed_without_changes(
+    observation, panel, data, failure
+):
+    if failure == "wal_header":
+        raw = bytearray(data["database"].read_bytes())
+        raw[18:20] = b"\x02\x02"
+        data["database"].write_bytes(raw)
+    else:
+        Path(str(data["database"]) + "-journal").write_bytes(b"pending")
+    before = {
+        path.name: hashlib.sha256(path.read_bytes()).digest()
+        for path in data["database"].parent.iterdir()
+        if path.is_file()
+    }
+    events = list(data["events"])
+
+    assert_error(observation, panel, data, "vpn_xui_inventory_unavailable")
+
+    after = {
+        path.name: hashlib.sha256(path.read_bytes()).digest()
+        for path in data["database"].parent.iterdir()
+        if path.is_file()
+    }
+    assert after == before
+    assert data["events"] == events
+
+
+def test_database_snapshot_rejects_content_drift(
+    observation, panel, data, monkeypatch
+):
+    real_read = os.read
+    reads = 0
+
+    def drifting_read(descriptor, size):
+        nonlocal reads
+        reads += 1
+        chunk = real_read(descriptor, size)
+        if reads == 3 and chunk:
+            return chunk[:-1] + bytes([chunk[-1] ^ 1])
+        return chunk
+
+    monkeypatch.setattr(observation.os, "read", drifting_read)
+    events = list(data["events"])
+
+    assert_error(observation, panel, data, "vpn_xui_inventory_unavailable")
+
+    assert reads >= 3
+    assert data["events"] == events
 
 
 @pytest.mark.parametrize(
@@ -482,13 +618,16 @@ def test_local_reads_select_only_ids_and_use_read_only_connection(
     observe(observation, panel, data)
     assert len(opened) == len(closed) == len(progress) == 2
     assert all(
-        uri == data["database"].as_uri() + "?mode=ro"
-        and kwargs == {"uri": True, "timeout": 2}
-        for uri, kwargs in opened
+        database == ":memory:" and kwargs == {"timeout": 2}
+        for database, kwargs in opened
     )
     assert (
         statements
-        == ["PRAGMA query_only=ON", "SELECT id FROM inbounds ORDER BY id LIMIT 10001"]
+        == [
+            "ATTACH x AS 'main'",
+            "PRAGMA query_only=ON",
+            "SELECT id FROM inbounds ORDER BY id LIMIT 10001",
+        ]
         * 2
     )
     assert all(steps > 0 for _, steps in progress)
@@ -510,6 +649,10 @@ def test_sqlite_deadline_error_is_static_and_connection_closes(
         "connect",
         lambda *args, **kwargs: real_connect(*args, factory=Connection, **kwargs),
     )
+    snapshot = data["database"].read_bytes()
+    monkeypatch.setattr(
+        observation, "_database_snapshot", lambda _path, _deadline: snapshot
+    )
     ticks = iter([0.0, 3.0])
     monkeypatch.setattr(observation.time, "monotonic", lambda: next(ticks))
     assert_error(observation, panel, data, "vpn_xui_inventory_unavailable")
@@ -517,12 +660,17 @@ def test_sqlite_deadline_error_is_static_and_connection_closes(
 
 
 def test_symlink_database_is_rejected_before_api(observation, panel, data, monkeypatch):
-    real_is_symlink = Path.is_symlink
-    monkeypatch.setattr(
-        Path,
-        "is_symlink",
-        lambda path: path == data["database"] or real_is_symlink(path),
-    )
+    real_lstat = os.lstat
+
+    def lstat(path):
+        info = real_lstat(path)
+        if Path(path) == data["database"]:
+            values = list(info)
+            values[0] = stat.S_IFLNK | 0o777
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(observation.os, "lstat", lstat)
     events = list(data["events"])
     assert_error(observation, panel, data, "vpn_xui_inventory_unavailable")
     assert data["events"] == events

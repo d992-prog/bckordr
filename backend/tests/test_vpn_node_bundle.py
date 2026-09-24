@@ -49,6 +49,20 @@ def test_bundle_executes_under_isolated_python_without_site_packages(tmp_path):
     assert result.stdout == result.stderr == b""
 
 
+def test_built_bundle_routes_malformed_health_request_silently(tmp_path):
+    bundle = tmp_path / "node.pyz"
+    build_node_bundle(BACKEND, bundle)
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(bundle), "--health"],
+        input=b"not-json",
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert result.stdout == result.stderr == b""
+
+
 def test_bundle_import_probe_emits_unambiguous_sentinel(tmp_path):
     from app.services.vpn_node_bundle import IMPORT_PROBE_SENTINEL
 

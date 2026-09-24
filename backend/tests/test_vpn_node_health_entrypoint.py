@@ -201,7 +201,7 @@ def run(
     *,
     config,
     token,
-    listener=lambda _port: True,
+    listener=lambda _row, _target: True,
     uid=lambda: 0,
     observer=None,
 ):
@@ -240,7 +240,9 @@ def test_endpoint_observation_is_immutable_and_does_not_read_clients(
         Panel(),
         target=target,
         database_path=node["database"],
-        listener_probe=lambda port: port == 443,
+        listener_probe=lambda row, selected: (
+            row["id"] == target.inbound_id and selected.port == 443
+        ),
     )
 
     assert asdict(result) == {
@@ -299,7 +301,11 @@ def test_exact_health_receipt_and_read_only_state(
         request_bytes(target),
         config=config,
         token=token,
-        listener=lambda port: port == target.port and node["listener"],
+        listener=lambda row, selected: (
+            row["id"] == target.inbound_id
+            and selected.port == target.port
+            and node["listener"]
+        ),
     )
     expected = VpnNodeHealthReceipt(
         "healthy" if error_code is None else "unhealthy",
@@ -367,6 +373,32 @@ def test_database_and_panel_failures_map_to_closed_receipts(
         config=config,
         token=token,
     )
+    assert (code, stdout, stderr) == (
+        0,
+        serialize_node_health_receipt(
+            VpnNodeHealthReceipt(
+                "unhealthy", "vpn_node_health_panel_unavailable", None
+            )
+        ),
+        b"",
+    )
+
+
+def test_malformed_panel_inventory_maps_to_panel_unavailable(
+    monkeypatch, entrypoint, node, target, tmp_path
+):
+    config, token, _checked = install_trusted_inputs(
+        monkeypatch, entrypoint, node, tmp_path
+    )
+    node["inbounds"]["obj"] = {}
+
+    code, stdout, stderr = run(
+        entrypoint,
+        request_bytes(target),
+        config=config,
+        token=token,
+    )
+
     assert (code, stdout, stderr) == (
         0,
         serialize_node_health_receipt(
@@ -607,7 +639,7 @@ def test_listener_probe_requires_an_exact_boolean(
         request_bytes(target),
         config=config,
         token=token,
-        listener=lambda _port: 1,
+        listener=lambda _row, _target: 1,
     )
     assert (code, stdout, stderr) == (
         0,
@@ -616,30 +648,3 @@ def test_listener_probe_requires_an_exact_boolean(
         ),
         b"",
     )
-
-
-@pytest.mark.parametrize(
-    "name,body",
-    [
-        (
-            "tcp",
-            (
-                "  sl  local_address rem_address   st\n"
-                "   0: 00000000:01BB 00000000:0000 0A\n"
-            ),
-        ),
-        (
-            "tcp6",
-            (
-                "  sl  local_address                         remote_address                        st\n"
-                "   0: 00000000000000000000000000000000:01BB "
-                "00000000000000000000000000000000:0000 0A\n"
-            ),
-        ),
-    ],
-)
-def test_listener_probe_supports_ipv4_and_ipv6(entrypoint, tmp_path, name, body):
-    table = tmp_path / name
-    table.write_text(body, encoding="ascii")
-    assert entrypoint.public_port_is_listening(443, tables=(table,)) is True
-    assert entrypoint.public_port_is_listening(8443, tables=(table,)) is False

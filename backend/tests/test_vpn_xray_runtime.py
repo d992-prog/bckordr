@@ -16,7 +16,6 @@ from uuid import UUID
 
 import pytest
 
-
 CLIENT = UUID("12345678-1234-4234-9234-123456789abc")
 ALIAS = UUID("12345678-1234-ffff-9234-123456789abc")
 EMAIL = "customer-1@example.test"
@@ -29,14 +28,18 @@ def runtime():
 
 
 def inputs(**changes):
-    return dict(
-        port=443, client_uuid=CLIENT, client_email=EMAIL, flow=FLOW,
-        executable_path=Path.cwd() / "xray", config_path=Path.cwd() / "config.json",
-    ) | changes
+    return {
+        "port": 443,
+        "client_uuid": CLIENT,
+        "client_email": EMAIL,
+        "flow": FLOW,
+        "executable_path": Path.cwd() / "xray",
+        "config_path": Path.cwd() / "config.json",
+    } | changes
 
 
 def client(**changes):
-    return dict(id=str(CLIENT), email=EMAIL, flow=FLOW) | changes
+    return {"id": str(CLIENT), "email": EMAIL, "flow": FLOW} | changes
 
 
 def account(**changes):
@@ -248,13 +251,32 @@ def node(runtime, monkeypatch):
         cfg: json.dumps(config()).encode(),
         pid / "stat": b"123 (name with ) space) S " + b"0 " * 18 + b"456 0\n",
         pid / "cmdline": f"{exe}\0run\0-config\0{cfg}\0".encode(),
-        pid / "net/tcp": b"header\n 0: 0100007F:F545 00000000:0000 0A 0:0 0:0 0 0 0 789\n",
+        pid / "net/tcp": (
+            b"header\n"
+            b" 0: 0100007F:F545 00000000:0000 0A 0:0 0:0 0 0 0 789\n"
+            b" 1: 00000000:01BB 00000000:0000 0A 0:0 0:0 0 0 0 900\n"
+        ),
+        pid / "net/tcp6": (
+            b"header\n"
+            b" 0: 00000000000000000000000000000000:01BB "
+            b"00000000000000000000000000000000:0000 0A 0:0 0:0 0 0 0 901\n"
+        ),
     }
-    links = {pid / "exe": str(exe), pid / "cwd": str(Path.cwd()), pid / "fd/3": "socket:[789]"}
+    links = {
+        pid / "exe": str(exe),
+        pid / "cwd": str(Path.cwd()),
+        pid / "fd/3": "socket:[789]",
+        pid / "fd/4": "socket:[900]",
+        pid / "fd/5": "socket:[901]",
+    }
     links[pid / "ns/net"] = "net:[12345]"
     links[root / "thread-self/ns/net"] = "net:[12345]"
-    dirs = {root: [pid], pid / "fd": [pid / "fd/3"]}
+    dirs = {
+        root: [pid],
+        pid / "fd": [pid / "fd/3", pid / "fd/4", pid / "fd/5"],
+    }
     calls = []
+    identity_overrides = {}
     responses = [b"Xray 26.9.9 (Xray, Penetrates Everything.)\n", json.dumps({"users": [account()]}).encode(), b"{}"]
     def read(path, *args):
         return data[path]
@@ -262,6 +284,10 @@ def node(runtime, monkeypatch):
         if path not in links:
             raise FileNotFoundError()
         return links[path]
+    def linked_identity(path, *args):
+        if path in identity_overrides:
+            return identity_overrides[path]
+        return links[path], 1
     def run(argv, deadline):
         calls.append((argv, deadline))
         return responses.pop(0)
@@ -269,11 +295,22 @@ def node(runtime, monkeypatch):
     monkeypatch.setattr(runtime, "_require_linux", lambda: None, raising=False)
     monkeypatch.setattr(runtime, "_read", read, raising=False)
     monkeypatch.setattr(runtime, "_readlink", readlink, raising=False)
+    monkeypatch.setattr(runtime, "_linked_identity", linked_identity, raising=False)
     monkeypatch.setattr(runtime, "_entries", lambda path, *args: dirs[path], raising=False)
     monkeypatch.setattr(runtime, "_trusted_file", lambda path, *args: (str(path), 1), raising=False)
     monkeypatch.setattr(runtime, "_run", run, raising=False)
-    return dict(root=root, exe=exe, cfg=cfg, pid=pid, data=data, links=links,
-                dirs=dirs, calls=calls, responses=responses)
+    return {
+        "root": root,
+        "exe": exe,
+        "cfg": cfg,
+        "pid": pid,
+        "data": data,
+        "links": links,
+        "dirs": dirs,
+        "calls": calls,
+        "responses": responses,
+        "identity_overrides": identity_overrides,
+    }
 
 
 def test_observe_pins_process_and_reads_every_configured_vless_inbound(runtime, node):
@@ -350,6 +387,108 @@ def test_api_listener_must_share_the_calling_threads_network_namespace(runtime, 
         runtime.observe_xray_client(**inputs())
     assert caught.value.code == "vpn_xray_runtime_unavailable"
     assert not node["calls"]
+
+
+def test_public_listener_accepts_multiple_xray_owned_wildcards(runtime, node):
+    listener = getattr(runtime, "xray_public_listener_is_bound", None)
+    assert listener is not None
+    assert listener(
+        port=443,
+        listen="",
+        executable_path=node["exe"],
+        timeout_seconds=1,
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "other_process",
+        "loopback",
+        "namespace",
+        "namespace_inode",
+        "executable_inode",
+    ],
+)
+def test_public_listener_rejects_unowned_loopback_and_wrong_namespace(
+    runtime, node, fault
+):
+    listener = getattr(runtime, "xray_public_listener_is_bound", None)
+    assert listener is not None
+    if fault == "other_process":
+        node["links"][node["pid"] / "fd/4"] = "socket:[999]"
+        node["links"][node["pid"] / "fd/5"] = "socket:[998]"
+    elif fault == "loopback":
+        node["data"][node["pid"] / "net/tcp"] = (
+            b"header\n"
+            b" 0: 0100007F:F545 00000000:0000 0A 0:0 0:0 0 0 0 789\n"
+            b" 1: 0100007F:01BB 00000000:0000 0A 0:0 0:0 0 0 0 900\n"
+        )
+        node["data"][node["pid"] / "net/tcp6"] = b"header\n"
+    elif fault == "namespace":
+        node["links"][node["root"] / "thread-self/ns/net"] = "net:[54321]"
+    elif fault == "namespace_inode":
+        node["identity_overrides"][node["root"] / "thread-self/ns/net"] = (
+            "net:[12345]",
+            2,
+        )
+    else:
+        node["identity_overrides"][node["pid"] / "exe"] = (str(node["exe"]), 2)
+    assert not listener(
+        port=443,
+        listen="",
+        executable_path=node["exe"],
+        timeout_seconds=1,
+    )
+
+
+def test_public_listener_requires_exact_ip_without_dns(runtime, node):
+    listener = getattr(runtime, "xray_public_listener_is_bound", None)
+    assert listener is not None
+    node["data"][node["pid"] / "net/tcp"] = (
+        b"header\n"
+        b" 0: 0A7100CB:01BB 00000000:0000 0A 0:0 0:0 0 0 0 900\n"
+    )
+    node["data"][node["pid"] / "net/tcp6"] = b"header\n"
+    assert listener(
+        port=443,
+        listen="203.0.113.10",
+        executable_path=node["exe"],
+        timeout_seconds=1,
+    )
+    assert not listener(
+        port=443,
+        listen="203.0.113.11",
+        executable_path=node["exe"],
+        timeout_seconds=1,
+    )
+    assert not listener(
+        port=443,
+        listen="vpn.example.test",
+        executable_path=node["exe"],
+        timeout_seconds=1,
+    )
+
+
+def test_public_listener_rejects_fd_drift_during_proof(runtime, node, monkeypatch):
+    original = runtime._public_listener
+    calls = 0
+
+    def drifting(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            node["links"][node["pid"] / "fd/5"] = "socket:[998]"
+        return result
+
+    monkeypatch.setattr(runtime, "_public_listener", drifting)
+    assert not runtime.xray_public_listener_is_bound(
+        port=443,
+        listen="",
+        executable_path=node["exe"],
+        timeout_seconds=1,
+    )
 
 
 @pytest.mark.parametrize("changed", ["process", "thread", "both"])
@@ -561,6 +700,11 @@ def test_import_without_site_packages_has_no_io(tmp_path):
         "m=importlib.util.module_from_spec(spec); sys.modules['runtime']=m; "
         "spec.loader.exec_module(m); print('ok')"
     )
-    result = subprocess.run([sys.executable, "-S", "-c", script], capture_output=True, timeout=5)
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", script],
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
     assert result.returncode == 0, result.stderr.decode()
     assert result.stdout.strip() == b"ok"

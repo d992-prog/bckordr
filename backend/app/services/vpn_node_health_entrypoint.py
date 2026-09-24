@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
-from app.services.vpn_endpoint_types import VpnEndpointError
+from app.services.vpn_endpoint_types import VpnEndpointError, VpnEndpointTarget
 from app.services.vpn_node_entrypoint import (
     EXIT_FAILURE,
     EXIT_INTERRUPTED,
@@ -33,7 +33,7 @@ from app.services.vpn_xui_node_http import NodePanelError, NodePanelSession
 from app.services.vpn_xui_node_observation import (
     NodeEndpointObservation,
     observe_node_endpoint,
-    public_port_is_listening,
+    xray_endpoint_is_listening,
 )
 
 
@@ -75,6 +75,13 @@ def _failure_receipt(error: Exception) -> VpnNodeHealthReceipt:
         return VpnNodeHealthReceipt(
             "unhealthy", "vpn_node_health_panel_unavailable", None
         )
+    if (
+        isinstance(error, VpnEndpointError)
+        and error.code == "vpn_xui_inventory_incomplete"
+    ):
+        return VpnNodeHealthReceipt(
+            "unhealthy", "vpn_node_health_panel_unavailable", None
+        )
     if isinstance(error, VpnEndpointError) and error.code in {
         "vpn_xui_status_invalid",
         "vpn_xui_version_unsupported",
@@ -93,7 +100,9 @@ def run_node_health_entrypoint(
     config_path: Path = NODE_CONFIG_PATH,
     token_path: Path = NODE_TOKEN_PATH,
     effective_uid: Callable[[], int] = _effective_uid,
-    listener_probe: Callable[[int], bool] = public_port_is_listening,
+    listener_probe: Callable[[dict, VpnEndpointTarget], bool] = (
+        xray_endpoint_is_listening
+    ),
     observer: Callable[..., NodeEndpointObservation] = observe_node_endpoint,
 ) -> int:
     try:
