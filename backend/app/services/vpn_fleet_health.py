@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
-from weakref import WeakKeyDictionary
+from weakref import ReferenceType, WeakKeyDictionary, ref
 
 from sqlalchemy import exists, select, text
 
@@ -42,9 +42,9 @@ _POSTGRES_FLEET_HEALTH_LOCK_ID = 6_218_437_898_136_996_948
 _POSTGRES_FLEET_HEALTH_LOCK = text(
     f"SELECT pg_try_advisory_xact_lock({_POSTGRES_FLEET_HEALTH_LOCK_ID})"
 )
-_LOCAL_PROBE_LOCKS: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
-    WeakKeyDictionary()
-)
+_LOCAL_PROBE_LOCKS: WeakKeyDictionary[
+    asyncio.AbstractEventLoop, ReferenceType[asyncio.Lock]
+] = WeakKeyDictionary()
 
 
 def _dialect_name(session) -> str:
@@ -55,10 +55,21 @@ def _dialect_name(session) -> str:
 def _local_probe_lock() -> asyncio.Lock:
     """Serialize non-PostgreSQL probes in this process and running event loop."""
     loop = asyncio.get_running_loop()
-    lock = _LOCAL_PROBE_LOCKS.get(loop)
+    lock_ref = _LOCAL_PROBE_LOCKS.get(loop)
+    lock = lock_ref() if lock_ref is not None else None
     if lock is None:
         lock = asyncio.Lock()
-        _LOCAL_PROBE_LOCKS[loop] = lock
+        loop_ref = ref(loop)
+
+        def forget(dead_lock_ref: ReferenceType[asyncio.Lock]) -> None:
+            stored_loop = loop_ref()
+            if (
+                stored_loop is not None
+                and _LOCAL_PROBE_LOCKS.get(stored_loop) is dead_lock_ref
+            ):
+                del _LOCAL_PROBE_LOCKS[stored_loop]
+
+        _LOCAL_PROBE_LOCKS[loop] = ref(lock, forget)
     return lock
 
 

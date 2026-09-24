@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gc
+import weakref
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -28,7 +30,11 @@ from app.services.vpn_endpoint_types import (
     VpnEndpointTarget,
     public_endpoint_fingerprint,
 )
-from app.services.vpn_fleet_health import probe_next_vpn_endpoint
+from app.services.vpn_fleet_health import (
+    _LOCAL_PROBE_LOCKS,
+    _local_probe_lock,
+    probe_next_vpn_endpoint,
+)
 from app.services.vpn_node_health import VpnNodeHealthReceipt, VpnNodeHealthRequest
 from app.services.vpn_node_transport import VpnNodeTransportError
 from app.services.vpn_policy import VPN_MUTATION_ACTIONS
@@ -292,6 +298,35 @@ async def test_sqlite_process_lease_prevents_overlapping_or_duplicate_probes(
             if not task.done():
                 task.cancel()
         await asyncio.gather(first, second, return_exceptions=True)
+
+
+def test_local_probe_lock_registry_releases_closed_contended_event_loops() -> None:
+    async def contend() -> None:
+        lock = _local_probe_lock()
+        await lock.acquire()
+        waiter = asyncio.create_task(lock.acquire())
+        await asyncio.sleep(0)
+        assert waiter.done() is False
+        lock.release()
+        await waiter
+        lock.release()
+
+    gc.collect()
+    initial_registry_size = len(_LOCAL_PROBE_LOCKS)
+    loop_refs = []
+    for _ in range(3):
+        loop = asyncio.new_event_loop()
+        loop_refs.append(weakref.ref(loop))
+        try:
+            loop.run_until_complete(contend())
+        finally:
+            loop.close()
+        del loop
+
+    gc.collect()
+
+    assert all(loop_ref() is None for loop_ref in loop_refs)
+    assert len(_LOCAL_PROBE_LOCKS) == initial_registry_size
 
 
 @pytest.mark.asyncio
