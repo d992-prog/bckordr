@@ -5,7 +5,11 @@
 The product now has a release-shaped, non-payment public trial path, but this
 checkpoint is deliberately fail-closed and **not deployed**. No production
 database, Telegram webhook, VPN node or feature flag was changed. Payments are
-still intentionally absent and remain the final integration stage.
+still intentionally absent and remain the final integration stage. The strict
+fleet-health implementation is complete on this branch, but it has not been
+deployed or enabled. Production still has one VPN node;
+`VPN_FLEET_HEALTH_ENABLED`, the public-trial, ready-notification and payment
+flags remain off.
 
 ### Customer, bot and provisioning behavior
 
@@ -79,6 +83,8 @@ VPN_PUBLIC_TRIAL_ENABLED=false
 VPN_PUBLIC_TRIAL_RELEASE_ID=
 VPN_PUBLIC_TRIAL_PLAN_SLUG=trial-7d
 VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS=300
+VPN_FLEET_HEALTH_ENABLED=false
+VPN_FLEET_HEALTH_INTERVAL_SECONDS=120
 VPN_READY_NOTIFICATIONS_ENABLED=false
 ```
 
@@ -102,6 +108,46 @@ VPN_READY_NOTIFICATIONS_ENABLED=false
   in this slice. Their missing values remain red, so the current local panel is
   expected to be unready and the marker cannot be committed yet.
 
+### Strict fleet health (implemented on branch, not deployed)
+
+- The common deterministic node bundle now has one bounded read-only `--health`
+  entrypoint. The controller reaches it only through strict SSH with the exact
+  configured Ed25519 host pin and a fixed command; ambient SSH configuration,
+  agents, default keys and host trust are disabled.
+- The probe verifies the installed runner, 3x-UI/Xray runtime, the expected
+  inbound and REALITY identity, and a process-owned public `LISTEN`. It does not
+  restart or update the node, mutate clients/inbounds, or collect traffic or DNS
+  data. Protocols, events and logs are bounded and contain no credentials,
+  client UUIDs or VPN URIs.
+- One endpoint is selected per cycle in oldest-`health_checked_at` order.
+  PostgreSQL supplies the cross-process advisory lease; the SQLite lock exists
+  only for local development. A health failure records only a fixed error,
+  immediately blocks new public allocation/readiness/external reconfirmation,
+  and preserves the last successful health time, endpoint identity, existing
+  profiles and matching external proof. A changed public fingerprint alone
+  clears that external proof.
+- The node inventory reader accepts a stable rollback-journal SQLite main file
+  and fails closed on live WAL/SHM/journal sidecars without modifying the
+  database. A real 3x-UI switch to WAL therefore requires a reviewed read-only
+  consistent-snapshot filesystem boundary before fleet health can be enabled;
+  an immutable-file workaround is not acceptable.
+- `VPN_FLEET_HEALTH_ENABLED=false` is the required production default. Its
+  interval defaults to 120 seconds and is constrained to 30..3600. The legacy
+  `vpn_check` path remains excluded from automation and readiness proof.
+
+No per-node feature work is required. A node is onboarded once with its standard
+credentials, exact Ed25519 pin and the same deterministic bundle; later changes
+remain the existing fleet-wide `vpn-update-all` and `vpn-autoconfig-all`
+operations. Rollout must deploy code/migrations disabled, bulk-install the same
+bundle, manually and externally verify the current node, then enable only fleet
+health. Readiness must still fail until a second distinct VPS is onboarded the
+same way and both endpoints have fresh health, positive capacity and valid
+external proof. Payment and public trial activation are not part of this work.
+
+The backup timer, independent watchdog and their observation collectors are
+**not implemented by this branch**. They remain the next reviewed plan, and
+their missing readiness evidence continues to fail closed.
+
 Remaining release work is to wire fresh operational/watchdog and backup evidence,
 bring the complete strict fleet to fresh health, add and externally verify the
 second production node, and then repeat the operator flow: set capacity, obtain
@@ -121,6 +167,24 @@ ready-notification flags remain off; this checkpoint performs no rollout.
 
 ### Local release-gate evidence
 
+- The strict fleet-health focused gate passed 879 tests and skipped 10 tests
+  that require `VPN_PORTAL_TEST_PG_URL`. The first full local backend run
+  correctly exposed 20 friend-invitation/Telegram fixture failures: those older
+  fixtures still seeded endpoint health one hour stale after public allocation
+  began enforcing the 300-second endpoint-health window. The two fixture
+  timestamps were corrected without changing production behavior; the focused
+  regression then passed 225 tests with two PostgreSQL skips.
+- The fresh complete backend rerun passed 2,700 tests and skipped 86: 81 tests
+  requiring the explicitly configured real-PostgreSQL URL, four unavailable
+  Windows symlink cases and one POSIX ownership/mode check. No current
+  real-PostgreSQL test was represented as executed. The new strict-health
+  modules and fleet-health test pass Ruff. Repository-wide `ruff check app`
+  still reports 480 pre-existing findings; the five findings in
+  `control_runtime.py` are identical to the pre-fleet-health baseline, and the
+  four findings in the two corrected legacy fixture files are unchanged by the
+  timestamp fix.
+- The frontend passed all 90 tests. Its TypeScript/Vite production build
+  transformed 45 modules and emitted both admin and cabinet HTML entries.
 - The desktop and mobile browser smoke used a disposable SQLite database, a fake
   seven-day plan and a fake ready endpoint. It exercised signed Telegram Mini
   App admission, the available card, one activation, preparing state, automatic
