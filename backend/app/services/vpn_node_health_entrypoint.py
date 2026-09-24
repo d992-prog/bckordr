@@ -115,27 +115,29 @@ def run_node_health_entrypoint(
             "ascii", errors="strict"
         )
     except BaseException as error:  # noqa: BLE001 - contain process interruption
-        return EXIT_FAILURE if isinstance(error, Exception) else EXIT_INTERRUPTED
-
-    try:
-        with NodePanelSession(
-            panel_url,
-            username=None,
-            password=None,
-            api_token=token,
-        ) as panel:
-            receipt = _receipt(
-                observer(
-                    panel,
-                    target=request.target,
-                    database_path=database_path,
-                    listener_probe=listener_probe,
-                )
-            )
-    except BaseException as error:  # noqa: BLE001 - contain process interruption
         if not isinstance(error, Exception):
             return EXIT_INTERRUPTED
         receipt = _failure_receipt(error)
+    else:
+        try:
+            with NodePanelSession(
+                panel_url,
+                username=None,
+                password=None,
+                api_token=token,
+            ) as panel:
+                receipt = _receipt(
+                    observer(
+                        panel,
+                        target=request.target,
+                        database_path=database_path,
+                        listener_probe=listener_probe,
+                    )
+                )
+        except BaseException as error:  # noqa: BLE001 - contain process interruption
+            if not isinstance(error, Exception):
+                return EXIT_INTERRUPTED
+            receipt = _failure_receipt(error)
 
     try:
         encoded = serialize_node_health_receipt(receipt)

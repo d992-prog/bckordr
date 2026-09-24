@@ -414,37 +414,109 @@ def test_request_is_bounded_to_health_protocol_limit(
     assert touched == []
 
 
-def test_root_and_private_inputs_are_required_without_output(
+@pytest.mark.parametrize(
+    "failure",
+    ["non_root", "config_file", "config_payload", "database", "token_file", "token_decode"],
+)
+def test_valid_request_maps_trusted_input_failures_to_one_static_receipt(
+    monkeypatch, entrypoint, node, target, tmp_path, failure
+):
+    config, token, _checked = install_trusted_inputs(
+        monkeypatch, entrypoint, node, tmp_path
+    )
+    uid = lambda: 1000 if failure == "non_root" else 0
+
+    if failure == "config_file":
+        monkeypatch.setattr(
+            entrypoint,
+            "_read_private_file",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                entrypoint.NodeEntrypointError()
+            ),
+        )
+    elif failure == "config_payload":
+        monkeypatch.setattr(
+            entrypoint,
+            "_read_private_file",
+            lambda path, *, limit: (
+                json.dumps(
+                    {
+                        "version": 1,
+                        "panel_url": node["panel_url"],
+                        "database_path": f"relative/{SECRET}",
+                    },
+                    separators=(",", ":"),
+                ).encode()
+                if path == config
+                else SECRET.encode()
+            ),
+        )
+    elif failure == "database":
+        monkeypatch.setattr(
+            entrypoint,
+            "_validate_private_regular_file",
+            lambda path: (_ for _ in ()).throw(RuntimeError(f"{path}:{SECRET}")),
+        )
+    elif failure == "token_file":
+        original_read = entrypoint._read_private_file
+
+        def reject_token(path, *, limit):
+            if path == token:
+                raise entrypoint.NodeEntrypointError()
+            return original_read(path, limit=limit)
+
+        monkeypatch.setattr(entrypoint, "_read_private_file", reject_token)
+    elif failure == "token_decode":
+        original_read = entrypoint._read_private_file
+
+        def invalid_token(path, *, limit):
+            if path == token:
+                return b"\xff" + SECRET.encode()
+            return original_read(path, limit=limit)
+
+        monkeypatch.setattr(entrypoint, "_read_private_file", invalid_token)
+
+    code, stdout, stderr = run(
+        entrypoint,
+        request_bytes(target),
+        config=config,
+        token=token,
+        uid=uid,
+    )
+    assert (code, stdout, stderr) == (
+        0,
+        serialize_node_health_receipt(
+            VpnNodeHealthReceipt("unhealthy", "vpn_node_health_internal", None)
+        ),
+        b"",
+    )
+    assert SECRET.encode() not in stdout + stderr
+    assert str(config).encode() not in stdout + stderr
+    assert str(token).encode() not in stdout + stderr
+    assert str(node["database"]).encode() not in stdout + stderr
+
+
+def test_valid_request_process_interruption_remains_silent(
     monkeypatch, entrypoint, node, target, tmp_path
 ):
-    touched = []
-    monkeypatch.setattr(
-        entrypoint,
-        "_read_private_file",
-        lambda *args, **kwargs: touched.append((args, kwargs)),
+    class ProcessInterruption(BaseException):
+        pass
+
+    config, token, _checked = install_trusted_inputs(
+        monkeypatch, entrypoint, node, tmp_path
     )
+
+    def interrupt(*_args, **_kwargs):
+        raise ProcessInterruption(SECRET)
+
+    monkeypatch.setattr(entrypoint, "_read_private_file", interrupt)
     code, stdout, stderr = run(
         entrypoint,
         request_bytes(target),
-        config=tmp_path / "node.json",
-        token=tmp_path / "token",
-        uid=lambda: 1000,
+        config=config,
+        token=token,
     )
-    assert code == entrypoint.EXIT_FAILURE
-    assert stdout == stderr == b""
-    assert touched == []
-
-    def reject(*_args, **_kwargs):
-        raise entrypoint.NodeEntrypointError()
-
-    monkeypatch.setattr(entrypoint, "_read_private_file", reject)
-    code, stdout, stderr = run(
-        entrypoint,
-        request_bytes(target),
-        config=tmp_path / "node.json",
-        token=tmp_path / "token",
-    )
-    assert code == entrypoint.EXIT_FAILURE
+    assert code == entrypoint.EXIT_INTERRUPTED
     assert stdout == stderr == b""
 
 
