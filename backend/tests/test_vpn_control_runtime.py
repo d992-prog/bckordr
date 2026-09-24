@@ -766,12 +766,19 @@ async def test_vpn_fleet_health_timeout_detaches_cancellation_resistant_probe(
 ) -> None:
     factory, _engine = runtime_database
     started = asyncio.Event()
+    second_started = asyncio.Event()
     cancelled = asyncio.Event()
     release = asyncio.Event()
     finished = asyncio.Event()
-    secret = "host=timeout-secret.example path=C:/private/known_hosts"
+    current_time = [NOW]
+    calls = 0
 
     async def probe(*_args) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            second_started.set()
+            return False
         started.set()
         try:
             while not release.is_set():
@@ -779,10 +786,14 @@ async def test_vpn_fleet_health_timeout_detaches_cancellation_resistant_probe(
                     await release.wait()
                 except asyncio.CancelledError:
                     cancelled.set()
-            raise RuntimeError(secret)
+            return False
         finally:
             finished.set()
 
+    monkeypatch.setattr(
+        "app.services.control_runtime.utcnow",
+        lambda: current_time[0],
+    )
     monkeypatch.setattr(
         "app.services.control_runtime.VPN_FLEET_HEALTH_TIMEOUT_SECONDS",
         0.01,
@@ -793,7 +804,10 @@ async def test_vpn_fleet_health_timeout_detaches_cancellation_resistant_probe(
     )
     runtime = _health_orchestrator(
         factory,
-        _runtime_settings(VPN_FLEET_HEALTH_ENABLED=True),
+        _runtime_settings(
+            VPN_FLEET_HEALTH_ENABLED=True,
+            VPN_FLEET_HEALTH_INTERVAL_SECONDS=30,
+        ),
         probe,
     )
     runtime._start_vpn_fleet_health(NOW)
@@ -805,12 +819,42 @@ async def test_vpn_fleet_health_timeout_detaches_cancellation_resistant_probe(
 
         assert task in done
         assert cancelled.is_set()
-        runtime._start_vpn_fleet_health(NOW)
+        probe_task = runtime._vpn_fleet_health_probe_task
+        assert probe_task is not None
+        assert not probe_task.done()
+
+        current_time[0] = NOW + timedelta(seconds=31)
+        runtime._start_vpn_fleet_health(current_time[0])
+        await asyncio.sleep(0)
         assert runtime._vpn_fleet_health_task is task
+        assert calls == 1
+
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert runtime._vpn_fleet_health_probe_task is None
+        terminal_at = runtime._last_vpn_fleet_health_terminal_at
+        assert terminal_at == current_time[0]
+
+        current_time[0] = terminal_at + timedelta(seconds=29)
+        runtime._start_vpn_fleet_health(current_time[0])
+        await asyncio.sleep(0)
+        assert calls == 1
+
+        current_time[0] = terminal_at + timedelta(seconds=30)
+        runtime._start_vpn_fleet_health(current_time[0])
+        await asyncio.wait_for(second_started.wait(), timeout=1)
+        assert runtime._vpn_fleet_health_task is not None
+        await runtime._vpn_fleet_health_task
+        assert calls == 2
     finally:
         release.set()
         await asyncio.wait_for(finished.wait(), timeout=1)
+        probe_task = getattr(runtime, "_vpn_fleet_health_probe_task", None)
+        if probe_task is not None:
+            await asyncio.gather(probe_task, return_exceptions=True)
         await asyncio.gather(task, return_exceptions=True)
+        await runtime.shutdown()
         await asyncio.sleep(0)
 
     messages = [
@@ -818,11 +862,7 @@ async def test_vpn_fleet_health_timeout_detaches_cancellation_resistant_probe(
         for record in caplog.records
         if record.name == "app.services.control_runtime"
     ]
-    assert messages == [
-        "VPN fleet health probe timed out",
-        "VPN fleet health probe failed",
-    ]
-    assert secret not in caplog.text
+    assert messages == ["VPN fleet health probe timed out"]
 
 
 @pytest.mark.asyncio
@@ -875,6 +915,7 @@ async def test_shutdown_detaches_cancellation_resistant_vpn_fleet_health_probe(
     release = asyncio.Event()
     finished = asyncio.Event()
     secret = "host=shutdown-secret.example path=C:/private/known_hosts"
+    current_time = [NOW]
 
     async def probe(*_args) -> bool:
         started.set()
@@ -896,6 +937,10 @@ async def test_shutdown_detaches_cancellation_resistant_vpn_fleet_health_probe(
         "app.services.control_runtime.VPN_FLEET_HEALTH_CLEANUP_TIMEOUT_SECONDS",
         0.01,
     )
+    monkeypatch.setattr(
+        "app.services.control_runtime.utcnow",
+        lambda: current_time[0],
+    )
     runtime = _health_orchestrator(
         factory,
         _runtime_settings(
@@ -910,8 +955,10 @@ async def test_shutdown_detaches_cancellation_resistant_vpn_fleet_health_probe(
     await asyncio.wait_for(started.wait(), timeout=1)
     fleet_task = runtime._vpn_fleet_health_task
     assert fleet_task is not None
+    probe_task = getattr(runtime, "_vpn_fleet_health_probe_task", None)
     shutdown_task = asyncio.create_task(runtime.shutdown())
     try:
+        assert probe_task is not None
         done, _pending = await asyncio.wait({shutdown_task}, timeout=0.25)
 
         assert shutdown_task in done
@@ -919,12 +966,21 @@ async def test_shutdown_detaches_cancellation_resistant_vpn_fleet_health_probe(
         assert cancelled.is_set()
         assert fleet_task.done()
         assert runtime._vpn_fleet_health_task is None
+        assert runtime._vpn_fleet_health_probe_task is probe_task
+        assert not probe_task.done()
+
+        await runtime.shutdown()
+        assert runtime._vpn_fleet_health_probe_task is probe_task
     finally:
         release.set()
         await asyncio.wait_for(finished.wait(), timeout=1)
+        if probe_task is not None:
+            await asyncio.gather(probe_task, return_exceptions=True)
         await asyncio.gather(shutdown_task, return_exceptions=True)
         await asyncio.sleep(0)
 
+    assert runtime._vpn_fleet_health_probe_task is None
+    assert runtime._last_vpn_fleet_health_terminal_at == current_time[0]
     messages = [
         record.getMessage()
         for record in caplog.records
@@ -932,6 +988,41 @@ async def test_shutdown_detaches_cancellation_resistant_vpn_fleet_health_probe(
     ]
     assert messages == ["VPN fleet health probe failed"]
     assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stale_probe_callback_does_not_clear_replacement_task(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+) -> None:
+    factory, _engine = runtime_database
+
+    async def complete() -> bool:
+        return False
+
+    async def block() -> bool:
+        await asyncio.Event().wait()
+        return False
+
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(VPN_FLEET_HEALTH_ENABLED=True),
+        complete,
+    )
+    callback = getattr(runtime, "_vpn_fleet_health_probe_done", None)
+    assert callback is not None
+    old_task = asyncio.create_task(complete())
+    replacement_task = asyncio.create_task(block())
+    runtime._vpn_fleet_health_probe_task = old_task
+    old_task.add_done_callback(callback)
+    runtime._vpn_fleet_health_probe_task = replacement_task
+
+    await old_task
+    await asyncio.sleep(0)
+
+    assert runtime._vpn_fleet_health_probe_task is replacement_task
+    replacement_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await replacement_task
 
 
 @pytest.mark.asyncio

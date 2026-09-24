@@ -56,30 +56,6 @@ VPN_FLEET_HEALTH_CLEANUP_TIMEOUT_SECONDS = 1.0
 _VPN_CONTROL_RELEASE_ID = re.compile(r"[0-9a-f]{64}")
 
 
-def _consume_vpn_fleet_health_probe_result(task: asyncio.Task[bool]) -> None:
-    try:
-        task.result()
-    except asyncio.CancelledError:
-        pass
-    except BaseException:  # noqa: BLE001 - detached task must not leak details
-        logger.error("VPN fleet health probe failed")
-
-
-async def _cancel_vpn_fleet_health_probe(task: asyncio.Task[bool]) -> None:
-    if not task.done():
-        task.cancel()
-    try:
-        await asyncio.wait(
-            {task},
-            timeout=VPN_FLEET_HEALTH_CLEANUP_TIMEOUT_SECONDS,
-        )
-    finally:
-        if task.done():
-            _consume_vpn_fleet_health_probe_result(task)
-        else:
-            task.add_done_callback(_consume_vpn_fleet_health_probe_result)
-
-
 class ControlRuntimeOrchestrator:
     def __init__(
         self,
@@ -148,12 +124,15 @@ class ControlRuntimeOrchestrator:
         self._vpn_control_database: VpnControlDatabase | None = None
         self._vpn_control_dispatch_task: asyncio.Task[None] | None = None
         self._vpn_fleet_health_task: asyncio.Task[None] | None = None
+        self._vpn_fleet_health_probe_task: asyncio.Task[bool] | None = None
+        self._detached_vpn_fleet_health_probes: set[asyncio.Task[bool]] = set()
         self._vpn_ready_notification_task: asyncio.Task[None] | None = None
         self._last_worker_supervision_at = None
         self._last_discovery_at = None
         self._last_vpn_lifecycle_at = None
         self._last_vpn_control_dispatch_at = None
         self._last_vpn_fleet_health_at = None
+        self._last_vpn_fleet_health_terminal_at = None
 
     async def bootstrap(self) -> None:
         if self._task is not None and not self._task.done():
@@ -180,6 +159,9 @@ class ControlRuntimeOrchestrator:
             except asyncio.CancelledError:
                 pass
         self._vpn_fleet_health_task = None
+        fleet_health_probe_task = self._vpn_fleet_health_probe_task
+        if fleet_health_probe_task is not None:
+            await self._cancel_vpn_fleet_health_probe(fleet_health_probe_task)
         lifecycle_task = self._vpn_lifecycle_task
         if lifecycle_task is not None and not lifecycle_task.done():
             lifecycle_task.cancel()
@@ -383,9 +365,17 @@ class ControlRuntimeOrchestrator:
         task = self._vpn_fleet_health_task
         if task is not None and not task.done():
             return False
+        if self._vpn_fleet_health_probe_task is not None:
+            return False
+        last_probe_at = self._last_vpn_fleet_health_at
+        terminal_at = self._last_vpn_fleet_health_terminal_at
+        if terminal_at is not None and (
+            last_probe_at is None or terminal_at > last_probe_at
+        ):
+            last_probe_at = terminal_at
         return (
-            self._last_vpn_fleet_health_at is None
-            or (now - self._last_vpn_fleet_health_at).total_seconds() >= interval
+            last_probe_at is None
+            or (now - last_probe_at).total_seconds() >= interval
         )
 
     def _start_vpn_fleet_health(self, now) -> None:
@@ -408,6 +398,8 @@ class ControlRuntimeOrchestrator:
                 known_hosts_path,
             )
         )
+        self._vpn_fleet_health_probe_task = probe_task
+        probe_task.add_done_callback(self._vpn_fleet_health_probe_done)
         try:
             done, _pending = await asyncio.wait(
                 {probe_task},
@@ -415,14 +407,41 @@ class ControlRuntimeOrchestrator:
             )
             if not done:
                 logger.error("VPN fleet health probe timed out")
-                await _cancel_vpn_fleet_health_probe(probe_task)
+                await self._cancel_vpn_fleet_health_probe(probe_task)
                 return
             probe_task.result()
         except asyncio.CancelledError:
-            await _cancel_vpn_fleet_health_probe(probe_task)
+            await self._cancel_vpn_fleet_health_probe(probe_task)
             raise
         except Exception:  # noqa: BLE001 - log only the fixed safe message
             logger.error("VPN fleet health probe failed")
+
+    async def _cancel_vpn_fleet_health_probe(
+        self,
+        task: asyncio.Task[bool],
+    ) -> None:
+        self._detached_vpn_fleet_health_probes.add(task)
+        if not task.done():
+            task.cancel()
+        await asyncio.wait(
+            {task},
+            timeout=VPN_FLEET_HEALTH_CLEANUP_TIMEOUT_SECONDS,
+        )
+
+    def _vpn_fleet_health_probe_done(self, task: asyncio.Task[bool]) -> None:
+        failed = False
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except BaseException:  # noqa: BLE001 - never leak detached task details
+            failed = True
+        if failed and task in self._detached_vpn_fleet_health_probes:
+            logger.error("VPN fleet health probe failed")
+        self._detached_vpn_fleet_health_probes.discard(task)
+        if self._vpn_fleet_health_probe_task is task:
+            self._last_vpn_fleet_health_terminal_at = utcnow()
+            self._vpn_fleet_health_probe_task = None
 
     def _vpn_control_dispatch_due(self, now) -> bool:
         settings = self._settings
