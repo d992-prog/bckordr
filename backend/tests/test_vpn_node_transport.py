@@ -1703,3 +1703,232 @@ async def test_health_cancellation_propagates():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_health_timeout_bounds_stubborn_reader_and_stalled_connection_exit(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        vpn_node_transport, "REMOTE_OPERATION_TIMEOUT", 0.02, raising=False
+    )
+    monkeypatch.setattr(
+        vpn_node_transport, "TRANSPORT_CLEANUP_TIMEOUT", 0.04, raising=False
+    )
+    reader_started = asyncio.Event()
+    reader_ignored_cancel = asyncio.Event()
+    reader_finished = asyncio.Event()
+    exit_started = asyncio.Event()
+    exit_finished = asyncio.Event()
+    process_closed = asyncio.Event()
+    process_wait_finished = asyncio.Event()
+    connection_aborted = asyncio.Event()
+    connection_wait_finished = asyncio.Event()
+    release = asyncio.Event()
+
+    class StubbornReader:
+        async def read(self, _size):
+            reader_started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                reader_ignored_cancel.set()
+                try:
+                    await release.wait()
+                finally:
+                    reader_finished.set()
+                raise
+            reader_finished.set()
+            return b""
+
+    class EmptyReader:
+        async def read(self, _size):
+            return b""
+
+    class Stdin:
+        def write(self, _value):
+            pass
+
+        async def drain(self):
+            pass
+
+        def write_eof(self):
+            pass
+
+    class Process:
+        stdin = Stdin()
+        stdout = StubbornReader()
+        stderr = EmptyReader()
+        exit_status = 0
+
+        async def wait(self):
+            await release.wait()
+
+        def close(self):
+            process_closed.set()
+
+        async def wait_closed(self):
+            try:
+                await release.wait()
+            finally:
+                process_wait_finished.set()
+
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            exit_started.set()
+            try:
+                await release.wait()
+            finally:
+                exit_finished.set()
+
+        async def create_process(self, *_args, **_kwargs):
+            return Process()
+
+        def abort(self):
+            connection_aborted.set()
+
+        async def wait_closed(self):
+            try:
+                await release.wait()
+            finally:
+                connection_wait_finished.set()
+
+    async def connector(*_args, **_kwargs):
+        return Connection()
+
+    async def release_later():
+        try:
+            await asyncio.wait_for(release.wait(), 0.3)
+        except TimeoutError:
+            release.set()
+
+    releaser = asyncio.create_task(release_later())
+    try:
+        with pytest.raises(VpnNodeTransportError) as caught:
+            await asyncio.wait_for(
+                execute_vpn_node_health_over_ssh(
+                    VpnNodeTransportSnapshot(
+                        "host", 22, "root", VALID_HOST_PIN, password=PASSWORD
+                    ),
+                    health_request(),
+                    now_ms=HEALTH_NOW_MS,
+                    connector=connector,
+                ),
+                0.2,
+            )
+        assert caught.value.phase == "preflight"
+        assert caught.value.__context__ is None
+        assert reader_started.is_set()
+        assert reader_ignored_cancel.is_set()
+        assert reader_finished.is_set()
+        assert exit_started.is_set()
+        assert exit_finished.is_set()
+        assert process_closed.is_set()
+        assert process_wait_finished.is_set()
+        assert connection_aborted.is_set()
+        assert connection_wait_finished.is_set()
+    finally:
+        release.set()
+        await releaser
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_health_caller_cancellation_propagates_when_cleanup_stalls(monkeypatch):
+    monkeypatch.setattr(
+        vpn_node_transport, "TRANSPORT_CLEANUP_TIMEOUT", 0.04, raising=False
+    )
+    reader_started = asyncio.Event()
+    exit_started = asyncio.Event()
+    exit_finished = asyncio.Event()
+    connection_aborted = asyncio.Event()
+    release = asyncio.Event()
+
+    class Reader:
+        async def read(self, _size):
+            reader_started.set()
+            await release.wait()
+            return b""
+
+    class Stdin:
+        def write(self, _value):
+            pass
+
+        async def drain(self):
+            pass
+
+        def write_eof(self):
+            pass
+
+    class Process:
+        stdin = Stdin()
+        stdout = Reader()
+        stderr = Reader()
+        exit_status = 0
+
+        async def wait(self):
+            await release.wait()
+
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            await release.wait()
+
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            exit_started.set()
+            try:
+                await release.wait()
+            finally:
+                exit_finished.set()
+
+        async def create_process(self, *_args, **_kwargs):
+            return Process()
+
+        def abort(self):
+            connection_aborted.set()
+
+        async def wait_closed(self):
+            await release.wait()
+
+    async def connector(*_args, **_kwargs):
+        return Connection()
+
+    async def release_later():
+        try:
+            await asyncio.wait_for(release.wait(), 0.3)
+        except TimeoutError:
+            release.set()
+
+    releaser = asyncio.create_task(release_later())
+    task = asyncio.create_task(
+        execute_vpn_node_health_over_ssh(
+            VpnNodeTransportSnapshot(
+                "host", 22, "root", VALID_HOST_PIN, password=PASSWORD
+            ),
+            health_request(),
+            now_ms=HEALTH_NOW_MS,
+            connector=connector,
+        )
+    )
+    try:
+        await reader_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 0.2)
+        assert exit_started.is_set()
+        assert exit_finished.is_set()
+        assert connection_aborted.is_set()
+    finally:
+        release.set()
+        await releaser
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

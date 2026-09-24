@@ -11,6 +11,7 @@ import re
 import stat
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from inspect import isawaitable
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
@@ -35,6 +36,7 @@ MAX_STDERR_BYTES = 64 * 1024
 CONNECT_TIMEOUT = 10.0
 LOGIN_TIMEOUT = 10.0
 REMOTE_OPERATION_TIMEOUT = 30.0
+TRANSPORT_CLEANUP_TIMEOUT = 1.0
 
 _RECEIPTS = frozenset(
     {
@@ -437,6 +439,107 @@ async def execute_vpn_node_request(
         _fail(phase)
 
 
+def _consume_task_result(task: asyncio.Task) -> None:
+    try:
+        task.exception()
+    except BaseException:  # noqa: BLE001,S110 - cleanup must never escape
+        pass
+
+
+async def _execute_health_operation(
+    connection,
+    request_bytes: bytes,
+    process_holder: list[object],
+) -> VpnNodeHealthReceipt:
+    async with connection:
+        process = await connection.create_process(
+            FIXED_NODE_HEALTH_COMMAND,
+            term_type=None,
+            encoding=None,
+        )
+        process_holder.append(process)
+        process.stdin.write(request_bytes)
+        await process.stdin.drain()
+        process.stdin.write_eof()
+        stdout, stderr = await _read_process_output(
+            process,
+            "preflight",
+            stdout_limit=MAX_HEALTH_PAYLOAD_BYTES,
+        )
+        await process.wait()
+        if process.exit_status != 0 or stderr:
+            _fail()
+        return parse_node_health_receipt(stdout)
+
+
+async def _bounded_health_cleanup(
+    connection,
+    process,
+    operation_task: asyncio.Task | None,
+) -> None:
+    if process is not None:
+        try:
+            process.close()
+        except Exception:  # noqa: BLE001,S110 - best-effort secret-free cleanup
+            pass
+    try:
+        connection.abort()
+    except Exception:  # noqa: BLE001,S110 - best-effort secret-free cleanup
+        pass
+
+    tasks: set[asyncio.Task] = set()
+    if operation_task is not None:
+        tasks.add(operation_task)
+        if not operation_task.done():
+            operation_task.cancel()
+    for owner in (process, connection):
+        if owner is None:
+            continue
+        try:
+            waiter = owner.wait_closed()
+            if isawaitable(waiter):
+                tasks.add(asyncio.ensure_future(waiter))
+        except Exception:  # noqa: BLE001,S110 - best-effort secret-free cleanup
+            pass
+
+    pending = {task for task in tasks if not task.done()}
+    slice_timeout = TRANSPORT_CLEANUP_TIMEOUT / 4
+    try:
+        for attempt in range(4):
+            if not pending:
+                break
+            if attempt:
+                for task in pending:
+                    task.cancel()
+            done, pending = await asyncio.wait(pending, timeout=slice_timeout)
+            for task in done:
+                _consume_task_result(task)
+    finally:
+        for task in tasks:
+            if task.done():
+                _consume_task_result(task)
+            else:
+                task.cancel()
+                task.add_done_callback(_consume_task_result)
+
+
+async def _cleanup_health_transport(
+    connection,
+    process,
+    operation_task: asyncio.Task | None,
+) -> None:
+    cleanup_task = asyncio.create_task(
+        _bounded_health_cleanup(connection, process, operation_task)
+    )
+    try:
+        await asyncio.shield(cleanup_task)
+    except asyncio.CancelledError:
+        cleanup_task.add_done_callback(_consume_task_result)
+        raise
+    except Exception:  # noqa: BLE001,S110 - cleanup never changes public failure
+        pass
+
+
 async def execute_vpn_node_health_over_ssh(
     snapshot: VpnNodeTransportSnapshot,
     request: VpnNodeHealthRequest,
@@ -450,6 +553,9 @@ async def execute_vpn_node_health_over_ssh(
     except Exception:  # noqa: BLE001 - collapse request details into a safe code
         _fail()
     options = _connection_options(snapshot)
+    connection = None
+    operation_task = None
+    process_holder: list[object] = []
     try:
         async with asyncio.timeout(CONNECT_TIMEOUT + LOGIN_TIMEOUT):
             connection = await connector(
@@ -458,30 +564,37 @@ async def execute_vpn_node_health_over_ssh(
                 username=snapshot.username,
                 **options,
             )
-        async with asyncio.timeout(REMOTE_OPERATION_TIMEOUT):
-            async with connection:
-                process = await connection.create_process(
-                    FIXED_NODE_HEALTH_COMMAND,
-                    term_type=None,
-                    encoding=None,
-                )
-                process.stdin.write(request_bytes)
-                await process.stdin.drain()
-                process.stdin.write_eof()
-                stdout, stderr = await _read_process_output(
-                    process,
-                    "preflight",
-                    stdout_limit=MAX_HEALTH_PAYLOAD_BYTES,
-                )
-                await process.wait()
-                if process.exit_status != 0 or stderr:
-                    _fail()
-                return parse_node_health_receipt(stdout)
+        operation_task = asyncio.create_task(
+            _execute_health_operation(connection, request_bytes, process_holder)
+        )
+        done, _pending = await asyncio.wait(
+            {operation_task}, timeout=REMOTE_OPERATION_TIMEOUT
+        )
+        if not done:
+            await _cleanup_health_transport(
+                connection,
+                process_holder[0] if process_holder else None,
+                operation_task,
+            )
+            _fail()
+        return operation_task.result()
     except asyncio.CancelledError:
+        if connection is not None:
+            await _cleanup_health_transport(
+                connection,
+                process_holder[0] if process_holder else None,
+                operation_task,
+            )
         raise
     except VpnNodeTransportError:
         raise
     except Exception:  # noqa: BLE001 - collapse transport details into a safe code
+        if connection is not None:
+            await _cleanup_health_transport(
+                connection,
+                process_holder[0] if process_holder else None,
+                operation_task,
+            )
         _fail()
 
 
