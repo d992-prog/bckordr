@@ -4,21 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from collections.abc import Callable
-from dataclasses import dataclass, field
 import json
 import math
 import os
-from pathlib import Path
 import re
 import stat
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
 import asyncssh
 
+from app.services.vpn_node_health import (
+    MAX_HEALTH_PAYLOAD_BYTES,
+    VpnNodeHealthReceipt,
+    VpnNodeHealthRequest,
+    parse_node_health_receipt,
+    serialize_node_health_request,
+)
 
 FIXED_NODE_COMMAND = "/usr/bin/python3 -I -S /opt/veltrix-vpn/current/vpn-node.pyz"
+FIXED_NODE_HEALTH_COMMAND = FIXED_NODE_COMMAND + " --health"
 FIXED_NODE_RECEIPT_LOOKUP_COMMAND = FIXED_NODE_COMMAND + " --lookup-receipt"
 MAX_KNOWN_HOSTS_BYTES = 64 * 1024
 MAX_PRIVATE_KEY_BYTES = 64 * 1024
@@ -321,10 +329,13 @@ async def _bounded_read(
 
 
 async def _read_process_output(
-    process, phase: Literal["preflight", "mutation"] = "mutation"
+    process,
+    phase: Literal["preflight", "mutation"] = "mutation",
+    *,
+    stdout_limit: int = MAX_STDOUT_BYTES,
 ) -> tuple[bytes, bytes]:
     tasks = (
-        asyncio.create_task(_bounded_read(process.stdout, MAX_STDOUT_BYTES, phase)),
+        asyncio.create_task(_bounded_read(process.stdout, stdout_limit, phase)),
         asyncio.create_task(_bounded_read(process.stderr, MAX_STDERR_BYTES, phase)),
     )
     try:
@@ -422,8 +433,56 @@ async def execute_vpn_node_request(
         raise
     except VpnNodeTransportError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 - collapse transport details into a safe code
         _fail(phase)
+
+
+async def execute_vpn_node_health_over_ssh(
+    snapshot: VpnNodeTransportSnapshot,
+    request: VpnNodeHealthRequest,
+    *,
+    now_ms: int | None = None,
+    connector: Callable[..., object] = asyncssh.connect,
+) -> VpnNodeHealthReceipt:
+    """Execute one read-only health observation through pinned strict SSH."""
+    try:
+        request_bytes = serialize_node_health_request(request, now_ms=now_ms)
+    except Exception:  # noqa: BLE001 - collapse request details into a safe code
+        _fail()
+    options = _connection_options(snapshot)
+    try:
+        async with asyncio.timeout(CONNECT_TIMEOUT + LOGIN_TIMEOUT):
+            connection = await connector(
+                snapshot.host,
+                snapshot.port,
+                username=snapshot.username,
+                **options,
+            )
+        async with asyncio.timeout(REMOTE_OPERATION_TIMEOUT):
+            async with connection:
+                process = await connection.create_process(
+                    FIXED_NODE_HEALTH_COMMAND,
+                    term_type=None,
+                    encoding=None,
+                )
+                process.stdin.write(request_bytes)
+                await process.stdin.drain()
+                process.stdin.write_eof()
+                stdout, stderr = await _read_process_output(
+                    process,
+                    "preflight",
+                    stdout_limit=MAX_HEALTH_PAYLOAD_BYTES,
+                )
+                await process.wait()
+                if process.exit_status != 0 or stderr:
+                    _fail()
+                return parse_node_health_receipt(stdout)
+    except asyncio.CancelledError:
+        raise
+    except VpnNodeTransportError:
+        raise
+    except Exception:  # noqa: BLE001 - collapse transport details into a safe code
+        _fail()
 
 
 def _parse_exact_lookup_receipt(
@@ -561,5 +620,5 @@ async def lookup_vpn_node_receipt(
         raise
     except VpnNodeTransportError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 - collapse transport details into a safe code
         _fail()
