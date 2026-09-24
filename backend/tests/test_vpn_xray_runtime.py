@@ -491,6 +491,29 @@ def test_public_listener_rejects_fd_drift_during_proof(runtime, node, monkeypatc
     )
 
 
+def test_public_listener_ignores_unrelated_owned_fd_drift(
+    runtime, node, monkeypatch
+):
+    original = runtime._public_listener
+    calls = 0
+
+    def drifting(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            node["links"][node["pid"] / "fd/3"] = "socket:[777]"
+        return result
+
+    monkeypatch.setattr(runtime, "_public_listener", drifting)
+    assert runtime.xray_public_listener_is_bound(
+        port=443,
+        listen="",
+        executable_path=node["exe"],
+        timeout_seconds=1,
+    )
+
+
 @pytest.mark.parametrize("changed", ["process", "thread", "both"])
 def test_network_namespace_drift_after_cli_fails_closed(runtime, node, monkeypatch, changed):
     original = runtime._run

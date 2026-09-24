@@ -249,7 +249,7 @@ def _public_bind_matches(address: ipaddress.IPv4Address | ipaddress.IPv6Address,
 
 
 def _public_listener(process: Path, port: int, listen: str,
-                     deadline: float) -> tuple[frozenset[str], frozenset[str]]:
+                     deadline: float) -> frozenset[str]:
     candidates: set[str] = set()
     tables = 0
     for name in ("tcp", "tcp6"):
@@ -286,7 +286,7 @@ def _public_listener(process: Path, port: int, listen: str,
         if match:
             owned.add(match.group(1))
     _require(candidates <= owned)
-    return frozenset(candidates), frozenset(owned)
+    return frozenset(candidates)
 
 
 def xray_public_listener_is_bound(
