@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -21,6 +22,11 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - exercised by the platform guard
     fcntl = None  # type: ignore[assignment]
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - resource is POSIX-only
+    resource = None  # type: ignore[assignment]
 
 _PG_DUMP = "/usr/bin/pg_dump"
 _PG_RESTORE = "/usr/bin/pg_restore"
@@ -162,7 +168,34 @@ def _validated_path(path: Path, *, directory: bool) -> os.stat_result:
     return info
 
 
-def _validated_root(path: Path) -> Path:
+def _validate_root_ancestors(path: Path) -> None:
+    if os.name != "posix":
+        return
+    effective_uid = os.geteuid()
+    try:
+        for ancestor in reversed(Path(os.path.abspath(path)).parents):
+            info = ancestor.lstat()
+            mode = stat.S_IMODE(info.st_mode)
+            sticky_system_temp = (
+                info.st_uid == 0
+                and bool(mode & stat.S_ISVTX)
+                and bool(mode & 0o002)
+            )
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or _is_reparse(info)
+                or info.st_uid not in {0, effective_uid}
+                or (mode & 0o022 and not sticky_system_temp)
+            ):
+                raise BackupError("backup_root_invalid")
+    except BackupError:
+        raise
+    except (OSError, RuntimeError, ValueError):
+        raise BackupError("backup_root_invalid") from None
+
+
+def _validated_root_details(path: Path) -> tuple[Path, os.stat_result]:
+    _validate_root_ancestors(path)
     try:
         info = path.lstat()
         resolved = path.resolve(strict=True)
@@ -178,9 +211,73 @@ def _validated_root(path: Path) -> Path:
         raise BackupError("backup_root_invalid")
     try:
         path.chmod(0o700)
+        after = path.lstat()
     except OSError:
         raise BackupError("backup_root_invalid") from None
-    return resolved
+    if (
+        _file_identity(after) != _file_identity(info)
+        or not stat.S_ISDIR(after.st_mode)
+        or _is_reparse(after)
+    ):
+        raise BackupError("backup_root_invalid")
+    return resolved, after
+
+
+def _validated_root(path: Path) -> Path:
+    return _validated_root_details(path)[0]
+
+
+def _validate_bound_root(
+    root: Path, descriptor: int, expected: os.stat_result
+) -> None:
+    _validate_root_ancestors(root)
+    try:
+        opened = os.fstat(descriptor)
+        linked = root.lstat()
+        effective_uid = os.geteuid()
+    except (OSError, RuntimeError, ValueError):
+        raise BackupError("backup_root_invalid") from None
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or not stat.S_ISDIR(linked.st_mode)
+        or _is_reparse(opened)
+        or _is_reparse(linked)
+        or _file_identity(opened) != _file_identity(expected)
+        or _file_identity(linked) != _file_identity(expected)
+        or opened.st_uid != effective_uid
+        or linked.st_uid != effective_uid
+        or stat.S_IMODE(opened.st_mode) & 0o077
+        or stat.S_IMODE(linked.st_mode) & 0o077
+    ):
+        raise BackupError("backup_root_invalid")
+
+
+@contextmanager
+def _bound_backup_root(path: Path):
+    root, expected = _validated_root_details(path)
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            root,
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | os.O_NOFOLLOW
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        validate = partial(_validate_bound_root, root, descriptor, expected)
+        validate()
+    except BackupError:
+        raise
+    except OSError:
+        raise BackupError("backup_root_invalid") from None
+    try:
+        yield root, validate
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                raise BackupError("backup_root_invalid") from None
 
 
 def _reject_source_overlap(config: BackupConfig, root: Path) -> None:
@@ -274,6 +371,13 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _set_file_size_limit(limit: int) -> None:
+    assert resource is not None
+    _soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    bounded = limit if hard == resource.RLIM_INFINITY else min(limit, hard)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (bounded, bounded))
+
+
 def _run_command(
     runner: Callable[..., Any],
     command: list[str],
@@ -281,17 +385,22 @@ def _run_command(
     environment: Mapping[str, str],
     timeout: float,
     error_code: str,
+    file_size_limit: int | None = None,
 ) -> None:
     try:
-        completed = runner(
-            command,
-            env=dict(environment),
-            timeout=timeout,
-            shell=False,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        options: dict[str, object] = {
+            "env": dict(environment),
+            "timeout": timeout,
+            "shell": False,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
+        if file_size_limit is not None:
+            if os.name != "posix" or resource is None:
+                raise BackupError(error_code)
+            options["preexec_fn"] = partial(_set_file_size_limit, file_size_limit)
+        completed = runner(command, **options)
         if completed.returncode != 0:
             raise BackupError(error_code)
     except BackupError:
@@ -403,7 +512,13 @@ def _matches_identity(
         same_object = _file_identity(info) == _file_identity(expected)
     else:
         same_object = info.st_ctime_ns == expected.st_ctime_ns
-    return expected_type and not _is_reparse(info) and same_object
+    stable_directory = not directory or (
+        info.st_mtime_ns == expected.st_mtime_ns
+        and (os.name != "posix" or info.st_ctime_ns == expected.st_ctime_ns)
+    )
+    return (
+        expected_type and not _is_reparse(info) and same_object and stable_directory
+    )
 
 
 def _matches_stable_file(info: os.stat_result, expected: os.stat_result) -> bool:
@@ -1098,19 +1213,24 @@ def create_validated_backup(
     """Create one validated set without exposing database credentials."""
     database, pg_environment = _postgres_environment(db_url)
     _require_secure_platform()
-    root = _validated_root(config.backup_root)
-    with _exclusive_backup_root(root):
-        return _create_validated_backup_locked(
-            config,
-            database,
-            pg_environment,
-            root,
-            runner=runner,
-            now=now,
-            nonce=nonce,
-            monotonic=monotonic,
-            replace=replace,
-        )
+    with _bound_backup_root(config.backup_root) as (root, validate_root):
+        with _exclusive_backup_root(root):
+            validate_root()
+            try:
+                return _create_validated_backup_locked(
+                    config,
+                    database,
+                    pg_environment,
+                    root,
+                    validate_root=validate_root,
+                    runner=runner,
+                    now=now,
+                    nonce=nonce,
+                    monotonic=monotonic,
+                    replace=replace,
+                )
+            finally:
+                validate_root()
 
 
 def _create_validated_backup_locked(
@@ -1119,6 +1239,7 @@ def _create_validated_backup_locked(
     pg_environment: Mapping[str, str],
     root: Path,
     *,
+    validate_root: Callable[[], None],
     runner: Callable[..., Any],
     now: Callable[[], datetime],
     nonce: Callable[[], str],
@@ -1171,6 +1292,11 @@ def _create_validated_backup_locked(
                 environment=pg_environment,
                 timeout=budget.command_timeout(),
                 error_code="backup_dump_failed",
+                file_size_limit=(
+                    min(config.max_file_bytes, config.max_total_bytes)
+                    if runner is _default_runner
+                    else None
+                ),
             )
         except BackupError as error:
             command_error = error
@@ -1220,6 +1346,7 @@ def _create_validated_backup_locked(
             directory.chmod(0o700)
             _sync_directory(directory)
         _sync_directory(partial)
+        validate_root()
         _publish_backup(
             root=root,
             partial=partial,
@@ -1235,7 +1362,9 @@ def _create_validated_backup_locked(
     except (OSError, RecursionError):
         raise BackupError("backup_write_failed") from None
 
+    validate_root()
     deleted = _apply_retention(root, config.retention, set_name)
+    validate_root()
     return BackupResult(final, created_at, manifest_digest, deleted)
 
 

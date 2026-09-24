@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace as replace_config
 from datetime import datetime, timezone
@@ -132,7 +133,12 @@ def _allow_test_platform(
         request.node.name != "test_backup_fails_before_writes_without_secure_platform"
         and not backup_module._DIR_FD_SUPPORTED
     ):
+        @contextmanager
+        def bound_test_root(path: Path):
+            yield backup_module._validated_root(path), lambda: None
+
         monkeypatch.setattr(backup_module, "_require_secure_platform", lambda: None)
+        monkeypatch.setattr(backup_module, "_bound_backup_root", bound_test_root)
         monkeypatch.setattr(
             backup_module, "_exclusive_backup_root", lambda _root: nullcontext()
         )
@@ -604,6 +610,43 @@ def test_backup_root_rejects_group_or_world_access(tmp_path: Path) -> None:
         backup_module._validated_root(root)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX ancestor mode validation")
+def test_backup_root_rejects_writable_non_sticky_ancestor(tmp_path: Path) -> None:
+    unsafe = tmp_path / "unsafe"
+    unsafe.mkdir(mode=0o700)
+    config = _config(tmp_path, backup_root=unsafe / "backups")
+    unsafe.chmod(0o777)
+
+    with pytest.raises(BackupError, match="^backup_root_invalid$"):
+        _run(config, FakeRunner())
+
+    assert list(config.backup_root.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "O_DIRECTORY"),
+    reason="retained root descriptors are a POSIX guarantee",
+)
+def test_backup_root_swap_after_lock_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    original = config.backup_root.with_name("backups-original")
+
+    @contextmanager
+    def swapping_lock(root: Path):
+        root.rename(original)
+        root.mkdir(mode=0o700)
+        yield
+
+    monkeypatch.setattr(backup_module, "_exclusive_backup_root", swapping_lock)
+
+    with pytest.raises(BackupError, match="^backup_root_invalid$"):
+        _run(config, FakeRunner())
+
+    assert list(config.backup_root.iterdir()) == []
+
+
 @pytest.mark.skipif(
     os.name != "posix" or not hasattr(os, "O_DIRECTORY"),
     reason="secure dir-fd traversal is a POSIX guarantee",
@@ -758,6 +801,41 @@ def test_dump_growth_is_bounded_while_hashing(
     assert calls == ["/usr/bin/pg_dump"]
 
 
+@pytest.mark.skipif(
+    os.name != "posix" or getattr(backup_module, "resource", None) is None,
+    reason="RLIMIT_FSIZE is POSIX-only",
+)
+def test_default_runner_caps_dump_during_child_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    limit = 4096
+    config = _config(
+        tmp_path,
+        max_file_bytes=limit * 2,
+        max_total_bytes=limit,
+    )
+    writer = tmp_path / "bounded-pg-dump"
+    writer.write_text(
+        f"#!{sys.executable}\n"
+        "import pathlib, sys\n"
+        "output = pathlib.Path(sys.argv[sys.argv.index('--file') + 1])\n"
+        "state = output.parent / 'writer.state'\n"
+        "state.write_text('started', encoding='utf-8')\n"
+        "output.write_bytes(b'x' * 65536)\n"
+        "state.write_text('finished', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    writer.chmod(0o700)
+    monkeypatch.setattr(backup_module, "_PG_DUMP", str(writer))
+
+    with pytest.raises(BackupError, match="^backup_dump_failed$"):
+        _run(config, backup_module._default_runner)
+
+    partial = config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial"
+    assert (partial / "writer.state").read_text(encoding="utf-8") == "started"
+    assert (partial / "database.dump").stat().st_size <= limit
+
+
 def test_stable_file_check_includes_posix_ctime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -775,6 +853,56 @@ def test_stable_file_check_includes_posix_ctime(
     monkeypatch.setattr(backup_module.os, "name", "posix")
 
     assert not backup_module._matches_stable_file(changed, expected)
+
+
+def test_directory_identity_includes_mtime_and_posix_ctime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o700,
+        st_dev=1,
+        st_ino=2,
+        st_size=0,
+        st_mtime_ns=4,
+        st_ctime_ns=5,
+        st_file_attributes=0,
+    )
+    changed = SimpleNamespace(**vars(expected))
+    changed.st_mtime_ns = 6
+    changed.st_ctime_ns = 7
+    monkeypatch.setattr(backup_module.os, "name", "posix")
+
+    assert not backup_module._matches_identity(changed, expected, directory=True)
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "O_DIRECTORY"),
+    reason="stable directory traversal is a POSIX guarantee",
+)
+def test_source_directory_addition_during_traversal_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    real_copy = backup_module._copy_descriptor
+    mutated = False
+
+    def copy_then_mutate(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal mutated
+        record = real_copy(*args, **kwargs)
+        if record["path"] == "nginx/veltrix.conf":
+            mutated = True
+            (config.nginx_directory / "added.conf").write_text(
+                "server_name added;\n", encoding="utf-8"
+            )
+        return record
+
+    monkeypatch.setattr(backup_module, "_copy_descriptor", copy_then_mutate)
+
+    with pytest.raises(BackupError, match="^backup_source_changed$"):
+        _run(config, FakeRunner())
+
+    assert mutated
+    assert not (config.backup_root / "latest-success.json").exists()
 
 
 def test_deadline_is_enforced_during_copy(tmp_path: Path) -> None:
