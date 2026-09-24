@@ -209,18 +209,7 @@ def _validated_root_details(path: Path) -> tuple[Path, os.stat_result]:
         or (os.name == "posix" and stat.S_IMODE(info.st_mode) & 0o077 != 0)
     ):
         raise BackupError("backup_root_invalid")
-    try:
-        path.chmod(0o700)
-        after = path.lstat()
-    except OSError:
-        raise BackupError("backup_root_invalid") from None
-    if (
-        _file_identity(after) != _file_identity(info)
-        or not stat.S_ISDIR(after.st_mode)
-        or _is_reparse(after)
-    ):
-        raise BackupError("backup_root_invalid")
-    return resolved, after
+    return resolved, info
 
 
 def _validated_root(path: Path) -> Path:
@@ -1121,6 +1110,49 @@ def _trusted_success(directory: Path, root: Path) -> bool:
         TypeError,
     ):
         return False
+
+
+def validated_latest_success_at(root: Path) -> datetime | None:
+    """Return the trusted latest backup timestamp, or None on any trust failure."""
+    try:
+        _require_secure_platform()
+        with _bound_backup_root(root) as (bound_root, validate_root):
+            validate_root()
+            try:
+                marker = _read_existing_marker(
+                    bound_root / "latest-success.json", bound_root
+                )
+                validate_root()
+                if marker is None:
+                    return None
+                metadata = json.loads(marker)
+                set_name = metadata.get("set_name")
+                if not isinstance(set_name, str) or not _SET_NAME.fullmatch(set_name):
+                    return None
+                target = bound_root / set_name
+                if not _trusted_success(target, bound_root):
+                    return None
+                target_metadata = _read_existing_marker(
+                    target / "backup.json", bound_root
+                )
+                validate_root()
+                if target_metadata is None or marker != target_metadata:
+                    return None
+                return datetime.strptime(
+                    str(metadata.get("created_at")), "%Y-%m-%dT%H:%M:%SZ"
+                ).replace(tzinfo=timezone.utc)
+            finally:
+                validate_root()
+    except (
+        BackupError,
+        OSError,
+        UnicodeError,
+        ValueError,
+        AttributeError,
+        TypeError,
+        RecursionError,
+    ):
+        return None
 
 
 def _remove_safe_tree(directory: Path, root: Path) -> bool:

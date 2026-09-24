@@ -248,6 +248,171 @@ def _write_success(root: Path, name: str) -> Path:
     return directory
 
 
+def test_validated_latest_success_returns_utc_without_mutation(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    success = _write_success(
+        config.backup_root, "20260924T031011.000000Z-aaaaaaaa"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((success / "backup.json").read_bytes())
+    before_entries = {path.name for path in config.backup_root.iterdir()}
+    before_root = config.backup_root.stat()
+
+    created_at = backup_module.validated_latest_success_at(config.backup_root)
+
+    assert created_at == datetime(2026, 9, 24, 3, 10, 11, tzinfo=timezone.utc)
+    assert created_at.tzinfo is timezone.utc
+    assert {path.name for path in config.backup_root.iterdir()} == before_entries
+    after_root = config.backup_root.stat()
+    assert stat.S_IMODE(after_root.st_mode) == stat.S_IMODE(before_root.st_mode)
+    assert after_root.st_ctime_ns == before_root.st_ctime_ns
+    assert not (config.backup_root / ".backup.lock").exists()
+
+
+def test_validated_latest_success_returns_none_when_marker_is_missing(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+
+    assert backup_module.validated_latest_success_at(config.backup_root) is None
+
+
+def test_validated_latest_success_returns_future_timestamp_for_caller_policy(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    success = _write_success(
+        config.backup_root, "20990101T000000.000000Z-aaaaaaaa"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((success / "backup.json").read_bytes())
+
+    assert backup_module.validated_latest_success_at(config.backup_root) == datetime(
+        2099, 1, 1, tzinfo=timezone.utc
+    )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["forged", "oversized", "failed", "mismatched", "partial"],
+)
+def test_validated_latest_success_rejects_untrusted_marker_or_set(
+    tmp_path: Path, tamper: str
+) -> None:
+    config = _config(tmp_path)
+    success = _write_success(
+        config.backup_root, "20260924T031011.000000Z-aaaaaaaa"
+    )
+    metadata_path = success / "backup.json"
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes(metadata_path.read_bytes())
+
+    if tamper == "forged":
+        marker.write_text('{"set_name":"not-a-backup"}\n', encoding="utf-8")
+    elif tamper == "oversized":
+        marker.write_bytes(b"x" * 16_385)
+    elif tamper == "failed":
+        metadata = _read_json(metadata_path)
+        metadata["status"] = "failed"
+        failed = backup_module._json_bytes(metadata)
+        metadata_path.write_bytes(failed)
+        marker.write_bytes(failed)
+    elif tamper == "mismatched":
+        metadata = _read_json(marker)
+        metadata["status"] = "failed"
+        marker.write_bytes(backup_module._json_bytes(metadata))
+    else:
+        metadata = _read_json(marker)
+        metadata["set_name"] = f"{success.name}.partial"
+        marker.write_bytes(backup_module._json_bytes(metadata))
+
+    assert backup_module.validated_latest_success_at(config.backup_root) is None
+
+
+def test_validated_latest_success_rejects_unstable_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    success = _write_success(
+        config.backup_root, "20260924T031011.000000Z-aaaaaaaa"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((success / "backup.json").read_bytes())
+    marker_identity = backup_module._file_identity(marker.stat())
+    real_read = os.read
+    changed = False
+
+    def changing_read(descriptor: int, size: int) -> bytes:
+        nonlocal changed
+        chunk = real_read(descriptor, size)
+        if (
+            chunk
+            and not changed
+            and backup_module._file_identity(os.fstat(descriptor)) == marker_identity
+        ):
+            changed = True
+            with marker.open("ab") as stream:
+                stream.write(b" ")
+        return chunk
+
+    monkeypatch.setattr(backup_module.os, "read", changing_read)
+
+    assert backup_module.validated_latest_success_at(config.backup_root) is None
+    assert changed
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not hasattr(os, "O_DIRECTORY"),
+    reason="retained root descriptors are a POSIX guarantee",
+)
+def test_validated_latest_success_rejects_root_swap_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    success = _write_success(
+        config.backup_root, "20260924T031011.000000Z-aaaaaaaa"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((success / "backup.json").read_bytes())
+    original = config.backup_root.with_name("backups-original")
+    real_read_marker = backup_module._read_existing_marker
+    swapped = False
+
+    def swapping_read_marker(path: Path, root: Path) -> bytes | None:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            root.rename(original)
+            shutil.copytree(original, root)
+        return real_read_marker(path, root)
+
+    monkeypatch.setattr(backup_module, "_read_existing_marker", swapping_read_marker)
+
+    assert backup_module.validated_latest_success_at(config.backup_root) is None
+    assert swapped
+
+
+@pytest.mark.parametrize("symlink_kind", ["marker", "set"])
+@pytest.mark.skipif(os.name != "posix", reason="symlink trust is POSIX-only")
+def test_validated_latest_success_rejects_symlinked_marker_and_set(
+    tmp_path: Path, symlink_kind: str
+) -> None:
+    config = _config(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    success = _write_success(outside, "20260924T031011.000000Z-aaaaaaaa")
+    marker = config.backup_root / "latest-success.json"
+    if symlink_kind == "marker":
+        marker.symlink_to(success / "backup.json")
+    else:
+        marker.write_bytes((success / "backup.json").read_bytes())
+        (config.backup_root / success.name).symlink_to(
+            success, target_is_directory=True
+        )
+
+    assert backup_module.validated_latest_success_at(config.backup_root) is None
+
+
 def test_success_uses_exact_bounded_commands_and_private_pg_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
