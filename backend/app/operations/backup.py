@@ -10,22 +10,20 @@ import stat
 import subprocess
 import time
 from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-_ALLOWED_ENVIRONMENT = (
-    "PATH",
-    "SystemRoot",
-    "SYSTEMROOT",
-    "WINDIR",
-    "PATHEXT",
-    "LD_LIBRARY_PATH",
-    "LANG",
-    "LC_ALL",
-)
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised by the platform guard
+    fcntl = None  # type: ignore[assignment]
+
+_PG_DUMP = "/usr/bin/pg_dump"
+_PG_RESTORE = "/usr/bin/pg_restore"
 _DATABASE_SCHEMES = {
     "postgres",
     "postgres+asyncpg",
@@ -173,6 +171,8 @@ def _validated_root(path: Path) -> Path:
         not stat.S_ISDIR(info.st_mode)
         or _is_reparse(info)
         or not _same_path(Path(os.path.abspath(path)), resolved)
+        or info.st_uid != getattr(os, "geteuid", lambda: info.st_uid)()
+        or (os.name == "posix" and stat.S_IMODE(info.st_mode) & 0o077 != 0)
     ):
         raise BackupError("backup_root_invalid")
     try:
@@ -241,16 +241,12 @@ def _postgres_environment(db_url: str) -> tuple[str, dict[str, str]]:
         raise BackupError("backup_database_url_invalid") from None
 
     environment = {
-        key: value for key, value in os.environ.items() if key in _ALLOWED_ENVIRONMENT
+        "LC_ALL": "C",
+        "PGHOST": hostname,
+        "PGPORT": str(port),
+        "PGUSER": username,
+        "PGDATABASE": database,
     }
-    environment.update(
-        {
-            "PGHOST": hostname,
-            "PGPORT": str(port),
-            "PGUSER": username,
-            "PGDATABASE": database,
-        }
-    )
     if password is not None:
         environment["PGPASSWORD"] = password
     return database, environment
@@ -259,15 +255,6 @@ def _postgres_environment(db_url: str) -> tuple[str, dict[str, str]]:
 def _mkdir_private(path: Path) -> None:
     path.mkdir(mode=0o700, exist_ok=True)
     path.chmod(0o700)
-
-
-def _sync_regular(path: Path) -> None:
-    try:
-        # Windows only permits fsync on a descriptor opened for writing.
-        with path.open("r+b") as handle:
-            os.fsync(handle.fileno())
-    except OSError:
-        raise BackupError("backup_write_failed") from None
 
 
 def _sync_directory(path: Path) -> None:
@@ -300,6 +287,7 @@ def _run_command(
             env=dict(environment),
             timeout=timeout,
             shell=False,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -337,21 +325,23 @@ def _create_private_dump(path: Path) -> tuple[int, int]:
             os.close(descriptor)
 
 
-def _secure_dump_after_command(path: Path, identity: tuple[int, int]) -> None:
+def _secure_dump_after_command(
+    path: Path, identity: tuple[int, int]
+) -> tuple[int, os.stat_result]:
     descriptor = -1
     try:
         flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(path, flags)
         info = os.fstat(descriptor)
-        os.fchmod(descriptor, 0o600)
-        os.fsync(descriptor)
         if not stat.S_ISREG(info.st_mode) or _file_identity(info) != identity:
             raise OSError
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+        return descriptor, os.fstat(descriptor)
     except OSError:
-        raise BackupError("backup_dump_failed") from None
-    finally:
         if descriptor >= 0:
             os.close(descriptor)
+        raise BackupError("backup_dump_failed") from None
 
 
 _DIR_FD_SUPPORTED = (
@@ -363,6 +353,43 @@ _DIR_FD_SUPPORTED = (
     and os.stat in os.supports_follow_symlinks
     and os.scandir in os.supports_fd
 )
+
+
+def _require_secure_platform() -> None:
+    if not _DIR_FD_SUPPORTED or fcntl is None:
+        raise BackupError("backup_platform_unsupported")
+
+
+@contextmanager
+def _exclusive_backup_root(root: Path):
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            root / ".backup.lock",
+            os.O_RDWR
+            | os.O_CREAT
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or _is_reparse(info):
+            raise OSError
+        os.fchmod(descriptor, 0o600)
+        assert fcntl is not None
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise BackupError("backup_busy") from None
+    except OSError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise BackupError("backup_lock_failed") from None
+    try:
+        yield
+    finally:
+        os.close(descriptor)
 
 
 def _matches_identity(
@@ -383,6 +410,7 @@ def _matches_stable_file(info: os.stat_result, expected: os.stat_result) -> bool
         _matches_identity(info, expected, directory=False)
         and info.st_size == expected.st_size
         and info.st_mtime_ns == expected.st_mtime_ns
+        and (os.name != "posix" or info.st_ctime_ns == expected.st_ctime_ns)
     )
 
 
@@ -655,110 +683,20 @@ def _copy_posix_file(
         os.close(parent_fd)
 
 
-def _copy_path_file(
-    source: Path,
-    destination: Path,
-    relative: Path,
-    budget: _Budget,
-    *,
-    expected: os.stat_result | None = None,
-) -> dict[str, object]:
-    before = _validated_path(source, directory=False) if expected is None else expected
-    if expected is None:
-        budget.add_file(before.st_size)
-    source_fd = -1
-    try:
-        source_fd = os.open(
-            source,
-            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
-        record = _copy_descriptor(source_fd, destination, relative, before, budget)
-        if not _matches_stable_file(source.lstat(), before):
-            raise BackupError("backup_source_changed")
-        return record
-    except BackupError:
-        raise
-    except OSError:
-        raise BackupError("backup_source_invalid") from None
-    finally:
-        if source_fd >= 0:
-            os.close(source_fd)
-
-
-def _copy_path_tree(
-    source: Path,
-    destination: Path,
-    relative: Path,
-    budget: _Budget,
-) -> list[dict[str, object]]:
-    root_info = _validated_path(source, directory=True)
-    budget.add_directory()
-    stack = [(source, destination, relative, 0, root_info)]
-    records: list[dict[str, object]] = []
-    while stack:
-        current, target, current_relative, depth, expected = stack.pop()
-        budget.check_deadline()
-        if not _matches_identity(current.lstat(), expected, directory=True):
-            raise BackupError("backup_source_changed")
-        _mkdir_private(target)
-        entries: list[tuple[Path, os.stat_result]] = []
-        try:
-            with os.scandir(current) as iterator:
-                for entry in iterator:
-                    budget.check_deadline()
-                    child = Path(entry.path)
-                    info = child.lstat()
-                    if _is_reparse(info) or stat.S_ISLNK(info.st_mode):
-                        raise BackupError("backup_source_invalid")
-                    if stat.S_ISDIR(info.st_mode):
-                        if depth + 1 > budget.config.max_depth:
-                            raise BackupError("backup_limits_exceeded")
-                        budget.add_directory()
-                    elif stat.S_ISREG(info.st_mode):
-                        budget.add_file(info.st_size)
-                    else:
-                        raise BackupError("backup_source_invalid")
-                    entries.append((child, info))
-        except BackupError:
-            raise
-        except OSError:
-            raise BackupError("backup_source_invalid") from None
-        for child, info in sorted(entries, key=lambda item: item[0].name, reverse=True):
-            child_target = target / child.name
-            child_relative = current_relative / child.name
-            if stat.S_ISDIR(info.st_mode):
-                stack.append((child, child_target, child_relative, depth + 1, info))
-            else:
-                records.append(
-                    _copy_path_file(
-                        child,
-                        child_target,
-                        child_relative,
-                        budget,
-                        expected=info,
-                    )
-                )
-        if not _matches_identity(current.lstat(), expected, directory=True):
-            raise BackupError("backup_source_changed")
-    if not _matches_identity(source.lstat(), root_info, directory=True):
-        raise BackupError("backup_source_changed")
-    return records
-
-
 def _copy_sources(
     config: BackupConfig, partial: Path, budget: _Budget
 ) -> list[dict[str, object]]:
     try:
-        file_copy = _copy_posix_file if _DIR_FD_SUPPORTED else _copy_path_file
-        tree_copy = _copy_posix_tree if _DIR_FD_SUPPORTED else _copy_path_tree
+        if not _DIR_FD_SUPPORTED:
+            raise BackupError("backup_platform_unsupported")
         records = [
-            file_copy(
+            _copy_posix_file(
                 config.env_file,
                 partial / "environment" / ".env",
                 Path("environment") / ".env",
                 budget,
             ),
-            file_copy(
+            _copy_posix_file(
                 config.systemd_unit,
                 partial / "systemd" / config.systemd_unit.name,
                 Path("systemd") / config.systemd_unit.name,
@@ -766,7 +704,7 @@ def _copy_sources(
             ),
         ]
         records.extend(
-            tree_copy(
+            _copy_posix_tree(
                 config.nginx_directory,
                 partial / "nginx",
                 Path("nginx"),
@@ -774,7 +712,7 @@ def _copy_sources(
             )
         )
         records.extend(
-            tree_copy(
+            _copy_posix_tree(
                 config.frontend_dist,
                 partial / "frontend",
                 Path("frontend"),
@@ -788,28 +726,31 @@ def _copy_sources(
         raise BackupError("backup_source_invalid") from None
 
 
-def _record_dump(path: Path, budget: _Budget) -> dict[str, object]:
+def _record_dump(
+    descriptor: int,
+    name: str,
+    expected: os.stat_result,
+    budget: _Budget,
+) -> dict[str, object]:
     try:
-        info = path.lstat()
-        if _is_reparse(info) or not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+        if expected.st_size == 0:
             raise BackupError("backup_dump_failed")
-        path.chmod(0o600)
-        _sync_regular(path)
-        budget.add_file(info.st_size)
+        budget.add_file(expected.st_size)
         digest = hashlib.sha256()
         size = 0
-        with path.open("rb") as handle:
-            while chunk := handle.read(_CHUNK_SIZE):
-                budget.check_deadline()
-                digest.update(chunk)
-                size += len(chunk)
-        if size != info.st_size:
+        while chunk := os.read(descriptor, _CHUNK_SIZE):
+            size += len(chunk)
+            budget.check_copy_size(expected.st_size, size)
+            digest.update(chunk)
+        if size != expected.st_size or not _matches_stable_file(
+            os.fstat(descriptor), expected
+        ):
             raise BackupError("backup_source_changed")
     except BackupError:
         raise
     except OSError:
         raise BackupError("backup_dump_failed") from None
-    return {"path": path.name, "sha256": digest.hexdigest(), "size": size}
+    return {"path": name, "sha256": digest.hexdigest(), "size": size}
 
 
 def _json_bytes(value: object) -> bytes:
@@ -841,6 +782,21 @@ def _write_private_file(path: Path, content: bytes) -> None:
         if descriptor >= 0:
             os.close(descriptor)
         raise BackupError("backup_write_failed") from None
+
+
+def _trusted_marker_bytes(raw: bytes, root: Path) -> bool:
+    try:
+        metadata = json.loads(raw)
+        set_name = metadata.get("set_name")
+        return bool(
+            set(metadata)
+            == {"created_at", "manifest_sha256", "set_name", "status", "version"}
+            and isinstance(set_name, str)
+            and _SET_NAME.fullmatch(set_name)
+            and _trusted_success(root / set_name, root)
+        )
+    except (UnicodeError, json.JSONDecodeError, AttributeError, TypeError):
+        return False
 
 
 def _read_existing_marker(path: Path, root: Path) -> bytes | None:
@@ -875,15 +831,7 @@ def _read_existing_marker(path: Path, root: Path) -> bytes | None:
         if size != opened.st_size or not _matches_stable_file(path.lstat(), opened):
             raise BackupError("backup_publish_failed")
         raw = b"".join(chunks)
-        metadata = json.loads(raw)
-        set_name = metadata.get("set_name")
-        if (
-            set(metadata)
-            != {"created_at", "manifest_sha256", "set_name", "status", "version"}
-            or not isinstance(set_name, str)
-            or not _SET_NAME.fullmatch(set_name)
-            or not _trusted_success(root / set_name, root)
-        ):
+        if not _trusted_marker_bytes(raw, root):
             raise BackupError("backup_publish_failed")
         return raw
     except BackupError:
@@ -907,21 +855,26 @@ def _restore_marker(
     root: Path,
     marker: Path,
     previous: bytes | None,
+    published: bytes,
     nonce: str,
     replace: Callable[[Path, Path], None],
 ) -> bool:
     rollback = root / f".latest-success.{nonce}.rollback"
     try:
         try:
-            unchanged = _read_existing_marker(marker, root) == previous
+            current = _read_existing_marker(marker, root)
         except BackupError:
-            unchanged = False
-        if unchanged:
+            return False
+        if current == previous:
             _sync_directory(root)
             return True
+        if current != published:
+            return False
         if previous is None:
             marker.unlink(missing_ok=True)
         else:
+            if not _trusted_marker_bytes(previous, root):
+                return False
             _write_private_file(rollback, previous)
             replace(rollback, marker)
         _sync_directory(root)
@@ -960,6 +913,7 @@ def _publish_backup(
             root=root,
             marker=marker,
             previous=previous,
+            published=metadata,
             nonce=nonce,
             replace=replace,
         )
@@ -1071,12 +1025,22 @@ def _apply_retention(root: Path, retention: int, current: str) -> int:
             reverse=True,
         )
     except OSError:
-        return 0
-    keep = {path.name for path in candidates[:retention]}
-    keep.add(current)
-    return sum(
-        _remove_safe_tree(path, root) for path in candidates if path.name not in keep
-    )
+        raise BackupError("backup_retention_failed") from None
+    others = [path.name for path in candidates if path.name != current]
+    keep = {current, *others[: retention - 1]}
+    deleted = 0
+    for path in candidates:
+        if path.name in keep:
+            continue
+        if not _remove_safe_tree(path, root):
+            raise BackupError("backup_retention_failed")
+        deleted += 1
+    if deleted:
+        try:
+            _sync_directory(root)
+        except BackupError:
+            raise BackupError("backup_retention_failed") from None
+    return deleted
 
 
 def _format_created_at(value: datetime) -> tuple[str, str]:
@@ -1107,7 +1071,34 @@ def create_validated_backup(
 ) -> BackupResult:
     """Create one validated set without exposing database credentials."""
     database, pg_environment = _postgres_environment(db_url)
+    _require_secure_platform()
     root = _validated_root(config.backup_root)
+    with _exclusive_backup_root(root):
+        return _create_validated_backup_locked(
+            config,
+            database,
+            pg_environment,
+            root,
+            runner=runner,
+            now=now,
+            nonce=nonce,
+            monotonic=monotonic,
+            replace=replace,
+        )
+
+
+def _create_validated_backup_locked(
+    config: BackupConfig,
+    database: str,
+    pg_environment: Mapping[str, str],
+    root: Path,
+    *,
+    runner: Callable[..., Any],
+    now: Callable[[], datetime],
+    nonce: Callable[[], str],
+    monotonic: Callable[[], float],
+    replace: Callable[[Path, Path], None] | None,
+) -> BackupResult:
     created_at, timestamp = _format_created_at(now())
     safe_nonce = nonce()
     if not _NONCE.fullmatch(safe_nonce):
@@ -1139,11 +1130,12 @@ def create_validated_backup(
         _reject_source_overlap(config, root)
         dump = partial / "database.dump"
         dump_identity = _create_private_dump(dump)
+        command_error: BackupError | None = None
         try:
             _run_command(
                 runner,
                 [
-                    "pg_dump",
+                    _PG_DUMP,
                     "--format=custom",
                     "--file",
                     str(dump),
@@ -1154,16 +1146,26 @@ def create_validated_backup(
                 timeout=budget.command_timeout(),
                 error_code="backup_dump_failed",
             )
+        except BackupError as error:
+            command_error = error
+        dump_fd, dump_info = _secure_dump_after_command(dump, dump_identity)
+        try:
+            if command_error is not None:
+                raise command_error
+            dump_record = _record_dump(dump_fd, dump.name, dump_info, budget)
+            _run_command(
+                runner,
+                [_PG_RESTORE, "--file", os.devnull, str(dump)],
+                environment=pg_environment,
+                timeout=budget.command_timeout(),
+                error_code="backup_validation_failed",
+            )
+            if not _matches_stable_file(
+                os.fstat(dump_fd), dump_info
+            ) or not _matches_stable_file(dump.lstat(), dump_info):
+                raise BackupError("backup_source_changed")
         finally:
-            _secure_dump_after_command(dump, dump_identity)
-        dump_record = _record_dump(dump, budget)
-        _run_command(
-            runner,
-            ["pg_restore", "--file", os.devnull, str(dump)],
-            environment=pg_environment,
-            timeout=budget.command_timeout(),
-            error_code="backup_validation_failed",
-        )
+            os.close(dump_fd)
 
         records = [dump_record, *_copy_sources(config, partial, budget)]
 

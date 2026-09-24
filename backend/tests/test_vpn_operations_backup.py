@@ -3,11 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace as replace_config
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import app.operations.backup as backup_module
 import pytest
@@ -23,6 +26,119 @@ NONCE = "abcdef0123456789"
 PASSWORD = "never-print-this-password"
 
 
+def _copy_test_file(
+    source: Path,
+    destination: Path,
+    relative: Path,
+    budget: backup_module._Budget,
+    expected: os.stat_result | None = None,
+) -> dict[str, object]:
+    before = (
+        backup_module._validated_path(source, directory=False)
+        if expected is None
+        else expected
+    )
+    if expected is None:
+        budget.add_file(before.st_size)
+    descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    try:
+        record = backup_module._copy_descriptor(
+            descriptor, destination, relative, before, budget
+        )
+    finally:
+        os.close(descriptor)
+    if not backup_module._matches_stable_file(source.lstat(), before):
+        raise BackupError("backup_source_changed")
+    return record
+
+
+def _copy_test_tree(
+    source: Path,
+    destination: Path,
+    relative: Path,
+    budget: backup_module._Budget,
+) -> list[dict[str, object]]:
+    root_info = backup_module._validated_path(source, directory=True)
+    budget.add_directory()
+    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+    records: list[dict[str, object]] = []
+    for child in sorted(source.rglob("*")):
+        budget.check_deadline()
+        info = child.lstat()
+        if backup_module._is_reparse(info) or stat.S_ISLNK(info.st_mode):
+            raise BackupError("backup_source_invalid")
+        child_relative = child.relative_to(source)
+        target = destination / child_relative
+        if stat.S_ISDIR(info.st_mode):
+            if len(child_relative.parts) > budget.config.max_depth:
+                raise BackupError("backup_limits_exceeded")
+            budget.add_directory()
+            target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        elif stat.S_ISREG(info.st_mode):
+            budget.add_file(info.st_size)
+            records.append(
+                _copy_test_file(
+                    child,
+                    target,
+                    relative / child_relative,
+                    budget,
+                    expected=info,
+                )
+            )
+        else:
+            raise BackupError("backup_source_invalid")
+    if not backup_module._matches_identity(
+        source.lstat(), root_info, directory=True
+    ):
+        raise BackupError("backup_source_changed")
+    return records
+
+
+def _copy_sources_for_test(
+    config: BackupConfig, partial: Path, budget: backup_module._Budget
+) -> list[dict[str, object]]:
+    records = [
+        _copy_test_file(
+            config.env_file,
+            partial / "environment" / ".env",
+            Path("environment") / ".env",
+            budget,
+        ),
+        _copy_test_file(
+            config.systemd_unit,
+            partial / "systemd" / config.systemd_unit.name,
+            Path("systemd") / config.systemd_unit.name,
+            budget,
+        ),
+    ]
+    records.extend(
+        _copy_test_tree(
+            config.nginx_directory, partial / "nginx", Path("nginx"), budget
+        )
+    )
+    records.extend(
+        _copy_test_tree(
+            config.frontend_dist, partial / "frontend", Path("frontend"), budget
+        )
+    )
+    return records
+
+
+@pytest.fixture(autouse=True)
+def _allow_test_platform(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if (
+        request.node.name != "test_backup_fails_before_writes_without_secure_platform"
+        and not backup_module._DIR_FD_SUPPORTED
+    ):
+        monkeypatch.setattr(backup_module, "_require_secure_platform", lambda: None)
+        monkeypatch.setattr(
+            backup_module, "_exclusive_backup_root", lambda _root: nullcontext()
+        )
+        monkeypatch.setattr(backup_module, "_copy_sources", _copy_sources_for_test)
+
+
 class FakeRunner:
     def __init__(self, *, fail: str | None = None, after_restore=None) -> None:
         self.fail = fail
@@ -33,11 +149,11 @@ class FakeRunner:
         self, command: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess:
         self.calls.append((command, kwargs))
-        if command[0] == "pg_dump":
+        if command[0] == "/usr/bin/pg_dump":
             if self.fail != "dump":
                 Path(command[3]).write_bytes(b"complete custom postgres archive")
             return subprocess.CompletedProcess(command, 1 if self.fail == "dump" else 0)
-        assert command[0] == "pg_restore"
+        assert command[0] == "/usr/bin/pg_restore"
         Path(command[-1]).read_bytes()  # The fake models a full archive read.
         if self.after_restore is not None:
             self.after_restore()
@@ -127,10 +243,12 @@ def _write_success(root: Path, name: str) -> Path:
 
 
 def test_success_uses_exact_bounded_commands_and_private_pg_environment(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(tmp_path)
     runner = FakeRunner()
+    monkeypatch.setenv("PATH", str(tmp_path / "attacker-bin"))
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path / "attacker-libs"))
 
     result = _run(config, runner)
 
@@ -140,17 +258,18 @@ def test_success_uses_exact_bounded_commands_and_private_pg_environment(
     assert result.created_at == "2026-09-24T03:10:11Z"
     assert [call[0] for call in runner.calls] == [
         [
-            "pg_dump",
+            "/usr/bin/pg_dump",
             "--format=custom",
             "--file",
             str(partial_dump),
             "--dbname",
             "veltrix",
         ],
-        ["pg_restore", "--file", os.devnull, str(partial_dump)],
+        ["/usr/bin/pg_restore", "--file", os.devnull, str(partial_dump)],
     ]
     for _command, kwargs in runner.calls:
         assert kwargs["shell"] is False
+        assert kwargs["stdin"] == subprocess.DEVNULL
         assert kwargs["stdout"] == subprocess.DEVNULL
         assert kwargs["stderr"] == subprocess.DEVNULL
         assert 0 < float(kwargs["timeout"]) <= config.command_timeout_seconds
@@ -161,14 +280,8 @@ def test_success_uses_exact_bounded_commands_and_private_pg_environment(
         assert env["PGUSER"] == "backup"
         assert env["PGPASSWORD"] == PASSWORD
         assert env["PGDATABASE"] == "veltrix"
-        assert set(env) <= {
-            "PATH",
-            "SystemRoot",
-            "SYSTEMROOT",
-            "WINDIR",
-            "PATHEXT",
-            "LD_LIBRARY_PATH",
-            "LANG",
+        assert env["LC_ALL"] == "C"
+        assert set(env) == {
             "LC_ALL",
             "PGHOST",
             "PGPORT",
@@ -272,9 +385,12 @@ def test_command_failure_is_static_and_preserves_diagnostic_partial(
 
     assert PASSWORD not in repr(raised.value)
     assert not (config.backup_root / "latest-success.json").exists()
-    assert [path.name for path in config.backup_root.iterdir()] == [
-        f"20260924T031011.000000Z-{NONCE}.partial"
-    ]
+    names = {path.name for path in config.backup_root.iterdir()}
+    assert f"20260924T031011.000000Z-{NONCE}.partial" in names
+    assert names <= {
+        ".backup.lock",
+        f"20260924T031011.000000Z-{NONCE}.partial",
+    }
 
 
 def test_dump_is_precreated_privately_and_stays_private_after_failure(
@@ -405,6 +521,43 @@ def test_backup_root_cannot_overlap_a_source_tree(tmp_path: Path) -> None:
     assert (config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial").is_dir()
 
 
+def test_backup_fails_before_writes_without_secure_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    monkeypatch.setattr(backup_module, "_DIR_FD_SUPPORTED", False)
+
+    with pytest.raises(BackupError, match="^backup_platform_unsupported$"):
+        _run(config, FakeRunner())
+
+    assert list(config.backup_root.iterdir()) == []
+
+
+def test_backup_root_must_be_owned_by_effective_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "backups"
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        backup_module.os,
+        "geteuid",
+        lambda: root.stat().st_uid + 1,
+        raising=False,
+    )
+
+    with pytest.raises(BackupError, match="^backup_root_invalid$"):
+        backup_module._validated_root(root)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
+def test_backup_root_rejects_group_or_world_access(tmp_path: Path) -> None:
+    root = tmp_path / "backups"
+    root.mkdir(mode=0o750)
+
+    with pytest.raises(BackupError, match="^backup_root_invalid$"):
+        backup_module._validated_root(root)
+
+
 @pytest.mark.skipif(
     os.name != "posix" or not hasattr(os, "O_DIRECTORY"),
     reason="secure dir-fd traversal is a POSIX guarantee",
@@ -482,8 +635,8 @@ def test_enumeration_file_limit_fails_before_publication(tmp_path: Path) -> None
         _run(config, runner)
 
     assert [command[0] for command, _kwargs in runner.calls] == [
-        "pg_dump",
-        "pg_restore",
+        "/usr/bin/pg_dump",
+        "/usr/bin/pg_restore",
     ]
     assert not (config.backup_root / "latest-success.json").exists()
 
@@ -500,8 +653,8 @@ def test_source_tree_depth_is_bounded_before_publication(tmp_path: Path) -> None
         _run(replace_config(config, max_depth=2), runner)
 
     assert [command[0] for command, _kwargs in runner.calls] == [
-        "pg_dump",
-        "pg_restore",
+        "/usr/bin/pg_dump",
+        "/usr/bin/pg_restore",
     ]
     assert not (config.backup_root / "latest-success.json").exists()
 
@@ -513,7 +666,69 @@ def test_oversized_dump_is_rejected_before_restore_reads_it(tmp_path: Path) -> N
     with pytest.raises(BackupError, match="^backup_limits_exceeded$"):
         _run(config, runner)
 
-    assert [command[0] for command, _kwargs in runner.calls] == ["pg_dump"]
+    assert [command[0] for command, _kwargs in runner.calls] == ["/usr/bin/pg_dump"]
+
+
+def test_dump_growth_is_bounded_while_hashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path, max_file_bytes=10)
+    dump_identity: tuple[int, int] | None = None
+    calls: list[str] = []
+
+    def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+        nonlocal dump_identity
+        calls.append(command[0])
+        if command[0] == "/usr/bin/pg_dump":
+            dump = Path(command[3])
+            dump.write_bytes(b"x")
+            dump_identity = backup_module._file_identity(dump.stat())
+        return subprocess.CompletedProcess(command, 0)
+
+    real_read = os.read
+    injected = False
+
+    def growing_read(descriptor: int, size: int) -> bytes:
+        nonlocal injected
+        if dump_identity == backup_module._file_identity(os.fstat(descriptor)):
+            chunk = real_read(descriptor, size)
+            if not chunk and not injected:
+                injected = True
+                return b"y" * 20
+            return chunk
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(backup_module.os, "read", growing_read)
+
+    with pytest.raises(BackupError, match="^backup_limits_exceeded$"):
+        create_validated_backup(
+            config,
+            f"postgresql://backup:{PASSWORD}@db.internal:5432/veltrix",
+            runner=runner,
+            now=lambda: NOW,
+            nonce=lambda: NONCE,
+        )
+
+    assert calls == ["/usr/bin/pg_dump"]
+
+
+def test_stable_file_check_includes_posix_ctime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_dev=1,
+        st_ino=2,
+        st_size=3,
+        st_mtime_ns=4,
+        st_ctime_ns=5,
+        st_file_attributes=0,
+    )
+    changed = SimpleNamespace(**vars(expected))
+    changed.st_ctime_ns = 6
+    monkeypatch.setattr(backup_module.os, "name", "posix")
+
+    assert not backup_module._matches_stable_file(changed, expected)
 
 
 def test_deadline_is_enforced_during_copy(tmp_path: Path) -> None:
@@ -583,6 +798,49 @@ def test_exclusive_set_creation_never_overwrites_a_collision(tmp_path: Path) -> 
         _run(config, FakeRunner())
 
     assert sentinel.read_text(encoding="utf-8") == "existing"
+
+
+def test_exclusive_lock_is_held_through_retention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    active = False
+
+    @contextmanager
+    def lock(_root: Path):
+        nonlocal active
+        active = True
+        try:
+            yield
+        finally:
+            active = False
+
+    real_retention = backup_module._apply_retention
+
+    def apply_retention(root: Path, retention: int, current: str) -> int:
+        assert active
+        return real_retention(root, retention, current)
+
+    monkeypatch.setattr(backup_module, "_exclusive_backup_root", lock, raising=False)
+    monkeypatch.setattr(backup_module, "_apply_retention", apply_retention)
+
+    _run(config, FakeRunner())
+
+    assert not active
+
+
+@pytest.mark.skipif(
+    not backup_module._DIR_FD_SUPPORTED,
+    reason="production flock is POSIX-only",
+)
+def test_overlapping_backup_lock_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / "backups"
+    root.mkdir(mode=0o700)
+
+    with backup_module._exclusive_backup_root(root):
+        with pytest.raises(BackupError, match="^backup_busy$"):
+            with backup_module._exclusive_backup_root(root):
+                raise AssertionError("overlapping backup acquired the lock")
 
 
 def test_marker_replace_failure_rolls_promoted_set_back_to_partial(
@@ -752,6 +1010,49 @@ def test_failed_marker_restoration_never_demotes_its_live_target(
     assert (config.backup_root / live).is_dir()
 
 
+def test_marker_rollback_never_clobbers_a_concurrent_success(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    previous = _write_success(
+        config.backup_root, "20260920T031011.000000Z-aaaaaaaa"
+    )
+    concurrent = _write_success(
+        config.backup_root, "20260922T031011.000000Z-cccccccc"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((previous / "backup.json").read_bytes())
+    final = _write_success(
+        config.backup_root, f"20260921T031011.000000Z-{NONCE}"
+    )
+    partial = final.with_name(final.name + ".partial")
+    final.rename(partial)
+    marker_temp = config.backup_root / f".latest-success.{NONCE}.tmp"
+    metadata = (partial / "backup.json").read_bytes()
+
+    def racing_replace(source: Path, target: Path) -> None:
+        os.replace(source, target)
+        if Path(target) == marker and Path(source) == marker_temp:
+            marker.write_bytes((concurrent / "backup.json").read_bytes())
+            shutil.rmtree(previous)
+            raise OSError("another successful publisher won")
+
+    with pytest.raises(BackupError, match="^backup_publish_failed$"):
+        backup_module._publish_backup(
+            root=config.backup_root,
+            partial=partial,
+            final=final,
+            marker=marker,
+            marker_temp=marker_temp,
+            metadata=metadata,
+            nonce=NONCE,
+            replace=racing_replace,
+        )
+
+    assert _read_json(marker)["set_name"] == concurrent.name
+    assert concurrent.is_dir()
+    assert final.is_dir()
+    assert not partial.exists()
+
+
 def test_fsync_failure_leaves_partial_and_previous_marker_unchanged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -847,12 +1148,39 @@ def test_retention_keeps_current_marker_target_if_clock_moves_backward(
         nonce=lambda: NONCE,
     )
 
-    assert first.is_dir()
+    assert not first.exists()
     assert second.is_dir()
     assert result.directory.is_dir()
+    assert len(
+        [
+            child
+            for child in config.backup_root.iterdir()
+            if backup_module._trusted_success(child, config.backup_root)
+        ]
+    ) == config.retention
     assert _read_json(config.backup_root / "latest-success.json")["set_name"] == (
         result.directory.name
     )
+
+
+def test_retention_failure_is_reported_after_successful_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path, retention=2)
+    for name in (
+        "20260920T031011.000000Z-aaaaaaaa",
+        "20260921T031011.000000Z-bbbbbbbb",
+        "20260922T031011.000000Z-cccccccc",
+    ):
+        _write_success(config.backup_root, name)
+    monkeypatch.setattr(backup_module, "_remove_safe_tree", lambda _path, _root: False)
+
+    with pytest.raises(BackupError, match="^backup_retention_failed$"):
+        _run(config, FakeRunner())
+
+    marker = _read_json(config.backup_root / "latest-success.json")
+    assert marker["set_name"] == f"20260924T031011.000000Z-{NONCE}"
+    assert (config.backup_root / marker["set_name"]).is_dir()
 
 
 def test_config_rejects_relative_paths_and_invalid_retention(tmp_path: Path) -> None:
