@@ -10,13 +10,15 @@ from app.db.models import (
     AttackRun,
     DropDomain,
     VpnAccessKey,
-    VpnCustomer,
     VpnControlOperation,
+    VpnCustomer,
     VpnSubscription,
     WorkerMaintenanceJob,
     WorkerNode,
     WorkerTask,
 )
+from app.services import vpn_policy
+from app.services.attack_runtime import load_attack_available_workers
 from app.services.vpn_policy import (
     active_vpn_mutation_worker_ids,
     count_device_slots,
@@ -26,7 +28,6 @@ from app.services.vpn_policy import (
     select_vpn_node,
     validate_subscription_access,
 )
-from app.services.attack_runtime import load_attack_available_workers
 
 
 @pytest_asyncio.fixture
@@ -84,6 +85,84 @@ def test_validate_subscription_access_enforces_device_limit():
     assert validate_subscription_access(subscription, customer, device_slots=1, now=now) == (
         "VPN device limit reached"
     )
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"is_enabled": False}, "Worker is not online and enabled"),
+        ({"status": "offline"}, "Worker is not online and enabled"),
+        ({"vpn_enabled": False}, "VPN role is disabled"),
+        ({"vpn_role": "none"}, "VPN role is disabled"),
+        ({"vpn_runtime_status": "not_installed"}, "VPN runtime is not ready"),
+        (
+            {"ssh_host": None, "ssh_password": None},
+            "Worker SSH access is not configured",
+        ),
+        ({"vpn_inbound_id": None}, "VPN inbound ID is not configured"),
+        ({"vpn_public_host": None}, "VPN public host is not configured"),
+    ],
+)
+def test_pure_node_admission_predicate_owns_all_structural_rules(changes, reason):
+    node = _vpn_worker("pure")
+    node.id = 7
+    for name, value in changes.items():
+        setattr(node, name, value)
+
+    result = vpn_policy.evaluate_vpn_node_attributes(
+        node,
+        active_attack_worker_ids=set(),
+    )
+
+    assert result.eligible is False
+    assert reason in result.reasons
+
+
+def test_pure_node_admission_predicate_accepts_non_terminal_status_and_active_set() -> None:
+    node = _vpn_worker("pure-active")
+    node.id = 7
+    node.status = "provisioning"
+
+    allowed = vpn_policy.evaluate_vpn_node_attributes(
+        node,
+        active_attack_worker_ids=set(),
+    )
+    blocked = vpn_policy.evaluate_vpn_node_attributes(
+        node,
+        active_attack_worker_ids={7},
+    )
+
+    assert allowed.eligible is True
+    assert blocked.reasons == ("Worker is assigned to an active domain attack",)
+
+
+@pytest.mark.asyncio
+async def test_async_node_admission_delegates_to_the_shared_pure_predicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = _vpn_worker("delegated")
+    node.id = 7
+    calls = []
+
+    async def attacks(_session):
+        return {7}
+
+    def shared(worker, *, active_attack_worker_ids):
+        calls.append((worker, active_attack_worker_ids))
+        return vpn_policy.VpnNodeEligibility(False, ("shared",))
+
+    monkeypatch.setattr(vpn_policy, "active_attack_worker_ids", attacks)
+    monkeypatch.setattr(
+        vpn_policy,
+        "evaluate_vpn_node_attributes",
+        shared,
+        raising=False,
+    )
+
+    result = await vpn_policy.evaluate_vpn_node(object(), node)
+
+    assert result.reasons == ("shared",)
+    assert calls == [(node, {7})]
 
 
 @pytest.mark.asyncio

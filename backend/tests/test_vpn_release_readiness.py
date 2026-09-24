@@ -94,6 +94,9 @@ def worker(worker_id: int, **changes) -> WorkerSnapshot:
         "vpn_enabled": True,
         "vpn_role": "vpn_node",
         "vpn_runtime_status": "ready",
+        "ssh_access_configured": True,
+        "vpn_inbound_id": 10,
+        "vpn_public_host": f"vpn-{worker_id}.example",
         "archived_at": None,
         "vpn_last_checked_at": NOW,
     }
@@ -125,6 +128,7 @@ def ready_snapshot(**changes) -> ReleaseReadinessSnapshot:
         "dispatch_enabled": True,
         "known_hosts_configured": True,
         "public_trial_enabled": False,
+        "vpn_portal_public_access": False,
         "payment_enabled": False,
         "public_trial_plan_slug": "trial-7d",
         "endpoint_health_max_age_seconds": 300,
@@ -132,6 +136,7 @@ def ready_snapshot(**changes) -> ReleaseReadinessSnapshot:
         "endpoints": (endpoint(10, 1), endpoint(20, 2)),
         "control_operations": (),
         "maintenance_jobs": (),
+        "active_attack_worker_ids": frozenset(),
         "operational": operations(),
         "backup": BackupObservation("pass", NOW, 86_400),
     }
@@ -310,6 +315,59 @@ def test_stale_or_inactive_fleet_member_is_a_hard_failure(
 
 
 @pytest.mark.parametrize(
+    "worker_changes",
+    [
+        {"is_enabled": False},
+        {"status": "offline"},
+        {"status": "disabled"},
+        {"vpn_enabled": False},
+        {"vpn_role": "none"},
+        {"vpn_runtime_status": "not_installed"},
+        {"ssh_access_configured": False},
+        {"vpn_inbound_id": None},
+        {"vpn_public_host": None},
+    ],
+)
+def test_every_policy_worker_admission_gate_blocks_release(worker_changes) -> None:
+    result = evaluate_release_readiness(
+        ready_snapshot(
+            endpoints=(
+                endpoint(10, 1, worker=worker(1, **worker_changes)),
+                endpoint(20, 2),
+            )
+        ),
+        now=NOW,
+    )
+
+    assert result.ready is False
+    assert "fail" in states(result, "worker_active")
+
+
+def test_active_attack_worker_blocks_release() -> None:
+    result = evaluate_release_readiness(
+        ready_snapshot(active_attack_worker_ids=frozenset({1})),
+        now=NOW,
+    )
+
+    assert result.ready is False
+    assert "fail" in states(result, "worker_active")
+
+
+def test_policy_allows_non_terminal_worker_status_without_requiring_ready() -> None:
+    result = evaluate_release_readiness(
+        ready_snapshot(
+            endpoints=(
+                endpoint(10, 1, worker=worker(1, status="provisioning")),
+                endpoint(20, 2),
+            )
+        ),
+        now=NOW,
+    )
+
+    assert result.ready is True
+
+
+@pytest.mark.parametrize(
     "changes",
     [
         {"external_verified_at": None},
@@ -442,6 +500,7 @@ def test_active_maintenance_blocks_release(state: str) -> None:
         ({"known_hosts_configured": False}, "known_hosts"),
         ({"payment_enabled": True}, "payment_disabled"),
         ({"public_trial_enabled": True}, "public_trial_disabled"),
+        ({"vpn_portal_public_access": True}, "portal_public_access"),
     ],
 )
 def test_release_configuration_prerequisites_fail_closed(changes, code: str) -> None:
@@ -751,18 +810,71 @@ async def test_loader_uses_grouped_queries_and_policy_occupancy_statuses(
             payment_enabled=False,
         )
 
-    assert selects == 5
+    assert selects == 6
     assert snapshot.plan == PlanSnapshot(plan.id, "trial-7d", True, 7, 1)
     assert snapshot.endpoints[0].occupied_profiles == 1
     assert snapshot.control_operations == (
         ControlOperationSnapshot(node.id, "running"),
     )
     assert snapshot.maintenance_jobs == (MaintenanceSnapshot(node.id, "queued"),)
+    assert snapshot.active_attack_worker_ids == frozenset()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending_kind", ["new", "dirty", "deleted"])
+async def test_loader_rejects_pending_session_without_sql_or_state_change(
+    session_factory,
+    pending_kind: str,
+) -> None:
+    engine, factory = session_factory
+    async with factory() as session:
+        row = VpnPlan(
+            slug=f"pending-{pending_kind}",
+            name=f"Pending {pending_kind}",
+            is_active=True,
+            duration_days=7,
+            max_devices=1,
+        )
+        session.add(row)
+        if pending_kind != "new":
+            await session.commit()
+            if pending_kind == "dirty":
+                row.name = "Changed but not flushed"
+            else:
+                await session.delete(row)
+
+        statements: list[str] = []
+
+        @event.listens_for(engine.sync_engine, "before_cursor_execute")
+        def capture_statement(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement)
+
+        before = (row.id, row.name)
+        with pytest.raises(ValueError, match="^vpn_release_readiness_pending_state$"):
+            await load_release_readiness_snapshot(
+                session,
+                Settings(_env_file=None),
+                operational=operations(),
+                backup=BackupObservation("pass", NOW, 86_400),
+            )
+
+        assert statements == []
+        assert (row.id, row.name) == before
+        pending_collection = {
+            "new": session.new,
+            "dirty": session.dirty,
+            "deleted": session.deleted,
+        }[pending_kind]
+        assert row in pending_collection
 
 
 @pytest.mark.asyncio
 async def test_loader_propagates_database_errors_without_turning_them_into_checks() -> None:
     class BrokenSession:
+        new = ()
+        dirty = ()
+        deleted = ()
+
         async def execute(self, _statement):
             raise RuntimeError("database-secret")
 

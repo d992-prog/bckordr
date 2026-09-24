@@ -21,7 +21,12 @@ from app.services.vpn_endpoint_types import (
     VpnEndpointTarget,
     public_endpoint_fingerprint,
 )
-from app.services.vpn_policy import NODE_CAPACITY_STATUSES, VPN_MUTATION_ACTIONS
+from app.services.vpn_policy import (
+    NODE_CAPACITY_STATUSES,
+    VPN_MUTATION_ACTIONS,
+    active_attack_worker_ids,
+    evaluate_vpn_node_attributes,
+)
 
 CheckState = Literal["pass", "warn", "fail"]
 ObservationState = Literal["pass", "warn", "fail", "unknown"]
@@ -91,8 +96,15 @@ class WorkerSnapshot:
     vpn_enabled: bool
     vpn_role: str
     vpn_runtime_status: str
+    ssh_access_configured: bool
+    vpn_inbound_id: int | None
+    vpn_public_host: str | None
     archived_at: datetime | None
     vpn_last_checked_at: datetime | None
+
+    @property
+    def id(self) -> int:
+        return self.entity_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +139,7 @@ class ReleaseReadinessSnapshot:
     dispatch_enabled: bool
     known_hosts_configured: bool
     public_trial_enabled: bool
+    vpn_portal_public_access: bool
     payment_enabled: bool
     public_trial_plan_slug: str
     endpoint_health_max_age_seconds: int
@@ -134,6 +147,7 @@ class ReleaseReadinessSnapshot:
     endpoints: tuple[EndpointSnapshot, ...]
     control_operations: tuple[ControlOperationSnapshot, ...]
     maintenance_jobs: tuple[MaintenanceSnapshot, ...]
+    active_attack_worker_ids: frozenset[int]
     operational: OperationalObservations | None
     backup: BackupObservation | None
 
@@ -150,6 +164,8 @@ _MESSAGES: dict[tuple[str, CheckState], str] = {
     ("payment_disabled", "fail"): "Платёжная интеграция включена.",
     ("public_trial_disabled", "pass"): "Публичный пробный доступ выключен.",
     ("public_trial_disabled", "fail"): "Публичный пробный доступ уже включён.",
+    ("portal_public_access", "pass"): "Публичный доступ к кабинету выключен.",
+    ("portal_public_access", "fail"): "Публичный доступ к кабинету включён.",
     ("public_trial_plan", "pass"): "План пробного доступа корректен.",
     ("public_trial_plan", "fail"): "План пробного доступа некорректен.",
     ("control_operations", "pass"): "Незавершённых операций ВПН нет.",
@@ -274,6 +290,12 @@ def evaluate_release_readiness(
             "fail" if snapshot.public_trial_enabled else "pass",
         )
     )
+    checks.append(
+        _check(
+            "portal_public_access",
+            "fail" if snapshot.vpn_portal_public_access else "pass",
+        )
+    )
     plan = snapshot.plan
     valid_plan = bool(
         snapshot.public_trial_plan_slug.strip()
@@ -351,12 +373,11 @@ def evaluate_release_readiness(
     max_age_seconds = max(snapshot.endpoint_health_max_age_seconds, 1)
     for item in sorted(snapshot.endpoints, key=lambda endpoint: endpoint.entity_id):
         worker_active = bool(
-            item.worker.status == "ready"
-            and item.worker.is_enabled
-            and item.worker.vpn_enabled
-            and item.worker.vpn_role != "none"
-            and item.worker.vpn_runtime_status == "ready"
-            and item.worker.archived_at is None
+            item.worker.archived_at is None
+            and evaluate_vpn_node_attributes(
+                item.worker,
+                active_attack_worker_ids=snapshot.active_attack_worker_ids,
+            ).eligible
         )
         worker_fresh = _fresh(
             item.worker.vpn_last_checked_at,
@@ -470,6 +491,8 @@ async def load_release_readiness_snapshot(
     backup: BackupObservation | None,
     payment_enabled: bool = False,
 ) -> ReleaseReadinessSnapshot:
+    if session.new or session.dirty or session.deleted:
+        raise ValueError("vpn_release_readiness_pending_state")
     plan_row = (
         (
             await session.execute(
@@ -515,6 +538,7 @@ async def load_release_readiness_snapshot(
             .order_by(WorkerMaintenanceJob.worker_id, WorkerMaintenanceJob.status)
         )
     ).all()
+    attack_worker_ids = await active_attack_worker_ids(session)
 
     occupied_by_endpoint = {
         int(endpoint_id): int(count) for endpoint_id, count in occupancy_rows
@@ -546,6 +570,9 @@ async def load_release_readiness_snapshot(
                     vpn_enabled=worker_row.vpn_enabled,
                     vpn_role=worker_row.vpn_role,
                     vpn_runtime_status=worker_row.vpn_runtime_status,
+                    ssh_access_configured=worker_row.ssh_access_configured,
+                    vpn_inbound_id=worker_row.vpn_inbound_id,
+                    vpn_public_host=worker_row.vpn_public_host,
                     archived_at=worker_row.archived_at,
                     vpn_last_checked_at=worker_row.vpn_last_checked_at,
                 ),
@@ -587,6 +614,7 @@ async def load_release_readiness_snapshot(
         dispatch_enabled=settings.vpn_control_dispatch_enabled,
         known_hosts_configured=bool(settings.vpn_control_known_hosts_path.strip()),
         public_trial_enabled=settings.vpn_public_trial_enabled,
+        vpn_portal_public_access=settings.vpn_portal_public_access,
         payment_enabled=payment_enabled,
         public_trial_plan_slug=settings.vpn_public_trial_plan_slug,
         endpoint_health_max_age_seconds=settings.vpn_endpoint_health_max_age_seconds,
@@ -594,6 +622,7 @@ async def load_release_readiness_snapshot(
         endpoints=tuple(endpoints),
         control_operations=control_operations,
         maintenance_jobs=maintenance_jobs,
+        active_attack_worker_ids=frozenset(attack_worker_ids),
         operational=operational,
         backup=backup,
     )
