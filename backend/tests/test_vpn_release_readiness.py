@@ -1,3 +1,4 @@
+import base64
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 
@@ -40,6 +41,7 @@ from app.services.vpn_release_readiness import (
 )
 
 NOW = datetime(2026, 9, 24, 12, tzinfo=UTC)
+VALID_PUBLIC_KEY = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
 
 
 def target(endpoint_id: int, worker_id: int) -> VpnEndpointTarget:
@@ -53,7 +55,7 @@ def target(endpoint_id: int, worker_id: int) -> VpnEndpointTarget:
         transport="raw",
         security="reality",
         server_name="www.example.com",
-        public_key="public-key",
+        public_key=VALID_PUBLIC_KEY,
         short_id="0123456789abcdef",
         fingerprint="chrome",
         flow="xtls-rprx-vision",
@@ -313,6 +315,49 @@ def test_stale_or_inactive_fleet_member_is_a_hard_failure(
 
     assert result.ready is False
     assert "fail" in states(result, code)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("public_key", "A" * 42),
+        ("short_id", "ABCD"),
+        ("server_name", "bad name"),
+        ("fingerprint", "bad\n"),
+        ("flow", "vision"),
+        ("public_host", "bad/path"),
+    ),
+)
+def test_malformed_persisted_target_fails_even_with_matching_external_hash(
+    field: str,
+    value: str,
+) -> None:
+    malformed_target = replace(target(10, 1), **{field: value})
+    malformed_endpoint = endpoint(
+        10,
+        1,
+        target=malformed_target,
+        external_config_fingerprint=public_endpoint_fingerprint(malformed_target),
+    )
+
+    result = evaluate_release_readiness(
+        ready_snapshot(endpoints=(malformed_endpoint, endpoint(20, 2))),
+        now=NOW,
+    )
+
+    configuration = next(
+        check
+        for check in result.checks
+        if check.code == "endpoint_configuration" and check.entity_id == 10
+    )
+    external_proof = next(
+        check
+        for check in result.checks
+        if check.code == "endpoint_external_proof" and check.entity_id == 10
+    )
+    assert result.ready is False
+    assert configuration.state == "fail"
+    assert external_proof.state == "pass"
 
 
 @pytest.mark.parametrize(
@@ -774,7 +819,7 @@ async def test_loader_uses_grouped_queries_and_policy_occupancy_statuses(
             transport="raw",
             security="reality",
             server_name="www.example.com",
-            public_key="public-key",
+            public_key=VALID_PUBLIC_KEY,
             short_id="0123456789abcdef",
             fingerprint="chrome",
             flow="xtls-rprx-vision",

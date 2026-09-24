@@ -11,8 +11,17 @@ from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.db.base import Base
-from app.db.models import VpnEndpoint, VpnPlan, WorkerMaintenanceJob, WorkerNode
-from app.services.vpn_release_readiness import lock_release_readiness_tables
+from app.db.models import (
+    AppSetting,
+    VpnEndpoint,
+    VpnPlan,
+    WorkerMaintenanceJob,
+    WorkerNode,
+)
+from app.services.vpn_release_readiness import (
+    ReleaseReadinessBusy,
+    lock_release_readiness_tables,
+)
 
 if TYPE_CHECKING:
     from test_vpn_endpoint_migrations import PostgresSchema
@@ -27,6 +36,7 @@ class PostgresReadiness:
     endpoint_id: int
     plan_id: int
     maintenance_id: int
+    setting_id: int
 
 
 @pytest_asyncio.fixture
@@ -74,7 +84,8 @@ async def postgres_readiness(postgres_schema: PostgresSchema) -> PostgresReadine
             action="vpn_update",
             status="finished",
         )
-        session.add_all([endpoint, maintenance])
+        setting = AppSetting(key="vpn_promotion_probe", value="before")
+        session.add_all([endpoint, maintenance, setting])
         await session.commit()
         result = PostgresReadiness(
             engine=postgres_schema.engine,
@@ -82,6 +93,7 @@ async def postgres_readiness(postgres_schema: PostgresSchema) -> PostgresReadine
             endpoint_id=endpoint.id,
             plan_id=plan.id,
             maintenance_id=maintenance.id,
+            setting_id=setting.id,
         )
     return result
 
@@ -147,14 +159,13 @@ def _case_statements(control: PostgresReadiness, case: str):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["capacity", "plan", "maintenance"])
-async def test_release_readiness_table_barrier_orders_existing_and_new_writers(
+async def test_release_readiness_table_barrier_rejects_existing_then_blocks_new_writers(
     postgres_readiness: PostgresReadiness,
     case: str,
 ) -> None:
     writer_statement, read_statement, late_statement, expected, late_expected = (
         _case_statements(postgres_readiness, case)
     )
-    barrier_task = None
     late_task = None
     async with (
         postgres_readiness.sessions() as writer,
@@ -162,13 +173,12 @@ async def test_release_readiness_table_barrier_orders_existing_and_new_writers(
     ):
         try:
             await writer.execute(writer_statement)
-            marker_pid = int(await marker.scalar(text("SELECT pg_backend_pid()")))
-            barrier_task = asyncio.create_task(lock_release_readiness_tables(marker))
-            await _wait_until_locking(postgres_readiness.engine, marker_pid)
-            assert barrier_task.done() is False
+            with pytest.raises(ReleaseReadinessBusy):
+                await lock_release_readiness_tables(marker)
+            await marker.rollback()
 
             await writer.commit()
-            await asyncio.wait_for(barrier_task, timeout=5)
+            await lock_release_readiness_tables(marker)
             assert await marker.scalar(read_statement) == expected
 
             late_pid_ready = asyncio.get_running_loop().create_future()
@@ -191,13 +201,53 @@ async def test_release_readiness_table_barrier_orders_existing_and_new_writers(
         finally:
             await writer.rollback()
             await marker.rollback()
-            for task in (barrier_task, late_task):
+            for task in (late_task,):
                 if task is not None and not task.done():
                     task.cancel()
             await asyncio.gather(
-                *(task for task in (barrier_task, late_task) if task is not None),
+                *(task for task in (late_task,) if task is not None),
                 return_exceptions=True,
             )
 
     async with postgres_readiness.sessions() as observer:
         assert await observer.scalar(read_statement) == late_expected
+
+
+@pytest.mark.asyncio
+async def test_release_barrier_avoids_app_setting_to_endpoint_deadlock(
+    postgres_readiness: PostgresReadiness,
+) -> None:
+    async with (
+        postgres_readiness.sessions() as promotion,
+        postgres_readiness.sessions() as marker,
+    ):
+        await promotion.execute(
+            update(AppSetting)
+            .where(AppSetting.id == postgres_readiness.setting_id)
+            .values(value="promoting")
+        )
+
+        with pytest.raises(ReleaseReadinessBusy):
+            await asyncio.wait_for(lock_release_readiness_tables(marker), timeout=5)
+        await marker.rollback()
+
+        await asyncio.wait_for(
+            promotion.execute(
+                update(VpnEndpoint)
+                .where(VpnEndpoint.id == postgres_readiness.endpoint_id)
+                .values(max_active_profiles=9)
+            ),
+            timeout=5,
+        )
+        await promotion.commit()
+
+        await lock_release_readiness_tables(marker)
+        await marker.rollback()
+
+    async with postgres_readiness.sessions() as observer:
+        marker_value = await observer.scalar(
+            select(AppSetting.value).where(
+                AppSetting.key == "vpn_public_release_ready_v1"
+            )
+        )
+        assert marker_value is None

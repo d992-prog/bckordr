@@ -38,6 +38,7 @@ from app.services.vpn_release_readiness import (
     BackupObservation,
     OperationalObservations,
     ReadinessObservation,
+    ReleaseReadinessBusy,
 )
 
 RELEASE_ID = "a" * 64
@@ -576,6 +577,47 @@ async def test_blocked_and_invalid_release_commits_do_not_change_marker(
         assert (
             await session.scalar(
                 select(AdminAuditLog).where(AdminAuditLog.action == "vpn_release_readiness_commit")
+            )
+        ) is None
+
+
+@pytest.mark.asyncio
+async def test_busy_release_commit_returns_bounded_conflict_without_marker_change(
+    api_context,
+    monkeypatch,
+) -> None:
+    async with api_context.factory() as session:
+        session.add(AppSetting(key=READY_MARKER_KEY, value="b" * 64))
+        await session.commit()
+
+    async def busy_barrier(_db) -> None:
+        raise ReleaseReadinessBusy("database details must stay private")
+
+    monkeypatch.setattr(
+        control_routes,
+        "lock_release_readiness_tables",
+        busy_barrier,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api_context.app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post("/control/vpn/release-readiness/commit")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "VPN release readiness is busy"}
+    assert "database" not in response.text
+    async with api_context.factory() as session:
+        marker = await session.scalar(
+            select(AppSetting).where(AppSetting.key == READY_MARKER_KEY)
+        )
+        assert marker is not None
+        assert marker.value == "b" * 64
+        assert (
+            await session.scalar(
+                select(AdminAuditLog).where(
+                    AdminAuditLog.action == "vpn_release_readiness_commit"
+                )
             )
         ) is None
 

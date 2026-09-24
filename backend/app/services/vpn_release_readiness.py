@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -19,6 +20,7 @@ from app.db.models import (
 )
 from app.services.vpn_endpoint_types import (
     VpnEndpointTarget,
+    is_valid_vpn_endpoint_target,
     public_endpoint_fingerprint,
 )
 from app.services.vpn_policy import (
@@ -33,11 +35,15 @@ ObservationState = Literal["pass", "warn", "fail", "unknown"]
 ControlOperationState = Literal["queued", "running", "uncertain"]
 MaintenanceState = Literal["queued", "running"]
 
-_RELEASE_READINESS_TABLE_LOCK = text(
-    "LOCK TABLE vpn_plans, vpn_endpoints, worker_nodes, vpn_access_keys, "
+_RELEASE_READINESS_TABLES = text(
+    "LOCK TABLE app_settings, vpn_plans, vpn_endpoints, worker_nodes, vpn_access_keys, "
     "vpn_control_operations, worker_maintenance_jobs, worker_tasks, "
-    "attack_runs, app_settings IN SHARE ROW EXCLUSIVE MODE"
+    "attack_runs IN SHARE ROW EXCLUSIVE MODE NOWAIT"
 )
+
+
+class ReleaseReadinessBusy(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,7 +241,12 @@ def _require_clean_uow(session: AsyncSession) -> None:
 async def lock_release_readiness_tables(session: AsyncSession) -> None:
     _require_clean_uow(session)
     if session.get_bind().dialect.name == "postgresql":
-        await session.execute(_RELEASE_READINESS_TABLE_LOCK)
+        try:
+            await session.execute(_RELEASE_READINESS_TABLES)
+        except DBAPIError as exc:
+            if getattr(exc.orig, "sqlstate", None) == "55P03":
+                raise ReleaseReadinessBusy("vpn_release_readiness_busy") from None
+            raise
 
 
 def _check(
@@ -406,6 +417,7 @@ def evaluate_release_readiness(
             and item.target.security == "reality"
             and item.target.endpoint_id == item.entity_id
             and item.target.worker_id == item.worker.entity_id
+            and is_valid_vpn_endpoint_target(item.target)
         )
         endpoint_fresh = _fresh(item.verified_at, checked_at, max_age_seconds)
         external_proof = bool(

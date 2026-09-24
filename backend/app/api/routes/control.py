@@ -221,6 +221,7 @@ from app.services.vpn_release_readiness import (
     BackupObservation,
     OperationalObservations,
     ReleaseReadiness,
+    ReleaseReadinessBusy,
     evaluate_release_readiness,
     load_release_readiness_snapshot,
     lock_release_readiness_tables,
@@ -3164,6 +3165,13 @@ async def commit_vpn_release_readiness(
             await db.commit()
         except HTTPException:
             raise
+        except ReleaseReadinessBusy:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="VPN release readiness is busy",
+                headers={"Cache-Control": "no-store"},
+            ) from None
         except Exception:
             await db.rollback()
             raise
