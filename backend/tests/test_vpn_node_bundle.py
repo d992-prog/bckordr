@@ -9,8 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from app.services.vpn_node_bundle import BUNDLE_MEMBERS, build_node_bundle
-
+from app.services.vpn_node_bundle import (
+    BUNDLE_MEMBERS,
+    NodeBundleError,
+    build_node_bundle,
+)
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -69,6 +72,15 @@ def test_bundle_routes_receipt_lookup_to_a_distinct_read_only_mode():
     assert b"run_node_receipt_lookup" in vpn_node_bundle._MAIN
 
 
+def test_bundle_routes_health_to_the_fixed_read_only_entrypoint():
+    from app.services import vpn_node_bundle
+
+    assert "app/services/vpn_node_health.py" in BUNDLE_MEMBERS
+    assert "app/services/vpn_node_health_entrypoint.py" in BUNDLE_MEMBERS
+    assert b"if sys.argv[1:] == ['--health']" in vpn_node_bundle._MAIN
+    assert b"run_node_health_entrypoint" in vpn_node_bundle._MAIN
+
+
 def test_bundle_modules_use_only_stdlib_and_bundled_imports():
     bundled = {
         member[:-3].replace("/", ".")
@@ -101,7 +113,7 @@ def test_failed_source_compile_does_not_replace_existing_bundle(tmp_path):
     broken = source / "app/services/vpn_node_entrypoint.py"
     broken.write_text("this is not valid Python !!!", encoding="utf-8")
 
-    with pytest.raises(Exception):
+    with pytest.raises(NodeBundleError):
         build_node_bundle(source, target)
     assert target.read_bytes() == b"existing-bundle"
     assert not list(tmp_path.glob(".node.pyz.*.tmp"))
@@ -118,7 +130,7 @@ def test_failed_import_probe_does_not_replace_existing_bundle(tmp_path):
     entrypoint = source / "app/services/vpn_node_entrypoint.py"
     entrypoint.write_text("import module_which_does_not_exist\n", encoding="utf-8")
 
-    with pytest.raises(Exception):
+    with pytest.raises(NodeBundleError):
         build_node_bundle(source, target)
     assert target.read_bytes() == b"existing-bundle"
     assert not list(tmp_path.glob(".node.pyz.*.tmp"))
@@ -135,7 +147,7 @@ def test_system_exit_during_import_does_not_replace_existing_bundle(tmp_path):
     endpoint_types = source / "app/services/vpn_endpoint_types.py"
     endpoint_types.write_text("raise SystemExit(2)\n", encoding="utf-8")
 
-    with pytest.raises(Exception):
+    with pytest.raises(NodeBundleError):
         build_node_bundle(source, target)
     assert target.read_bytes() == b"existing-bundle"
     assert not list(tmp_path.glob(".node.pyz.*.tmp"))
@@ -144,6 +156,6 @@ def test_system_exit_during_import_does_not_replace_existing_bundle(tmp_path):
 def test_missing_source_does_not_replace_existing_bundle(tmp_path):
     target = tmp_path / "node.pyz"
     target.write_bytes(b"existing-bundle")
-    with pytest.raises(Exception):
+    with pytest.raises(NodeBundleError):
         build_node_bundle(tmp_path / "missing", target)
     assert target.read_bytes() == b"existing-bundle"

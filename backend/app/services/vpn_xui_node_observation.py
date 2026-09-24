@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import ipaddress
 import re
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -24,6 +26,87 @@ class NodeClientObservation:
     enabled: bool | None
     transport: Literal["matched", "mismatch", "unsupported"]
     runtime: Literal["running", "stop", "error"]
+
+
+@dataclass(frozen=True, slots=True)
+class NodeEndpointObservation:
+    state: Literal["matched", "not_observed"]
+    transport: Literal["matched", "mismatch", "unsupported"] | None
+    runtime: Literal["running", "stop", "error"]
+    listening: bool
+
+
+_LISTENER_TABLES = (Path("/proc/net/tcp"), Path("/proc/net/tcp6"))
+
+
+def _public_address(raw: str) -> bool:
+    try:
+        packed = bytes.fromhex(raw)
+        if len(packed) == 4:
+            packed = packed[::-1]
+        elif len(packed) == 16:
+            packed = b"".join(
+                packed[offset : offset + 4][::-1] for offset in range(0, 16, 4)
+            )
+        else:
+            return False
+        return not ipaddress.ip_address(packed).is_loopback
+    except ValueError:
+        return False
+
+
+def public_port_is_listening(
+    port: int,
+    *,
+    tables: tuple[Path, ...] = _LISTENER_TABLES,
+) -> bool:
+    """Read Linux socket tables without shelling out or opening a connection."""
+    if type(port) is not int or not 1 <= port <= 65535:
+        return False
+    for table in tables:
+        try:
+            lines = table.read_text(encoding="ascii").splitlines()
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError):
+            return False
+        for line in lines[1:]:
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != "0A":
+                continue
+            try:
+                address, encoded_port = fields[1].rsplit(":", 1)
+                matches = int(encoded_port, 16) == port
+            except (ValueError, TypeError):
+                continue
+            if matches and _public_address(address):
+                return True
+    return False
+
+
+def observe_node_endpoint(
+    panel: NodePanelSession,
+    *,
+    target: VpnEndpointTarget,
+    database_path: Path,
+    listener_probe: Callable[[int], bool] = public_port_is_listening,
+) -> NodeEndpointObservation:
+    """Observe one endpoint without reading or changing client identities."""
+    before = _local_inbound_ids(database_path)
+    runtime = _runtime(panel.request("GET", "panel/api/server/status"))
+    inbounds = panel.request("GET", "panel/api/inbounds/list")
+    after = _local_inbound_ids(database_path)
+    rows = _covered_rows(inbounds, before, after)
+    row = next((item for item in rows if item["id"] == target.inbound_id), None)
+    listening = listener_probe(target.port)
+    if type(listening) is not bool:
+        raise TypeError from None
+    return NodeEndpointObservation(
+        "matched" if row is not None else "not_observed",
+        _transport(row, target, None, False) if row is not None else None,
+        runtime,
+        listening,
+    )
 
 
 def observe_node_client(
@@ -252,8 +335,11 @@ def _transport(
     ):
         return "unsupported"
     stream = row.get("streamSettings")
+    settings = row.get("settings")
     if (
-        not _positive_int(row.get("port"))
+        row.get("protocol") != target.protocol
+        or row.get("listen", "") not in ("", "0.0.0.0", "::", target.public_host)
+        or not _positive_int(row.get("port"))
         or not _positive_int(target.port)
         or row["port"] != target.port
         or not 1 <= target.port <= 65535
@@ -262,7 +348,8 @@ def _transport(
         or stream.get("network") not in ("tcp", "raw")
         or stream.get("security") != target.security
         or not _raw_options(stream)
-        or row["settings"].get("decryption") != "none"
+        or not isinstance(settings, dict)
+        or settings.get("decryption") != "none"
         or (matched and client_flow != target_flow)
     ):
         return "mismatch"
