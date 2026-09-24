@@ -36,6 +36,7 @@ _HEX_DIGEST = re.compile(r"\A[0-9a-f]{64}\Z")
 _HOSTNAME = re.compile(r"\A[0-9A-Za-z._:-]+\Z")
 _REPARSE_POINT = 0x400
 _CHUNK_SIZE = 1024 * 1024
+_MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 
 
 class BackupError(RuntimeError):
@@ -759,6 +760,18 @@ def _json_bytes(value: object) -> bytes:
     )
 
 
+def _capped_json_bytes(value: object, max_bytes: int, error_code: str) -> bytes:
+    output = bytearray()
+    encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"))
+    for chunk in encoder.iterencode(value):
+        encoded = chunk.encode("utf-8")
+        if len(output) + len(encoded) + 1 > max_bytes:
+            raise BackupError(error_code)
+        output.extend(encoded)
+    output.append(0x0A)
+    return bytes(output)
+
+
 def _write_private_file(path: Path, content: bytes) -> None:
     descriptor = -1
     try:
@@ -966,7 +979,7 @@ def _trusted_success(directory: Path, root: Path) -> bool:
                 return False
         if (
             metadata_path.stat().st_size > 16_384
-            or manifest_path.stat().st_size > 16_777_216
+            or manifest_path.stat().st_size > _MAX_MANIFEST_BYTES
         ):
             return False
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -1026,6 +1039,19 @@ def _apply_retention(root: Path, retention: int, current: str) -> int:
         )
     except OSError:
         raise BackupError("backup_retention_failed") from None
+    current_path = next(
+        (path for path in candidates if path.name == current),
+        None,
+    )
+    if current_path is None:
+        raise BackupError("backup_retention_failed")
+    try:
+        marker = _read_existing_marker(root / "latest-success.json", root)
+        current_metadata = (current_path / "backup.json").read_bytes()
+    except (BackupError, OSError):
+        raise BackupError("backup_retention_failed") from None
+    if marker is None or marker != current_metadata:
+        raise BackupError("backup_retention_failed")
     others = [path.name for path in candidates if path.name != current]
     keep = {current, *others[: retention - 1]}
     deleted = 0
@@ -1170,7 +1196,11 @@ def _create_validated_backup_locked(
         records = [dump_record, *_copy_sources(config, partial, budget)]
 
         records.sort(key=lambda item: str(item["path"]))
-        manifest_raw = _json_bytes({"files": records, "version": 1})
+        manifest_raw = _capped_json_bytes(
+            {"files": records, "version": 1},
+            _MAX_MANIFEST_BYTES,
+            "backup_limits_exceeded",
+        )
         manifest_digest = hashlib.sha256(manifest_raw).hexdigest()
         _write_private_file(partial / "manifest.json", manifest_raw)
         metadata = {

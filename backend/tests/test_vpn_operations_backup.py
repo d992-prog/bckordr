@@ -325,6 +325,52 @@ def test_manifest_is_deterministic_and_hashes_every_payload_file(
     )
 
 
+def test_oversized_manifest_is_bounded_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    previous = _write_success(
+        config.backup_root, "20260920T031011.000000Z-aaaaaaaa"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((previous / "backup.json").read_bytes())
+    before = marker.read_bytes()
+    real_dumps = json.dumps
+
+    def reject_one_shot_manifest(value: object, *args: object, **kwargs: object) -> str:
+        if isinstance(value, dict) and "files" in value:
+            raise AssertionError("manifest must use the capped streaming encoder")
+        return real_dumps(value, *args, **kwargs)
+
+    def many_long_records(
+        _config: BackupConfig,
+        _partial: Path,
+        _budget: backup_module._Budget,
+    ) -> list[dict[str, object]]:
+        return [
+            {
+                "path": f"frontend/{index:04d}-{'x' * 120}.js",
+                "sha256": "0" * 64,
+                "size": 1,
+            }
+            for index in range(20)
+        ]
+
+    monkeypatch.setattr(backup_module, "_MAX_MANIFEST_BYTES", 512, raising=False)
+    monkeypatch.setattr(backup_module.json, "dumps", reject_one_shot_manifest)
+    monkeypatch.setattr(backup_module, "_copy_sources", many_long_records)
+
+    with pytest.raises(BackupError, match="^backup_limits_exceeded$"):
+        _run(config, FakeRunner())
+
+    assert marker.read_bytes() == before
+    assert previous.is_dir()
+    assert not any(
+        child.is_dir() and not child.name.endswith(".partial") and child != previous
+        for child in config.backup_root.iterdir()
+    )
+
+
 def test_root_marker_contains_only_safe_metadata_and_no_secrets(tmp_path: Path) -> None:
     config = _config(tmp_path)
     runner = FakeRunner()
@@ -837,10 +883,11 @@ def test_overlapping_backup_lock_fails_closed(tmp_path: Path) -> None:
     root = tmp_path / "backups"
     root.mkdir(mode=0o700)
 
-    with backup_module._exclusive_backup_root(root):
-        with pytest.raises(BackupError, match="^backup_busy$"):
-            with backup_module._exclusive_backup_root(root):
-                raise AssertionError("overlapping backup acquired the lock")
+    with backup_module._exclusive_backup_root(root), pytest.raises(
+        BackupError, match="^backup_busy$"
+    ):
+        with backup_module._exclusive_backup_root(root):
+            raise AssertionError("overlapping backup acquired the lock")
 
 
 def test_marker_replace_failure_rolls_promoted_set_back_to_partial(
@@ -1181,6 +1228,37 @@ def test_retention_failure_is_reported_after_successful_publication(
     marker = _read_json(config.backup_root / "latest-success.json")
     assert marker["set_name"] == f"20260924T031011.000000Z-{NONCE}"
     assert (config.backup_root / marker["set_name"]).is_dir()
+
+
+@pytest.mark.parametrize("tamper", ["manifest", "marker"])
+def test_retention_never_deletes_when_current_is_not_trusted(
+    tmp_path: Path, tamper: str
+) -> None:
+    config = _config(tmp_path, retention=2)
+    old = [
+        _write_success(config.backup_root, name)
+        for name in (
+            "20260920T031011.000000Z-aaaaaaaa",
+            "20260921T031011.000000Z-bbbbbbbb",
+            "20260922T031011.000000Z-cccccccc",
+        )
+    ]
+    current = _write_success(
+        config.backup_root, "20260924T031011.000000Z-dddddddd"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((current / "backup.json").read_bytes())
+    if tamper == "manifest":
+        (current / "manifest.json").write_bytes(b"tampered\n")
+    else:
+        marker.write_bytes((old[-1] / "backup.json").read_bytes())
+
+    with pytest.raises(BackupError, match="^backup_retention_failed$"):
+        backup_module._apply_retention(
+            config.backup_root, config.retention, current.name
+        )
+
+    assert all(path.is_dir() for path in [*old, current])
 
 
 def test_config_rejects_relative_paths_and_invalid_retention(tmp_path: Path) -> None:
