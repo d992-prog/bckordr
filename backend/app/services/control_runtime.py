@@ -50,7 +50,34 @@ from app.services.zone_scanner import run_zone_scan_job
 
 logger = logging.getLogger(__name__)
 PORTAL_AUTH_CLEANUP_TIMEOUT_SECONDS = 5.0
+# Strict SSH can use 50 seconds; allow DB selection/commit and bounded cleanup.
+VPN_FLEET_HEALTH_TIMEOUT_SECONDS = 90.0
+VPN_FLEET_HEALTH_CLEANUP_TIMEOUT_SECONDS = 1.0
 _VPN_CONTROL_RELEASE_ID = re.compile(r"[0-9a-f]{64}")
+
+
+def _consume_vpn_fleet_health_probe_result(task: asyncio.Task[bool]) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except BaseException:  # noqa: BLE001 - detached task must not leak details
+        logger.error("VPN fleet health probe failed")
+
+
+async def _cancel_vpn_fleet_health_probe(task: asyncio.Task[bool]) -> None:
+    if not task.done():
+        task.cancel()
+    try:
+        await asyncio.wait(
+            {task},
+            timeout=VPN_FLEET_HEALTH_CLEANUP_TIMEOUT_SECONDS,
+        )
+    finally:
+        if task.done():
+            _consume_vpn_fleet_health_probe_result(task)
+        else:
+            task.add_done_callback(_consume_vpn_fleet_health_probe_result)
 
 
 class ControlRuntimeOrchestrator:
@@ -364,20 +391,35 @@ class ControlRuntimeOrchestrator:
     def _start_vpn_fleet_health(self, now) -> None:
         if not self._vpn_fleet_health_due(now):
             return
+        assert self._settings is not None
+        known_hosts_path = Path(
+            self._settings.vpn_control_known_hosts_path.strip()
+        )
         self._last_vpn_fleet_health_at = now
         self._vpn_fleet_health_task = asyncio.create_task(
-            self._run_vpn_fleet_health(),
+            self._run_vpn_fleet_health(known_hosts_path),
             name="vpn-fleet-health",
         )
 
-    async def _run_vpn_fleet_health(self) -> None:
-        assert self._settings is not None
-        try:
-            await self._vpn_fleet_health_probe(
+    async def _run_vpn_fleet_health(self, known_hosts_path: Path) -> None:
+        probe_task = asyncio.create_task(
+            self._vpn_fleet_health_probe(
                 self._session_factory,
-                Path(self._settings.vpn_control_known_hosts_path),
+                known_hosts_path,
             )
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                {probe_task},
+                timeout=VPN_FLEET_HEALTH_TIMEOUT_SECONDS,
+            )
+            if not done:
+                logger.error("VPN fleet health probe timed out")
+                await _cancel_vpn_fleet_health_probe(probe_task)
+                return
+            probe_task.result()
         except asyncio.CancelledError:
+            await _cancel_vpn_fleet_health_probe(probe_task)
             raise
         except Exception:  # noqa: BLE001 - log only the fixed safe message
             logger.error("VPN fleet health probe failed")
