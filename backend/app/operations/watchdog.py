@@ -41,6 +41,11 @@ SAFE_CHECK_CODES = frozenset(
 )
 TELEGRAM_TIMEOUT_SECONDS = 3.0
 TELEGRAM_RESPONSE_BYTE_LIMIT = 4096
+STATE_FILE_BYTE_LIMIT = 4096
+
+
+class AlertStateError(RuntimeError):
+    pass
 
 
 class TelegramDeliveryError(RuntimeError):
@@ -85,7 +90,11 @@ def build_alert_state(
 def _read_alert_state(path: str | Path) -> tuple[AlertState, bool]:
     healthy = build_alert_state((), notified=True)
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        with Path(path).open("rb") as state_file:
+            raw_state = state_file.read(STATE_FILE_BYTE_LIMIT + 1)
+        if len(raw_state) > STATE_FILE_BYTE_LIMIT:
+            raise ValueError("watchdog_state_invalid")
+        payload = json.loads(raw_state)
         codes = payload["failing_codes"]
         notified = payload["notified"]
         if not isinstance(codes, list) or not isinstance(notified, bool):
@@ -102,6 +111,19 @@ def load_alert_state(path: str | Path) -> AlertState:
     return _read_alert_state(path)[0]
 
 
+def _fsync_directory(directory: Path) -> None:
+    if os.name != "posix":
+        return
+    directory_fd = os.open(
+        directory,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def save_alert_state(path: str | Path, state: AlertState) -> None:
     destination = Path(path)
     payload = json.dumps(
@@ -114,11 +136,13 @@ def save_alert_state(path: str | Path, state: AlertState) -> None:
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.",
-        dir=str(destination.parent),
-    )
+    fd: int | None = None
+    temporary_name: str | None = None
     try:
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.",
+            dir=str(destination.parent),
+        )
         os.chmod(temporary_name, 0o600)
         with os.fdopen(fd, "wb") as temporary:
             temporary.write(payload)
@@ -126,15 +150,20 @@ def save_alert_state(path: str | Path, state: AlertState) -> None:
             os.fsync(temporary.fileno())
         os.replace(temporary_name, destination)
         os.chmod(destination, 0o600)
-    except BaseException:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
+        _fsync_directory(destination.parent)
+    except BaseException as error:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+        if isinstance(error, Exception):
+            raise AlertStateError("watchdog_state_write_failed") from None
         raise
 
 
@@ -206,6 +235,13 @@ def run_alert_cycle(
     delivery = send_telegram_message if sender is None else sender
     previous, state_valid = _read_alert_state(state_path)
     current = build_alert_state(failing_codes, notified=False)
+    preserve_previous = bool(
+        state_valid
+        and previous.notified
+        and previous.failing_codes
+        and current.failing_codes
+        and previous.digest != current.digest
+    )
 
     if current.failing_codes:
         if (
@@ -232,12 +268,13 @@ def run_alert_cycle(
             save_alert_state(state_path, healthy)
         return healthy
 
-    save_alert_state(state_path, pending)
+    if not preserve_previous:
+        save_alert_state(state_path, pending)
     try:
         token, user_id = _telegram_credentials(environment)
         delivery(token, user_id, message)
     except Exception:  # noqa: BLE001 - any sender failure must remain retryable.
-        return pending
+        return previous if preserve_previous else pending
 
     notified = build_alert_state(current.failing_codes, notified=True)
     save_alert_state(state_path, notified)
