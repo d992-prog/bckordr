@@ -228,6 +228,126 @@ button {
   font-weight: 600;
 }
 
+.vpn-release-readiness {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  overflow: hidden;
+  border-inline-start: 5px solid var(--warning);
+}
+
+.vpn-release-readiness.is-pass {
+  border-inline-start-color: var(--success);
+}
+
+.vpn-release-readiness.is-fail {
+  border-inline-start-color: var(--danger);
+}
+
+.vpn-release-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.vpn-release-summary h2,
+.vpn-release-group h3,
+.vpn-release-commit h3 {
+  margin: 0;
+}
+
+.vpn-release-summary .muted {
+  margin-bottom: 0;
+}
+
+.vpn-release-counts,
+.vpn-release-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.vpn-release-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.vpn-release-group,
+.vpn-release-commit {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel-strong);
+}
+
+.vpn-release-group,
+.vpn-release-checks,
+.vpn-release-check {
+  display: grid;
+  gap: 10px;
+}
+
+.vpn-release-check {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.vpn-release-check:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.vpn-release-check-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.vpn-release-check-head > div {
+  min-width: 0;
+}
+
+.vpn-release-readiness strong,
+.vpn-release-readiness .row-hint,
+.vpn-release-commit p,
+.vpn-release-commit label {
+  overflow-wrap: anywhere;
+}
+
+.vpn-release-success {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(31, 122, 70, 0.12);
+  color: var(--success);
+  font-weight: 700;
+}
+
+.vpn-release-commit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.8fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.vpn-release-commit label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.vpn-release-readiness :focus-visible {
+  outline: 3px solid rgba(183, 93, 45, 0.45);
+  outline-offset: 2px;
+}
+
 .grid {
   display: grid;
   gap: 20px;
@@ -1481,8 +1601,25 @@ button:disabled {
   }
 
   .vpn-capacity-grid,
-  .vpn-capacity-fields {
+  .vpn-capacity-fields,
+  .vpn-release-groups,
+  .vpn-release-summary,
+  .vpn-release-commit {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vpn-release-summary,
+  .vpn-release-commit {
+    align-items: stretch;
+  }
+
+  .vpn-release-check-head {
+    flex-direction: column;
+  }
+
+  .vpn-release-readiness button,
+  .vpn-release-commit input {
+    max-width: 100%;
   }
 
   .stats,

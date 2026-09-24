@@ -30,6 +30,7 @@ import {
   VpnNodeEligibility,
   VpnOverview,
   VpnPlan,
+  VpnReleaseReadiness,
   VpnSubscription,
   VpnTelegramUpdate,
   WorkerNode,
@@ -47,6 +48,7 @@ import { VpnCustomerWorkspace } from "./VpnCustomerWorkspacePanel";
 import { shouldApplyLoadGeneration } from "./vpnCustomerWorkspace";
 import { VpnEndpointCapacityPanel } from "./VpnEndpointCapacityPanel";
 import { replaceVpnEndpointCapacity } from "./vpnEndpointCapacity";
+import { VpnReleaseReadinessPanel } from "./VpnReleaseReadinessPanel";
 
 type Toast = { type: "success" | "error"; text: string } | null;
 type Tab =
@@ -1059,6 +1061,9 @@ export default function App() {
   const [events, setEvents] = useState<AttackEvent[]>([]);
   const [vpnOverview, setVpnOverview] = useState<VpnOverview | null>(null);
   const [vpnEndpointCapacities, setVpnEndpointCapacities] = useState<VpnEndpointCapacity[]>([]);
+  const [vpnReleaseReadiness, setVpnReleaseReadiness] = useState<VpnReleaseReadiness | null>(null);
+  const [vpnReadinessLoading, setVpnReadinessLoading] = useState(false);
+  const [vpnReadinessError, setVpnReadinessError] = useState<string | null>(null);
   const [vpnPlans, setVpnPlans] = useState<VpnPlan[]>([]);
   const [vpnCustomers, setVpnCustomers] = useState<VpnCustomer[]>([]);
   const [vpnSubscriptions, setVpnSubscriptions] = useState<VpnSubscription[]>([]);
@@ -1067,6 +1072,7 @@ export default function App() {
   const loadAllGenerationRef = useRef(0);
   const lastAppliedLoadGenerationRef = useRef(0);
   const vpnCapacityMutationGenerationRef = useRef(0);
+  const vpnReadinessRequestGenerationRef = useRef(0);
   const [vpnNodeEvents, setVpnNodeEvents] = useState<VpnNodeEvent[]>([]);
   const [vpnLifecycleStatus, setVpnLifecycleStatus] = useState<VpnLifecycleStatus | null>(null);
   const [vpnNodeEligibility, setVpnNodeEligibility] = useState<Record<number, VpnNodeEligibility>>({});
@@ -1386,9 +1392,42 @@ export default function App() {
     void loadDomainOverrideDetails(selectedOverrideDomainId, previewDate);
   }, [previewDate, selectedOverrideDomainId, session?.user.id]);
 
+  async function refreshVpnReleaseReadiness() {
+    const readinessGeneration = ++vpnReadinessRequestGenerationRef.current;
+    setVpnReadinessLoading(true);
+    setVpnReadinessError(null);
+    try {
+      const report = await api.getVpnReleaseReadiness();
+      if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
+        setVpnReleaseReadiness(report);
+      }
+    } catch (caught) {
+      if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
+        setVpnReadinessError(
+          (caught instanceof Error ? caught.message : "Не удалось загрузить готовность к релизу.").slice(0, 180),
+        );
+      }
+    } finally {
+      if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
+        setVpnReadinessLoading(false);
+      }
+    }
+  }
+
+  function navigateVpnReadiness(target: "nodes" | "capacity" | "maintenance") {
+    setTab(target === "capacity" ? "vpn" : "workers");
+    window.setTimeout(() => {
+      document.getElementById(`vpn-${target}-section`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }
+
   async function loadAll(options?: { silent?: boolean; throwOnError?: boolean }) {
     const generation = ++loadAllGenerationRef.current;
     const capacityMutationGeneration = vpnCapacityMutationGenerationRef.current;
+    const readinessGeneration = ++vpnReadinessRequestGenerationRef.current;
+    if (!options?.silent) {
+      setVpnReadinessLoading(true);
+    }
     try {
       const [
         overviewData,
@@ -1409,6 +1448,7 @@ export default function App() {
         eventsData,
         vpnOverviewData,
         vpnEndpointCapacitiesData,
+        vpnReleaseReadinessResult,
         vpnPlansData,
         vpnCustomersData,
         vpnSubscriptionsData,
@@ -1438,6 +1478,12 @@ export default function App() {
         api.getEvents(),
         api.getVpnOverview(),
         api.getVpnEndpointCapacities(),
+        api.getVpnReleaseReadiness()
+          .then((report) => ({ report, error: null }))
+          .catch((caught) => ({
+            report: null,
+            error: (caught instanceof Error ? caught.message : "Не удалось загрузить готовность к релизу.").slice(0, 180),
+          })),
         api.getVpnPlans(),
         api.getVpnCustomers(),
         api.getVpnSubscriptions(),
@@ -1474,6 +1520,13 @@ export default function App() {
       if (capacityMutationGeneration === vpnCapacityMutationGenerationRef.current) {
         setVpnEndpointCapacities(vpnEndpointCapacitiesData);
       }
+      if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
+        setVpnReadinessLoading(false);
+        setVpnReadinessError(vpnReleaseReadinessResult.error);
+        if (vpnReleaseReadinessResult.report) {
+          setVpnReleaseReadiness(vpnReleaseReadinessResult.report);
+        }
+      }
       setVpnPlans(vpnPlansData);
       setVpnCustomers(vpnCustomersData);
       setVpnSubscriptions(vpnSubscriptionsData);
@@ -1487,6 +1540,9 @@ export default function App() {
       setVpnTelegramUpdates(vpnTelegramUpdatesData);
       setDiagnosticTelegram(diagnosticData);
     } catch (error) {
+      if (readinessGeneration === vpnReadinessRequestGenerationRef.current) {
+        setVpnReadinessLoading(false);
+      }
       const stale = generation < lastAppliedLoadGenerationRef.current;
       if (!options?.silent && !stale) {
         setToast({ type: "error", text: error instanceof Error ? error.message : "Не удалось загрузить данные control-панели" });
@@ -4079,7 +4135,7 @@ export default function App() {
           </div>
         ) : null}
 
-        <div className="card full-span">
+        <div className="card full-span" id="vpn-nodes-section">
           <div className="card-head">
             <div>
               <h2>Воркеры</h2>
@@ -4267,7 +4323,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="card full-span">
+        <div className="card full-span" id="vpn-maintenance-section">
           <div className="card-head">
             <div>
               <h2>Обслуживание серверов</h2>
@@ -4388,6 +4444,14 @@ export default function App() {
           </div>
         </div>
 
+        <VpnReleaseReadinessPanel
+          report={vpnReleaseReadiness}
+          loading={vpnReadinessLoading}
+          error={vpnReadinessError}
+          onRefresh={refreshVpnReleaseReadiness}
+          onNavigate={navigateVpnReadiness}
+        />
+
         <div className="card full-span">
           <div className="card-head">
             <div>
@@ -4410,7 +4474,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="card full-span">
+        <div className="card full-span" id="vpn-capacity-section">
           <div className="card-head">
             <div>
               <h2>Ёмкость VPN endpoint’ов</h2>
@@ -4422,6 +4486,7 @@ export default function App() {
             onUpdated={(updated) => {
               vpnCapacityMutationGenerationRef.current += 1;
               setVpnEndpointCapacities((current) => replaceVpnEndpointCapacity(current, updated));
+              void refreshVpnReleaseReadiness();
             }}
           />
         </div>
