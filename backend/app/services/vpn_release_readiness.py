@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -32,6 +32,12 @@ CheckState = Literal["pass", "warn", "fail"]
 ObservationState = Literal["pass", "warn", "fail", "unknown"]
 ControlOperationState = Literal["queued", "running", "uncertain"]
 MaintenanceState = Literal["queued", "running"]
+
+_RELEASE_READINESS_TABLE_LOCK = text(
+    "LOCK TABLE vpn_plans, vpn_endpoints, worker_nodes, vpn_access_keys, "
+    "vpn_control_operations, worker_maintenance_jobs, worker_tasks, "
+    "attack_runs, app_settings IN SHARE ROW EXCLUSIVE MODE"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +225,17 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _require_clean_uow(session: AsyncSession) -> None:
+    if session.new or session.dirty or session.deleted:
+        raise ValueError("vpn_release_readiness_pending_state")
+
+
+async def lock_release_readiness_tables(session: AsyncSession) -> None:
+    _require_clean_uow(session)
+    if session.get_bind().dialect.name == "postgresql":
+        await session.execute(_RELEASE_READINESS_TABLE_LOCK)
 
 
 def _check(
@@ -491,8 +508,7 @@ async def load_release_readiness_snapshot(
     backup: BackupObservation | None,
     payment_enabled: bool = False,
 ) -> ReleaseReadinessSnapshot:
-    if session.new or session.dirty or session.deleted:
-        raise ValueError("vpn_release_readiness_pending_state")
+    _require_clean_uow(session)
     plan_row = (
         (
             await session.execute(

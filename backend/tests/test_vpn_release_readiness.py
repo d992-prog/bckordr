@@ -36,6 +36,7 @@ from app.services.vpn_release_readiness import (
     WorkerSnapshot,
     evaluate_release_readiness,
     load_release_readiness_snapshot,
+    lock_release_readiness_tables,
 )
 
 NOW = datetime(2026, 9, 24, 12, tzinfo=UTC)
@@ -677,6 +678,58 @@ async def session_factory():
         yield engine, factory
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_release_readiness_table_barrier_is_sqlite_noop(
+    session_factory,
+) -> None:
+    engine, factory = session_factory
+    statements: list[str] = []
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def capture_statement(_conn, _cursor, statement, _params, _context, _many):
+        statements.append(statement)
+
+    async with factory() as session:
+        await lock_release_readiness_tables(session)
+
+    assert statements == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending_kind", ["new", "dirty", "deleted"])
+async def test_release_readiness_table_barrier_rejects_pending_uow_without_sql(
+    session_factory,
+    pending_kind: str,
+) -> None:
+    engine, factory = session_factory
+    async with factory() as session:
+        row = VpnPlan(
+            slug=f"barrier-{pending_kind}",
+            name=f"Barrier {pending_kind}",
+            is_active=True,
+            duration_days=7,
+            max_devices=1,
+        )
+        session.add(row)
+        if pending_kind != "new":
+            await session.commit()
+            if pending_kind == "dirty":
+                row.name = "Pending change"
+            else:
+                await session.delete(row)
+
+        statements: list[str] = []
+
+        @event.listens_for(engine.sync_engine, "before_cursor_execute")
+        def capture_statement(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement)
+
+        with pytest.raises(ValueError, match="^vpn_release_readiness_pending_state$"):
+            await lock_release_readiness_tables(session)
+
+        assert statements == []
 
 
 @pytest.mark.asyncio

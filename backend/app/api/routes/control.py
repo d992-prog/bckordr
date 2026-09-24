@@ -176,7 +176,11 @@ from app.services.vpn_friend_invitations import (
     retry_friend_invitation,
     rotate_friend_invitation,
 )
-from app.services.vpn_endpoint_types import VpnEndpointTarget, public_endpoint_fingerprint
+from app.services.vpn_endpoint_types import (
+    VpnEndpointTarget,
+    is_valid_vpn_endpoint_target,
+    public_endpoint_fingerprint,
+)
 from app.services.vpn_mutations import serialize_vpn_mutation, vpn_mutation_lock
 from app.services.vpn_profile_names import (
     initial_display_name,
@@ -219,6 +223,7 @@ from app.services.vpn_release_readiness import (
     ReleaseReadiness,
     evaluate_release_readiness,
     load_release_readiness_snapshot,
+    lock_release_readiness_tables,
 )
 from app.services.strategy_runtime import (
     evaluate_domain_readiness,
@@ -3034,38 +3039,9 @@ def _external_verification_target(
         or not now - timedelta(seconds=max(health_max_age_seconds, 1))
         <= verified_at
         <= now
-        or endpoint.protocol != "vless"
-        or endpoint.transport not in {"tcp", "raw"}
-        or type(endpoint.inbound_id) is not int
-        or endpoint.inbound_id <= 0
-        or type(endpoint.port) is not int
-        or not 1 <= endpoint.port <= 65535
     ):
         return None
-    required_strings = (
-        endpoint.public_host,
-        endpoint.server_name,
-        endpoint.public_key,
-        endpoint.short_id,
-        endpoint.fingerprint,
-        endpoint.flow,
-    )
-    if any(
-        type(value) is not str
-        or not value
-        or value != value.strip()
-        or any(character.isspace() for character in value)
-        for value in required_strings
-    ):
-        return None
-    if (
-        endpoint.public_host != endpoint.public_host.lower()
-        or endpoint.public_host.endswith(".")
-        or len(endpoint.public_host) > 253
-        or any(character in endpoint.public_host for character in "/\\?#@")
-    ):
-        return None
-    return VpnEndpointTarget(
+    target = VpnEndpointTarget(
         endpoint_id=endpoint.id,
         worker_id=endpoint.worker_id,
         inbound_id=endpoint.inbound_id,
@@ -3080,6 +3056,7 @@ def _external_verification_target(
         fingerprint=endpoint.fingerprint,
         flow=endpoint.flow,
     )
+    return target if is_valid_vpn_endpoint_target(target) else None
 
 
 @router.get(
@@ -3165,6 +3142,7 @@ async def commit_vpn_release_readiness(
     settings = get_settings()
     async with vpn_mutation_lock():
         try:
+            await lock_release_readiness_tables(db)
             report = await _load_vpn_release_readiness_report(db, settings)
             if not report.ready:
                 await db.rollback()

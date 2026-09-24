@@ -11,7 +11,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from app.services.vpn_endpoint_types import VpnEndpointTarget
+from app.services.vpn_endpoint_types import (
+    VpnEndpointTarget,
+    is_valid_vpn_endpoint_target,
+)
 
 
 def test_request_module_exists():
@@ -91,6 +94,41 @@ def test_roundtrip_exact_digest_detached_and_secret_free(api, request_value):
         result.target.public_key,
     ):
         assert secret not in repr(result)
+
+
+def test_canonical_endpoint_target_validator_covers_reality_and_plain_targets(
+    request_value,
+) -> None:
+    assert is_valid_vpn_endpoint_target(request_value.target) is True
+    plain = replace(
+        request_value.target,
+        security="none",
+        server_name=None,
+        public_key=None,
+        short_id=None,
+        fingerprint=None,
+        flow=None,
+    )
+    assert is_valid_vpn_endpoint_target(plain) is True
+    assert is_valid_vpn_endpoint_target(replace(plain, flow="")) is True
+    assert is_valid_vpn_endpoint_target(replace(plain, fingerprint="chrome")) is False
+
+
+def test_node_request_uses_canonical_endpoint_target_validator(
+    api,
+    request_value,
+    monkeypatch,
+) -> None:
+    seen = []
+
+    def reject(target):
+        seen.append(target)
+        return False
+
+    monkeypatch.setattr(api, "is_valid_vpn_endpoint_target", reject)
+    with pytest.raises(api.VpnNodeRequestError, match="^vpn_node_request_invalid$"):
+        api.serialize_node_request(request_value)
+    assert seen == [request_value.target]
 
 
 @pytest.mark.parametrize(

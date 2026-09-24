@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -39,9 +40,9 @@ from app.services.vpn_release_readiness import (
     ReadinessObservation,
 )
 
-NOW = datetime.now(UTC)
 RELEASE_ID = "a" * 64
 READY_MARKER_KEY = "vpn_public_release_ready_v1"
+VALID_PUBLIC_KEY = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
 
 
 def _settings(*, release_id: str = RELEASE_ID) -> Settings:
@@ -124,7 +125,7 @@ async def _add_ready_endpoint(
         transport="raw",
         security="reality",
         server_name="www.example.com",
-        public_key=f"public-key-secret-{index}",
+        public_key=VALID_PUBLIC_KEY,
         short_id=f"aabbcc{index:02d}",
         fingerprint="chrome",
         flow="xtls-rprx-vision",
@@ -184,7 +185,9 @@ async def api_context(monkeypatch):
         await connection.run_sync(Base.metadata.create_all)
 
     settings = _settings()
+    now = datetime.now(UTC)
     monkeypatch.setattr(control_routes, "get_settings", lambda: settings)
+    monkeypatch.setattr(control_routes, "utcnow", lambda: now)
 
     async def override_get_db():
         async with factory() as session:
@@ -208,6 +211,7 @@ async def api_context(monkeypatch):
         settings=settings,
         app=app,
         anonymous_app=anonymous_app,
+        now=now,
     )
     await engine.dispose()
 
@@ -245,7 +249,7 @@ async def test_get_release_readiness_is_fail_closed_bounded_and_no_store(
     api_context,
 ) -> None:
     async with api_context.factory() as session:
-        first, _second = await _seed_ready_release(session, now=NOW)
+        first, _second = await _seed_ready_release(session, now=api_context.now)
         first_id = first.id
 
     async with httpx.AsyncClient(
@@ -274,7 +278,7 @@ async def test_get_release_readiness_is_fail_closed_bounded_and_no_store(
     serialized = response.text
     for secret in (
         "vpn-1.example",
-        "public-key-secret-1",
+        VALID_PUBLIC_KEY,
         "aabbcc01",
         "worker-secret-1",
         "fingerprint",
@@ -310,13 +314,13 @@ async def test_external_verification_is_server_computed_safe_and_audited(
         endpoint = await _add_ready_endpoint(
             session,
             index=1,
-            now=NOW,
+            now=api_context.now,
             externally_verified=False,
         )
         stale = await _add_ready_endpoint(
             session,
             index=3,
-            now=NOW - timedelta(seconds=301),
+            now=api_context.now - timedelta(seconds=301),
             externally_verified=False,
         )
         unsuitable = VpnEndpoint(
@@ -328,12 +332,37 @@ async def test_external_verification_is_server_computed_safe_and_audited(
             transport="raw",
             security="reality",
             server_name="www.example.com",
-            public_key="staged-public-secret",
+            public_key=VALID_PUBLIC_KEY,
             short_id="00112233",
             fingerprint="chrome",
             flow="xtls-rprx-vision",
             status="staged",
             verified_at=None,
+        )
+        plain = VpnEndpoint(
+            worker_id=endpoint.worker_id,
+            inbound_id=1000,
+            public_host="plain.example",
+            port=443,
+            protocol="vless",
+            transport="raw",
+            security="none",
+            server_name=None,
+            public_key=None,
+            short_id=None,
+            fingerprint=None,
+            flow=None,
+            status="ready",
+            verified_at=api_context.now,
+        )
+        plain.id = 999999
+        assert (
+            control_routes._external_verification_target(
+                plain,
+                now=api_context.now,
+                health_max_age_seconds=300,
+            )
+            is None
         )
         customer = VpnCustomer(telegram_user_id="identity-owner")
         session.add_all([unsuitable, customer])
@@ -409,7 +438,7 @@ async def test_external_verification_is_server_computed_safe_and_audited(
 
     for secret in (
         "vpn-1.example",
-        "public-key-secret-1",
+        VALID_PUBLIC_KEY,
         "aabbcc01",
         "worker-secret-1",
         "identity-secret",
@@ -445,6 +474,59 @@ async def test_external_verification_is_server_computed_safe_and_audited(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("public_key", "A" * 42),
+        ("short_id", "ABCD"),
+        ("server_name", "bad name"),
+        ("fingerprint", "bad\n"),
+        ("flow", "vision"),
+    ),
+)
+async def test_external_verification_rejects_malformed_reality_target_without_sealing(
+    api_context,
+    field: str,
+    value: str,
+) -> None:
+    async with api_context.factory() as session:
+        endpoint = await _add_ready_endpoint(
+            session,
+            index=1,
+            now=api_context.now,
+            externally_verified=False,
+        )
+        setattr(endpoint, field, value)
+        await session.commit()
+        endpoint_id = endpoint.id
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=api_context.app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/control/vpn/endpoints/{endpoint_id}/external-verification",
+            json={"confirmed": True},
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "VPN endpoint is not eligible for confirmation"}
+    assert value not in response.text
+    async with api_context.factory() as session:
+        stored = await session.get(VpnEndpoint, endpoint_id)
+        assert stored is not None
+        assert stored.external_verified_at is None
+        assert stored.external_config_fingerprint is None
+        assert (
+            await session.scalar(
+                select(AdminAuditLog).where(
+                    AdminAuditLog.action == "vpn_endpoint_external_verification"
+                )
+            )
+        ) is None
+
+
+@pytest.mark.asyncio
 async def test_blocked_and_invalid_release_commits_do_not_change_marker(
     api_context,
     monkeypatch,
@@ -470,12 +552,12 @@ async def test_blocked_and_invalid_release_commits_do_not_change_marker(
                 select(AdminAuditLog).where(AdminAuditLog.action == "vpn_release_readiness_commit")
             )
         ) is None
-        await _seed_ready_release(session, now=NOW)
+        await _seed_ready_release(session, now=api_context.now)
 
     monkeypatch.setattr(
         control_routes,
         "_release_readiness_observations",
-        lambda: _passing_observations(NOW),
+        lambda: _passing_observations(api_context.now),
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api_context.app),
@@ -504,7 +586,7 @@ async def test_ready_commit_writes_exact_marker_audits_and_serializes(
     monkeypatch,
 ) -> None:
     async with api_context.factory() as session:
-        first, _second = await _seed_ready_release(session, now=NOW)
+        first, _second = await _seed_ready_release(session, now=api_context.now)
         customer = VpnCustomer(telegram_user_id="release-owner")
         session.add(customer)
         await session.flush()
@@ -526,7 +608,29 @@ async def test_ready_commit_writes_exact_marker_audits_and_serializes(
     monkeypatch.setattr(
         control_routes,
         "_release_readiness_observations",
-        lambda: _passing_observations(NOW),
+        lambda: _passing_observations(api_context.now),
+    )
+    barrier_calls = 0
+    active_barriers = 0
+    max_active_barriers = 0
+    sequence: list[str] = []
+
+    async def tracked_barrier(db):
+        del db
+        nonlocal barrier_calls, active_barriers, max_active_barriers
+        barrier_calls += 1
+        active_barriers += 1
+        max_active_barriers = max(max_active_barriers, active_barriers)
+        sequence.append("barrier")
+        try:
+            await asyncio.sleep(0.01)
+        finally:
+            active_barriers -= 1
+
+    monkeypatch.setattr(
+        control_routes,
+        "lock_release_readiness_tables",
+        tracked_barrier,
     )
     original_loader = control_routes._load_vpn_release_readiness_report
     active_loaders = 0
@@ -535,6 +639,8 @@ async def test_ready_commit_writes_exact_marker_audits_and_serializes(
 
     async def tracked_loader(db, settings):
         nonlocal active_loaders, max_active_loaders, loader_calls
+        assert sequence[-1] == "barrier"
+        sequence.append("loader")
         loader_calls += 1
         active_loaders += 1
         max_active_loaders = max(max_active_loaders, active_loaders)
@@ -564,6 +670,9 @@ async def test_ready_commit_writes_exact_marker_audits_and_serializes(
     assert second_response.json() == {"detail": "VPN release readiness committed"}
     assert loader_calls == 2
     assert max_active_loaders == 1
+    assert barrier_calls == 2
+    assert max_active_barriers == 1
+    assert sequence == ["barrier", "loader", "barrier", "loader"]
 
     async with api_context.factory() as session:
         markers = list(
