@@ -601,6 +601,177 @@ async def test_disabled_public_trial_does_not_admit_fresh_mini_app_identity(port
 
 
 @pytest.mark.asyncio
+async def test_existing_public_trial_can_log_in_after_admission_flag_is_disabled(
+    portal_app,
+    monkeypatch,
+):
+    await seed_ready_public_trial(portal_app, monkeypatch)
+    portal_app.settings.vpn_portal_allowed_telegram_ids = ""
+    first = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=portal_app.app),
+        base_url=PORTAL_ORIGIN,
+    )
+    try:
+        login = await first.post(
+            "/api/vpn-portal/auth/mini-app",
+            headers={"Origin": PORTAL_ORIGIN},
+            json={
+                "init_data": mini_app_data(
+                    404,
+                    portal_app.settings.vpn_telegram_bot_token,
+                )
+            },
+        )
+        activated = await first.post(
+            "/api/vpn-portal/trial/activate",
+            headers={
+                "Origin": PORTAL_ORIGIN,
+                "X-CSRF-Token": login.json()["csrf_token"],
+            },
+        )
+        assert activated.status_code == 200
+    finally:
+        await first.aclose()
+
+    portal_app.settings.vpn_public_trial_enabled = False
+    config = await portal_app.client.get("/api/vpn-portal/config")
+    assert config.json()["enabled"] is True
+    second = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=portal_app.app),
+        base_url=PORTAL_ORIGIN,
+    )
+    try:
+        returning = await second.post(
+            "/api/vpn-portal/auth/mini-app",
+            headers={"Origin": PORTAL_ORIGIN},
+            json={
+                "init_data": mini_app_data(
+                    404,
+                    portal_app.settings.vpn_telegram_bot_token,
+                )
+            },
+        )
+        fresh = await second.post(
+            "/api/vpn-portal/auth/mini-app",
+            headers={"Origin": PORTAL_ORIGIN},
+            json={
+                "init_data": mini_app_data(
+                    405,
+                    portal_app.settings.vpn_telegram_bot_token,
+                )
+            },
+        )
+        assert returning.status_code == 200
+        assert (await second.get("/api/vpn-portal/me")).status_code == 200
+        assert fresh.status_code == 401
+    finally:
+        await second.aclose()
+
+
+@pytest.mark.asyncio
+async def test_public_trial_oidc_callback_rechecks_admission_after_customer_lock(
+    portal_app,
+    monkeypatch,
+):
+    await seed_ready_public_trial(portal_app, monkeypatch)
+    portal_app.settings.vpn_portal_allowed_telegram_ids = ""
+    first = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=portal_app.app),
+        base_url=PORTAL_ORIGIN,
+    )
+    try:
+        login = await first.post(
+            "/api/vpn-portal/auth/mini-app",
+            headers={"Origin": PORTAL_ORIGIN},
+            json={
+                "init_data": mini_app_data(
+                    406,
+                    portal_app.settings.vpn_telegram_bot_token,
+                )
+            },
+        )
+        activated = await first.post(
+            "/api/vpn-portal/trial/activate",
+            headers={
+                "Origin": PORTAL_ORIGIN,
+                "X-CSRF-Token": login.json()["csrf_token"],
+            },
+        )
+        assert activated.status_code == 200
+    finally:
+        await first.aclose()
+
+    portal_app.settings.vpn_public_trial_enabled = False
+
+    async def verified_identity(*args, **kwargs) -> TelegramIdentity:
+        del args, kwargs
+        return TelegramIdentity(user_id="406", first_name="Returning")
+
+    from app.api.routes import vpn_portal as route
+
+    original_admitted = route.identity_admitted
+    admission_checks = 0
+
+    async def expire_after_first_check(db, settings, user_id, **kwargs):
+        nonlocal admission_checks
+        admitted = await original_admitted(db, settings, user_id, **kwargs)
+        admission_checks += 1
+        if admission_checks == 1:
+            subscription = await db.scalar(
+                select(VpnSubscription)
+                .join(VpnCustomer, VpnCustomer.id == VpnSubscription.customer_id)
+                .where(VpnCustomer.telegram_user_id == "406")
+            )
+            assert subscription is not None
+            subscription.expires_at = utcnow() - timedelta(seconds=1)
+            await db.flush()
+        return admitted
+
+    monkeypatch.setattr(route, "exchange_authorization_code", verified_identity)
+    portal_app.app.state.vpn_portal_http_client = None
+    portal_app.app.state.vpn_portal_jwks_provider = None
+    async with portal_app.factory() as session:
+        state, binding, _verifier = await create_login_attempt(session)
+        await session.commit()
+        callback = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/vpn-portal/auth/telegram/callback",
+                "query_string": urlencode(
+                    {"state": state, "code": "provider-code"}
+                ).encode(),
+                "headers": [(b"cookie", f"{BINDING_COOKIE}={binding}".encode())],
+                "app": portal_app.app,
+            }
+        )
+        response = await telegram_callback(callback, session)
+
+    assert response.headers["location"] == "/cabinet/"
+
+    monkeypatch.setattr(route, "identity_admitted", expire_after_first_check)
+    async with portal_app.factory() as session:
+        state, binding, _verifier = await create_login_attempt(session)
+        await session.commit()
+        callback = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/vpn-portal/auth/telegram/callback",
+                "query_string": urlencode(
+                    {"state": state, "code": "provider-code"}
+                ).encode(),
+                "headers": [(b"cookie", f"{BINDING_COOKIE}={binding}".encode())],
+                "app": portal_app.app,
+            }
+        )
+        response = await telegram_callback(callback, session)
+
+    assert admission_checks == 2
+    assert response.headers["location"] == "/cabinet/#login=failed"
+
+
+@pytest.mark.asyncio
 async def test_public_trial_allows_fresh_oidc_identity_through_existing_callback(portal_app, monkeypatch):
     portal_app.settings.vpn_portal_allowed_telegram_ids = ""
     portal_app.settings.vpn_public_trial_enabled = True

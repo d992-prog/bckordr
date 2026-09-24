@@ -33,6 +33,7 @@ from app.services.vpn_control_intents import (
     VpnControlIntentError,
     stage_vpn_control_operation,
 )
+from app.services.vpn_policy import select_public_vpn_endpoint
 from app.services.vpn_telegram_identity import (
     TelegramIdentity,
     resolve_telegram_customer,
@@ -145,6 +146,26 @@ def _bot_username(settings: Settings) -> str:
     if BOT_USERNAME.fullmatch(username) is None or not username.lower().endswith("bot"):
         _unavailable()
     return username
+
+
+async def _require_friend_release_marker(
+    db: AsyncSession,
+    settings: Settings,
+) -> None:
+    release_id = settings.vpn_friend_beta_release_id
+    if (
+        not settings.vpn_friend_beta_enabled
+        or not settings.vpn_control_dispatch_enabled
+        or settings.vpn_portal_public_access
+        or _RELEASE_ID.fullmatch(release_id) is None
+        or await db.scalar(
+            select(AppSetting.value).where(
+                AppSetting.key == _VPN_FRIEND_BETA_READINESS_KEY
+            )
+        )
+        != release_id
+    ):
+        _unavailable()
 
 
 async def require_friend_invitation_readiness(
@@ -819,7 +840,7 @@ async def redeem_friend_invitation(
             ):
                 _rejected()
 
-            endpoint = await require_friend_invitation_readiness(db, settings)
+            await _require_friend_release_marker(db, settings)
             customer = await resolve_telegram_customer(db, identity)
             if customer.trial_started_at is not None:
                 _rejected()
@@ -834,6 +855,23 @@ async def redeem_friend_invitation(
             )
             if prior_friend_slot is not None:
                 _rejected()
+            selected = await select_public_vpn_endpoint(
+                db,
+                now=current,
+                health_max_age_seconds=settings.vpn_endpoint_health_max_age_seconds,
+                lock=True,
+            )
+            if selected is None:
+                _unavailable()
+            endpoint = selected.endpoint
+            worker = await db.get(WorkerNode, endpoint.worker_id)
+            try:
+                load_transport_snapshot(
+                    worker,
+                    Path(settings.vpn_control_known_hosts_path),
+                )
+            except VpnNodeTransportError:
+                _unavailable()
             subscription = VpnSubscription(
                 customer_id=customer.id,
                 status="trial",

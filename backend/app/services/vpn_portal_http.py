@@ -12,6 +12,7 @@ from app.services.vpn_portal_auth import (
     BINDING_COOKIE,
     delete_binding_cookie,
     identity_allowed,
+    public_trial_release_configured,
     public_origin,
 )
 
@@ -33,10 +34,15 @@ def portal_capabilities(settings: Settings) -> dict[str, bool]:
     else:
         origin_valid = True
 
-    access_configured = settings.vpn_public_trial_enabled or settings.vpn_portal_public_access or any(
-        identity_allowed(settings, candidate.strip())
-        for candidate in settings.vpn_portal_allowed_telegram_ids.split(",")
-        if candidate.strip()
+    access_configured = (
+        settings.vpn_public_trial_enabled
+        or public_trial_release_configured(settings)
+        or settings.vpn_portal_public_access
+        or any(
+            identity_allowed(settings, candidate.strip())
+            for candidate in settings.vpn_portal_allowed_telegram_ids.split(",")
+            if candidate.strip()
+        )
     )
     base_enabled = bool(
         settings.vpn_portal_enabled and origin_valid and access_configured

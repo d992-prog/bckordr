@@ -115,6 +115,38 @@ async def seed_invited_portal_identity(
     return customer, subscription, key, invitation
 
 
+async def seed_public_trial_portal_identity(
+    db: AsyncSession,
+    user_id: str = "790",
+    *,
+    now: datetime = NOW,
+) -> tuple[VpnCustomer, VpnSubscription, VpnAccessKey]:
+    customer = VpnCustomer(
+        telegram_user_id=user_id,
+        status="active",
+        trial_started_at=now,
+    )
+    db.add(customer)
+    await db.flush()
+    subscription = VpnSubscription(
+        customer_id=customer.id,
+        status="trial",
+        starts_at=now,
+        expires_at=now + timedelta(days=7),
+        max_devices=1,
+    )
+    db.add(subscription)
+    await db.flush()
+    key = VpnAccessKey(
+        subscription_id=subscription.id,
+        status="pending_sync",
+        expires_at=subscription.expires_at,
+    )
+    db.add(key)
+    await db.flush()
+    return customer, subscription, key
+
+
 @pytest_asyncio.fixture
 async def session_factory(tmp_path):
     path = (tmp_path / "portal-auth.db").as_posix()
@@ -320,6 +352,39 @@ async def test_friend_admission_requires_the_exact_active_invitation_chain(sessi
         subscription.expires_at = NOW + timedelta(microseconds=1)
         await db.flush()
         assert await identity_admitted(db, settings, "789", now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_existing_public_trial_admission_survives_kill_switch_but_not_expiry_or_revoke(
+    session_factory,
+):
+    settings = portal_settings(
+        VPN_PORTAL_ALLOWED_TELEGRAM_IDS="",
+        VPN_PUBLIC_TRIAL_ENABLED=False,
+        VPN_PUBLIC_TRIAL_RELEASE_ID="a" * 64,
+    )
+    async with session_factory() as db:
+        _customer, subscription, key = await seed_public_trial_portal_identity(db)
+        await db.commit()
+
+        assert await identity_admitted(db, settings, "790", now=NOW)
+        assert not await identity_admitted(db, settings, "791", now=NOW)
+
+        subscription.expires_at = NOW
+        await db.flush()
+        assert not await identity_admitted(db, settings, "790", now=NOW)
+
+        subscription.expires_at = NOW + timedelta(days=7)
+        key.status = "revoked"
+        key.revoked_at = NOW
+        await db.flush()
+        assert not await identity_admitted(db, settings, "790", now=NOW)
+
+        key.status = "pending_sync"
+        key.revoked_at = None
+        settings.vpn_public_trial_release_id = ""
+        await db.flush()
+        assert not await identity_admitted(db, settings, "790", now=NOW)
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,7 @@ from app.services.vpn_node_transport import VpnNodeTransportError
 
 RELEASE_ID = "a" * 64
 READINESS_KEY = "vpn_friend_beta_release_ready_v1"
+PUBLIC_READINESS_KEY = "vpn_public_release_ready_v1"
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 
 
@@ -187,6 +188,7 @@ async def _seed_runtime_readiness(
     factory: async_sessionmaker[AsyncSession],
     *,
     marker: str | None = RELEASE_ID,
+    marker_key: str = READINESS_KEY,
     archived_at: datetime | None = None,
     with_endpoint: bool = True,
     endpoint_status: str = "ready",
@@ -211,7 +213,7 @@ async def _seed_runtime_readiness(
             )
         )
         if marker is not None:
-            db.add(AppSetting(key=READINESS_KEY, value=marker))
+            db.add(AppSetting(key=marker_key, value=marker))
         await db.flush()
         ignore_ready_check = endpoint_status == "ready" and endpoint_verified_at is None
         if ignore_ready_check:
@@ -241,6 +243,123 @@ async def _seed_runtime_readiness(
         finally:
             if ignore_ready_check:
                 await db.execute(text("PRAGMA ignore_check_constraints = OFF"))
+
+
+@pytest.mark.asyncio
+async def test_public_only_release_gate_starts_control_dispatch(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+) -> None:
+    factory, _engine = runtime_database
+    await _seed_runtime_readiness(factory, marker_key=PUBLIC_READINESS_KEY)
+    settings = _runtime_settings(
+        VPN_FRIEND_BETA_ENABLED=False,
+        VPN_FRIEND_BETA_RELEASE_ID="",
+        VPN_PUBLIC_TRIAL_ENABLED=True,
+        VPN_PUBLIC_TRIAL_RELEASE_ID=RELEASE_ID,
+    )
+    dispatch_calls: list[object] = []
+    dedicated_engine = _FakeDedicatedEngine()
+    runtime = _orchestrator(
+        factory,
+        settings,
+        database_factory=lambda _settings: SimpleNamespace(
+            engine=dedicated_engine,
+            session_factory=object(),
+        ),
+        dispatcher=lambda *args, **kwargs: dispatch_calls.append((args, kwargs)),
+        snapshot_loader=lambda worker, path: object(),
+    )
+
+    await runtime.run_cycle()
+    assert runtime._vpn_control_dispatch_task is not None
+    await runtime._vpn_control_dispatch_task
+    await runtime.shutdown()
+
+    assert len(dispatch_calls) == 1
+
+
+@pytest.mark.parametrize("marker", [None, "b" * 64])
+@pytest.mark.asyncio
+async def test_public_only_release_gate_requires_exact_marker(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    marker: str | None,
+) -> None:
+    factory, _engine = runtime_database
+    await _seed_runtime_readiness(
+        factory,
+        marker=marker,
+        marker_key=PUBLIC_READINESS_KEY,
+    )
+    database_calls: list[Settings] = []
+    runtime = _orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_FRIEND_BETA_RELEASE_ID="",
+            VPN_PUBLIC_TRIAL_ENABLED=True,
+            VPN_PUBLIC_TRIAL_RELEASE_ID=RELEASE_ID,
+        ),
+        database_factory=lambda settings: database_calls.append(settings),
+        dispatcher=lambda *args, **kwargs: None,
+        snapshot_loader=lambda worker, path: object(),
+    )
+
+    await runtime.run_cycle()
+    await runtime.shutdown()
+
+    assert database_calls == []
+
+
+@pytest.mark.parametrize("release_id", ["", "A" * 64, "a" * 63])
+@pytest.mark.asyncio
+async def test_public_only_release_gate_requires_valid_release_id(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    release_id: str,
+) -> None:
+    factory, _engine = runtime_database
+    await _seed_runtime_readiness(factory, marker_key=PUBLIC_READINESS_KEY)
+    database_calls: list[Settings] = []
+    runtime = _orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_FRIEND_BETA_RELEASE_ID="",
+            VPN_PUBLIC_TRIAL_ENABLED=True,
+            VPN_PUBLIC_TRIAL_RELEASE_ID=release_id,
+        ),
+        database_factory=lambda settings: database_calls.append(settings),
+        dispatcher=lambda *args, **kwargs: None,
+        snapshot_loader=lambda worker, path: object(),
+    )
+
+    await runtime.run_cycle()
+    await runtime.shutdown()
+
+    assert database_calls == []
+
+
+@pytest.mark.asyncio
+async def test_control_dispatch_stays_off_when_both_release_paths_are_disabled(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+) -> None:
+    factory, _engine = runtime_database
+    await _seed_runtime_readiness(factory)
+    database_calls: list[Settings] = []
+    runtime = _orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_PUBLIC_TRIAL_ENABLED=False,
+        ),
+        database_factory=lambda settings: database_calls.append(settings),
+        dispatcher=lambda *args, **kwargs: None,
+        snapshot_loader=lambda worker, path: object(),
+    )
+
+    await runtime.run_cycle()
+    await runtime.shutdown()
+
+    assert database_calls == []
 
 
 class _FakeDedicatedEngine:

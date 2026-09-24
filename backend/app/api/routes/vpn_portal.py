@@ -275,7 +275,12 @@ async def telegram_callback(
         if not await identity_admitted(db, settings, identity.user_id):
             raise TelegramAuthenticationError("telegram_authentication_failed")
         customer = await resolve_telegram_customer(db, identity)
-        if customer.status != "active":
+        if customer.status != "active" or not await identity_admitted(
+            db,
+            settings,
+            identity.user_id,
+            lock_public_trial=True,
+        ):
             raise TelegramAuthenticationError("telegram_authentication_failed")
         raw_session = await issue_session(db, customer.id, identity.user_id)
         await db.commit()

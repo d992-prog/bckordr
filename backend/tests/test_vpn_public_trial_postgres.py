@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.db.base import Base
 from app.db.migrations import MIGRATIONS
 from app.db.models import (
+    AppSetting,
     User,
     VpnAccessKey,
     VpnControlOperation,
@@ -185,6 +186,124 @@ async def test_two_identities_compete_for_one_capacity_slot(pg_trial):
                 assert (
                     await trial.public_trial_status(db, trial_settings(), customer, NOW)
                 ).state == "capacity_paused"
+
+
+@pytest.mark.asyncio
+async def test_public_and_friend_identities_compete_for_one_capacity_slot(pg_trial):
+    engine, sessions = pg_trial
+    async with sessions() as db:
+        target = await db.get(VpnEndpoint, 1)
+        assert target is not None
+        target.max_active_profiles = 1
+        db.add_all(
+            [
+                User(
+                    id=1,
+                    username="owner",
+                    password_hash="hash",
+                    role="admin",
+                    status="active",
+                ),
+                AppSetting(
+                    key="vpn_friend_beta_release_ready_v1",
+                    value="a" * 64,
+                ),
+                VpnCustomer(telegram_user_id="222", status="active"),
+            ]
+        )
+        await db.flush()
+        db.add(
+            VpnFriendInvitation(
+                slot=1,
+                created_by_user_id=1,
+                token_digest=friends.digest_invite_token("A" * 43),
+                redeem_expires_at=NOW + timedelta(days=1),
+            )
+        )
+        await db.commit()
+
+    both_allocating = asyncio.Event()
+    arrived = 0
+
+    class RacingSession(AsyncSession):
+        first_worker_lock = True
+
+        async def scalar(self, statement, **kwargs):
+            nonlocal arrived
+            if self.first_worker_lock and locking(statement, WorkerNode):
+                self.first_worker_lock = False
+                arrived += 1
+                if arrived == 2:
+                    both_allocating.set()
+                await asyncio.wait_for(both_allocating.wait(), 5)
+            return await super().scalar(statement, **kwargs)
+
+    racing = async_sessionmaker(
+        engine,
+        class_=RacingSession,
+        expire_on_commit=False,
+    )
+
+    async def public() -> tuple[str, bool]:
+        async with racing() as db:
+            await limits(db)
+            try:
+                await trial.activate_public_trial(
+                    db,
+                    trial_settings(),
+                    TelegramIdentity("222"),
+                    NOW,
+                )
+            except trial.PublicTrialUnavailable:
+                await db.rollback()
+                return "public", False
+            await db.commit()
+            return "public", True
+
+    async def friend() -> tuple[str, bool]:
+        async with racing() as db:
+            await limits(db)
+            settings = trial_settings(
+                VPN_FRIEND_BETA_ENABLED=True,
+                VPN_FRIEND_BETA_RELEASE_ID="a" * 64,
+            )
+            try:
+                await friends.redeem_friend_invitation(
+                    db,
+                    settings,
+                    "A" * 43,
+                    TelegramIdentity("333"),
+                    NOW,
+                )
+            except friends.FriendInvitationUnavailable:
+                await db.rollback()
+                return "friend", False
+            await db.commit()
+            return "friend", True
+
+    results = await asyncio.wait_for(
+        asyncio.gather(public(), friend()),
+        20,
+    )
+    assert sum(won for _name, won in results) == 1
+    won = dict(results)
+    async with sessions() as db:
+        assert await trial_counts(db) == [1, 1, 1]
+        public_customer = await db.scalar(
+            select(VpnCustomer).where(VpnCustomer.telegram_user_id == "222")
+        )
+        friend_customer = await db.scalar(
+            select(VpnCustomer).where(VpnCustomer.telegram_user_id == "333")
+        )
+        invitation = await db.get(VpnFriendInvitation, 1)
+        assert public_customer is not None
+        assert (public_customer.trial_started_at is not None) is won["public"]
+        assert (friend_customer is not None) is won["friend"]
+        assert invitation is not None
+        assert (invitation.redeemed_at is not None) is won["friend"]
+        if not won["friend"]:
+            assert invitation.telegram_user_id is None
+            assert invitation.access_key_id is None
 
 
 @pytest.mark.asyncio

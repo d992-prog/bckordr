@@ -117,10 +117,13 @@ async def _seed_ready_environment(
                     vpn_enabled=True,
                     vpn_role="vpn_node",
                     vpn_runtime_status="ready",
+                    vpn_public_host="vpn.example.test",
+                    vpn_inbound_id=11,
                     ssh_host="192.0.2.10",
                     ssh_port=22,
                     ssh_username="root",
                     ssh_password="test-only-password",
+                    vpn_last_checked_at=NOW,
                 ),
             ]
         )
@@ -142,6 +145,7 @@ async def _seed_ready_environment(
                 flow="xtls-rprx-vision",
                 status="ready",
                 verified_at=NOW - timedelta(hours=1),
+                max_active_profiles=4,
             )
         )
         await db.commit()
@@ -1303,6 +1307,60 @@ async def test_redeem_rechecks_readiness_and_leaves_token_unbound_on_failure(
     assert await _count(db, VpnCustomer) == 0
     assert await _count(db, VpnSubscription) == 0
     assert await _count(db, VpnAccessKey) == 0
+    assert await _count(db, VpnControlOperation) == 0
+
+
+@pytest.mark.asyncio
+async def test_redeem_rejects_full_endpoint_without_consuming_invitation_or_trial(
+    ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+) -> None:
+    db, settings, _ = ready_session
+    endpoint = await db.get(VpnEndpoint, 1)
+    assert endpoint is not None
+    endpoint.max_active_profiles = 1
+    occupying_customer = VpnCustomer(telegram_user_id="799998", status="active")
+    db.add(occupying_customer)
+    await db.flush()
+    occupying_subscription = VpnSubscription(
+        customer_id=occupying_customer.id,
+        status="active",
+        starts_at=NOW,
+        expires_at=NOW + timedelta(days=30),
+        max_devices=1,
+    )
+    db.add(occupying_subscription)
+    await db.flush()
+    db.add(
+        VpnAccessKey(
+            subscription_id=occupying_subscription.id,
+            worker_id=endpoint.worker_id,
+            endpoint_id=endpoint.id,
+            status="active",
+        )
+    )
+    await db.commit()
+    issued = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+    token = _token_from_link(issued.link)
+
+    with pytest.raises(FriendInvitationUnavailable, match="^friend_beta_unavailable$"):
+        await redeem_friend_invitation(
+            db,
+            settings,
+            token,
+            TelegramIdentity("799999"),
+            NOW,
+        )
+
+    invitation = await db.get(VpnFriendInvitation, issued.view.slot)
+    assert invitation is not None
+    assert invitation.redeemed_at is None
+    assert invitation.telegram_user_id is None
+    assert invitation.access_key_id is None
+    assert await db.scalar(
+        select(VpnCustomer).where(VpnCustomer.telegram_user_id == "799999")
+    ) is None
+    assert await _count(db, VpnSubscription) == 1
+    assert await _count(db, VpnAccessKey) == 1
     assert await _count(db, VpnControlOperation) == 0
 
 

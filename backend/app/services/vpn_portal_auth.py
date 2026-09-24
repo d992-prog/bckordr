@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
@@ -46,6 +46,10 @@ MAX_OPAQUE_TOKEN_LENGTH = 128
 CSRF_MESSAGE = b"veltrix-portal-csrf-v1"
 DNS_HOST_PATTERN = re.compile(
     r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*\Z"
+)
+PUBLIC_TRIAL_RELEASE_ID = re.compile(r"[0-9a-f]{64}")
+PUBLIC_TRIAL_ACCESS_KEY_STATUSES = frozenset(
+    {"pending_sync", "syncing", "active", "failed"}
 )
 
 
@@ -153,6 +157,10 @@ def identity_allowed(settings: Settings, user_id: object) -> bool:
     return canonical in allowed
 
 
+def public_trial_release_configured(settings: Settings) -> bool:
+    return PUBLIC_TRIAL_RELEASE_ID.fullmatch(settings.vpn_public_trial_release_id) is not None
+
+
 def friend_admission_query(user_id: str, now: datetime):
     return (
         select(VpnFriendInvitation.slot)
@@ -173,12 +181,47 @@ def friend_admission_query(user_id: str, now: datetime):
     )
 
 
+def public_trial_admission_query(
+    user_id: str,
+    now: datetime,
+    *,
+    lock: bool = False,
+):
+    friend_key = exists(
+        select(VpnFriendInvitation.slot).where(
+            VpnFriendInvitation.access_key_id == VpnAccessKey.id
+        )
+    )
+    query = (
+        select(VpnAccessKey.id)
+        .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
+        .join(VpnCustomer, VpnCustomer.id == VpnSubscription.customer_id)
+        .where(
+            VpnCustomer.telegram_user_id == user_id,
+            VpnCustomer.status == "active",
+            VpnCustomer.trial_started_at.is_not(None),
+            VpnSubscription.starts_at == VpnCustomer.trial_started_at,
+            VpnSubscription.status.in_(("active", "trial")),
+            VpnSubscription.starts_at <= now,
+            VpnSubscription.expires_at > now,
+            VpnAccessKey.status.in_(PUBLIC_TRIAL_ACCESS_KEY_STATUSES),
+            VpnAccessKey.revoked_at.is_(None),
+            VpnAccessKey.revoke_requested_at.is_(None),
+            or_(VpnAccessKey.expires_at.is_(None), VpnAccessKey.expires_at > now),
+            ~friend_key,
+        )
+        .limit(1)
+    )
+    return query.with_for_update(of=(VpnSubscription, VpnAccessKey)) if lock else query
+
+
 async def identity_admitted(
     db: AsyncSession,
     settings: Settings,
     user_id: object,
     *,
     now: datetime | None = None,
+    lock_public_trial: bool = False,
 ) -> bool:
     if not settings.vpn_portal_enabled:
         return False
@@ -189,7 +232,18 @@ async def identity_admitted(
     if identity_allowed(settings, normalized):
         return True
     current = as_utc(now or utcnow())
-    return bool(await db.scalar(friend_admission_query(normalized, current)))
+    if await db.scalar(friend_admission_query(normalized, current)):
+        return True
+    return bool(
+        public_trial_release_configured(settings)
+        and await db.scalar(
+            public_trial_admission_query(
+                normalized,
+                current,
+                lock=lock_public_trial,
+            )
+        )
+    )
 
 
 def _valid_opaque_token(value: object) -> bool:
@@ -311,6 +365,7 @@ async def lock_current_principal(
             settings,
             session.telegram_user_id,
             now=current_time,
+            lock_public_trial=True,
         )
     ):
         return None
@@ -500,7 +555,17 @@ async def exchange_mini_app_session(
 
     async with db.begin_nested():
         customer = await resolve_telegram_customer(db, identity)
-        if customer.status != "active" or customer.telegram_user_id != identity.user_id:
+        if (
+            customer.status != "active"
+            or customer.telegram_user_id != identity.user_id
+            or not await identity_admitted(
+                db,
+                settings,
+                identity.user_id,
+                now=current_time,
+                lock_public_trial=True,
+            )
+        ):
             raise PortalAuthenticationError()
 
         try:

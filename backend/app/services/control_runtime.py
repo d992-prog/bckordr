@@ -7,7 +7,7 @@ import math
 from pathlib import Path
 import re
 
-from sqlalchemy import select, true
+from sqlalchemy import and_, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -16,6 +16,7 @@ from app.db.models import AppSetting, VpnEndpoint, WorkerNode, ZoneScanJob
 from app.db.session import VpnControlDatabase, create_vpn_control_database
 from app.services.app_settings import (
     _VPN_FRIEND_BETA_RELEASE_READY_KEY,
+    _VPN_PUBLIC_RELEASE_READY_KEY,
     get_diagnostic_telegram_settings,
     get_discovery_runtime_settings,
 )
@@ -329,13 +330,9 @@ class ControlRuntimeOrchestrator:
         dispatch_interval = settings.vpn_control_dispatch_interval_seconds
         finalize_timeout = settings.vpn_control_finalize_timeout_seconds
         if (
-            not settings.vpn_friend_beta_enabled
-            or not settings.vpn_control_dispatch_enabled
+            not settings.vpn_control_dispatch_enabled
             or settings.vpn_portal_public_access
-            or _VPN_CONTROL_RELEASE_ID.fullmatch(
-                settings.vpn_friend_beta_release_id
-            )
-            is None
+            or not self._vpn_control_release_markers()
             or not settings.vpn_control_known_hosts_path.strip()
             or not math.isfinite(command_timeout)
             or command_timeout <= 0
@@ -355,19 +352,48 @@ class ControlRuntimeOrchestrator:
             >= settings.vpn_control_dispatch_interval_seconds
         )
 
+    def _vpn_control_release_markers(self) -> tuple[tuple[str, str], ...]:
+        assert self._settings is not None
+        settings = self._settings
+        candidates = (
+            (
+                settings.vpn_friend_beta_enabled,
+                _VPN_FRIEND_BETA_RELEASE_READY_KEY,
+                settings.vpn_friend_beta_release_id,
+            ),
+            (
+                settings.vpn_public_trial_enabled,
+                _VPN_PUBLIC_RELEASE_READY_KEY,
+                settings.vpn_public_trial_release_id,
+            ),
+        )
+        return tuple(
+            (key, release_id)
+            for enabled, key, release_id in candidates
+            if enabled and _VPN_CONTROL_RELEASE_ID.fullmatch(release_id) is not None
+        )
+
     async def _load_vpn_control_worker(
         self,
         session: AsyncSession,
     ) -> WorkerNode | None:
         assert self._settings is not None
+        markers = self._vpn_control_release_markers()
+        if not markers:
+            return None
         row = (
             await session.execute(
-                select(AppSetting.value, VpnEndpoint, WorkerNode)
+                select(VpnEndpoint, WorkerNode)
                 .select_from(AppSetting)
                 .join(VpnEndpoint, true())
                 .join(WorkerNode, WorkerNode.id == VpnEndpoint.worker_id)
                 .where(
-                    AppSetting.key == _VPN_FRIEND_BETA_RELEASE_READY_KEY,
+                    or_(
+                        *(
+                            and_(AppSetting.key == key, AppSetting.value == release_id)
+                            for key, release_id in markers
+                        )
+                    ),
                     VpnEndpoint.status == "ready",
                     VpnEndpoint.security == "reality",
                     VpnEndpoint.verified_at.is_not(None),
@@ -377,9 +403,9 @@ class ControlRuntimeOrchestrator:
                 .limit(1)
             )
         ).first()
-        if row is None or row[0] != self._settings.vpn_friend_beta_release_id:
+        if row is None:
             return None
-        return row[2]
+        return row[1]
 
     def _start_vpn_control_dispatch(self, now) -> None:
         settings = self._settings
