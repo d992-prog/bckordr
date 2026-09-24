@@ -213,6 +213,9 @@ async def seed_friend_invitation(
                     vpn_enabled=True,
                     vpn_role="vpn_node",
                     vpn_runtime_status="ready",
+                    vpn_public_host="vpn.example.test",
+                    vpn_inbound_id=51,
+                    vpn_last_checked_at=now,
                     ssh_host="192.0.2.51",
                     ssh_port=22,
                     ssh_username="root",
@@ -238,6 +241,7 @@ async def seed_friend_invitation(
                 flow="xtls-rprx-vision",
                 status="ready",
                 verified_at=now - timedelta(hours=1),
+                max_active_profiles=10,
             )
         )
     invitation = VpnFriendInvitation(
