@@ -114,18 +114,21 @@ def run_node_health_entrypoint(
         token = _read_private_file(token_path, limit=MAX_TOKEN_BYTES).decode(
             "ascii", errors="strict"
         )
+        panel_session = NodePanelSession(
+            panel_url,
+            username=None,
+            password=None,
+            api_token=token,
+        )
     except BaseException as error:  # noqa: BLE001 - contain process interruption
         if not isinstance(error, Exception):
             return EXIT_INTERRUPTED
-        receipt = _failure_receipt(error)
+        receipt = VpnNodeHealthReceipt(
+            "unhealthy", "vpn_node_health_internal", None
+        )
     else:
         try:
-            with NodePanelSession(
-                panel_url,
-                username=None,
-                password=None,
-                api_token=token,
-            ) as panel:
+            with panel_session as panel:
                 receipt = _receipt(
                     observer(
                         panel,

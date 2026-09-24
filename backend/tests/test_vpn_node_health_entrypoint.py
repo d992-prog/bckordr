@@ -350,9 +350,15 @@ def test_database_and_panel_failures_map_to_closed_receipts(
 
     class UnavailablePanel:
         def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
             from app.services.vpn_xui_node_http import NodePanelError
 
             raise NodePanelError("vpn_xui_request_failed")
+
+        def __exit__(self, *_args):
+            return False
 
     monkeypatch.setattr(entrypoint, "NodePanelSession", UnavailablePanel)
     code, stdout, stderr = run(
@@ -416,7 +422,15 @@ def test_request_is_bounded_to_health_protocol_limit(
 
 @pytest.mark.parametrize(
     "failure",
-    ["non_root", "config_file", "config_payload", "database", "token_file", "token_decode"],
+    [
+        "non_root",
+        "config_file",
+        "config_payload",
+        "database",
+        "token_file",
+        "token_decode",
+        "token_syntax",
+    ],
 )
 def test_valid_request_maps_trusted_input_failures_to_one_static_receipt(
     monkeypatch, entrypoint, node, target, tmp_path, failure
@@ -466,12 +480,16 @@ def test_valid_request_maps_trusted_input_failures_to_one_static_receipt(
             return original_read(path, limit=limit)
 
         monkeypatch.setattr(entrypoint, "_read_private_file", reject_token)
-    elif failure == "token_decode":
+    elif failure in {"token_decode", "token_syntax"}:
         original_read = entrypoint._read_private_file
 
         def invalid_token(path, *, limit):
             if path == token:
-                return b"\xff" + SECRET.encode()
+                return (
+                    b"\xff" + SECRET.encode()
+                    if failure == "token_decode"
+                    else f"invalid token {SECRET}".encode()
+                )
             return original_read(path, limit=limit)
 
         monkeypatch.setattr(entrypoint, "_read_private_file", invalid_token)
