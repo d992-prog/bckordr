@@ -1213,24 +1213,26 @@ def create_validated_backup(
     """Create one validated set without exposing database credentials."""
     database, pg_environment = _postgres_environment(db_url)
     _require_secure_platform()
-    with _bound_backup_root(config.backup_root) as (root, validate_root):
-        with _exclusive_backup_root(root):
+    with (
+        _bound_backup_root(config.backup_root) as (root, validate_root),
+        _exclusive_backup_root(root),
+    ):
+        validate_root()
+        try:
+            return _create_validated_backup_locked(
+                config,
+                database,
+                pg_environment,
+                root,
+                validate_root=validate_root,
+                runner=runner,
+                now=now,
+                nonce=nonce,
+                monotonic=monotonic,
+                replace=replace,
+            )
+        finally:
             validate_root()
-            try:
-                return _create_validated_backup_locked(
-                    config,
-                    database,
-                    pg_environment,
-                    root,
-                    validate_root=validate_root,
-                    runner=runner,
-                    now=now,
-                    nonce=nonce,
-                    monotonic=monotonic,
-                    replace=replace,
-                )
-            finally:
-                validate_root()
 
 
 def _create_validated_backup_locked(
