@@ -230,6 +230,71 @@ async def test_probe_rechecks_candidate_attempt_timestamp_after_worker_lock(
 
 
 @pytest.mark.asyncio
+async def test_sqlite_process_lease_prevents_overlapping_or_duplicate_probes(
+    session_factory,
+) -> None:
+    async with session_factory() as session:
+        first_worker = worker("lease-first")
+        second_worker = worker("lease-second")
+        session.add_all([first_worker, second_worker])
+        await session.flush()
+        first_endpoint = endpoint(first_worker, inbound_id=21)
+        second_endpoint = endpoint(second_worker, inbound_id=22)
+        session.add_all([first_endpoint, second_endpoint])
+        await session.commit()
+        expected = [first_endpoint.id, second_endpoint.id]
+
+    first_started = asyncio.Event()
+    duplicate_started = asyncio.Event()
+    release_first = asyncio.Event()
+    calls: list[int] = []
+
+    async def transport(_snapshot, request, *, now_ms):
+        del now_ms
+        calls.append(request.target.endpoint_id)
+        if len(calls) == 1:
+            first_started.set()
+            await release_first.wait()
+        else:
+            duplicate_started.set()
+        return VpnNodeHealthReceipt("healthy", None, "running")
+
+    first = asyncio.create_task(
+        probe_next_vpn_endpoint(
+            session_factory,
+            KNOWN_HOSTS,
+            snapshot_loader=lambda *_: object(),
+            transport=transport,
+            now=lambda: NOW,
+        )
+    )
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second = asyncio.create_task(
+        probe_next_vpn_endpoint(
+            session_factory,
+            KNOWN_HOSTS,
+            snapshot_loader=lambda *_: object(),
+            transport=transport,
+            now=lambda: NOW + timedelta(seconds=1),
+        )
+    )
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(duplicate_started.wait(), timeout=0.1)
+        assert calls == [expected[0]]
+        assert second.done() is False
+        release_first.set()
+        assert await asyncio.gather(first, second) == [True, True]
+        assert calls == expected
+    finally:
+        release_first.set()
+        for task in (first, second):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("worker_changes", "endpoint_changes"),
     [

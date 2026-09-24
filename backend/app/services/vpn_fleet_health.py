@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, select, text
 
 from app.db.base import utcnow
 from app.db.models import (
@@ -36,6 +37,29 @@ _MAINTENANCE_ACTIONS = (*VPN_MUTATION_ACTIONS, "vpn_check")
 _CONTROL_STATES = ("queued", "claimed", "uncertain")
 _TRANSPORT_ERROR = "vpn_node_health_transport_failed"
 _INTERNAL_ERROR = "vpn_node_health_internal"
+# Signed int64 encoding of the fixed ASCII namespace ``VLTRXHLT``.
+_POSTGRES_FLEET_HEALTH_LOCK_ID = 6_218_437_898_136_996_948
+_POSTGRES_FLEET_HEALTH_LOCK = text(
+    f"SELECT pg_try_advisory_xact_lock({_POSTGRES_FLEET_HEALTH_LOCK_ID})"
+)
+_LOCAL_PROBE_LOCKS: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+    WeakKeyDictionary()
+)
+
+
+def _dialect_name(session) -> str:
+    dialect = getattr(session.get_bind(), "dialect", None)
+    return str(getattr(dialect, "name", ""))
+
+
+def _local_probe_lock() -> asyncio.Lock:
+    """Serialize non-PostgreSQL probes in this process and running event loop."""
+    loop = asyncio.get_running_loop()
+    lock = _LOCAL_PROBE_LOCKS.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _LOCAL_PROBE_LOCKS[loop] = lock
+    return lock
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -145,7 +169,19 @@ async def probe_next_vpn_endpoint(
 ) -> bool:
     """Probe at most one eligible endpoint while holding worker and endpoint locks."""
     async with session_factory() as session:
+        local_lock = None
+        local_lock_acquired = False
         try:
+            if _dialect_name(session) == "postgresql":
+                if not bool(await session.scalar(_POSTGRES_FLEET_HEALTH_LOCK)):
+                    await session.rollback()
+                    return False
+            else:
+                # SQLite/dev fallback is process-local; production PostgreSQL uses
+                # the transaction-scoped advisory lock above across app instances.
+                local_lock = _local_probe_lock()
+                await local_lock.acquire()
+                local_lock_acquired = True
             with session.no_autoflush:
                 candidate = (
                     await session.execute(
@@ -266,3 +302,7 @@ async def probe_next_vpn_endpoint(
         except BaseException:
             await session.rollback()
             raise
+        finally:
+            if local_lock_acquired:
+                assert local_lock is not None
+                local_lock.release()
