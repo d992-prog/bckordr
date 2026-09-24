@@ -9,10 +9,11 @@ User=root
 Group=root
 WorkingDirectory=/opt/domain-drop-catcher/backend
 EnvironmentFile=/opt/domain-drop-catcher/backend/.env
-Environment=VPN_BACKUP_DIRECTORY=/var/backups/domain-drop-catcher VPN_BACKUP_ENV_FILE=/opt/domain-drop-catcher/backend/.env VPN_BACKUP_SYSTEMD_UNIT=/etc/systemd/system/domain-drop-control.service VPN_BACKUP_NGINX_DIRECTORY=/etc/nginx VPN_BACKUP_FRONTEND_DIST=/opt/domain-drop-catcher/frontend/dist
+EnvironmentFile=/etc/veltrix-operations.env
+Environment=VPN_BACKUP_ENV_FILE=/opt/domain-drop-catcher/backend/.env VPN_BACKUP_SYSTEMD_UNIT=/etc/systemd/system/domain-drop-control.service VPN_BACKUP_NGINX_DIRECTORY=/etc/nginx VPN_BACKUP_FRONTEND_DIST=/opt/domain-drop-catcher/frontend/dist
 ExecStart=/opt/domain-drop-catcher/backend/.venv/bin/python -m app.operations.backup
 UMask=0077
-RuntimeMaxSec=75min
+TimeoutStartSec=75min
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -31,5 +32,5 @@ RestrictNamespaces=true
 SystemCallArchitectures=native
 CapabilityBoundingSet=
 AmbientCapabilities=
-ReadOnlyPaths=/opt/domain-drop-catcher/backend/.env /etc/systemd/system/domain-drop-control.service /etc/nginx /opt/domain-drop-catcher/frontend/dist
+ReadOnlyPaths=/opt/domain-drop-catcher/backend/.env /etc/veltrix-operations.env /etc/systemd/system/domain-drop-control.service /etc/nginx /opt/domain-drop-catcher/frontend/dist
 ReadWritePaths=/var/backups/domain-drop-catcher
