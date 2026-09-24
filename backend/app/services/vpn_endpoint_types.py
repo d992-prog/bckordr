@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Literal
-
 
 EndpointOperation = Literal["provision", "suspend", "revoke"]
 
@@ -30,3 +31,29 @@ class VpnEndpointTarget:
     short_id: str | None
     fingerprint: str | None
     flow: str | None
+
+
+_PUBLIC_IDENTITY_FIELDS = (
+    "inbound_id",
+    "public_host",
+    "port",
+    "protocol",
+    "transport",
+    "security",
+    "server_name",
+    "public_key",
+    "short_id",
+    "fingerprint",
+    "flow",
+)
+
+
+def public_endpoint_fingerprint(target: VpnEndpointTarget) -> str:
+    payload = {name: getattr(target, name) for name in _PUBLIC_IDENTITY_FIELDS}
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(canonical).hexdigest()
