@@ -103,6 +103,8 @@ def test_operations_services_are_root_only_hardened_oneshots(
 def test_backup_service_exposes_only_required_backup_paths() -> None:
     service = _unit("veltrix-backup.service")["Service"]
 
+    assert service["CapabilityBoundingSet"] == ""
+    assert service["AmbientCapabilities"] == ""
     assert service["ReadOnlyPaths"].split() == [
         ENV_FILE,
         OPERATIONS_ENV_FILE,
@@ -121,12 +123,15 @@ def test_backup_service_exposes_only_required_backup_paths() -> None:
 def test_watchdog_service_owns_only_its_private_state_directory() -> None:
     service = _unit("veltrix-watchdog.service")["Service"]
 
+    assert service["CapabilityBoundingSet"] == "CAP_DAC_READ_SEARCH"
+    assert service["AmbientCapabilities"] == "CAP_DAC_READ_SEARCH"
     assert service["StateDirectory"] == "veltrix-watchdog"
     assert service["StateDirectoryMode"] == "0700"
     assert "Environment" not in service
     assert service["ReadOnlyPaths"].split() == [
         ENV_FILE,
         OPERATIONS_ENV_FILE,
+        "/etc/veltrix/known_hosts",
         "-/var/backups/domain-drop-catcher",
     ]
 
@@ -136,6 +141,7 @@ def test_last_environment_file_pins_paths_against_app_env_overrides() -> None:
 
     assert fixed == {
         "VPN_BACKUP_DIRECTORY": "/var/backups/domain-drop-catcher",
+        "VPN_CONTROL_KNOWN_HOSTS_PATH": "/etc/veltrix/known_hosts",
         "VPN_WATCHDOG_STATE_PATH": "/var/lib/veltrix-watchdog/state.json",
     }
 
@@ -143,10 +149,14 @@ def test_last_environment_file_pins_paths_against_app_env_overrides() -> None:
     # root-owned operations file must override conflicting app .env values.
     app_environment = {
         "VPN_BACKUP_DIRECTORY": "/tmp/unconfined-backups",
+        "VPN_CONTROL_KNOWN_HOSTS_PATH": "/tmp/unconfined-known-hosts",
         "VPN_WATCHDOG_STATE_PATH": "/tmp/unconfined-watchdog.json",
     }
     effective = app_environment | fixed
     assert effective["VPN_BACKUP_DIRECTORY"] == "/var/backups/domain-drop-catcher"
+    assert effective["VPN_CONTROL_KNOWN_HOSTS_PATH"] == (
+        "/etc/veltrix/known_hosts"
+    )
     assert effective["VPN_WATCHDOG_STATE_PATH"] == (
         "/var/lib/veltrix-watchdog/state.json"
     )
