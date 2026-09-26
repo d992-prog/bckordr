@@ -311,7 +311,6 @@ def _bound_backup_root(path: Path, *, stable: bool = False):
     absolute = Path(os.path.abspath(path))
     parent_fd = -1
     root_fd = -1
-    pending_close_fd = -1
     try:
         if not path.is_absolute() or not _same_path(path, absolute) or absolute == Path(
             absolute.anchor
@@ -354,9 +353,7 @@ def _bound_backup_root(path: Path, *, stable: bool = False):
                 raise
             previous_fd = parent_fd
             parent_fd = child_fd
-            pending_close_fd = previous_fd
-            os.close(pending_close_fd)
-            pending_close_fd = -1
+            os.close(previous_fd)
             parent_expected = opened
         root_name = absolute.name
         root_before = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
@@ -383,7 +380,7 @@ def _bound_backup_root(path: Path, *, stable: bool = False):
         )
         validate()
     except BackupError:
-        for descriptor in (root_fd, parent_fd, pending_close_fd):
+        for descriptor in (root_fd, parent_fd):
             if descriptor >= 0:
                 try:
                     os.close(descriptor)
@@ -391,7 +388,7 @@ def _bound_backup_root(path: Path, *, stable: bool = False):
                     pass
         raise
     except (OSError, RuntimeError, ValueError):
-        for descriptor in (root_fd, parent_fd, pending_close_fd):
+        for descriptor in (root_fd, parent_fd):
             if descriptor >= 0:
                 try:
                     os.close(descriptor)
@@ -402,7 +399,7 @@ def _bound_backup_root(path: Path, *, stable: bool = False):
         yield absolute, root_fd, validate
     finally:
         close_failed = False
-        for descriptor in (root_fd, parent_fd, pending_close_fd):
+        for descriptor in (root_fd, parent_fd):
             if descriptor < 0:
                 continue
             try:

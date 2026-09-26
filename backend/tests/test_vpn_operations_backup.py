@@ -1148,12 +1148,13 @@ def test_bound_root_closes_unowned_child_when_fstat_fails(
     assert (open_attempts, close_attempts) == ([10, 11], [11, 10])
 
 
-def test_bound_root_retries_traversal_descriptor_after_close_failure(
+def test_bound_root_does_not_retry_failed_close_and_closes_owned_descriptors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = Path(Path.cwd().anchor) / "parent" / "backups"
     descriptors = iter([10, 11])
-    open_descriptors: set[int] = set()
+    owned_descriptors: set[int] = set()
+    reused_descriptors: set[int] = set()
     close_attempts: list[int] = []
     directory = SimpleNamespace(
         st_mode=stat.S_IFDIR | 0o700,
@@ -1167,16 +1168,21 @@ def test_bound_root_retries_traversal_descriptor_after_close_failure(
 
     def open_descriptor(*_args, **_kwargs) -> int:
         descriptor = next(descriptors)
-        open_descriptors.add(descriptor)
+        owned_descriptors.add(descriptor)
         return descriptor
 
     def close(descriptor: int) -> None:
         close_attempts.append(descriptor)
         if descriptor == 10 and close_attempts.count(descriptor) == 1:
+            owned_descriptors.remove(descriptor)
+            reused_descriptors.add(descriptor)
             raise OSError("synthetic close failure")
-        if descriptor not in open_descriptors:
+        if descriptor in owned_descriptors:
+            owned_descriptors.remove(descriptor)
+        elif descriptor in reused_descriptors:
+            reused_descriptors.remove(descriptor)
+        else:
             raise AssertionError("descriptor closed more than once")
-        open_descriptors.remove(descriptor)
 
     monkeypatch.setattr(backup_module.os, "O_DIRECTORY", 0, raising=False)
     monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0, raising=False)
@@ -1193,8 +1199,9 @@ def test_bound_root_retries_traversal_descriptor_after_close_failure(
     ):
         pytest.fail("root binding unexpectedly succeeded")
 
-    assert close_attempts.count(10) == 2
-    assert open_descriptors == set()
+    assert close_attempts == [10, 11]
+    assert owned_descriptors == set()
+    assert reused_descriptors == {10}
 
 
 def test_bound_root_cleanup_attempts_every_close_after_error(
