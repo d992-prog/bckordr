@@ -26,6 +26,7 @@ from app.operations.backup import (
 NOW = datetime(2026, 9, 24, 3, 10, 11, tzinfo=UTC)
 NONCE = "abcdef0123456789"
 PASSWORD = "never-print-this-password"
+_BOUND_BACKUP_ROOT = backup_module._bound_backup_root
 POSIX_SNAPSHOT_ONLY = pytest.mark.skipif(
     not backup_module._DIR_FD_SUPPORTED,
     reason="descriptor-anchored snapshot inspection is POSIX-only",
@@ -668,6 +669,65 @@ def test_validated_latest_success_is_anchored_during_transient_path_swap(
     assert swapped and restored
 
 
+def test_snapshot_cleanup_attempts_every_close_after_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_name = "20260924T031011.000000Z-aaaaaaaa"
+    manifest = b'{"files":[],"version":1}\n'
+    metadata = backup_module._json_bytes(
+        {
+            "created_at": "2026-09-24T03:10:11Z",
+            "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
+            "set_name": set_name,
+            "status": "successful",
+            "version": 1,
+        }
+    )
+    close_attempts: list[str | int] = []
+
+    def snapshot(name: str, raw: bytes) -> SimpleNamespace:
+        def close() -> None:
+            close_attempts.append(name)
+            if name == "manifest":
+                raise OSError("synthetic close failure")
+
+        return SimpleNamespace(raw=raw, validate=lambda: None, close=close)
+
+    files = iter(
+        [
+            snapshot("marker", metadata),
+            snapshot("metadata", metadata),
+            snapshot("manifest", manifest),
+        ]
+    )
+    directory = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o700,
+        st_dev=1,
+        st_ino=2,
+        st_mtime_ns=1,
+        st_ctime_ns=1,
+        st_file_attributes=0,
+    )
+    monkeypatch.setattr(
+        backup_module, "_read_bounded_file_at", lambda *_args: next(files)
+    )
+    monkeypatch.setattr(backup_module.os, "O_DIRECTORY", 0, raising=False)
+    monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0, raising=False)
+    monkeypatch.setattr(backup_module.os, "stat", lambda *_args, **_kwargs: directory)
+    monkeypatch.setattr(backup_module.os, "open", lambda *_args, **_kwargs: 40)
+    monkeypatch.setattr(backup_module.os, "fstat", lambda _descriptor: directory)
+    monkeypatch.setattr(
+        backup_module.os,
+        "close",
+        lambda descriptor: close_attempts.append(descriptor),
+    )
+
+    with pytest.raises(BackupError, match="^backup_snapshot_invalid$"):
+        backup_module._inspect_latest_success_fd(10)
+
+    assert close_attempts == ["manifest", "metadata", "marker", 40]
+
+
 def test_success_uses_exact_bounded_commands_and_private_pg_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1041,6 +1101,109 @@ def test_backup_root_rejects_writable_non_sticky_ancestor(tmp_path: Path) -> Non
         _run(config, FakeRunner())
 
     assert list(config.backup_root.iterdir()) == []
+
+
+def test_bound_root_closes_unowned_child_when_fstat_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(Path.cwd().anchor) / "parent" / "backups"
+    descriptors = iter([10, 11])
+    open_attempts: list[int] = []
+    close_attempts: list[int] = []
+    directory = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o700,
+        st_uid=1000,
+        st_dev=1,
+        st_ino=10,
+        st_mtime_ns=1,
+        st_ctime_ns=1,
+        st_file_attributes=0,
+    )
+
+    def fstat(descriptor: int) -> SimpleNamespace:
+        if descriptor == 11:
+            raise OSError("synthetic fstat failure")
+        return directory
+
+    def open_descriptor(*_args, **_kwargs) -> int:
+        descriptor = next(descriptors)
+        open_attempts.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(backup_module.os, "O_DIRECTORY", 0, raising=False)
+    monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0, raising=False)
+    monkeypatch.setattr(backup_module.os, "geteuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(backup_module, "_same_path", lambda *_args: True)
+    monkeypatch.setattr(backup_module.os, "open", open_descriptor)
+    monkeypatch.setattr(backup_module.os, "stat", lambda *_args, **_kwargs: directory)
+    monkeypatch.setattr(backup_module.os, "fstat", fstat)
+    monkeypatch.setattr(backup_module.os, "close", close_attempts.append)
+
+    with pytest.raises(BackupError, match="^backup_root_invalid$"):
+        with _BOUND_BACKUP_ROOT(root, stable=True):
+            pytest.fail("root binding unexpectedly succeeded")
+
+    assert (open_attempts, close_attempts) == ([10, 11], [11, 10])
+
+
+def test_bound_root_cleanup_attempts_every_close_after_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(Path.cwd().anchor) / "backups"
+    descriptors = iter([10, 11])
+    open_attempts: list[int] = []
+    close_attempts: list[int] = []
+    parent = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o700,
+        st_uid=1000,
+        st_dev=1,
+        st_ino=10,
+        st_mtime_ns=1,
+        st_ctime_ns=1,
+        st_file_attributes=0,
+    )
+    bound = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o700,
+        st_uid=1000,
+        st_dev=1,
+        st_ino=11,
+        st_mtime_ns=1,
+        st_ctime_ns=1,
+        st_file_attributes=0,
+    )
+
+    def close(descriptor: int) -> None:
+        close_attempts.append(descriptor)
+        if descriptor == 11:
+            raise OSError("synthetic close failure")
+
+    def open_descriptor(*_args, **_kwargs) -> int:
+        descriptor = next(descriptors)
+        open_attempts.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(backup_module.os, "O_DIRECTORY", 0, raising=False)
+    monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0, raising=False)
+    monkeypatch.setattr(backup_module.os, "geteuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(backup_module, "_same_path", lambda *_args: True)
+    monkeypatch.setattr(backup_module.os, "open", open_descriptor)
+    monkeypatch.setattr(
+        backup_module.os,
+        "stat",
+        lambda *_args, **_kwargs: bound,
+    )
+    monkeypatch.setattr(
+        backup_module.os,
+        "fstat",
+        lambda descriptor: parent if descriptor == 10 else bound,
+    )
+    monkeypatch.setattr(backup_module.os, "close", close)
+
+    with pytest.raises(BackupError, match="^backup_root_invalid$"):
+        with _BOUND_BACKUP_ROOT(root, stable=True):
+            pass
+
+    assert (open_attempts, close_attempts) == ([10, 11], [11, 10])
 
 
 @pytest.mark.skipif(

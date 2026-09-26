@@ -129,8 +129,9 @@ class _SnapshotFile:
 
     def close(self) -> None:
         if self.descriptor >= 0:
-            os.close(self.descriptor)
+            descriptor = self.descriptor
             self.descriptor = -1
+            os.close(descriptor)
 
 
 @dataclass(slots=True)
@@ -340,10 +341,16 @@ def _bound_backup_root(path: Path, *, stable: bool = False):
             ):
                 raise BackupError("backup_root_invalid")
             child_fd = os.open(component, flags, dir_fd=parent_fd)
-            opened = os.fstat(child_fd)
-            if not _matches_identity(opened, before, directory=True):
-                os.close(child_fd)
-                raise BackupError("backup_root_invalid")
+            try:
+                opened = os.fstat(child_fd)
+                if not _matches_identity(opened, before, directory=True):
+                    raise BackupError("backup_root_invalid")
+            except (BackupError, OSError):
+                try:
+                    os.close(child_fd)
+                except OSError:
+                    pass
+                raise
             previous_fd = parent_fd
             parent_fd = child_fd
             os.close(previous_fd)
@@ -391,13 +398,16 @@ def _bound_backup_root(path: Path, *, stable: bool = False):
     try:
         yield absolute, root_fd, validate
     finally:
+        close_failed = False
         for descriptor in (root_fd, parent_fd):
             if descriptor < 0:
                 continue
             try:
                 os.close(descriptor)
             except OSError:
-                raise BackupError("backup_root_invalid") from None
+                close_failed = True
+        if close_failed:
+            raise BackupError("backup_root_invalid") from None
 
 
 def _reject_source_overlap(config: BackupConfig, root: Path) -> None:
@@ -1403,10 +1413,19 @@ def _inspect_latest_success_fd(root_fd: int) -> datetime | None:
             raise BackupError("backup_snapshot_invalid")
         return created_at
     finally:
+        close_failed = False
         for snapshot_file in reversed(files):
-            snapshot_file.close()
+            try:
+                snapshot_file.close()
+            except OSError:
+                close_failed = True
         if set_descriptor >= 0:
-            os.close(set_descriptor)
+            try:
+                os.close(set_descriptor)
+            except OSError:
+                close_failed = True
+        if close_failed:
+            raise BackupError("backup_snapshot_invalid") from None
 
 
 def validated_latest_success_at(root: Path) -> datetime | None:
