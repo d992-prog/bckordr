@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
 import math
 import os
@@ -50,6 +51,11 @@ _RECEIPTS = frozenset(
     }
 )
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_DNS_HOST = re.compile(
+    r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
+    r"(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*\Z"
+)
+_DOTTED_QUAD = re.compile(r"(?:[0-9]+\.){3}[0-9]+\Z")
 
 
 class VpnNodeTransportError(RuntimeError):
@@ -76,6 +82,12 @@ class VpnNodeTransportSnapshot:
     known_hosts: bytes = field(repr=False)
     password: str | None = field(default=None, repr=False)
     client_key: object | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class _KnownHostEntry:
+    line: str
+    key: bytes
 
 
 def _fail(phase: Literal["preflight", "mutation"] = "preflight") -> None:
@@ -167,26 +179,75 @@ def _read_private_file(path: Path, *, limit: int, owner_uid: int) -> bytes:
                 _fail()
 
 
-def _parse_literal_known_hosts(raw: bytes):
+def _canonical_known_hosts_host(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return (
+            _DOTTED_QUAD.fullmatch(host) is None
+            and _DNS_HOST.fullmatch(host) is not None
+        )
+    return str(address) == host
+
+
+def _canonical_known_hosts_target(target: str) -> bool:
+    if (
+        not target
+        or any(character in target for character in "*,?!|")
+        or target.startswith("@")
+        or any(character.isspace() for character in target)
+    ):
+        return False
+    if target.startswith("["):
+        match = re.fullmatch(r"\[([^\[\]]+)\]:([1-9][0-9]{0,4})", target)
+        if match is None:
+            return False
+        host, port_text = match.groups()
+        port = int(port_text)
+        return (
+            _canonical_known_hosts_host(host)
+            and port != 22
+            and port <= 65535
+            and port_text == str(port)
+        )
+    if "[" in target or "]" in target:
+        return False
+    return _canonical_known_hosts_host(target)
+
+
+def _known_hosts_target(host: str, port: int) -> str:
+    if type(host) is not str or type(port) is not int or not 1 <= port <= 65535:
+        _fail()
+    target = host if port == 22 else f"[{host}]:{port}"
+    if not _canonical_known_hosts_target(target):
+        _fail()
+    return target
+
+
+def _parse_literal_known_hosts(raw: bytes) -> dict[str, _KnownHostEntry]:
     try:
         text = raw.decode("ascii", errors="strict")
         lines = [line for line in text.splitlines() if line.strip()]
-        if len(lines) != 1:
+        if not lines:
             _fail()
-        fields = lines[0].split()
-        if len(fields) < 3 or fields[0].startswith("@"):
-            _fail()
-        hostname, key_type, encoded_key = fields[:3]
-        if (
-            any(character in hostname for character in "*,?!")
-            or hostname.startswith("|")
-            or key_type != "ssh-ed25519"
-        ):
-            _fail()
-        decoded = base64.b64decode(encoded_key, validate=True)
-        if not decoded:
-            _fail()
-        return hostname, asyncssh.import_known_hosts(text)
+        entries: dict[str, _KnownHostEntry] = {}
+        for line in lines:
+            fields = line.split()
+            if len(fields) != 3:
+                _fail()
+            target, key_type, encoded_key = fields[:3]
+            if (
+                not _canonical_known_hosts_target(target)
+                or key_type != "ssh-ed25519"
+                or target in entries
+            ):
+                _fail()
+            decoded = base64.b64decode(encoded_key, validate=True)
+            if not decoded:
+                _fail()
+            asyncssh.import_public_key(f"{key_type} {encoded_key}")
+            entries[target] = _KnownHostEntry(line, decoded)
+        return entries
     except VpnNodeTransportError:
         raise
     except (
@@ -200,11 +261,11 @@ def _parse_literal_known_hosts(raw: bytes):
 
 
 def _parse_known_hosts(raw: bytes, host: str, port: int):
-    hostname, known_hosts = _parse_literal_known_hosts(raw)
-    expected = host if port == 22 else f"[{host}]:{port}"
-    if hostname != expected:
+    entries = _parse_literal_known_hosts(raw)
+    entry = entries.get(_known_hosts_target(host, port))
+    if entry is None:
         _fail()
-    return known_hosts
+    return asyncssh.import_known_hosts(entry.line + "\n")
 
 
 def validate_known_hosts_file(path: Path, *, owner_uid: int) -> None:

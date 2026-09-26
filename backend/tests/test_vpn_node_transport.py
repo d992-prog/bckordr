@@ -92,6 +92,7 @@ async def test_real_loopback_server_uses_exact_pin_fixed_command_and_stdin_only(
     tmp_path,
 ):
     host_key = asyncssh.generate_private_key("ssh-ed25519")
+    unrelated_key = asyncssh.generate_private_key("ssh-ed25519")
     invocations = []
 
     async def process_factory(process):
@@ -127,7 +128,11 @@ async def test_real_loopback_server_uses_exact_pin_fixed_command_and_stdin_only(
             host="127.0.0.1",
             port=port,
             username="root",
-            known_hosts=line.encode(),
+            known_hosts=(
+                b"unrelated.example.test "
+                + unrelated_key.export_public_key("openssh")
+                + line.encode()
+            ),
             password=PASSWORD,
         )
         receipt = await execute_vpn_node_request(
@@ -273,6 +278,61 @@ async def test_wrong_pin_fails_before_remote_process_reads_stdin():
 def test_nonliteral_or_nonport_specific_pins_are_rejected(line):
     with pytest.raises(VpnNodeTransportError):
         _parse_known_hosts(line, "host", 2222)
+
+
+def test_multiple_literal_pins_validate_all_entries_and_select_only_exact_target(
+    monkeypatch,
+):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    first = b"node-one " + key.export_public_key("openssh")
+    second = b"[node-two]:2222 " + key.export_public_key("openssh")
+    imported = []
+    selected = object()
+    monkeypatch.setattr(
+        asyncssh,
+        "import_known_hosts",
+        lambda text: imported.append(text) or selected,
+    )
+
+    raw = b"\n" + first + b"\n" + second + b"\n"
+
+    assert _parse_known_hosts(raw, "node-one", 22) is selected
+    assert _parse_known_hosts(raw, "node-two", 2222) is selected
+    assert imported == [
+        first.rstrip(b"\n").decode() + "\n",
+        second.rstrip(b"\n").decode() + "\n",
+    ]
+
+
+def test_multiple_literal_pins_reject_malformed_duplicate_or_missing_targets():
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    first = b"node-one " + key.export_public_key("openssh")
+    second = b"[node-two]:2222 " + key.export_public_key("openssh")
+
+    for raw, host, port in (
+        (first + b"bad ssh-ed25519 AAAA\n", "node-one", 22),
+        (first + first, "node-one", 22),
+        (first + second, "missing", 22),
+        (first, "node-one", 2222),
+    ):
+        with pytest.raises(VpnNodeTransportError):
+            _parse_known_hosts(raw, host, port)
+
+
+@pytest.mark.parametrize(
+    ("target", "host", "port"),
+    (
+        ("node-1.example.test", "node-1.example.test", 22),
+        ("127.0.0.1", "127.0.0.1", 22),
+        ("2001:db8::1", "2001:db8::1", 22),
+        ("[2001:db8::1]:2222", "2001:db8::1", 2222),
+    ),
+)
+def test_literal_pin_targets_accept_supported_canonical_hosts(target, host, port):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    raw = target.encode() + b" " + key.export_public_key("openssh")
+
+    assert _parse_known_hosts(raw, host, port) is not None
 
 
 def test_exact_receipt_rejects_ambiguous_output():
@@ -559,6 +619,26 @@ def test_known_hosts_file_validator_reuses_strict_private_reader(monkeypatch):
     assert calls == [(path, MAX_KNOWN_HOSTS_BYTES, 33)]
 
 
+def test_shared_known_hosts_validator_accepts_multi_node_trust(monkeypatch):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    raw = (
+        b"node-one "
+        + key.export_public_key("openssh")
+        + b"[node-two]:2222 "
+        + key.export_public_key("openssh")
+    )
+    monkeypatch.setattr(
+        vpn_node_transport,
+        "_read_private_file",
+        lambda *_args, **_kwargs: raw,
+    )
+
+    vpn_node_transport.validate_known_hosts_file(
+        Path("/etc/veltrix/known_hosts"),
+        owner_uid=33,
+    )
+
+
 @pytest.mark.parametrize(
     "raw",
     (
@@ -566,6 +646,19 @@ def test_known_hosts_file_validator_reuses_strict_private_reader(monkeypatch):
         b"*.example.test ssh-ed25519 AAAA\n",
         VALID_HOST_PIN.replace(b"host ", b"host,alias ", 1),
         VALID_HOST_PIN + VALID_HOST_PIN,
+        VALID_HOST_PIN.replace(b"host ", b"[host]:22 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"[host]:022 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"[host]:65536 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"host:2222 ", 1),
+        VALID_HOST_PIN.rstrip(b"\n") + b" ignored-comment\n",
+        VALID_HOST_PIN.replace(b"host ", b"../host ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"Host.Example ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"-host.example ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"host..example ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"[../host]:2222 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"[HOST]:2222 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"127.000.000.001 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"2001:0db8::1 ", 1),
     ),
 )
 def test_known_hosts_file_validator_rejects_nonliteral_or_non_ed25519_content(

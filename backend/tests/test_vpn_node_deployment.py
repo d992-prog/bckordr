@@ -4,20 +4,26 @@ import asyncio
 import hashlib
 import importlib
 import json
-from pathlib import Path
+import os
 import stat
 import subprocess
 import sys
-from types import SimpleNamespace
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
+from types import SimpleNamespace
 
 import asyncssh
 import pytest
 
+from app.services import vpn_node_transport
 from app.services.vpn_node_bundle import IMPORT_PROBE_SENTINEL, build_node_bundle
 from app.services.vpn_node_journal import initialize_node_journal
-from app.services.vpn_node_transport import VpnNodeTransportSnapshot
-
+from app.services.vpn_node_transport import (
+    MAX_KNOWN_HOSTS_BYTES,
+    VpnNodeTransportSnapshot,
+)
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -280,6 +286,204 @@ def test_control_trust_is_exact_atomic_and_idempotent(tmp_path: Path) -> None:
             owner_uid=owner_uid,
             require_posix=False,
         )
+
+
+def test_control_trust_appends_distinct_target_and_preserves_existing_bytes(
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    first = b"node-one " + key.export_public_key("openssh").rstrip(b"\n")
+    second = b"[node-two]:2222 " + key.export_public_key("openssh")
+    _private_file(target, first)
+
+    assert deployment.install_control_known_hosts(
+        second,
+        target=target,
+        host="node-two",
+        port=2222,
+        owner_uid=parent.stat().st_uid,
+        require_posix=False,
+    ) == "installed"
+    assert target.read_bytes() == first + b"\n" + second
+
+
+def test_control_trust_same_pin_is_unchanged_and_rotation_is_refused(
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    original_key = asyncssh.generate_private_key("ssh-ed25519")
+    replacement_key = asyncssh.generate_private_key("ssh-ed25519")
+    original = b"node-one " + original_key.export_public_key("openssh").rstrip(b"\n")
+    _private_file(target, original)
+    before = target.stat()
+    owner_uid = parent.stat().st_uid
+
+    assert deployment.install_control_known_hosts(
+        original + b"\n",
+        target=target,
+        host="node-one",
+        port=22,
+        owner_uid=owner_uid,
+        require_posix=False,
+    ) == "unchanged"
+    assert target.read_bytes() == original
+    assert target.stat().st_ino == before.st_ino
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment.install_control_known_hosts(
+            b"node-one " + replacement_key.export_public_key("openssh"),
+            target=target,
+            host="node-one",
+            port=22,
+            owner_uid=owner_uid,
+            require_posix=False,
+        )
+    assert target.read_bytes() == original
+
+
+def test_control_trust_rejects_multi_entry_input_and_oversize_merge_without_mutation(
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    owner_uid = parent.stat().st_uid
+    first = b"node-one " + key.export_public_key("openssh")
+    second = b"node-two " + key.export_public_key("openssh")
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment.install_control_known_hosts(
+            first + second,
+            target=target,
+            host="node-one",
+            port=22,
+            owner_uid=owner_uid,
+            require_posix=False,
+        )
+    assert not target.exists()
+
+    incoming = b"new-node " + key.export_public_key("openssh")
+    suffix = b" " + key.export_public_key("openssh").rstrip(b"\n") + b"\n"
+    existing = b""
+    index = 0
+    while True:
+        for host_length in range(1, 254):
+            final_size = len(existing) + host_length + len(suffix)
+            if (
+                MAX_KNOWN_HOSTS_BYTES - len(incoming)
+                < final_size
+                <= MAX_KNOWN_HOSTS_BYTES
+            ):
+                labels = []
+                remaining = host_length
+                while remaining > 63:
+                    label_length = 62 if remaining == 64 else 63
+                    labels.append("z" * label_length)
+                    remaining -= label_length + 1
+                labels.append("z" * remaining)
+                existing += ".".join(labels).encode() + suffix
+                break
+        else:
+            existing += f"node-{index}".encode() + suffix
+            index += 1
+            continue
+        break
+    assert len(existing) <= MAX_KNOWN_HOSTS_BYTES < len(existing) + len(incoming)
+    _private_file(target, existing)
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment.install_control_known_hosts(
+            incoming,
+            target=target,
+            host="new-node",
+            port=22,
+            owner_uid=owner_uid,
+            require_posix=False,
+        )
+    assert target.read_bytes() == existing
+
+
+def test_control_trust_replace_failure_preserves_existing_content(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    original = b"node-one " + key.export_public_key("openssh")
+    incoming = b"node-two " + key.export_public_key("openssh")
+    _private_file(target, original)
+    replace_calls = []
+
+    def fail_replace(*args, **kwargs):
+        replace_calls.append((args, kwargs))
+        raise OSError("synthetic replace failure")
+
+    monkeypatch.setattr(deployment.os, "replace", fail_replace)
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment.install_control_known_hosts(
+            incoming,
+            target=target,
+            host="node-two",
+            port=22,
+            owner_uid=parent.stat().st_uid,
+            require_posix=False,
+        )
+    assert replace_calls
+    assert target.read_bytes() == original
+    assert not list(parent.glob(".known_hosts.*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="stdlib flock is POSIX-only")
+def test_control_trust_concurrent_distinct_appends_retain_both(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    owner_uid = parent.stat().st_uid
+    barrier = Barrier(2)
+    monkeypatch.setattr(deployment, "_secure_ancestors", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpn_node_transport,
+        "_validate_ancestors",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def install(host: str) -> str:
+        raw = host.encode() + b" " + key.export_public_key("openssh")
+        barrier.wait()
+        return deployment.install_control_known_hosts(
+            raw,
+            target=target,
+            host=host,
+            port=22,
+            owner_uid=owner_uid,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(install, ("node-one", "node-two")))
+
+    assert results == ["installed", "installed"]
+    assert set(target.read_bytes().splitlines()) == {
+        b"node-one " + key.export_public_key("openssh").rstrip(b"\n"),
+        b"node-two " + key.export_public_key("openssh").rstrip(b"\n"),
+    }
 
 
 def test_deployment_helper_is_deterministic_and_runs_one_shot(tmp_path: Path) -> None:
