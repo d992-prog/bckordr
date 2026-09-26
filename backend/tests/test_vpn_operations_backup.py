@@ -1139,11 +1139,62 @@ def test_bound_root_closes_unowned_child_when_fstat_fails(
     monkeypatch.setattr(backup_module.os, "fstat", fstat)
     monkeypatch.setattr(backup_module.os, "close", close_attempts.append)
 
-    with pytest.raises(BackupError, match="^backup_root_invalid$"):
-        with _BOUND_BACKUP_ROOT(root, stable=True):
-            pytest.fail("root binding unexpectedly succeeded")
+    with (
+        pytest.raises(BackupError, match="^backup_root_invalid$"),
+        _BOUND_BACKUP_ROOT(root, stable=True),
+    ):
+        pytest.fail("root binding unexpectedly succeeded")
 
     assert (open_attempts, close_attempts) == ([10, 11], [11, 10])
+
+
+def test_bound_root_retries_traversal_descriptor_after_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(Path.cwd().anchor) / "parent" / "backups"
+    descriptors = iter([10, 11])
+    open_descriptors: set[int] = set()
+    close_attempts: list[int] = []
+    directory = SimpleNamespace(
+        st_mode=stat.S_IFDIR | 0o700,
+        st_uid=1000,
+        st_dev=1,
+        st_ino=10,
+        st_mtime_ns=1,
+        st_ctime_ns=1,
+        st_file_attributes=0,
+    )
+
+    def open_descriptor(*_args, **_kwargs) -> int:
+        descriptor = next(descriptors)
+        open_descriptors.add(descriptor)
+        return descriptor
+
+    def close(descriptor: int) -> None:
+        close_attempts.append(descriptor)
+        if descriptor == 10 and close_attempts.count(descriptor) == 1:
+            raise OSError("synthetic close failure")
+        if descriptor not in open_descriptors:
+            raise AssertionError("descriptor closed more than once")
+        open_descriptors.remove(descriptor)
+
+    monkeypatch.setattr(backup_module.os, "O_DIRECTORY", 0, raising=False)
+    monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0, raising=False)
+    monkeypatch.setattr(backup_module.os, "geteuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(backup_module, "_same_path", lambda *_args: True)
+    monkeypatch.setattr(backup_module.os, "open", open_descriptor)
+    monkeypatch.setattr(backup_module.os, "stat", lambda *_args, **_kwargs: directory)
+    monkeypatch.setattr(backup_module.os, "fstat", lambda _descriptor: directory)
+    monkeypatch.setattr(backup_module.os, "close", close)
+
+    with (
+        pytest.raises(BackupError, match="^backup_root_invalid$"),
+        _BOUND_BACKUP_ROOT(root, stable=True),
+    ):
+        pytest.fail("root binding unexpectedly succeeded")
+
+    assert close_attempts.count(10) == 2
+    assert open_descriptors == set()
 
 
 def test_bound_root_cleanup_attempts_every_close_after_error(
@@ -1199,9 +1250,11 @@ def test_bound_root_cleanup_attempts_every_close_after_error(
     )
     monkeypatch.setattr(backup_module.os, "close", close)
 
-    with pytest.raises(BackupError, match="^backup_root_invalid$"):
-        with _BOUND_BACKUP_ROOT(root, stable=True):
-            pass
+    with (
+        pytest.raises(BackupError, match="^backup_root_invalid$"),
+        _BOUND_BACKUP_ROOT(root, stable=True),
+    ):
+        pass
 
     assert (open_attempts, close_attempts) == ([10, 11], [11, 10])
 
