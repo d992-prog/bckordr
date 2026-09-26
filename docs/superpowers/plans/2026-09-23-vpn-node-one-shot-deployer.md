@@ -9,10 +9,11 @@
 `backend/app/services/vpn_node_deployment.py` is a tracked administrative tool,
 not a daemon and not a runtime auto-deployer. It provides four bounded steps:
 
-1. `install_control_known_hosts()` installs one pre-reviewed literal
-   `ssh-ed25519` host line atomically. The final file must be owned by the actual
-   control-service effective UID with mode `0600`. Existing different trust is
-   refused, never replaced implicitly.
+1. `install_control_known_hosts()` merges one pre-reviewed literal
+   `ssh-ed25519` host line into the shared file atomically under a process-safe
+   lock. The final file is owned by root, group-readable by the actual control
+   service effective group and has mode `0640`. Existing trust is preserved; a
+   conflicting key for the same target is refused, never rotated implicitly.
 2. `build_node_deployment_helper()` creates a deterministic root-private helper
    zipapp containing the exact node bundle, exact `node.json`, deployment
    transaction and no API token.
@@ -46,9 +47,10 @@ second time to install. Unexpected identity, token or state changes return only
 - The newly captured literal Ed25519 host line for worker 15. Its accepted public
   fingerprint is `SHA256:/rAY4jmkHBS0RZnVjJfn0ZP/C1FgBgncM3FvY17SlZs`.
   The older ignored cache file is RSA and is not compatible with strict transport.
-- The actual production control-service effective UID. Do not infer it from the
-  repository service template: the last live checkpoint said root while the
-  tracked template says `www-data`.
+- The actual production control-service effective UID and GID. Do not infer
+  them from the repository service template: the last live checkpoint said
+  root while the tracked template says `www-data`. An empty unit `Group` means
+  the configured user's primary group.
 - Exact canonical node configuration containing only version 1, the verified
   loopback 3x-UI URL and the verified existing x-ui database path.
 - A fresh read-only snapshot of active code, token/config/journal metadata, Xray
@@ -62,7 +64,8 @@ second time to install. Unexpected identity, token or state changes return only
    entrypoint and transport suites on disposable Linux with the node's real
    `/usr/bin/python3` version.
 3. Install the durable control `known_hosts` through
-   `install_control_known_hosts()` and verify exact bytes, owner and `0600` mode.
+   `install_control_known_hosts()` and verify every retained pin, root ownership,
+   the exact control-service reader group and `0640` mode.
 4. Build the helper through `build_node_deployment_helper()` into a private
    `0600` file; do not put it in the repository or logs.
 5. Load worker 15 and call `deploy_prebuilt_node_release()` with the exact helper

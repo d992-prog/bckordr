@@ -20,7 +20,14 @@ VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS=300
 VPN_FLEET_HEALTH_ENABLED=false
 VPN_FLEET_HEALTH_INTERVAL_SECONDS=120
 VPN_READY_NOTIFICATIONS_ENABLED=false
+VPN_BACKUP_ENABLED=false
+VPN_WATCHDOG_ENABLED=false
 ```
+
+Install, manual acceptance, isolated restore, alert/recovery rehearsal and
+rollback are documented in [Veltrix release operations](veltrix-release-operations.md).
+Installing those units does not enable their timers and does not authorize the
+public trial or payments.
 
 Do not enable the public path merely because the code is deployed. Every item
 below is required at the same time:
@@ -46,8 +53,9 @@ below is required at the same time:
 The admin panel and `GET /api/control/vpn/release-readiness` use the same
 authoritative evaluator. It is fail closed: any failed prerequisite keeps the
 release unready. Missing operational/watchdog or backup observations are shown
-in red and block the marker; this is expected until the later operations tasks
-wire those observations.
+in red and block the marker. The independent watchdog persists both observation
+groups; they remain missing or stale until the disabled jobs pass acceptance and
+run successfully.
 
 External endpoint confirmation is evidence that a real client used the VPN from
 outside the control network. The server stores the confirmation time and a hash
@@ -67,7 +75,7 @@ ID (with the normal admin audit record). It does **not** edit `.env`, enable
 `VPN_PUBLIC_TRIAL_ENABLED`, enable payment, provision or revoke profiles, or
 restart VPN services.
 
-Operator flow after the remaining observation collectors exist:
+Operator flow after backup and watchdog acceptance:
 
 1. Set explicit positive capacity for each release endpoint.
 2. Obtain fresh strict worker and endpoint health for the complete release fleet.
@@ -87,8 +95,10 @@ mechanism. Keep `VPN_FLEET_HEALTH_ENABLED=false` when code and migrations are
 first deployed. The interval defaults to 120 seconds and accepts only finite
 values from 30 through 3600 seconds. The separate endpoint freshness window is
 `VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS=300`. Enabling the scheduler also requires
-the existing `VPN_CONTROL_KNOWN_HOSTS_PATH` to name a private file containing
-the exact literal Ed25519 host-and-port pin for the target node.
+the existing `VPN_CONTROL_KNOWN_HOSTS_PATH` to name the shared root-owned,
+control-group-readable file containing one exact literal Ed25519 host-and-port
+pin for every target node. Onboarding appends to this file under a lock; it does
+not replace existing trust or rotate a conflicting key.
 
 Each cycle probes at most one eligible endpoint, choosing the oldest attempted
 health check by `health_checked_at` so one failing node cannot starve the rest
@@ -142,7 +152,7 @@ it during a health check.
    through the existing fleet-wide `vpn-update-all` path (and
    `vpn-autoconfig-all` where the standard configuration must be installed).
    There is no per-node custom implementation or update script.
-3. On one existing node, verify its stored credentials, exact Ed25519 pin,
+3. On one existing node, verify its stored credentials, selected exact Ed25519 pin,
    installed bundle hash, read-only health result and one real external client
    connection. Confirm the external test only after that connection succeeds.
 4. Enable only `VPN_FLEET_HEALTH_ENABLED=true` and observe the readiness panel.
@@ -150,7 +160,8 @@ it during a health check.
    to fail for the missing second distinct worker and for any unset capacity,
    stale health or missing external proof.
 5. Add the second VPS through the same one-time onboarding: create the worker,
-   install credentials and its exact Ed25519 pin, install the common bundle,
+   install credentials, append its exact Ed25519 pin to the shared trust file,
+   install the common bundle,
    create the REALITY endpoint, set capacity, obtain fresh strict health, and
    complete the external client test. Later nodes use this identical process.
 6. Keep payment and public trial activation out of this rollout. They require a
