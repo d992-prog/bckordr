@@ -71,7 +71,7 @@ HTTP_RESPONSE_BYTE_LIMIT = 4096
 OPERATIONAL_MAX_AGE_SECONDS = 600
 BACKUP_MAX_AGE_SECONDS = 36 * 60 * 60
 DATABASE_TIMEOUT_SECONDS = 10.0
-SERVICE_USER_BYTE_LIMIT = 256
+SERVICE_IDENTITY_BYTE_LIMIT = 512
 
 
 class AlertStateError(RuntimeError):
@@ -450,6 +450,7 @@ def collect_known_hosts_observation(
     *,
     runner: Callable[..., Any] = subprocess.run,
     user_lookup: Callable[[str], Any] | None = None,
+    group_lookup: Callable[[str], Any] | None = None,
     validator: Callable[..., None] = validate_known_hosts_file,
 ) -> ReadinessObservation:
     try:
@@ -466,6 +467,8 @@ def collect_known_hosts_observation(
                 "show",
                 "-p",
                 "User",
+                "-p",
+                "Group",
                 "--value",
                 "domain-drop-control.service",
             ],
@@ -479,22 +482,35 @@ def collect_known_hosts_observation(
         if (
             result.returncode != 0
             or type(raw_user) is not bytes
-            or len(raw_user) > SERVICE_USER_BYTE_LIMIT
+            or len(raw_user) > SERVICE_IDENTITY_BYTE_LIMIT
+            or not raw_user.endswith(b"\n")
         ):
-            raise ValueError("control_service_user_invalid")
-        username = raw_user.decode("ascii", errors="strict").removesuffix("\n")
-        if "\n" in username or "\r" in username or username != username.strip():
-            raise ValueError("control_service_user_invalid")
-        lookup = (
-            importlib.import_module("pwd").getpwnam
-            if user_lookup is None
-            else user_lookup
+            raise ValueError("control_service_identity_invalid")
+        identity = (
+            raw_user.decode("ascii", errors="strict").removesuffix("\n").split("\n")
         )
-        account = lookup(username or "root")
-        owner_uid = account.pw_uid
-        if type(owner_uid) is not int or owner_uid < 0:
-            raise ValueError("control_service_user_invalid")
-        validator(candidate, owner_uid=owner_uid)
+        if len(identity) != 2 or any(
+            any(character.isspace() for character in value) for value in identity
+        ):
+            raise ValueError("control_service_identity_invalid")
+        username, group_name = identity
+        if group_name:
+            lookup_group = (
+                importlib.import_module("grp").getgrnam
+                if group_lookup is None
+                else group_lookup
+            )
+            reader_gid = lookup_group(group_name).gr_gid
+        else:
+            lookup_user = (
+                importlib.import_module("pwd").getpwnam
+                if user_lookup is None
+                else user_lookup
+            )
+            reader_gid = lookup_user(username or "root").pw_gid
+        if type(reader_gid) is not int or reader_gid < 0:
+            raise ValueError("control_service_identity_invalid")
+        validator(candidate, expected_reader_gid=reader_gid)
         passed = True
     except Exception:  # noqa: BLE001 - every local failure is a static state.
         passed = False

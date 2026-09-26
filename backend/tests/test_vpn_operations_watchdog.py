@@ -850,27 +850,28 @@ def test_disk_observation_enforces_ten_percent_boundary(
     assert paths == ["/var/backups/domain-drop-catcher"]
 
 
-def test_known_hosts_observation_uses_control_service_uid_and_transport_validator() -> None:
+def test_known_hosts_observation_uses_explicit_control_service_group() -> None:
     runner_calls: list[tuple[list[str], dict[str, object]]] = []
-    lookup_calls: list[str] = []
+    group_lookup_calls: list[str] = []
     validator_calls: list[tuple[Path, int]] = []
 
     def runner(command: list[str], **kwargs: object):
         runner_calls.append((command, kwargs))
-        return SimpleNamespace(returncode=0, stdout=b"www-data\n")
+        return SimpleNamespace(returncode=0, stdout=b"www-data\nveltrix-control\n")
 
-    def user_lookup(username: str):
-        lookup_calls.append(username)
-        return SimpleNamespace(pw_uid=33)
+    def group_lookup(group_name: str):
+        group_lookup_calls.append(group_name)
+        return SimpleNamespace(gr_gid=44)
 
-    def validator(path: Path, *, owner_uid: int) -> None:
-        validator_calls.append((path, owner_uid))
+    def validator(path: Path, *, expected_reader_gid: int) -> None:
+        validator_calls.append((path, expected_reader_gid))
 
     observation = watchdog.collect_known_hosts_observation(
         _settings(VPN_CONTROL_KNOWN_HOSTS_PATH="/etc/veltrix/known_hosts"),
         NOW,
         runner=runner,
-        user_lookup=user_lookup,
+        user_lookup=lambda _username: pytest.fail("user lookup called"),
+        group_lookup=group_lookup,
         validator=validator,
     )
 
@@ -882,6 +883,8 @@ def test_known_hosts_observation_uses_control_service_uid_and_transport_validato
                 "show",
                 "-p",
                 "User",
+                "-p",
+                "Group",
                 "--value",
                 "domain-drop-control.service",
             ],
@@ -894,11 +897,11 @@ def test_known_hosts_observation_uses_control_service_uid_and_transport_validato
             },
         )
     ]
-    assert lookup_calls == ["www-data"]
-    assert validator_calls == [(Path("/etc/veltrix/known_hosts"), 33)]
+    assert group_lookup_calls == ["veltrix-control"]
+    assert validator_calls == [(Path("/etc/veltrix/known_hosts"), 44)]
 
 
-def test_known_hosts_observation_maps_empty_service_user_to_root() -> None:
+def test_known_hosts_observation_uses_service_users_primary_group() -> None:
     lookup_calls: list[str] = []
     validator_calls: list[tuple[Path, int]] = []
 
@@ -907,13 +910,39 @@ def test_known_hosts_observation_maps_empty_service_user_to_root() -> None:
         NOW,
         runner=lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0,
-            stdout=b"\n",
+            stdout=b"www-data\n\n",
         ),
         user_lookup=lambda username: (
-            lookup_calls.append(username) or SimpleNamespace(pw_uid=0)
+            lookup_calls.append(username) or SimpleNamespace(pw_gid=33)
         ),
-        validator=lambda path, *, owner_uid: validator_calls.append(
-            (path, owner_uid)
+        group_lookup=lambda _group: pytest.fail("group lookup called"),
+        validator=lambda path, *, expected_reader_gid: validator_calls.append(
+            (path, expected_reader_gid)
+        ),
+    )
+
+    assert observation.state == "pass"
+    assert lookup_calls == ["www-data"]
+    assert validator_calls == [(Path("/etc/veltrix/known_hosts"), 33)]
+
+
+def test_known_hosts_observation_maps_empty_service_identity_to_root_group() -> None:
+    lookup_calls: list[str] = []
+    validator_calls: list[tuple[Path, int]] = []
+
+    observation = watchdog.collect_known_hosts_observation(
+        _settings(VPN_CONTROL_KNOWN_HOSTS_PATH="/etc/veltrix/known_hosts"),
+        NOW,
+        runner=lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=b"\n\n",
+        ),
+        user_lookup=lambda username: (
+            lookup_calls.append(username) or SimpleNamespace(pw_gid=0)
+        ),
+        group_lookup=lambda _group: pytest.fail("group lookup called"),
+        validator=lambda path, *, expected_reader_gid: validator_calls.append(
+            (path, expected_reader_gid)
         ),
     )
 
@@ -923,36 +952,62 @@ def test_known_hosts_observation_maps_empty_service_user_to_root() -> None:
 
 
 @pytest.mark.parametrize(
-    ("path", "result", "lookup", "validator"),
+    ("path", "result", "user_lookup", "group_lookup", "validator"),
     (
         (
             "relative-known-hosts",
-            SimpleNamespace(returncode=0, stdout=b"www-data\n"),
-            lambda _username: SimpleNamespace(pw_uid=33),
+            SimpleNamespace(returncode=0, stdout=b"www-data\ncontrol\n"),
+            lambda _username: SimpleNamespace(pw_gid=33),
+            lambda _group: SimpleNamespace(gr_gid=44),
             lambda *_args, **_kwargs: None,
         ),
         (
             "/etc/veltrix/known_hosts",
             SimpleNamespace(returncode=1, stdout=b""),
-            lambda _username: SimpleNamespace(pw_uid=33),
+            lambda _username: SimpleNamespace(pw_gid=33),
+            lambda _group: SimpleNamespace(gr_gid=44),
             lambda *_args, **_kwargs: None,
         ),
         (
             "/etc/veltrix/known_hosts",
-            SimpleNamespace(returncode=0, stdout=b"x" * 257),
-            lambda _username: SimpleNamespace(pw_uid=33),
-            lambda *_args, **_kwargs: None,
-        ),
-        (
-            "/etc/veltrix/known_hosts",
-            SimpleNamespace(returncode=0, stdout=b"missing\n"),
-            lambda _username: (_ for _ in ()).throw(KeyError("missing")),
+            SimpleNamespace(returncode=0, stdout=b"x" * 513),
+            lambda _username: SimpleNamespace(pw_gid=33),
+            lambda _group: SimpleNamespace(gr_gid=44),
             lambda *_args, **_kwargs: None,
         ),
         (
             "/etc/veltrix/known_hosts",
             SimpleNamespace(returncode=0, stdout=b"www-data\n"),
-            lambda _username: SimpleNamespace(pw_uid=33),
+            lambda _username: SimpleNamespace(pw_gid=33),
+            lambda _group: SimpleNamespace(gr_gid=44),
+            lambda *_args, **_kwargs: None,
+        ),
+        (
+            "/etc/veltrix/known_hosts",
+            SimpleNamespace(returncode=0, stdout=b"www data\ncontrol\n"),
+            lambda _username: SimpleNamespace(pw_gid=33),
+            lambda _group: SimpleNamespace(gr_gid=44),
+            lambda *_args, **_kwargs: None,
+        ),
+        (
+            "/etc/veltrix/known_hosts",
+            SimpleNamespace(returncode=0, stdout=b"missing\n\n"),
+            lambda _username: (_ for _ in ()).throw(KeyError("missing")),
+            lambda _group: SimpleNamespace(gr_gid=44),
+            lambda *_args, **_kwargs: None,
+        ),
+        (
+            "/etc/veltrix/known_hosts",
+            SimpleNamespace(returncode=0, stdout=b"www-data\nmissing\n"),
+            lambda _username: SimpleNamespace(pw_gid=33),
+            lambda _group: (_ for _ in ()).throw(KeyError("missing")),
+            lambda *_args, **_kwargs: None,
+        ),
+        (
+            "/etc/veltrix/known_hosts",
+            SimpleNamespace(returncode=0, stdout=b"www-data\ncontrol\n"),
+            lambda _username: SimpleNamespace(pw_gid=33),
+            lambda _group: SimpleNamespace(gr_gid=44),
             lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad pin")),
         ),
     ),
@@ -960,14 +1015,16 @@ def test_known_hosts_observation_maps_empty_service_user_to_root() -> None:
 def test_known_hosts_observation_fails_closed(
     path: str,
     result: object,
-    lookup,
+    user_lookup,
+    group_lookup,
     validator,
 ) -> None:
     observation = watchdog.collect_known_hosts_observation(
         _settings(VPN_CONTROL_KNOWN_HOSTS_PATH=path),
         NOW,
         runner=lambda *_args, **_kwargs: result,
-        user_lookup=lookup,
+        user_lookup=user_lookup,
+        group_lookup=group_lookup,
         validator=validator,
     )
 

@@ -93,7 +93,7 @@ def test_operations_services_are_root_only_hardened_oneshots(
     assert service["RestrictSUIDSGID"] == "true"
     assert service["LockPersonality"] == "true"
     assert service["RestrictRealtime"] == "true"
-    assert service["ReadWritePaths"] == read_write_path
+    assert _directive_values(name, "Service", "ReadWritePaths") == [read_write_path]
     assert "/bin/sh" not in service["ExecStart"]
     assert "-c" not in service["ExecStart"].split()
     assert "TELEGRAM" not in service["ExecStart"]
@@ -103,14 +103,20 @@ def test_operations_services_are_root_only_hardened_oneshots(
 def test_backup_service_exposes_only_required_backup_paths() -> None:
     service = _unit("veltrix-backup.service")["Service"]
 
-    assert service["CapabilityBoundingSet"] == ""
-    assert service["AmbientCapabilities"] == ""
-    assert service["ReadOnlyPaths"].split() == [
-        ENV_FILE,
-        OPERATIONS_ENV_FILE,
-        "/etc/systemd/system/domain-drop-control.service",
-        "/etc/nginx",
-        "/opt/domain-drop-catcher/frontend/dist",
+    assert _directive_values(
+        "veltrix-backup.service", "Service", "CapabilityBoundingSet"
+    ) == [""]
+    assert _directive_values(
+        "veltrix-backup.service", "Service", "AmbientCapabilities"
+    ) == [""]
+    assert _directive_values(
+        "veltrix-backup.service", "Service", "ReadOnlyPaths"
+    ) == [
+        (
+            f"{ENV_FILE} {OPERATIONS_ENV_FILE} "
+            "/etc/systemd/system/domain-drop-control.service /etc/nginx "
+            "/opt/domain-drop-catcher/frontend/dist"
+        )
     ]
     assert service["Environment"].split() == [
         f"VPN_BACKUP_ENV_FILE={ENV_FILE}",
@@ -123,16 +129,22 @@ def test_backup_service_exposes_only_required_backup_paths() -> None:
 def test_watchdog_service_owns_only_its_private_state_directory() -> None:
     service = _unit("veltrix-watchdog.service")["Service"]
 
-    assert service["CapabilityBoundingSet"] == "CAP_DAC_READ_SEARCH"
-    assert service["AmbientCapabilities"] == "CAP_DAC_READ_SEARCH"
+    assert _directive_values(
+        "veltrix-watchdog.service", "Service", "CapabilityBoundingSet"
+    ) == [""]
+    assert _directive_values(
+        "veltrix-watchdog.service", "Service", "AmbientCapabilities"
+    ) == [""]
     assert service["StateDirectory"] == "veltrix-watchdog"
     assert service["StateDirectoryMode"] == "0700"
     assert "Environment" not in service
-    assert service["ReadOnlyPaths"].split() == [
-        ENV_FILE,
-        OPERATIONS_ENV_FILE,
-        "/etc/veltrix/known_hosts",
-        "-/var/backups/domain-drop-catcher",
+    assert _directive_values(
+        "veltrix-watchdog.service", "Service", "ReadOnlyPaths"
+    ) == [
+        (
+            f"{ENV_FILE} {OPERATIONS_ENV_FILE} /etc/veltrix/known_hosts "
+            "-/var/backups/domain-drop-catcher"
+        )
     ]
 
 

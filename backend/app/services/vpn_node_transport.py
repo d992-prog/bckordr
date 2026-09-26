@@ -56,6 +56,8 @@ _DNS_HOST = re.compile(
     r"(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*\Z"
 )
 _DOTTED_QUAD = re.compile(r"(?:[0-9]+\.){3}[0-9]+\Z")
+_IPV4_NUMBER = r"(?:0[xX][0-9a-fA-F]+|[0-9]+)"
+_LEGACY_IPV4 = re.compile(rf"{_IPV4_NUMBER}(?:\.{_IPV4_NUMBER}){{0,3}}\Z")
 
 
 class VpnNodeTransportError(RuntimeError):
@@ -103,6 +105,11 @@ def _effective_uid() -> int:
     return getter() if getter is not None else -1
 
 
+def _effective_gid() -> int:
+    getter = getattr(os, "getegid", None)
+    return getter() if getter is not None else -1
+
+
 def _reparse(info: os.stat_result) -> bool:
     return bool(getattr(info, "st_file_attributes", 0) & 1024)
 
@@ -116,6 +123,7 @@ def _identity(info: os.stat_result) -> tuple[object, ...]:
         info.st_ctime_ns,
         info.st_mode,
         info.st_uid,
+        info.st_gid,
     )
 
 
@@ -137,8 +145,14 @@ def _validate_ancestors(path: Path, owner_uid: int) -> None:
         _fail()
 
 
-def _read_private_file(path: Path, *, limit: int, owner_uid: int) -> bytes:
-    _validate_ancestors(path, owner_uid)
+def _read_stable_file(
+    path: Path,
+    *,
+    limit: int,
+    owner_uid: int,
+    mode: int,
+    expected_gid: int | None = None,
+) -> bytes:
     descriptor = None
     try:
         before = os.lstat(path)
@@ -147,7 +161,8 @@ def _read_private_file(path: Path, *, limit: int, owner_uid: int) -> bytes:
             or stat.S_ISLNK(before.st_mode)
             or _reparse(before)
             or before.st_uid != owner_uid
-            or stat.S_IMODE(before.st_mode) != 0o600
+            or (expected_gid is not None and before.st_gid != expected_gid)
+            or stat.S_IMODE(before.st_mode) != mode
             or not 0 < before.st_size <= limit
         ):
             _fail()
@@ -179,12 +194,36 @@ def _read_private_file(path: Path, *, limit: int, owner_uid: int) -> bytes:
                 _fail()
 
 
+def _read_private_file(path: Path, *, limit: int, owner_uid: int) -> bytes:
+    _validate_ancestors(path, owner_uid)
+    return _read_stable_file(
+        path,
+        limit=limit,
+        owner_uid=owner_uid,
+        mode=0o600,
+    )
+
+
+def _read_known_hosts_file(path: Path, *, expected_reader_gid: int) -> bytes:
+    if type(expected_reader_gid) is not int or expected_reader_gid < 0:
+        _fail()
+    _validate_ancestors(path, 0)
+    return _read_stable_file(
+        path,
+        limit=MAX_KNOWN_HOSTS_BYTES,
+        owner_uid=0,
+        expected_gid=expected_reader_gid,
+        mode=0o640,
+    )
+
+
 def _canonical_known_hosts_host(host: str) -> bool:
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
         return (
-            _DOTTED_QUAD.fullmatch(host) is None
+            _LEGACY_IPV4.fullmatch(host) is None
+            and _DOTTED_QUAD.fullmatch(host) is None
             and _DNS_HOST.fullmatch(host) is not None
         )
     return str(address) == host
@@ -268,11 +307,9 @@ def _parse_known_hosts(raw: bytes, host: str, port: int):
     return asyncssh.import_known_hosts(entry.line + "\n")
 
 
-def validate_known_hosts_file(path: Path, *, owner_uid: int) -> None:
-    raw = _read_private_file(
-        Path(path),
-        limit=MAX_KNOWN_HOSTS_BYTES,
-        owner_uid=owner_uid,
+def validate_known_hosts_file(path: Path, *, expected_reader_gid: int) -> None:
+    raw = _read_known_hosts_file(
+        Path(path), expected_reader_gid=expected_reader_gid
     )
     _parse_literal_known_hosts(raw)
 
@@ -296,10 +333,11 @@ def load_transport_snapshot(worker, known_hosts_path: Path) -> VpnNodeTransportS
     ):
         _fail()
     owner_uid = _effective_uid()
-    if owner_uid < 0:
+    reader_gid = _effective_gid()
+    if owner_uid < 0 or reader_gid < 0:
         _fail()
-    known_hosts_raw = _read_private_file(
-        Path(known_hosts_path), limit=MAX_KNOWN_HOSTS_BYTES, owner_uid=owner_uid
+    known_hosts_raw = _read_known_hosts_file(
+        Path(known_hosts_path), expected_reader_gid=reader_gid
     )
     _parse_known_hosts(known_hosts_raw, host, port)
     if password_mode:

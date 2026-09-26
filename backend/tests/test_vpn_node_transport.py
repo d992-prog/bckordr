@@ -25,7 +25,6 @@ from app.services.vpn_node_transport import (
     FIXED_NODE_COMMAND,
     FIXED_NODE_HEALTH_COMMAND,
     FIXED_NODE_RECEIPT_LOOKUP_COMMAND,
-    MAX_KNOWN_HOSTS_BYTES,
     MAX_STDERR_BYTES,
     NodeControlReceipt,
     VpnNodeTransportError,
@@ -476,15 +475,23 @@ def test_snapshot_loader_closes_ambient_auth_and_redacts_secrets(monkeypatch, tm
         b"host ssh-ed25519 " + host_key.export_public_key("openssh").split()[1] + b"\n"
     )
     key_path.write_bytes(private_key.export_private_key("openssh"))
-    values = {
-        known_hosts_path: known_hosts_path.read_bytes(),
-        key_path: key_path.read_bytes(),
-    }
+    private_reads = []
     monkeypatch.setattr(
         "app.services.vpn_node_transport._read_private_file",
-        lambda path, **_kwargs: values[Path(path)],
+        lambda path, **kwargs: private_reads.append((Path(path), kwargs))
+        or key_path.read_bytes(),
+    )
+    shared_reads = []
+    monkeypatch.setattr(
+        "app.services.vpn_node_transport._read_known_hosts_file",
+        lambda path, **kwargs: shared_reads.append((Path(path), kwargs))
+        or known_hosts_path.read_bytes(),
+        raising=False,
     )
     monkeypatch.setattr("app.services.vpn_node_transport._effective_uid", lambda: 1000)
+    monkeypatch.setattr(
+        "app.services.vpn_node_transport._effective_gid", lambda: 2000, raising=False
+    )
     worker = SimpleNamespace(
         ssh_host="host",
         ip_address=None,
@@ -498,6 +505,9 @@ def test_snapshot_loader_closes_ambient_auth_and_redacts_secrets(monkeypatch, tm
     assert str(key_path) not in rendered
     assert private_key.export_private_key("openssh").decode() not in rendered
     assert snapshot.password is None and snapshot.client_key is not None
+    assert shared_reads == [(known_hosts_path, {"expected_reader_gid": 2000})]
+    assert private_reads[0][0] == key_path
+    assert private_reads[0][1]["owner_uid"] == 1000
 
 
 def test_transport_error_is_secret_free():
@@ -541,10 +551,11 @@ def test_stderr_limit_is_finite():
     assert 0 < MAX_STDERR_BYTES <= 1024 * 1024
 
 
-def metadata(mode, *, uid=1000, size=1, attributes=0):
+def metadata(mode, *, uid=1000, gid=1000, size=1, attributes=0):
     return SimpleNamespace(
         st_mode=mode,
         st_uid=uid,
+        st_gid=gid,
         st_dev=1,
         st_ino=2,
         st_size=size,
@@ -600,23 +611,78 @@ def test_private_transport_file_is_nofollow_bounded_and_identity_checked(monkeyp
         _read_private_file(path, limit=3, owner_uid=1000)
 
 
-def test_known_hosts_file_validator_reuses_strict_private_reader(monkeypatch):
+def test_known_hosts_file_validator_reuses_strict_shared_reader(monkeypatch):
     path = Path("/etc/veltrix/known_hosts")
     calls = []
     validator = getattr(vpn_node_transport, "validate_known_hosts_file", None)
     assert validator is not None
     monkeypatch.setattr(
         vpn_node_transport,
-        "_read_private_file",
-        lambda target, *, limit, owner_uid: calls.append(
-            (target, limit, owner_uid)
-        )
-        or VALID_HOST_PIN,
+        "_read_known_hosts_file",
+        lambda target, *, expected_reader_gid: calls.append(
+            (target, expected_reader_gid)
+        ) or VALID_HOST_PIN,
+        raising=False,
     )
 
-    validator(path, owner_uid=33)
+    validator(path, expected_reader_gid=33)
 
-    assert calls == [(path, MAX_KNOWN_HOSTS_BYTES, 33)]
+    assert calls == [(path, 33)]
+
+
+@pytest.mark.parametrize(
+    "fault", ["symlink", "owner", "group", "mode", "directory", "reparse"]
+)
+def test_shared_known_hosts_rejects_untrusted_metadata(monkeypatch, fault):
+    path = Path("/etc/veltrix/known_hosts")
+    info = metadata(stat.S_IFREG | 0o640, uid=0, gid=33)
+    if fault == "symlink":
+        info.st_mode = stat.S_IFLNK | 0o777
+    elif fault == "owner":
+        info.st_uid = 33
+    elif fault == "group":
+        info.st_gid = 34
+    elif fault == "mode":
+        info.st_mode = stat.S_IFREG | 0o660
+    elif fault == "directory":
+        info.st_mode = stat.S_IFDIR | 0o640
+    else:
+        info.st_file_attributes = 1024
+    monkeypatch.setattr(
+        "app.services.vpn_node_transport._validate_ancestors", lambda *_args: None
+    )
+    monkeypatch.setattr(os, "lstat", lambda _path: info)
+    reader = getattr(vpn_node_transport, "_read_known_hosts_file", None)
+    assert reader is not None
+
+    with pytest.raises(VpnNodeTransportError):
+        reader(path, expected_reader_gid=33)
+
+
+def test_shared_known_hosts_is_nofollow_bounded_and_identity_checked(monkeypatch):
+    path = Path("/etc/veltrix/known_hosts")
+    before = metadata(stat.S_IFREG | 0o640, uid=0, gid=33, size=3)
+    changed_group = metadata(stat.S_IFREG | 0o640, uid=0, gid=34, size=3)
+    opened = []
+    reads = [b"abc", b""]
+    monkeypatch.setattr(
+        "app.services.vpn_node_transport._validate_ancestors", lambda *_args: None
+    )
+    monkeypatch.setattr(os, "lstat", lambda _path: before)
+    monkeypatch.setattr(
+        os, "open", lambda target, flags: opened.append((target, flags)) or 9
+    )
+    stats = [before, changed_group]
+    monkeypatch.setattr(os, "fstat", lambda _fd: stats.pop(0))
+    monkeypatch.setattr(os, "read", lambda _fd, _size: reads.pop(0))
+    monkeypatch.setattr(os, "close", lambda _fd: None)
+    reader = getattr(vpn_node_transport, "_read_known_hosts_file", None)
+    assert reader is not None
+
+    with pytest.raises(VpnNodeTransportError):
+        reader(path, expected_reader_gid=33)
+    if hasattr(os, "O_NOFOLLOW"):
+        assert opened[0][1] & os.O_NOFOLLOW
 
 
 def test_shared_known_hosts_validator_accepts_multi_node_trust(monkeypatch):
@@ -629,13 +695,14 @@ def test_shared_known_hosts_validator_accepts_multi_node_trust(monkeypatch):
     )
     monkeypatch.setattr(
         vpn_node_transport,
-        "_read_private_file",
+        "_read_known_hosts_file",
         lambda *_args, **_kwargs: raw,
+        raising=False,
     )
 
     vpn_node_transport.validate_known_hosts_file(
         Path("/etc/veltrix/known_hosts"),
-        owner_uid=33,
+        expected_reader_gid=33,
     )
 
 
@@ -658,6 +725,10 @@ def test_shared_known_hosts_validator_accepts_multi_node_trust(monkeypatch):
         VALID_HOST_PIN.replace(b"host ", b"[../host]:2222 ", 1),
         VALID_HOST_PIN.replace(b"host ", b"[HOST]:2222 ", 1),
         VALID_HOST_PIN.replace(b"host ", b"127.000.000.001 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"127.1 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"127.0.1 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"2130706433 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"0x7f000001 ", 1),
         VALID_HOST_PIN.replace(b"host ", b"2001:0db8::1 ", 1),
     ),
 )
@@ -669,13 +740,14 @@ def test_known_hosts_file_validator_rejects_nonliteral_or_non_ed25519_content(
     assert validator is not None
     monkeypatch.setattr(
         vpn_node_transport,
-        "_read_private_file",
+        "_read_known_hosts_file",
         lambda *_args, **_kwargs: raw,
+        raising=False,
     )
     monkeypatch.setattr(asyncssh, "import_known_hosts", lambda _text: object())
 
     with pytest.raises(VpnNodeTransportError):
-        validator(Path("/etc/veltrix/known_hosts"), owner_uid=33)
+        validator(Path("/etc/veltrix/known_hosts"), expected_reader_gid=33)
 
 
 def test_secure_ancestors_allow_only_root_or_service_uid(monkeypatch):

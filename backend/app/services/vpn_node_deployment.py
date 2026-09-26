@@ -832,7 +832,6 @@ async def deploy_prebuilt_node_release(
 def _control_known_hosts_lock(
     target: Path,
     *,
-    owner_uid: int,
     require_posix: bool,
 ):
     if not require_posix:
@@ -860,29 +859,72 @@ def _control_known_hosts_lock(
             | getattr(os, "O_NOFOLLOW", 0)
             | getattr(os, "O_CLOEXEC", 0)
         )
-        created = False
         try:
-            lock_fd = os.open(
-                lock_name,
-                flags | os.O_CREAT | os.O_EXCL,
-                0o600,
-                dir_fd=directory_fd,
-            )
-            created = True
-        except FileExistsError:
             lock_fd = os.open(lock_name, flags, dir_fd=directory_fd)
-        if created:
-            os.fchown(lock_fd, owner_uid, -1)
-            os.fchmod(lock_fd, 0o600)
-            os.fsync(lock_fd)
-            os.fsync(directory_fd)
+        except FileNotFoundError:
+            temporary_name = f"{lock_name}.{uuid4().hex}.tmp"
+            temporary_fd = None
+            try:
+                temporary_fd = os.open(
+                    temporary_name,
+                    flags | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                os.fchown(temporary_fd, 0, 0)
+                os.fchmod(temporary_fd, 0o600)
+                os.fsync(temporary_fd)
+                temporary_info = os.fstat(temporary_fd)
+                if (
+                    not stat.S_ISREG(temporary_info.st_mode)
+                    or temporary_info.st_uid != 0
+                    or temporary_info.st_gid != 0
+                    or stat.S_IMODE(temporary_info.st_mode) != 0o600
+                ):
+                    _fail()
+                try:
+                    os.link(
+                        temporary_name,
+                        lock_name,
+                        src_dir_fd=directory_fd,
+                        dst_dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    os.fsync(directory_fd)
+                except FileExistsError:
+                    pass
+            finally:
+                if temporary_fd is not None:
+                    os.close(temporary_fd)
+                try:
+                    os.unlink(temporary_name, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                except FileNotFoundError:
+                    pass
+            lock_fd = os.open(lock_name, flags, dir_fd=directory_fd)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         locked = True
         opened = os.fstat(lock_fd)
         linked = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
         if (
             not stat.S_ISREG(opened.st_mode)
-            or opened.st_uid != owner_uid
+            or not stat.S_ISREG(linked.st_mode)
+            or (opened.st_dev, opened.st_ino) != (linked.st_dev, linked.st_ino)
+        ):
+            _fail()
+        if (
+            opened.st_uid != 0
+            or opened.st_gid != 0
+            or stat.S_IMODE(opened.st_mode) != 0o600
+        ):
+            os.fchown(lock_fd, 0, 0)
+            os.fchmod(lock_fd, 0o600)
+            os.fsync(lock_fd)
+            opened = os.fstat(lock_fd)
+            linked = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
+        if (
+            opened.st_uid != 0
+            or opened.st_gid != 0
             or stat.S_IMODE(opened.st_mode) != 0o600
             or (opened.st_dev, opened.st_ino) != (linked.st_dev, linked.st_ino)
         ):
@@ -904,11 +946,31 @@ def _replace_control_known_hosts(
     target: Path,
     raw: bytes,
     *,
-    owner_uid: int,
+    reader_gid: int,
     require_posix: bool,
     directory_fd: int | None,
+    existed: bool,
 ) -> None:
     candidate = target.parent / f".{target.name}.{uuid4().hex}.tmp"
+    backup = target.parent / f".{target.name}.{uuid4().hex}.bak"
+    backup_created = False
+    retain_backup = False
+
+    def sync_directory() -> None:
+        if directory_fd is None:
+            _sync_directory(target.parent)
+        else:
+            os.fsync(directory_fd)
+
+    def unlink(name: Path) -> None:
+        if directory_fd is None:
+            name.unlink(missing_ok=True)
+        else:
+            try:
+                os.unlink(name.name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
     try:
         _write_exclusive(candidate, raw, directory_fd=directory_fd)
         descriptor = os.open(
@@ -918,14 +980,26 @@ def _replace_control_known_hosts(
         )
         try:
             if require_posix:
-                os.fchown(descriptor, owner_uid, -1)
-                os.fchmod(descriptor, 0o600)
+                os.fchown(descriptor, 0, reader_gid)
+                os.fchmod(descriptor, 0o640)
                 os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        if existed:
+            if directory_fd is None:
+                os.link(target, backup, follow_symlinks=False)
+            else:
+                os.link(
+                    target.name,
+                    backup.name,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            backup_created = True
+            sync_directory()
         if directory_fd is None:
             os.replace(candidate, target)
-            _sync_directory(target.parent)
         else:
             os.replace(
                 candidate.name,
@@ -933,15 +1007,36 @@ def _replace_control_known_hosts(
                 src_dir_fd=directory_fd,
                 dst_dir_fd=directory_fd,
             )
-            os.fsync(directory_fd)
+        try:
+            sync_directory()
+        except OSError:
+            if backup_created:
+                try:
+                    if directory_fd is None:
+                        os.replace(backup, target)
+                    else:
+                        os.replace(
+                            backup.name,
+                            target.name,
+                            src_dir_fd=directory_fd,
+                            dst_dir_fd=directory_fd,
+                        )
+                except OSError:
+                    retain_backup = True
+                    raise
+                else:
+                    backup_created = False
+            else:
+                unlink(target)
+            sync_directory()
+            raise
+        if backup_created:
+            unlink(backup)
+            backup_created = False
     finally:
-        if directory_fd is None:
-            candidate.unlink(missing_ok=True)
-        else:
-            try:
-                os.unlink(candidate.name, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass
+        unlink(candidate)
+        if backup_created and not retain_backup:
+            unlink(backup)
 
 
 def install_control_known_hosts(
@@ -950,7 +1045,7 @@ def install_control_known_hosts(
     target: Path,
     host: str,
     port: int,
-    owner_uid: int,
+    reader_gid: int,
     require_posix: bool = True,
 ) -> str:
     """Merge one immutable literal Ed25519 pin into control-service trust."""
@@ -959,34 +1054,37 @@ def install_control_known_hosts(
         VpnNodeTransportError,
         _known_hosts_target,
         _parse_literal_known_hosts,
-        _read_private_file,
+        _read_known_hosts_file,
     )
 
     try:
-        if type(raw) is not bytes or not 0 < len(raw) <= MAX_KNOWN_HOSTS_BYTES:
+        if (
+            type(raw) is not bytes
+            or not 0 < len(raw) <= MAX_KNOWN_HOSTS_BYTES
+            or type(reader_gid) is not int
+            or reader_gid < 0
+        ):
             _fail()
         incoming = _parse_literal_known_hosts(raw)
         expected_target = _known_hosts_target(host, port)
         if len(incoming) != 1 or expected_target not in incoming:
             _fail()
-        _secure_ancestors(target, owner_uid, require_posix=require_posix)
+        _secure_ancestors(target, 0, require_posix=require_posix)
         with _control_known_hosts_lock(
             target,
-            owner_uid=owner_uid,
             require_posix=require_posix,
         ) as directory_fd:
             existed = target.exists() or target.is_symlink()
             if existed:
                 if require_posix:
-                    existing_raw = _read_private_file(
+                    existing_raw = _read_known_hosts_file(
                         target,
-                        limit=MAX_KNOWN_HOSTS_BYTES,
-                        owner_uid=owner_uid,
+                        expected_reader_gid=reader_gid,
                     )
                 else:
                     _private_regular(
                         target,
-                        owner_uid,
+                        0,
                         bounded=MAX_KNOWN_HOSTS_BYTES,
                         enforce_metadata=False,
                     )
@@ -1014,9 +1112,10 @@ def install_control_known_hosts(
             _replace_control_known_hosts(
                 target,
                 merged,
-                owner_uid=owner_uid,
+                reader_gid=reader_gid,
                 require_posix=require_posix,
                 directory_fd=directory_fd,
+                existed=existed,
             )
             return "installed"
     except NodeDeploymentError:
