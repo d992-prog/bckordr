@@ -1,7 +1,7 @@
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -61,6 +61,36 @@ class Settings(BaseSettings):
     vpn_public_trial_plan_slug: str = Field(default="trial-7d", alias="VPN_PUBLIC_TRIAL_PLAN_SLUG")
     vpn_endpoint_health_max_age_seconds: int = Field(
         default=300, alias="VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS"
+    )
+    vpn_fleet_health_enabled: bool = Field(
+        default=False, alias="VPN_FLEET_HEALTH_ENABLED"
+    )
+    vpn_fleet_health_interval_seconds: float = Field(
+        default=120.0,
+        ge=30.0,
+        le=3600.0,
+        allow_inf_nan=False,
+        alias="VPN_FLEET_HEALTH_INTERVAL_SECONDS",
+    )
+    vpn_backup_enabled: bool = Field(default=False, alias="VPN_BACKUP_ENABLED")
+    vpn_backup_directory: str = Field(
+        default="/var/backups/domain-drop-catcher",
+        alias="VPN_BACKUP_DIRECTORY",
+    )
+    vpn_backup_retention: int = Field(
+        default=7,
+        ge=2,
+        le=31,
+        alias="VPN_BACKUP_RETENTION",
+    )
+    vpn_watchdog_enabled: bool = Field(default=False, alias="VPN_WATCHDOG_ENABLED")
+    vpn_alert_telegram_user_id: str = Field(
+        default="",
+        alias="VPN_ALERT_TELEGRAM_USER_ID",
+    )
+    vpn_watchdog_state_path: str = Field(
+        default="/var/lib/veltrix-watchdog/state.json",
+        alias="VPN_WATCHDOG_STATE_PATH",
     )
     vpn_ready_notifications_enabled: bool = Field(
         default=False, alias="VPN_READY_NOTIFICATIONS_ENABLED"
@@ -153,6 +183,29 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    @field_validator("vpn_backup_directory", "vpn_watchdog_state_path")
+    @classmethod
+    def _require_absolute_operations_path(cls, value: str) -> str:
+        candidate = value.strip()
+        if not candidate or not (
+            PurePosixPath(candidate).is_absolute()
+            or PureWindowsPath(candidate).is_absolute()
+        ):
+            raise ValueError("operations_path_must_be_absolute")
+        return candidate
+
+    @model_validator(mode="after")
+    def _validate_watchdog_alert_destination(self) -> "Settings":
+        user_id = self.vpn_alert_telegram_user_id.strip()
+        if self.vpn_watchdog_enabled and (
+            not user_id.isascii()
+            or not user_id.isdecimal()
+            or int(user_id) <= 0
+        ):
+            raise ValueError("watchdog_telegram_user_id_required")
+        self.vpn_alert_telegram_user_id = user_id
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

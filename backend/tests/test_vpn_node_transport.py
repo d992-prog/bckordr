@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from pathlib import Path
 import stat
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -12,8 +13,17 @@ import asyncssh
 import pytest
 
 from app.services import vpn_node_transport
+from app.services.vpn_endpoint_types import VpnEndpointTarget
+from app.services.vpn_node_health import (
+    MAX_HEALTH_PAYLOAD_BYTES,
+    VpnNodeHealthReceipt,
+    VpnNodeHealthRequest,
+    serialize_node_health_receipt,
+    serialize_node_health_request,
+)
 from app.services.vpn_node_transport import (
     FIXED_NODE_COMMAND,
+    FIXED_NODE_HEALTH_COMMAND,
     FIXED_NODE_RECEIPT_LOOKUP_COMMAND,
     MAX_STDERR_BYTES,
     NodeControlReceipt,
@@ -25,18 +35,44 @@ from app.services.vpn_node_transport import (
     _parse_known_hosts,
     _read_private_file,
     _validate_ancestors,
+    execute_vpn_node_health_over_ssh,
     execute_vpn_node_request,
     load_transport_snapshot,
     lookup_vpn_node_receipt,
 )
 
-
 OPERATION_ID = UUID("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
 DIGEST = "a" * 64
 PASSWORD = "synthetic-password-must-not-leak"
+HEALTH_NOW_MS = 1_700_000_000_000
 VALID_HOST_PIN = b"host " + asyncssh.generate_private_key(
     "ssh-ed25519"
 ).export_public_key("openssh")
+
+
+def health_request() -> VpnNodeHealthRequest:
+    target = VpnEndpointTarget(
+        endpoint_id=1,
+        worker_id=2,
+        inbound_id=3,
+        public_host="vpn.example.test",
+        port=443,
+        protocol="vless",
+        transport="tcp",
+        security="reality",
+        server_name="example.test",
+        public_key="A" * 43,
+        short_id="abcd",
+        fingerprint="chrome",
+        flow="xtls-rprx-vision",
+    )
+    return VpnNodeHealthRequest(target.worker_id, target, HEALTH_NOW_MS)
+
+
+def healthy_receipt() -> bytes:
+    return serialize_node_health_receipt(
+        VpnNodeHealthReceipt("healthy", None, "running")
+    )
 
 
 class PasswordServer(asyncssh.SSHServer):
@@ -55,6 +91,7 @@ async def test_real_loopback_server_uses_exact_pin_fixed_command_and_stdin_only(
     tmp_path,
 ):
     host_key = asyncssh.generate_private_key("ssh-ed25519")
+    unrelated_key = asyncssh.generate_private_key("ssh-ed25519")
     invocations = []
 
     async def process_factory(process):
@@ -90,7 +127,11 @@ async def test_real_loopback_server_uses_exact_pin_fixed_command_and_stdin_only(
             host="127.0.0.1",
             port=port,
             username="root",
-            known_hosts=line.encode(),
+            known_hosts=(
+                b"unrelated.example.test "
+                + unrelated_key.export_public_key("openssh")
+                + line.encode()
+            ),
             password=PASSWORD,
         )
         receipt = await execute_vpn_node_request(
@@ -238,6 +279,61 @@ def test_nonliteral_or_nonport_specific_pins_are_rejected(line):
         _parse_known_hosts(line, "host", 2222)
 
 
+def test_multiple_literal_pins_validate_all_entries_and_select_only_exact_target(
+    monkeypatch,
+):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    first = b"node-one " + key.export_public_key("openssh")
+    second = b"[node-two]:2222 " + key.export_public_key("openssh")
+    imported = []
+    selected = object()
+    monkeypatch.setattr(
+        asyncssh,
+        "import_known_hosts",
+        lambda text: imported.append(text) or selected,
+    )
+
+    raw = b"\n" + first + b"\n" + second + b"\n"
+
+    assert _parse_known_hosts(raw, "node-one", 22) is selected
+    assert _parse_known_hosts(raw, "node-two", 2222) is selected
+    assert imported == [
+        first.rstrip(b"\n").decode() + "\n",
+        second.rstrip(b"\n").decode() + "\n",
+    ]
+
+
+def test_multiple_literal_pins_reject_malformed_duplicate_or_missing_targets():
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    first = b"node-one " + key.export_public_key("openssh")
+    second = b"[node-two]:2222 " + key.export_public_key("openssh")
+
+    for raw, host, port in (
+        (first + b"bad ssh-ed25519 AAAA\n", "node-one", 22),
+        (first + first, "node-one", 22),
+        (first + second, "missing", 22),
+        (first, "node-one", 2222),
+    ):
+        with pytest.raises(VpnNodeTransportError):
+            _parse_known_hosts(raw, host, port)
+
+
+@pytest.mark.parametrize(
+    ("target", "host", "port"),
+    (
+        ("node-1.example.test", "node-1.example.test", 22),
+        ("127.0.0.1", "127.0.0.1", 22),
+        ("2001:db8::1", "2001:db8::1", 22),
+        ("[2001:db8::1]:2222", "2001:db8::1", 2222),
+    ),
+)
+def test_literal_pin_targets_accept_supported_canonical_hosts(target, host, port):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    raw = target.encode() + b" " + key.export_public_key("openssh")
+
+    assert _parse_known_hosts(raw, host, port) is not None
+
+
 def test_exact_receipt_rejects_ambiguous_output():
     valid = (
         json.dumps(
@@ -379,15 +475,23 @@ def test_snapshot_loader_closes_ambient_auth_and_redacts_secrets(monkeypatch, tm
         b"host ssh-ed25519 " + host_key.export_public_key("openssh").split()[1] + b"\n"
     )
     key_path.write_bytes(private_key.export_private_key("openssh"))
-    values = {
-        known_hosts_path: known_hosts_path.read_bytes(),
-        key_path: key_path.read_bytes(),
-    }
+    private_reads = []
     monkeypatch.setattr(
         "app.services.vpn_node_transport._read_private_file",
-        lambda path, **_kwargs: values[Path(path)],
+        lambda path, **kwargs: private_reads.append((Path(path), kwargs))
+        or key_path.read_bytes(),
+    )
+    shared_reads = []
+    monkeypatch.setattr(
+        "app.services.vpn_node_transport._read_known_hosts_file",
+        lambda path, **kwargs: shared_reads.append((Path(path), kwargs))
+        or known_hosts_path.read_bytes(),
+        raising=False,
     )
     monkeypatch.setattr("app.services.vpn_node_transport._effective_uid", lambda: 1000)
+    monkeypatch.setattr(
+        "app.services.vpn_node_transport._effective_gid", lambda: 2000, raising=False
+    )
     worker = SimpleNamespace(
         ssh_host="host",
         ip_address=None,
@@ -401,6 +505,9 @@ def test_snapshot_loader_closes_ambient_auth_and_redacts_secrets(monkeypatch, tm
     assert str(key_path) not in rendered
     assert private_key.export_private_key("openssh").decode() not in rendered
     assert snapshot.password is None and snapshot.client_key is not None
+    assert shared_reads == [(known_hosts_path, {"expected_reader_gid": 2000})]
+    assert private_reads[0][0] == key_path
+    assert private_reads[0][1]["owner_uid"] == 1000
 
 
 def test_transport_error_is_secret_free():
@@ -444,10 +551,11 @@ def test_stderr_limit_is_finite():
     assert 0 < MAX_STDERR_BYTES <= 1024 * 1024
 
 
-def metadata(mode, *, uid=1000, size=1, attributes=0):
+def metadata(mode, *, uid=1000, gid=1000, size=1, attributes=0):
     return SimpleNamespace(
         st_mode=mode,
         st_uid=uid,
+        st_gid=gid,
         st_dev=1,
         st_ino=2,
         st_size=size,
@@ -501,6 +609,145 @@ def test_private_transport_file_is_nofollow_bounded_and_identity_checked(monkeyp
     reads[:] = [b"abcd"]
     with pytest.raises(VpnNodeTransportError):
         _read_private_file(path, limit=3, owner_uid=1000)
+
+
+def test_known_hosts_file_validator_reuses_strict_shared_reader(monkeypatch):
+    path = Path("/etc/veltrix/known_hosts")
+    calls = []
+    validator = getattr(vpn_node_transport, "validate_known_hosts_file", None)
+    assert validator is not None
+    monkeypatch.setattr(
+        vpn_node_transport,
+        "_read_known_hosts_file",
+        lambda target, *, expected_reader_gid: calls.append(
+            (target, expected_reader_gid)
+        ) or VALID_HOST_PIN,
+        raising=False,
+    )
+
+    validator(path, expected_reader_gid=33)
+
+    assert calls == [(path, 33)]
+
+
+@pytest.mark.parametrize(
+    "fault", ["symlink", "owner", "group", "mode", "directory", "reparse"]
+)
+def test_shared_known_hosts_rejects_untrusted_metadata(monkeypatch, fault):
+    path = Path("/etc/veltrix/known_hosts")
+    info = metadata(stat.S_IFREG | 0o640, uid=0, gid=33)
+    if fault == "symlink":
+        info.st_mode = stat.S_IFLNK | 0o777
+    elif fault == "owner":
+        info.st_uid = 33
+    elif fault == "group":
+        info.st_gid = 34
+    elif fault == "mode":
+        info.st_mode = stat.S_IFREG | 0o660
+    elif fault == "directory":
+        info.st_mode = stat.S_IFDIR | 0o640
+    else:
+        info.st_file_attributes = 1024
+    monkeypatch.setattr(
+        "app.services.vpn_node_transport._validate_ancestors", lambda *_args: None
+    )
+    monkeypatch.setattr(os, "lstat", lambda _path: info)
+    reader = getattr(vpn_node_transport, "_read_known_hosts_file", None)
+    assert reader is not None
+
+    with pytest.raises(VpnNodeTransportError):
+        reader(path, expected_reader_gid=33)
+
+
+def test_shared_known_hosts_is_nofollow_bounded_and_identity_checked(monkeypatch):
+    path = Path("/etc/veltrix/known_hosts")
+    before = metadata(stat.S_IFREG | 0o640, uid=0, gid=33, size=3)
+    changed_group = metadata(stat.S_IFREG | 0o640, uid=0, gid=34, size=3)
+    opened = []
+    reads = [b"abc", b""]
+    monkeypatch.setattr(
+        "app.services.vpn_node_transport._validate_ancestors", lambda *_args: None
+    )
+    monkeypatch.setattr(os, "lstat", lambda _path: before)
+    monkeypatch.setattr(
+        os, "open", lambda target, flags: opened.append((target, flags)) or 9
+    )
+    stats = [before, changed_group]
+    monkeypatch.setattr(os, "fstat", lambda _fd: stats.pop(0))
+    monkeypatch.setattr(os, "read", lambda _fd, _size: reads.pop(0))
+    monkeypatch.setattr(os, "close", lambda _fd: None)
+    reader = getattr(vpn_node_transport, "_read_known_hosts_file", None)
+    assert reader is not None
+
+    with pytest.raises(VpnNodeTransportError):
+        reader(path, expected_reader_gid=33)
+    if hasattr(os, "O_NOFOLLOW"):
+        assert opened[0][1] & os.O_NOFOLLOW
+
+
+def test_shared_known_hosts_validator_accepts_multi_node_trust(monkeypatch):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    raw = (
+        b"node-one "
+        + key.export_public_key("openssh")
+        + b"[node-two]:2222 "
+        + key.export_public_key("openssh")
+    )
+    monkeypatch.setattr(
+        vpn_node_transport,
+        "_read_known_hosts_file",
+        lambda *_args, **_kwargs: raw,
+        raising=False,
+    )
+
+    vpn_node_transport.validate_known_hosts_file(
+        Path("/etc/veltrix/known_hosts"),
+        expected_reader_gid=33,
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b"host ssh-rsa AAAA\n",
+        b"*.example.test ssh-ed25519 AAAA\n",
+        VALID_HOST_PIN.replace(b"host ", b"host,alias ", 1),
+        VALID_HOST_PIN + VALID_HOST_PIN,
+        VALID_HOST_PIN.replace(b"host ", b"[host]:22 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"[host]:022 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"[host]:65536 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"host:2222 ", 1),
+        VALID_HOST_PIN.rstrip(b"\n") + b" ignored-comment\n",
+        VALID_HOST_PIN.replace(b"host ", b"../host ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"Host.Example ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"-host.example ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"host..example ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"[../host]:2222 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"[HOST]:2222 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"127.000.000.001 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"127.1 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"127.0.1 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"2130706433 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"0x7f000001 ", 1),
+        VALID_HOST_PIN.replace(b"host ", b"2001:0db8::1 ", 1),
+    ),
+)
+def test_known_hosts_file_validator_rejects_nonliteral_or_non_ed25519_content(
+    monkeypatch,
+    raw,
+):
+    validator = getattr(vpn_node_transport, "validate_known_hosts_file", None)
+    assert validator is not None
+    monkeypatch.setattr(
+        vpn_node_transport,
+        "_read_known_hosts_file",
+        lambda *_args, **_kwargs: raw,
+        raising=False,
+    )
+    monkeypatch.setattr(asyncssh, "import_known_hosts", lambda _text: object())
+
+    with pytest.raises(VpnNodeTransportError):
+        validator(Path("/etc/veltrix/known_hosts"), expected_reader_gid=33)
 
 
 def test_secure_ancestors_allow_only_root_or_service_uid(monkeypatch):
@@ -1170,3 +1417,729 @@ def test_snapshot_rejects_explicit_zero_ssh_port(monkeypatch, tmp_path):
     )
     with pytest.raises(VpnNodeTransportError):
         load_transport_snapshot(worker, tmp_path / "known_hosts")
+
+
+@pytest.mark.asyncio
+async def test_health_real_loopback_uses_exact_pin_fixed_command_and_stdin_only():
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    invocations = []
+
+    async def process_factory(process):
+        request = await process.stdin.read()
+        invocations.append((process.command, process.term_type, request))
+        process.stdout.write(healthy_receipt())
+        process.exit(0)
+
+    server = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_factory=PasswordServer,
+        server_host_keys=[host_key],
+        process_factory=process_factory,
+        encoding=None,
+    )
+    try:
+        port = server.get_port()
+        snapshot = VpnNodeTransportSnapshot(
+            "127.0.0.1",
+            port,
+            "root",
+            f"[127.0.0.1]:{port} ".encode() + host_key.export_public_key("openssh"),
+            password=PASSWORD,
+        )
+        request = health_request()
+
+        assert await execute_vpn_node_health_over_ssh(
+            snapshot, request, now_ms=HEALTH_NOW_MS
+        ) == VpnNodeHealthReceipt("healthy", None, "running")
+        assert FIXED_NODE_HEALTH_COMMAND == FIXED_NODE_COMMAND + " --health"
+        assert invocations == [
+            (
+                FIXED_NODE_HEALTH_COMMAND,
+                None,
+                serialize_node_health_request(request, now_ms=HEALTH_NOW_MS),
+            )
+        ]
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_health_real_loopback_key_auth_uses_only_explicit_key(
+    monkeypatch, tmp_path
+):
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    explicit_key = asyncssh.generate_private_key("ssh-ed25519")
+    ambient_key = asyncssh.generate_private_key("ssh-ed25519")
+    expected_public = explicit_key.export_public_key("openssh")
+    offered = []
+
+    class KeyServer(asyncssh.SSHServer):
+        def begin_auth(self, username):
+            return True
+
+        def public_key_auth_supported(self):
+            return True
+
+        def validate_public_key(self, username, key):
+            offered.append(key.export_public_key("openssh"))
+            return username == "root" and offered[-1] == expected_public
+
+    async def process_factory(process):
+        await process.stdin.read()
+        process.stdout.write(healthy_receipt())
+        process.exit(0)
+
+    hostile_home = tmp_path / "hostile-home"
+    hostile_ssh = hostile_home / ".ssh"
+    hostile_ssh.mkdir(parents=True)
+    (hostile_ssh / "id_ed25519").write_bytes(ambient_key.export_private_key("openssh"))
+    monkeypatch.setenv("HOME", str(hostile_home))
+    monkeypatch.setenv("USERPROFILE", str(hostile_home))
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "hostile-agent.sock"))
+    server = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_factory=KeyServer,
+        server_host_keys=[host_key],
+        process_factory=process_factory,
+        encoding=None,
+    )
+    try:
+        port = server.get_port()
+        snapshot = VpnNodeTransportSnapshot(
+            "127.0.0.1",
+            port,
+            "root",
+            f"[127.0.0.1]:{port} ".encode() + host_key.export_public_key("openssh"),
+            client_key=explicit_key,
+        )
+        assert await execute_vpn_node_health_over_ssh(
+            snapshot, health_request(), now_ms=HEALTH_NOW_MS
+        ) == VpnNodeHealthReceipt("healthy", None, "running")
+        assert offered
+        assert set(offered) == {expected_public}
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_health_real_loopback_rejects_forged_and_ambient_host_pin(
+    monkeypatch, tmp_path
+):
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    wrong_key = asyncssh.generate_private_key("ssh-ed25519")
+    invoked = False
+
+    async def process_factory(process):
+        nonlocal invoked
+        invoked = True
+        process.exit(0)
+
+    server = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_factory=PasswordServer,
+        server_host_keys=[host_key],
+        process_factory=process_factory,
+        encoding=None,
+    )
+    try:
+        port = server.get_port()
+        target = f"[127.0.0.1]:{port}"
+        hostile_ssh = tmp_path / "hostile-home" / ".ssh"
+        hostile_ssh.mkdir(parents=True)
+        (hostile_ssh / "known_hosts").write_bytes(
+            target.encode() + b" " + host_key.export_public_key("openssh")
+        )
+        monkeypatch.setenv("HOME", str(hostile_ssh.parent))
+        monkeypatch.setenv("USERPROFILE", str(hostile_ssh.parent))
+        monkeypatch.setenv("SSH_AUTH_SOCK", str(tmp_path / "hostile-agent.sock"))
+        snapshot = VpnNodeTransportSnapshot(
+            "127.0.0.1",
+            port,
+            "root",
+            target.encode() + b" " + wrong_key.export_public_key("openssh"),
+            password=PASSWORD,
+        )
+
+        with pytest.raises(VpnNodeTransportError) as caught:
+            await execute_vpn_node_health_over_ssh(
+                snapshot, health_request(), now_ms=HEALTH_NOW_MS
+            )
+        assert caught.value.phase == "preflight"
+        assert not invoked
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_health_rejects_invalid_or_oversized_request_before_connect():
+    called = False
+
+    async def connector(*_args, **_kwargs):
+        nonlocal called
+        called = True
+
+    request = health_request()
+    oversized = replace(
+        request,
+        target=replace(
+            request.target,
+            public_host="secret" + "\u034f" * MAX_HEALTH_PAYLOAD_BYTES + ".test",
+        ),
+    )
+    snapshot = VpnNodeTransportSnapshot(
+        "host", 22, "root", VALID_HOST_PIN, password=PASSWORD
+    )
+
+    for candidate in (object(), oversized):
+        with pytest.raises(VpnNodeTransportError) as caught:
+            await execute_vpn_node_health_over_ssh(
+                snapshot, candidate, now_ms=HEALTH_NOW_MS, connector=connector
+            )
+        assert caught.value.phase == "preflight"
+        assert str(caught.value) == "vpn_node_transport_failed"
+        assert caught.value.__context__ is None
+    assert not called
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("password_mode", [True, False])
+async def test_health_connection_options_disable_every_ambient_source(password_mode):
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    snapshot = VpnNodeTransportSnapshot(
+        "127.0.0.1",
+        22,
+        "root",
+        b"127.0.0.1 " + host_key.export_public_key("openssh"),
+        password=PASSWORD if password_mode else None,
+        client_key=None if password_mode else key,
+    )
+    captured = []
+
+    async def connector(*args, **kwargs):
+        captured.append((args, kwargs))
+        raise OSError(PASSWORD)
+
+    with pytest.raises(VpnNodeTransportError) as caught:
+        await execute_vpn_node_health_over_ssh(
+            snapshot,
+            health_request(),
+            now_ms=HEALTH_NOW_MS,
+            connector=connector,
+        )
+    assert caught.value.phase == "preflight"
+    assert PASSWORD not in repr(caught.value) + str(caught.value)
+    assert caught.value.__context__ is None
+    kwargs = captured[0][1]
+    assert kwargs["config"] is None
+    assert kwargs["agent_path"] is None
+    assert kwargs["agent_forwarding"] is False
+    assert kwargs["pkcs11_provider"] is None
+    assert kwargs["x509_trusted_certs"] is None
+    assert kwargs["x509_trusted_cert_paths"] == []
+    assert kwargs["server_host_key_algs"] == ["ssh-ed25519"]
+    assert kwargs["gss_host"] is None
+    assert kwargs["gss_kex"] is kwargs["gss_auth"] is False
+    assert kwargs["host_based_auth"] is False
+    assert kwargs["kbdint_auth"] is False
+    assert kwargs["disable_trivial_auth"] is True
+    if password_mode:
+        assert kwargs["preferred_auth"] == ["password"]
+        assert kwargs["client_keys"] is None
+        assert kwargs["public_key_auth"] is False
+        assert kwargs["password_auth"] is True
+    else:
+        assert kwargs["preferred_auth"] == ["publickey"]
+        assert kwargs["client_keys"] == [key]
+        assert kwargs["password"] is None
+        assert kwargs["public_key_auth"] is True
+        assert kwargs["password_auth"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exit_status", "stderr", "stdout"),
+    [
+        (1, b"", healthy_receipt()),
+        (0, b"host-password-token", healthy_receipt()),
+        (0, b"x" * (MAX_STDERR_BYTES + 1), healthy_receipt()),
+        (0, b"", b"x" * (MAX_HEALTH_PAYLOAD_BYTES + 1)),
+        (0, b"", b'{"raw-token":"must-not-leak"}'),
+        (0, b"", b" " + healthy_receipt()),
+    ],
+    ids=[
+        "nonzero",
+        "stderr",
+        "oversized-stderr",
+        "oversized-stdout",
+        "malformed",
+        "noncanonical",
+    ],
+)
+async def test_health_real_loopback_fails_closed_on_invalid_process_result(
+    exit_status, stderr, stdout
+):
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+
+    async def process_factory(process):
+        await process.stdin.read()
+        process.stdout.write(stdout)
+        process.stderr.write(stderr)
+        process.exit(exit_status)
+
+    server = await asyncssh.listen(
+        "127.0.0.1",
+        0,
+        server_factory=PasswordServer,
+        server_host_keys=[host_key],
+        process_factory=process_factory,
+        encoding=None,
+    )
+    try:
+        port = server.get_port()
+        snapshot = VpnNodeTransportSnapshot(
+            "127.0.0.1",
+            port,
+            "root",
+            f"[127.0.0.1]:{port} ".encode() + host_key.export_public_key("openssh"),
+            password=PASSWORD,
+        )
+        with pytest.raises(VpnNodeTransportError) as caught:
+            await execute_vpn_node_health_over_ssh(
+                snapshot, health_request(), now_ms=HEALTH_NOW_MS
+            )
+        rendered = repr(caught.value) + str(caught.value)
+        assert caught.value.phase == "preflight"
+        assert rendered.count("vpn_node_transport_failed") == 2
+        assert "token" not in rendered
+        assert PASSWORD not in rendered
+        assert "127.0.0.1" not in rendered
+        assert caught.value.__context__ is None
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_health_adversarial_reader_cancels_and_collects_blocked_sibling():
+    sibling_cancelled = asyncio.Event()
+
+    class OversizedReader:
+        async def read(self, _size):
+            return b"x" * (MAX_HEALTH_PAYLOAD_BYTES + 1)
+
+    class BlockedReader:
+        async def read(self, _size):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                sibling_cancelled.set()
+                raise
+
+    class Stdin:
+        def write(self, _value):
+            pass
+
+        async def drain(self):
+            pass
+
+        def write_eof(self):
+            pass
+
+    class Process:
+        stdin = Stdin()
+        stdout = OversizedReader()
+        stderr = BlockedReader()
+        exit_status = 0
+
+        async def wait(self):
+            pass
+
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def create_process(self, *_args, **_kwargs):
+            return Process()
+
+    async def connector(*_args, **_kwargs):
+        return Connection()
+
+    with pytest.raises(VpnNodeTransportError) as caught:
+        await execute_vpn_node_health_over_ssh(
+            VpnNodeTransportSnapshot(
+                "host", 22, "root", VALID_HOST_PIN, password=PASSWORD
+            ),
+            health_request(),
+            now_ms=HEALTH_NOW_MS,
+            connector=connector,
+        )
+    assert caught.value.phase == "preflight"
+    assert sibling_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_health_nonbytes_reader_fails_closed():
+    class Reader:
+        async def read(self, _size):
+            return "not-bytes"
+
+    class Stdin:
+        def write(self, _value):
+            pass
+
+        async def drain(self):
+            pass
+
+        def write_eof(self):
+            pass
+
+    class Process:
+        stdin = Stdin()
+        stdout = Reader()
+        stderr = Reader()
+        exit_status = 0
+
+        async def wait(self):
+            pass
+
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def create_process(self, *_args, **_kwargs):
+            return Process()
+
+    async def connector(*_args, **_kwargs):
+        return Connection()
+
+    with pytest.raises(VpnNodeTransportError) as caught:
+        await execute_vpn_node_health_over_ssh(
+            VpnNodeTransportSnapshot(
+                "host", 22, "root", VALID_HOST_PIN, password=PASSWORD
+            ),
+            health_request(),
+            now_ms=HEALTH_NOW_MS,
+            connector=connector,
+        )
+    assert caught.value.phase == "preflight"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stall", ["connect", "create", "drain"])
+async def test_health_fixed_deadlines_fail_as_preflight(monkeypatch, stall):
+    monkeypatch.setattr(vpn_node_transport, "CONNECT_TIMEOUT", 0.02, raising=False)
+    monkeypatch.setattr(vpn_node_transport, "LOGIN_TIMEOUT", 0.02, raising=False)
+    monkeypatch.setattr(
+        vpn_node_transport, "REMOTE_OPERATION_TIMEOUT", 0.02, raising=False
+    )
+
+    class Stdin:
+        def write(self, _value):
+            pass
+
+        async def drain(self):
+            if stall == "drain":
+                await asyncio.Event().wait()
+
+        def write_eof(self):
+            pass
+
+    class Process:
+        stdin = Stdin()
+
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def create_process(self, *_args, **_kwargs):
+            if stall == "create":
+                await asyncio.Event().wait()
+            return Process()
+
+    async def connector(*_args, **_kwargs):
+        if stall == "connect":
+            await asyncio.Event().wait()
+        return Connection()
+
+    with pytest.raises(VpnNodeTransportError) as caught:
+        await asyncio.wait_for(
+            execute_vpn_node_health_over_ssh(
+                VpnNodeTransportSnapshot(
+                    "host", 22, "root", VALID_HOST_PIN, password=PASSWORD
+                ),
+                health_request(),
+                now_ms=HEALTH_NOW_MS,
+                connector=connector,
+            ),
+            0.25,
+        )
+    assert caught.value.phase == "preflight"
+
+
+@pytest.mark.asyncio
+async def test_health_cancellation_propagates():
+    started = asyncio.Event()
+
+    async def connector(*_args, **_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(
+        execute_vpn_node_health_over_ssh(
+            VpnNodeTransportSnapshot(
+                "host", 22, "root", VALID_HOST_PIN, password=PASSWORD
+            ),
+            health_request(),
+            now_ms=HEALTH_NOW_MS,
+            connector=connector,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_health_timeout_bounds_stubborn_reader_and_stalled_connection_exit(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        vpn_node_transport, "REMOTE_OPERATION_TIMEOUT", 0.02, raising=False
+    )
+    monkeypatch.setattr(
+        vpn_node_transport, "TRANSPORT_CLEANUP_TIMEOUT", 0.04, raising=False
+    )
+    reader_started = asyncio.Event()
+    reader_ignored_cancel = asyncio.Event()
+    reader_finished = asyncio.Event()
+    exit_started = asyncio.Event()
+    exit_finished = asyncio.Event()
+    process_closed = asyncio.Event()
+    process_wait_finished = asyncio.Event()
+    connection_aborted = asyncio.Event()
+    connection_wait_finished = asyncio.Event()
+    release = asyncio.Event()
+
+    class StubbornReader:
+        async def read(self, _size):
+            reader_started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                reader_ignored_cancel.set()
+                try:
+                    await release.wait()
+                finally:
+                    reader_finished.set()
+                raise
+            reader_finished.set()
+            return b""
+
+    class EmptyReader:
+        async def read(self, _size):
+            return b""
+
+    class Stdin:
+        def write(self, _value):
+            pass
+
+        async def drain(self):
+            pass
+
+        def write_eof(self):
+            pass
+
+    class Process:
+        stdin = Stdin()
+        stdout = StubbornReader()
+        stderr = EmptyReader()
+        exit_status = 0
+
+        async def wait(self):
+            await release.wait()
+
+        def close(self):
+            process_closed.set()
+
+        async def wait_closed(self):
+            try:
+                await release.wait()
+            finally:
+                process_wait_finished.set()
+
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            exit_started.set()
+            try:
+                await release.wait()
+            finally:
+                exit_finished.set()
+
+        async def create_process(self, *_args, **_kwargs):
+            return Process()
+
+        def abort(self):
+            connection_aborted.set()
+
+        async def wait_closed(self):
+            try:
+                await release.wait()
+            finally:
+                connection_wait_finished.set()
+
+    async def connector(*_args, **_kwargs):
+        return Connection()
+
+    async def release_later():
+        try:
+            await asyncio.wait_for(release.wait(), 0.3)
+        except TimeoutError:
+            release.set()
+
+    releaser = asyncio.create_task(release_later())
+    try:
+        with pytest.raises(VpnNodeTransportError) as caught:
+            await asyncio.wait_for(
+                execute_vpn_node_health_over_ssh(
+                    VpnNodeTransportSnapshot(
+                        "host", 22, "root", VALID_HOST_PIN, password=PASSWORD
+                    ),
+                    health_request(),
+                    now_ms=HEALTH_NOW_MS,
+                    connector=connector,
+                ),
+                0.2,
+            )
+        assert caught.value.phase == "preflight"
+        assert caught.value.__context__ is None
+        assert reader_started.is_set()
+        assert reader_ignored_cancel.is_set()
+        assert reader_finished.is_set()
+        assert exit_started.is_set()
+        assert exit_finished.is_set()
+        assert process_closed.is_set()
+        assert process_wait_finished.is_set()
+        assert connection_aborted.is_set()
+        assert connection_wait_finished.is_set()
+    finally:
+        release.set()
+        await releaser
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_health_caller_cancellation_propagates_when_cleanup_stalls(monkeypatch):
+    monkeypatch.setattr(
+        vpn_node_transport, "TRANSPORT_CLEANUP_TIMEOUT", 0.04, raising=False
+    )
+    reader_started = asyncio.Event()
+    exit_started = asyncio.Event()
+    exit_finished = asyncio.Event()
+    connection_aborted = asyncio.Event()
+    release = asyncio.Event()
+
+    class Reader:
+        async def read(self, _size):
+            reader_started.set()
+            await release.wait()
+            return b""
+
+    class Stdin:
+        def write(self, _value):
+            pass
+
+        async def drain(self):
+            pass
+
+        def write_eof(self):
+            pass
+
+    class Process:
+        stdin = Stdin()
+        stdout = Reader()
+        stderr = Reader()
+        exit_status = 0
+
+        async def wait(self):
+            await release.wait()
+
+        def close(self):
+            pass
+
+        async def wait_closed(self):
+            await release.wait()
+
+    class Connection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            exit_started.set()
+            try:
+                await release.wait()
+            finally:
+                exit_finished.set()
+
+        async def create_process(self, *_args, **_kwargs):
+            return Process()
+
+        def abort(self):
+            connection_aborted.set()
+
+        async def wait_closed(self):
+            await release.wait()
+
+    async def connector(*_args, **_kwargs):
+        return Connection()
+
+    async def release_later():
+        try:
+            await asyncio.wait_for(release.wait(), 0.3)
+        except TimeoutError:
+            release.set()
+
+    releaser = asyncio.create_task(release_later())
+    task = asyncio.create_task(
+        execute_vpn_node_health_over_ssh(
+            VpnNodeTransportSnapshot(
+                "host", 22, "root", VALID_HOST_PIN, password=PASSWORD
+            ),
+            health_request(),
+            now_ms=HEALTH_NOW_MS,
+            connector=connector,
+        )
+    )
+    try:
+        await reader_started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 0.2)
+        assert exit_started.is_set()
+        assert exit_finished.is_set()
+        assert connection_aborted.is_set()
+    finally:
+        release.set()
+        await releaser
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

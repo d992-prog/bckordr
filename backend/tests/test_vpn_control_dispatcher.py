@@ -11,9 +11,9 @@ import pytest
 
 from app.services import vpn_node_transport
 from app.services.vpn_control_dispatcher import (
-    _FinalizeGate,
     _bounded_finalize,
     _finalize_once,
+    _FinalizeGate,
     dispatch_next_vpn_control_operation,
 )
 from app.services.vpn_node_transport import (
@@ -21,7 +21,6 @@ from app.services.vpn_node_transport import (
     VpnNodeTransportError,
     load_transport_snapshot,
 )
-
 
 OPERATION_ID = UUID("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
 TOKEN = UUID("bbbbbbbb-cccc-4ddd-8eee-ffffffffffff")
@@ -171,11 +170,14 @@ async def test_private_key_material_is_snapshotted_before_commit(monkeypatch, tm
     replacement_path.write_bytes(replacement_key.export_private_key("openssh"))
     real_lstat = os.lstat
     real_fstat = os.fstat
+    known_hosts_size = real_lstat(known_hosts_path).st_size
 
-    def private_info(info):
+    def transport_info(info):
+        known_hosts = info.st_size == known_hosts_size
         return SimpleNamespace(
-            st_mode=stat.S_IFREG | 0o600,
+            st_mode=stat.S_IFREG | (0o640 if known_hosts else 0o600),
             st_uid=0,
+            st_gid=44 if known_hosts else 0,
             st_dev=1,
             st_ino=info.st_size,
             st_size=info.st_size,
@@ -185,9 +187,10 @@ async def test_private_key_material_is_snapshotted_before_commit(monkeypatch, tm
         )
 
     monkeypatch.setattr(vpn_node_transport, "_effective_uid", lambda: 0)
+    monkeypatch.setattr(vpn_node_transport, "_effective_gid", lambda: 44)
     monkeypatch.setattr(vpn_node_transport, "_validate_ancestors", lambda *_args: None)
-    monkeypatch.setattr(os, "lstat", lambda path: private_info(real_lstat(path)))
-    monkeypatch.setattr(os, "fstat", lambda fd: private_info(real_fstat(fd)))
+    monkeypatch.setattr(os, "lstat", lambda path: transport_info(real_lstat(path)))
+    monkeypatch.setattr(os, "fstat", lambda fd: transport_info(real_fstat(fd)))
 
     worker = SimpleNamespace(
         ssh_host="host",

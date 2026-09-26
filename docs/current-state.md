@@ -1,11 +1,15 @@
 # Current State
 
-## Public-trial release-candidate checkpoint (2026-09-24, local only)
+## Public-trial release-operations checkpoint (2026-09-27, local only)
 
 The product now has a release-shaped, non-payment public trial path, but this
 checkpoint is deliberately fail-closed and **not deployed**. No production
 database, Telegram webhook, VPN node or feature flag was changed. Payments are
-still intentionally absent and remain the final integration stage.
+still intentionally absent and remain the final integration stage. Strict fleet
+health, validated backups and the independent watchdog are implemented on this
+branch, but have not been deployed or enabled. Production still has one VPN
+node; fleet health, backup, watchdog, public-trial, ready-notification and
+payment flags remain off.
 
 ### Customer, bot and provisioning behavior
 
@@ -79,8 +83,111 @@ VPN_PUBLIC_TRIAL_ENABLED=false
 VPN_PUBLIC_TRIAL_RELEASE_ID=
 VPN_PUBLIC_TRIAL_PLAN_SLUG=trial-7d
 VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS=300
+VPN_FLEET_HEALTH_ENABLED=false
+VPN_FLEET_HEALTH_INTERVAL_SECONDS=120
 VPN_READY_NOTIFICATIONS_ENABLED=false
+VPN_BACKUP_ENABLED=false
+VPN_WATCHDOG_ENABLED=false
 ```
+
+### Release-readiness gate (implemented locally)
+
+- The backend now has one authoritative fail-closed readiness evaluator, exposed
+  through an admin-only API and the Russian admin panel. The report groups fixed,
+  bounded checks for configuration, strict fleet health, endpoint capacity and
+  redundancy, active operations, external proof, operational health and backup.
+- An admin can record an external client test only for a fresh, valid REALITY
+  endpoint. The stored hash covers its public identity, so a public-identity
+  change invalidates the proof. API/UI responses never include a connection URI,
+  UUID, public host or the stored fingerprint.
+- State-changing readiness calls require an exact same-origin `Origin` and exact
+  JSON confirmation. `Зафиксировать готовность` serializes with VPN mutations,
+  locks the relevant PostgreSQL tables and rechecks readiness before writing only
+  `vpn_public_release_ready_v1` for the configured lowercase 64-hex release ID
+  (plus the admin audit record). It does not edit `.env`, enable the public trial
+  or payment, change profiles, or restart VPN.
+- The independent watchdog now persists the bounded operational and backup
+  observations consumed by the same readiness evaluator. Missing or stale
+  evidence remains red, so a fresh successful backup and watchdog run are still
+  required before the marker can be committed.
+
+### Strict fleet health (implemented on branch, not deployed)
+
+- The common deterministic node bundle now has one bounded read-only `--health`
+  entrypoint. The controller reaches it only through strict SSH with the exact
+  configured Ed25519 host pin and a fixed command; ambient SSH configuration,
+  agents, default keys and host trust are disabled.
+- The probe verifies the installed runner, 3x-UI/Xray runtime, the expected
+  inbound and REALITY identity, and a process-owned public `LISTEN`. It does not
+  restart or update the node, mutate clients/inbounds, or collect traffic or DNS
+  data. Protocols, events and logs are bounded and contain no credentials,
+  client UUIDs or VPN URIs.
+- One endpoint is selected per cycle in oldest-`health_checked_at` order.
+  PostgreSQL supplies the cross-process advisory lease; the SQLite lock exists
+  only for local development. A health failure records only a fixed error,
+  immediately blocks new public allocation/readiness/external reconfirmation,
+  and preserves the last successful health time, endpoint identity, existing
+  profiles and matching external proof. A changed public fingerprint alone
+  clears that external proof.
+- The node inventory reader accepts a stable rollback-journal SQLite main file
+  and fails closed on live WAL/SHM/journal sidecars without modifying the
+  database. A real 3x-UI switch to WAL therefore requires a reviewed read-only
+  consistent-snapshot filesystem boundary before fleet health can be enabled;
+  an immutable-file workaround is not acceptable.
+- `VPN_FLEET_HEALTH_ENABLED=false` is the required production default. Its
+  interval defaults to 120 seconds and is constrained to 30..3600. The legacy
+  `vpn_check` path remains excluded from automation and readiness proof.
+- One shared strict trust file carries a canonical literal Ed25519 pin for each
+  node. The strict transport selects only the requested host and port. One-time
+  onboarding appends under a process-safe lock, preserves all existing pins,
+  treats the same pin as idempotent and rejects conflicting implicit rotation.
+  The file is root-owned, has mode `0640`, and is readable through the control
+  service's effective group; the control process cannot rewrite its own trust.
+  The root watchdog reads it without a DAC-bypass capability.
+
+No per-node feature work is required. A node is onboarded once with its standard
+credentials, exact Ed25519 pin and the same deterministic bundle; later changes
+remain the existing fleet-wide `vpn-update-all` and `vpn-autoconfig-all`
+operations. Rollout must deploy code/migrations disabled, bulk-install the same
+bundle, manually and externally verify the current node, then enable only fleet
+health. Readiness must still fail until a second distinct VPS is onboarded the
+same way and both endpoints have fresh health, positive capacity and valid
+external proof. Payment and public trial activation are not part of this work.
+
+### Backup and watchdog operations (implemented locally, disabled)
+
+- The daily root backup creates a private atomic set containing a custom-format
+  PostgreSQL dump, the private application environment, the actual control unit,
+  Nginx configuration and built frontend. It validates the dump with a full
+  `pg_restore --file /dev/null`, hashes every copied file, publishes the set and
+  success marker only after revalidating descriptor-bound sources, and retains
+  the previous successful marker on failure. Retention never promotes partial
+  data.
+- The five-minute root watchdog checks the control unit, local/public health,
+  cabinet response, disk, strict trust, backup freshness and the shared
+  database-backed readiness evaluator. Every subprocess, HTTP request, database
+  phase and cleanup is bounded. Database failure does not discard independent
+  local checks.
+- Alert state is root-private and atomic. One unchanged sorted set of safe check
+  codes sends one Telegram alert, changed reasons send one new alert, and full
+  recovery sends one recovery. Raw exceptions, URLs, credentials, client UUIDs
+  and VPN links are never included.
+- The hardened systemd units expose only their required read/write paths, run
+  with no effective capabilities and are installed separately from enablement.
+  Linux acceptance and the disposable restore rehearsal have passed. Both
+  timers and both feature flags remain off until the operations slice is
+  deployed disabled and fresh production backup, restore and alert/recovery
+  rehearsals have passed.
+
+Remaining release work is to deploy the operations slice disabled, obtain fresh
+production operational/watchdog and backup evidence, bring the complete strict
+fleet to fresh health, add and externally verify the second production node,
+and then repeat the operator flow: set capacity, obtain strict health, run the
+external tests, inspect the panel, type the exact phrase `ГОТОВО К РЕЛИЗУ`, and
+commit the marker. Public-trial enablement remains a separate release requiring
+a fresh reviewed backup and observations.
+The public-trial and payment flags remain off; nothing in this checkpoint is
+deployed or green in production.
 
 Production enablement requires all of the following in addition to reviewed
 code: the exact `vpn_public_release_ready_v1` database marker matching a
@@ -90,8 +197,22 @@ the strict dispatcher, a second externally verified production VPN node, a
 reviewed migration backup and separate deployment approval. The public-trial and
 ready-notification flags remain off; this checkpoint performs no rollout.
 
-### Local release-gate evidence
+### Release-gate evidence
 
+- The fresh final Windows backend run passed 2,911 tests and skipped 123
+  environment-gated PostgreSQL, POSIX and filesystem cases. The operations,
+  transport, deployment and dispatcher slice separately passed 289 tests with
+  37 Windows-only skips; scoped Ruff passed. The final backup lifecycle passed
+  67 tests with 36 POSIX skips, and independent review found no remaining
+  Critical or Important issue.
+- GitHub Actions [Veltrix release gate run #3](https://github.com/d992-prog/bckordr/actions/runs/36277002659)
+  passed at commit `2d49fc2`: **3,032 passed, 2 skipped in 223.36s** on Ubuntu
+  24.04 with PostgreSQL 16. Scoped Ruff, recursive systemd verification, the
+  actual root-owned/group-readable trust-file check with zero effective
+  capabilities, and the synthetic validated PostgreSQL backup/restore all
+  completed successfully.
+- The frontend passed all 90 tests. Its TypeScript/Vite production build
+  transformed 45 modules and emitted both admin and cabinet HTML entries.
 - The desktop and mobile browser smoke used a disposable SQLite database, a fake
   seven-day plan and a fake ready endpoint. It exercised signed Telegram Mini
   App admission, the available card, one activation, preparing state, automatic

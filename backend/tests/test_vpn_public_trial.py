@@ -150,6 +150,10 @@ async def test_selects_least_utilized_ratio_then_lowest_id(session_factory):
         {"vpn_enabled": False},
         {"vpn_last_checked_at": None},
         {"vpn_last_checked_at": NOW - timedelta(seconds=61)},
+        {"vpn_last_checked_at": NOW + timedelta(microseconds=1)},
+        {"verified_at": NOW - timedelta(seconds=61)},
+        {"verified_at": NOW + timedelta(microseconds=1)},
+        {"last_error_code": "vpn_node_health_internal"},
     ],
 )
 async def test_excludes_invalid_endpoint_or_worker(session_factory, change):
@@ -171,6 +175,38 @@ async def test_excludes_invalid_endpoint_or_worker(session_factory, change):
         selected = await select_public_vpn_endpoint(session, now=NOW, health_max_age_seconds=60)
         assert selected is not None
         assert selected.endpoint.id == fallback.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock", [False, True])
+@pytest.mark.parametrize(
+    ("worker_change", "endpoint_change"),
+    [
+        ({}, {"last_error_code": "vpn_node_health_endpoint_mismatch"}),
+        ({}, {"verified_at": NOW - timedelta(seconds=61)}),
+        ({}, {"verified_at": NOW + timedelta(microseconds=1)}),
+        ({"vpn_last_checked_at": NOW + timedelta(microseconds=1)}, {}),
+    ],
+)
+async def test_unhealthy_timestamp_or_error_is_rejected_in_both_selection_paths(
+    session_factory,
+    lock: bool,
+    worker_change: dict[str, object],
+    endpoint_change: dict[str, object],
+) -> None:
+    async with session_factory() as session:
+        node = worker("failed", **worker_change)
+        session.add(node)
+        await session.flush()
+        session.add(endpoint(node, **endpoint_change))
+        await session.flush()
+
+        assert await select_public_vpn_endpoint(
+            session,
+            now=NOW,
+            health_max_age_seconds=60,
+            lock=lock,
+        ) is None
 
 
 @pytest.mark.asyncio

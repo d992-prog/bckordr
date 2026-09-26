@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import os
 import re
 import sqlite3
+import stat
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
 from app.services.vpn_endpoint_types import VpnEndpointError, VpnEndpointTarget
+from app.services.vpn_xray_runtime import xray_public_listener_is_bound
 from app.services.vpn_xui_identity import inspect_xui_client_identity
 from app.services.vpn_xui_node_http import NodePanelSession
+
+_DATABASE_LIMIT = 64 * 1024 * 1024
+_DATABASE_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +32,49 @@ class NodeClientObservation:
     enabled: bool | None
     transport: Literal["matched", "mismatch", "unsupported"]
     runtime: Literal["running", "stop", "error"]
+
+
+@dataclass(frozen=True, slots=True)
+class NodeEndpointObservation:
+    state: Literal["matched", "not_observed"]
+    transport: Literal["matched", "mismatch", "unsupported"] | None
+    runtime: Literal["running", "stop", "error"]
+    listening: bool
+
+
+def xray_endpoint_is_listening(row: dict, target: VpnEndpointTarget) -> bool:
+    listen = row.get("listen", "")
+    return isinstance(listen, str) and xray_public_listener_is_bound(
+        port=target.port,
+        listen=listen,
+    )
+
+
+def observe_node_endpoint(
+    panel: NodePanelSession,
+    *,
+    target: VpnEndpointTarget,
+    database_path: Path,
+    listener_probe: Callable[[dict, VpnEndpointTarget], bool] = (
+        xray_endpoint_is_listening
+    ),
+) -> NodeEndpointObservation:
+    """Observe one endpoint without reading or changing client identities."""
+    before = _local_inbound_ids(database_path)
+    runtime = _runtime(panel.request("GET", "panel/api/server/status"))
+    inbounds = panel.request("GET", "panel/api/inbounds/list")
+    after = _local_inbound_ids(database_path)
+    rows = _covered_rows(inbounds, before, after)
+    row = next((item for item in rows if item["id"] == target.inbound_id), None)
+    listening = False if row is None else listener_probe(row, target)
+    if type(listening) is not bool:
+        raise TypeError from None
+    return NodeEndpointObservation(
+        "matched" if row is not None else "not_observed",
+        _transport(row, target, None, False) if row is not None else None,
+        runtime,
+        listening,
+    )
 
 
 def observe_node_client(
@@ -80,19 +131,143 @@ def _positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def _file_identity(info: os.stat_result) -> tuple[object, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        info.st_mode,
+        info.st_uid,
+    )
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        left.st_dev,
+        left.st_ino,
+        left.st_size,
+        left.st_mtime_ns,
+        left.st_mode,
+        left.st_uid,
+    ) == (
+        right.st_dev,
+        right.st_ino,
+        right.st_size,
+        right.st_mtime_ns,
+        right.st_mode,
+        right.st_uid,
+    )
+
+
+def _reparse(info: os.stat_result) -> bool:
+    return bool(getattr(info, "st_file_attributes", 0) & 1024)
+
+
+def _sidecars_absent(path: Path) -> None:
+    for suffix in ("-wal", "-shm", "-journal"):
+        try:
+            os.lstat(str(path) + suffix)
+        except FileNotFoundError:
+            continue
+        raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+
+
+def _database_snapshot(path: Path, deadline: float) -> bytes:
+    # Live WAL is intentionally unsupported: only a stable rollback-mode main
+    # file can be copied without touching the panel database directory.
+    if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
+        raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+    descriptor = None
+    try:
+        for parent in path.parents:
+            info = os.lstat(parent)
+            if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or _reparse(info):
+                raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+        directory_before = _file_identity(os.lstat(path.parent))
+        before = os.lstat(path)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or _reparse(before)
+            or not 100 <= before.st_size <= _DATABASE_LIMIT
+        ):
+            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+        _sidecars_absent(path)
+        if time.monotonic() >= deadline:
+            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if not _same_file(opened, before):
+            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+        result = bytearray()
+        while True:
+            if time.monotonic() >= deadline:
+                raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+            chunk = os.read(descriptor, min(65536, _DATABASE_LIMIT + 1 - len(result)))
+            if not chunk:
+                break
+            result.extend(chunk)
+            if len(result) > _DATABASE_LIMIT:
+                raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+        digest = hashlib.sha256(result).digest()
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        confirmed = hashlib.sha256()
+        confirmed_size = 0
+        while confirmed_size <= _DATABASE_LIMIT:
+            if time.monotonic() >= deadline:
+                raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+            chunk = os.read(
+                descriptor,
+                min(65536, _DATABASE_LIMIT + 1 - confirmed_size),
+            )
+            if not chunk:
+                break
+            confirmed.update(chunk)
+            confirmed_size += len(chunk)
+        if confirmed_size != len(result) or confirmed.digest() != digest:
+            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+        after = os.fstat(descriptor)
+        linked = os.lstat(path)
+        _sidecars_absent(path)
+        directory_after = _file_identity(os.lstat(path.parent))
+        if not (
+            len(result) == opened.st_size
+            and _file_identity(after) == _file_identity(opened)
+            and _file_identity(linked) == _file_identity(before)
+            and _same_file(linked, opened)
+            and directory_after == directory_before
+        ):
+            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+        snapshot = bytes(result)
+        if (
+            snapshot[:16] != b"SQLite format 3\x00"
+            or snapshot[18] != 1
+            or snapshot[19] != 1
+        ):
+            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+        return snapshot
+    except VpnEndpointError:
+        raise
+    except (OSError, ValueError, TypeError):
+        raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+
+
 def _local_inbound_ids(path: Path) -> tuple[int, ...]:
     connection = None
     try:
-        if (
-            not isinstance(path, Path)
-            or not path.is_absolute()
-            or path.is_symlink()
-            or not path.is_file()
-            or any(parent.is_symlink() for parent in path.parents)
-        ):
-            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-        deadline = time.monotonic() + 2.0
-        connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)
+        deadline = time.monotonic() + _DATABASE_TIMEOUT_SECONDS
+        snapshot = _database_snapshot(path, deadline)
+        connection = sqlite3.connect(":memory:", timeout=_DATABASE_TIMEOUT_SECONDS)
+        connection.deserialize(snapshot)
         connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
         connection.execute("PRAGMA query_only=ON")
         values = tuple(
@@ -109,7 +284,7 @@ def _local_inbound_ids(path: Path) -> tuple[int, ...]:
         ):
             raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
         return values
-    except (OSError, ValueError, sqlite3.Error):
+    except (OSError, ValueError, TypeError, AttributeError, sqlite3.Error):
         raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
     finally:
         if connection is not None:
@@ -252,8 +427,11 @@ def _transport(
     ):
         return "unsupported"
     stream = row.get("streamSettings")
+    settings = row.get("settings")
     if (
-        not _positive_int(row.get("port"))
+        row.get("protocol") != target.protocol
+        or row.get("listen", "") not in ("", "0.0.0.0", "::", target.public_host)
+        or not _positive_int(row.get("port"))
         or not _positive_int(target.port)
         or row["port"] != target.port
         or not 1 <= target.port <= 65535
@@ -262,7 +440,8 @@ def _transport(
         or stream.get("network") not in ("tcp", "raw")
         or stream.get("security") != target.security
         or not _raw_options(stream)
-        or row["settings"].get("decryption") != "none"
+        or not isinstance(settings, dict)
+        or settings.get("decryption") != "none"
         or (matched and client_flow != target_flow)
     ):
         return "mismatch"

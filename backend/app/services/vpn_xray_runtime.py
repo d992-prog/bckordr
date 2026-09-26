@@ -8,6 +8,7 @@ readiness/revocation. Raw configuration and accounts must stay on this node.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -21,11 +22,11 @@ from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
-
 _INVALID = "vpn_xray_runtime_invalid"
 _UNAVAILABLE = "vpn_xray_runtime_unavailable"
 _CONFLICT = "vpn_xray_runtime_conflict"
 _LIMIT = 2 * 1024 * 1024
+_ENTRY_LIMIT = 65536
 _PROC = Path("/proc")
 
 
@@ -83,7 +84,7 @@ def observe_xray_client(
         return _observe(port, client_uuid, client_email, flow, executable_path, config_path, timeout_seconds)
     except XrayRuntimeError as exc:
         code = exc.code
-    except Exception:
+    except Exception:  # noqa: BLE001 - collapse the public observation boundary
         code = _UNAVAILABLE
     _fail(code)
 
@@ -138,11 +139,19 @@ def _readlink(path: Path, deadline: float) -> str:
     return result
 
 
+def _linked_identity(path: Path, deadline: float) -> tuple[int, int]:
+    _remaining(deadline)
+    info = os.stat(path)
+    _remaining(deadline)
+    return info.st_dev, info.st_ino
+
+
 def _entries(path: Path, deadline: float):
     _remaining(deadline)
     with os.scandir(path) as entries:
-        for entry in entries:
+        for count, entry in enumerate(entries, 1):
             _remaining(deadline)
+            _require(count <= _ENTRY_LIMIT)
             yield Path(entry.path)
 
 
@@ -212,10 +221,109 @@ def _listener(process: Path, port: int, deadline: float) -> str:
     _fail(_UNAVAILABLE)
 
 
-def _network_namespace(process: Path, deadline: float) -> str:
-    namespace = _readlink(process / "ns/net", deadline)
-    _require(namespace == _readlink(_PROC / "thread-self/ns/net", deadline))
+def _network_namespace(process: Path, deadline: float) -> tuple[int, int]:
+    namespace = _linked_identity(process / "ns/net", deadline)
+    _require(namespace == _linked_identity(_PROC / "thread-self/ns/net", deadline))
     return namespace
+
+
+def _proc_address(raw: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    _require(len(raw) in (8, 32) and re.fullmatch(r"[0-9A-F]{8}([0-9A-F]{24})?", raw))
+    packed = bytes.fromhex(raw)
+    if len(packed) == 4:
+        return ipaddress.IPv4Address(packed[::-1])
+    return ipaddress.IPv6Address(b"".join(
+        packed[index:index + 4][::-1] for index in range(0, len(packed), 4)
+    ))
+
+
+def _public_bind_matches(address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+                         listen: str) -> bool:
+    if listen == "":
+        return address.is_unspecified
+    try:
+        expected = ipaddress.ip_address(listen)
+    except ValueError:
+        return False
+    return not expected.is_loopback and address == expected
+
+
+def _public_listener(process: Path, port: int, listen: str,
+                     deadline: float) -> frozenset[str]:
+    candidates: set[str] = set()
+    tables = 0
+    for name in ("tcp", "tcp6"):
+        try:
+            raw = _read(process / f"net/{name}", deadline)
+        except FileNotFoundError:
+            continue
+        tables += 1
+        for line in raw.decode("ascii").splitlines()[1:]:
+            _remaining(deadline)
+            fields = line.split()
+            _require(len(fields) >= 10)
+            local = fields[1].split(":", 1)
+            _require(len(local) == 2 and len(local[1]) == 4)
+            try:
+                local_port = int(local[1], 16)
+            except ValueError:
+                _fail(_UNAVAILABLE)
+            if local_port != port or fields[3] != "0A":
+                continue
+            address = _proc_address(local[0])
+            if not _public_bind_matches(address, listen):
+                continue
+            _require(fields[9].isdigit() and int(fields[9]) > 0)
+            candidates.add(fields[9])
+    _require(tables > 0 and candidates)
+    owned: set[str] = set()
+    for descriptor in _entries(process / "fd", deadline):
+        try:
+            target = _readlink(descriptor, deadline)
+        except FileNotFoundError:
+            continue
+        match = re.fullmatch(r"socket:\[([1-9][0-9]*)\]", target)
+        if match:
+            owned.add(match.group(1))
+    _require(candidates <= owned)
+    return frozenset(candidates)
+
+
+def xray_public_listener_is_bound(
+    *, port: int, listen: str,
+    executable_path: Path = Path("/usr/local/x-ui/bin/xray-linux-amd64"),
+    timeout_seconds: float = 2.0,
+) -> bool:
+    """Prove a public bind belongs to the one pinned Xray process."""
+    if not (
+        _port(port)
+        and isinstance(listen, str)
+        and len(listen) <= 255
+        and type(timeout_seconds) in (int, float)
+        and 0 < timeout_seconds <= 30
+        and math.isfinite(timeout_seconds)
+        and isinstance(executable_path, Path)
+        and executable_path.is_absolute()
+    ):
+        return False
+    try:
+        deadline = time.monotonic() + timeout_seconds
+        _require_linux()
+        executable = _trusted_file(executable_path, deadline)
+        process = _process(executable_path, deadline)
+        _require(_linked_identity(process / "exe", deadline) == executable[:2])
+        started = _start_ticks(process, deadline)
+        namespace = _network_namespace(process, deadline)
+        first = _public_listener(process, port, listen, deadline)
+        _require(_trusted_file(executable_path, deadline) == executable)
+        _require(_process(executable_path, deadline) == process)
+        _require(_linked_identity(process / "exe", deadline) == executable[:2])
+        _require(_start_ticks(process, deadline) == started)
+        _require(_network_namespace(process, deadline) == namespace)
+        _require(_public_listener(process, port, listen, deadline) == first)
+        return True
+    except Exception:  # noqa: BLE001 - this proof is strictly fail-closed
+        return False
 
 
 def _run(arguments: list[str], deadline: float) -> bytes:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from typing import Protocol
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +19,6 @@ from app.db.models import (
     WorkerNode,
     WorkerTask,
 )
-
 
 DEVICE_SLOT_STATUSES = (
     "pending_sync", "syncing", "active", "pending_revoke", "pending_suspend", "suspended", "failed",
@@ -40,6 +41,18 @@ class VpnNodeEligibility:
     reasons: tuple[str, ...]
 
 
+class VpnNodeAttributes(Protocol):
+    id: int
+    is_enabled: bool
+    status: str
+    vpn_enabled: bool
+    vpn_role: str
+    vpn_runtime_status: str
+    ssh_access_configured: bool
+    vpn_inbound_id: int | None
+    vpn_public_host: str | None
+
+
 @dataclass(frozen=True, slots=True)
 class VpnEndpointCapacity:
     endpoint: VpnEndpoint
@@ -55,8 +68,8 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def validate_subscription_access(
@@ -159,7 +172,11 @@ async def active_attack_worker_ids(session: AsyncSession) -> set[int]:
     return {int(worker_id) for worker_id in result.scalars().all()}
 
 
-async def evaluate_vpn_node(session: AsyncSession, worker: WorkerNode) -> VpnNodeEligibility:
+def evaluate_vpn_node_attributes(
+    worker: VpnNodeAttributes,
+    *,
+    active_attack_worker_ids: AbstractSet[int],
+) -> VpnNodeEligibility:
     reasons: list[str] = []
     if not worker.is_enabled or worker.status in {"offline", "disabled"}:
         reasons.append("Worker is not online and enabled")
@@ -173,9 +190,16 @@ async def evaluate_vpn_node(session: AsyncSession, worker: WorkerNode) -> VpnNod
         reasons.append("VPN inbound ID is not configured")
     if not worker.vpn_public_host:
         reasons.append("VPN public host is not configured")
-    if worker.id in await active_attack_worker_ids(session):
+    if worker.id in active_attack_worker_ids:
         reasons.append("Worker is assigned to an active domain attack")
     return VpnNodeEligibility(eligible=not reasons, reasons=tuple(reasons))
+
+
+async def evaluate_vpn_node(session: AsyncSession, worker: WorkerNode) -> VpnNodeEligibility:
+    return evaluate_vpn_node_attributes(
+        worker,
+        active_attack_worker_ids=await active_attack_worker_ids(session),
+    )
 
 
 async def select_public_vpn_endpoint(
@@ -196,7 +220,7 @@ async def select_public_vpn_endpoint(
             worker is not None
             and worker.archived_at is None
             and (checked_at := _as_utc(worker.vpn_last_checked_at)) is not None
-            and checked_at >= healthy_since
+            and healthy_since <= checked_at <= current_time
             and (await evaluate_vpn_node(session, worker)).eligible
         )
 
@@ -208,7 +232,11 @@ async def select_public_vpn_endpoint(
         if (
             endpoint.status != "ready"
             or endpoint.security != "reality"
-            or endpoint.verified_at is None
+            or not (
+                (verified_at := _as_utc(endpoint.verified_at)) is not None
+                and healthy_since <= verified_at <= current_time
+            )
+            or bool(endpoint.last_error_code)
             or limit is None
             or limit <= 0
         ):
@@ -296,7 +324,7 @@ async def select_vpn_node(
         key=lambda item: (
             item[0],
             item[1] is not None,
-            _as_utc(item[1]) or datetime.min.replace(tzinfo=timezone.utc),
+            _as_utc(item[1]) or datetime.min.replace(tzinfo=UTC),
             item[2],
         )
     )

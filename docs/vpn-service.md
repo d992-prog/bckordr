@@ -17,8 +17,17 @@ VPN_PUBLIC_TRIAL_ENABLED=false
 VPN_PUBLIC_TRIAL_RELEASE_ID=
 VPN_PUBLIC_TRIAL_PLAN_SLUG=trial-7d
 VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS=300
+VPN_FLEET_HEALTH_ENABLED=false
+VPN_FLEET_HEALTH_INTERVAL_SECONDS=120
 VPN_READY_NOTIFICATIONS_ENABLED=false
+VPN_BACKUP_ENABLED=false
+VPN_WATCHDOG_ENABLED=false
 ```
+
+Install, manual acceptance, isolated restore, alert/recovery rehearsal and
+rollback are documented in [Veltrix release operations](veltrix-release-operations.md).
+Installing those units does not enable their timers and does not authorize the
+public trial or payments.
 
 Do not enable the public path merely because the code is deployed. Every item
 below is required at the same time:
@@ -38,6 +47,125 @@ below is required at the same time:
    it. The public-trial flag is enabled only after that marker is written.
 7. Ready notifications are enabled separately only after Telegram delivery and
    retry monitoring are accepted.
+
+### Release-readiness gate
+
+The admin panel and `GET /api/control/vpn/release-readiness` use the same
+authoritative evaluator. It is fail closed: any failed prerequisite keeps the
+release unready. Missing operational/watchdog or backup observations are shown
+in red and block the marker. The independent watchdog persists both observation
+groups; they remain missing or stale until the disabled jobs pass acceptance and
+run successfully.
+
+External endpoint confirmation is evidence that a real client used the VPN from
+outside the control network. The server stores the confirmation time and a hash
+of the endpoint's public identity. Any change to that identity invalidates the
+evidence and requires a new external test. The readiness response and admin
+panel expose only fixed check text, state, timestamps and numeric entity IDs;
+they never expose a VPN URI, UUID, public host or configuration fingerprint.
+
+All readiness routes are admin-only. State-changing requests additionally
+require an exact same-origin `Origin` header and an exact JSON body with no extra
+fields: `{"confirmed":true}` for an external test and
+`{"confirmation":"ГОТОВО К РЕЛИЗУ"}` for the release marker.
+`Зафиксировать готовность` takes the VPN mutation and database table locks,
+reloads and re-evaluates the authoritative state, and writes only the database
+marker `vpn_public_release_ready_v1` for the configured lowercase 64-hex release
+ID (with the normal admin audit record). It does **not** edit `.env`, enable
+`VPN_PUBLIC_TRIAL_ENABLED`, enable payment, provision or revoke profiles, or
+restart VPN services.
+
+Operator flow after backup and watchdog acceptance:
+
+1. Set explicit positive capacity for each release endpoint.
+2. Obtain fresh strict worker and endpoint health for the complete release fleet.
+3. Test each endpoint from an external client and confirm that test in the panel.
+4. Inspect every panel check; do not continue while any item is red.
+5. Type the exact phrase `ГОТОВО К РЕЛИЗУ` and press
+   `Зафиксировать готовность` to commit the marker.
+
+Enabling the public trial is a separate release. Take a fresh reviewed backup
+and fresh operational observations before that release; do not treat a stored
+readiness marker as permission to turn on the flag later.
+
+### Strict fleet health (disabled by default)
+
+Strict fleet health is a read-only release signal, not an update or recovery
+mechanism. Keep `VPN_FLEET_HEALTH_ENABLED=false` when code and migrations are
+first deployed. The interval defaults to 120 seconds and accepts only finite
+values from 30 through 3600 seconds. The separate endpoint freshness window is
+`VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS=300`. Enabling the scheduler also requires
+the existing `VPN_CONTROL_KNOWN_HOSTS_PATH` to name the shared root-owned,
+control-group-readable file containing one exact literal Ed25519 host-and-port
+pin for every target node. Onboarding appends to this file under a lock; it does
+not replace existing trust or rotate a conflicting key.
+
+Each cycle probes at most one eligible endpoint, choosing the oldest attempted
+health check by `health_checked_at` so one failing node cannot starve the rest
+of the fleet. PostgreSQL uses one global transaction-scoped advisory lease to
+prevent probes from different control processes from overlapping. The
+process-local lock is only a development fallback for SQLite and is not a
+production coordination mechanism.
+
+The controller uses the pinned strict SSH transport and the single fixed remote
+command `/usr/bin/python3 -I -S /opt/veltrix-vpn/current/vpn-node.pyz --health`.
+No SSH config, agent, default key, ambient host trust, PTY or caller-supplied
+command is accepted. Successful execution proves the installed node runner is
+reachable; the read-only command then checks 3x-UI/Xray runtime, the expected
+inbound and REALITY identity, and that the public `LISTEN` socket belongs to the
+pinned Xray process. It does not restart or update software, change clients or
+inbounds, read client identities, or collect traffic content or DNS requests.
+
+The health request and receipt are bounded, exact JSON messages. They contain
+only the endpoint target and fixed state/error values: never panel credentials,
+SSH material, client UUIDs or VPN URIs. Logs use static messages. A failed probe
+creates a bounded node event containing only the numeric endpoint ID and fixed
+error code, and the same consecutive error is deduplicated.
+
+A failed health attempt immediately sets a safe error and blocks that endpoint
+from **new** public allocation, release readiness and external reconfirmation.
+Stale health blocks those same fresh-health gates; an endpoint at capacity also
+blocks new allocation and readiness. Existing client profiles are not revoked
+or mutated. Failure preserves the last successful `verified_at`, endpoint
+identity and existing external proof. External proof is cleared only when its
+stored public-identity fingerprint no longer matches the current endpoint.
+
+The old maintenance action `vpn_check` remains a legacy diagnostic path using
+`known_hosts=None`. It is deliberately excluded from automated fleet health and
+is not accepted as release-readiness evidence. The readiness panel is the one
+authoritative health view; do not add a second update endpoint or a per-node
+health/update workflow.
+
+The node-side 3x-UI SQLite inventory is observed from a stable rollback-journal
+main file without changing the database or its directory. A live WAL, SHM or
+journal sidecar fails closed. If the installed 3x-UI version actually switches
+the live database to WAL, provision and review a safe read-only filesystem
+boundary that can present a consistent snapshot before enabling fleet health.
+Do not work around this by marking the live database immutable or by modifying
+it during a health check.
+
+### Strict fleet rollout
+
+1. Deploy the reviewed code and additive migration with fleet health disabled.
+   Do not enable payment, the public trial, or ready notifications.
+2. For every existing node, install the same reviewed deterministic node bundle
+   through the existing fleet-wide `vpn-update-all` path (and
+   `vpn-autoconfig-all` where the standard configuration must be installed).
+   There is no per-node custom implementation or update script.
+3. On one existing node, verify its stored credentials, selected exact Ed25519 pin,
+   installed bundle hash, read-only health result and one real external client
+   connection. Confirm the external test only after that connection succeeds.
+4. Enable only `VPN_FLEET_HEALTH_ENABLED=true` and observe the readiness panel.
+   With the current single-node production fleet, readiness is still expected
+   to fail for the missing second distinct worker and for any unset capacity,
+   stale health or missing external proof.
+5. Add the second VPS through the same one-time onboarding: create the worker,
+   install credentials, append its exact Ed25519 pin to the shared trust file,
+   install the common bundle,
+   create the REALITY endpoint, set capacity, obtain fresh strict health, and
+   complete the external client test. Later nodes use this identical process.
+6. Keep payment and public trial activation out of this rollout. They require a
+   separate reviewed release after every readiness check is green.
 
 ### Customer-facing behavior
 
@@ -137,13 +265,15 @@ and `git diff --check` passed.
 
 ## Safe Node Rollout
 
-1. Enable the VPN role on one non-critical worker.
-2. Configure its SSH access, public host, 3x-UI panel, and inbound.
-3. Run VPN check, install or autoconfigure, and create the inbound when required.
-4. Confirm the node says `готова к выдаче` in the VPN screen. Read every blocking reason if it does not.
-5. Create one test customer, subscription, and key.
-6. Test the VLESS/VMess URI on a client device.
-7. Revoke the key and confirm it remains in history as `revoked`.
+1. Enable the VPN role on one non-critical worker and configure its SSH access,
+   public host and 3x-UI credentials.
+2. Install the exact reviewed Ed25519 host pin and the common deterministic node
+   bundle, then create or autoconfigure the expected REALITY inbound.
+3. Obtain a fresh strict fleet-health result and inspect every blocking reason in
+   the readiness panel. Do not use legacy `vpn_check` as release evidence.
+4. Set an explicit capacity, create one test customer/subscription/key, and test
+   the profile from a real external client before recording external proof.
+5. Revoke the test key and confirm it remains in history as `revoked`.
 
 VPN-changing maintenance and key mutations are blocked while the same worker is running an active domain attack. Health checks remain available, and existing VPN clients continue working. Wait for the attack to finish before retrying a mutation.
 

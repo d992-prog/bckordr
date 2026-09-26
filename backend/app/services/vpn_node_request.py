@@ -8,9 +8,11 @@ import re
 from dataclasses import asdict, dataclass, field, fields
 from uuid import UUID
 
-from app.services.vpn_endpoint_types import EndpointOperation, VpnEndpointTarget
-from app.services.vpn_xui_node_http import _valid_hostname
-from app.services.vpn_xui_node_observation import _fingerprint, _public_key, _short_id
+from app.services.vpn_endpoint_types import (
+    EndpointOperation,
+    VpnEndpointTarget,
+    is_valid_vpn_endpoint_target,
+)
 
 
 class VpnNodeRequestError(ValueError):
@@ -51,7 +53,6 @@ def _integer(value: object, minimum: int = 0) -> bool:
 def _validate(request: object) -> None:
     if not isinstance(request, VpnNodeRequest):
         _invalid()
-    target = request.target
     if not (
         isinstance(request.operation_id, UUID)
         and isinstance(request.client_uuid, UUID)
@@ -69,48 +70,10 @@ def _validate(request: object) -> None:
         and request.client_email not in (".", "..")
         and type(request.sub_id) is str
         and re.fullmatch(r"[A-Za-z0-9_-]{0,64}", request.sub_id)
-        and isinstance(target, VpnEndpointTarget)
+        and is_valid_vpn_endpoint_target(request.target)
     ):
         _invalid()
-    if not (
-        all(
-            _integer(value, 1)
-            for value in (target.endpoint_id, target.worker_id, target.inbound_id)
-        )
-        and _integer(target.port, 1)
-        and target.port <= 65535
-        and type(target.public_host) is str
-        and _valid_hostname(target.public_host)
-        and target.protocol == "vless"
-        and target.transport in ("tcp", "raw")
-        and target.security in ("none", "reality")
-        and all(
-            type(value) is str
-            for value in (target.protocol, target.transport, target.security)
-        )
-    ):
-        _invalid()
-    if target.security == "none":
-        if any(
-            value not in (None, "")
-            for value in (
-                target.flow,
-                target.server_name,
-                target.public_key,
-                target.short_id,
-                target.fingerprint,
-            )
-        ):
-            _invalid()
-    elif not (
-        target.flow == "xtls-rprx-vision"
-        and _public_key(target.public_key)
-        and _short_id(target.short_id)
-        and _fingerprint(target.fingerprint)
-        and type(target.server_name) is str
-        and _valid_hostname(target.server_name)
-    ):
-        _invalid()
+    target = request.target
     if request.allow_create and not (
         request.action == "provision"
         and target.security == "reality"

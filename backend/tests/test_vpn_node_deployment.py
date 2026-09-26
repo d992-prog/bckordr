@@ -4,20 +4,26 @@ import asyncio
 import hashlib
 import importlib
 import json
-from pathlib import Path
+import os
 import stat
 import subprocess
 import sys
-from types import SimpleNamespace
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
+from types import SimpleNamespace
 
 import asyncssh
 import pytest
 
+from app.services import vpn_node_transport
 from app.services.vpn_node_bundle import IMPORT_PROBE_SENTINEL, build_node_bundle
 from app.services.vpn_node_journal import initialize_node_journal
-from app.services.vpn_node_transport import VpnNodeTransportSnapshot
-
+from app.services.vpn_node_transport import (
+    MAX_KNOWN_HOSTS_BYTES,
+    VpnNodeTransportSnapshot,
+)
 
 BACKEND = Path(__file__).resolve().parents[1]
 
@@ -243,14 +249,14 @@ def test_control_trust_is_exact_atomic_and_idempotent(tmp_path: Path) -> None:
     target = parent / "vpn-node-15-known_hosts"
     key = asyncssh.generate_private_key("ssh-ed25519")
     raw = b"64.188.64.159 " + key.export_public_key("openssh")
-    owner_uid = parent.stat().st_uid
+    reader_gid = parent.stat().st_gid
 
     assert deployment.install_control_known_hosts(
         raw,
         target=target,
         host="64.188.64.159",
         port=22,
-        owner_uid=owner_uid,
+        reader_gid=reader_gid,
         require_posix=False,
     ) == "installed"
     before = target.stat()
@@ -260,7 +266,7 @@ def test_control_trust_is_exact_atomic_and_idempotent(tmp_path: Path) -> None:
         target=target,
         host="64.188.64.159",
         port=22,
-        owner_uid=owner_uid,
+        reader_gid=reader_gid,
         require_posix=False,
     ) == "unchanged"
     after = target.stat()
@@ -277,9 +283,519 @@ def test_control_trust_is_exact_atomic_and_idempotent(tmp_path: Path) -> None:
             target=parent / "wrong-known-hosts",
             host="64.188.64.159",
             port=22,
-            owner_uid=owner_uid,
+            reader_gid=reader_gid,
             require_posix=False,
         )
+
+
+def test_control_trust_posix_install_uses_root_owner_reader_group_and_0640(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    target = tmp_path / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    raw = b"node-one " + key.export_public_key("openssh")
+    secure_calls = []
+    replace_calls = []
+
+    class Lock:
+        def __enter__(self):
+            return 7
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        deployment,
+        "_secure_ancestors",
+        lambda path, owner_uid, *, require_posix: secure_calls.append(
+            (path, owner_uid, require_posix)
+        ),
+    )
+    monkeypatch.setattr(
+        deployment,
+        "_control_known_hosts_lock",
+        lambda *_args, **_kwargs: Lock(),
+    )
+    monkeypatch.setattr(
+        deployment,
+        "_replace_control_known_hosts",
+        lambda *args, **kwargs: replace_calls.append((args, kwargs)),
+    )
+
+    assert deployment.install_control_known_hosts(
+        raw,
+        target=target,
+        host="node-one",
+        port=22,
+        reader_gid=33,
+    ) == "installed"
+
+    assert secure_calls == [(target, 0, True)]
+    assert replace_calls == [
+        (
+            (target, raw),
+            {
+                "reader_gid": 33,
+                "require_posix": True,
+                "directory_fd": 7,
+                "existed": False,
+            },
+        )
+    ]
+
+
+def test_control_trust_posix_candidate_is_root_reader_group_0640(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    target = tmp_path / "known_hosts"
+    ownership = []
+    modes = []
+    monkeypatch.setattr(deployment, "_write_exclusive", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(deployment.os, "open", lambda *_args, **_kwargs: 9)
+    monkeypatch.setattr(
+        deployment.os, "fchown", lambda *args: ownership.append(args), raising=False
+    )
+    monkeypatch.setattr(deployment.os, "fchmod", lambda *args: modes.append(args))
+    monkeypatch.setattr(deployment.os, "fsync", lambda _fd: None)
+    monkeypatch.setattr(deployment.os, "close", lambda _fd: None)
+    monkeypatch.setattr(deployment.os, "replace", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(deployment, "_sync_directory", lambda _path: None)
+
+    deployment._replace_control_known_hosts(
+        target,
+        b"pin\n",
+        reader_gid=33,
+        require_posix=True,
+        directory_fd=None,
+        existed=False,
+    )
+
+    assert ownership == [(9, 0, 33)]
+    assert modes == [(9, 0o640)]
+
+
+def test_control_trust_lock_is_secured_before_atomic_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    target = Path("C:/etc/veltrix/known_hosts")
+    ownership = []
+    modes = []
+    opens = []
+    links = []
+    unlinks = []
+    locks = []
+    fcntl = SimpleNamespace(
+        LOCK_EX=1,
+        LOCK_UN=2,
+        flock=lambda fd, operation: locks.append((fd, operation)),
+    )
+    secure = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_uid=0,
+        st_gid=0,
+        st_dev=1,
+        st_ino=2,
+    )
+
+    def open_file(path, flags, *args, **kwargs):
+        opens.append((path, flags, args, kwargs))
+        if len(opens) == 1:
+            return 10
+        if path == ".known_hosts.lock" and len(opens) == 2:
+            raise FileNotFoundError
+        if path != ".known_hosts.lock":
+            assert flags & os.O_EXCL
+            return 11
+        return 12
+
+    monkeypatch.setattr(deployment.os, "name", "posix")
+    monkeypatch.setattr(deployment.os, "O_DIRECTORY", 0x10000, raising=False)
+    monkeypatch.setitem(sys.modules, "fcntl", fcntl)
+    monkeypatch.setattr(deployment.os, "open", open_file)
+    monkeypatch.setattr(
+        deployment.os, "fchown", lambda *args: ownership.append(args), raising=False
+    )
+    monkeypatch.setattr(deployment.os, "fchmod", lambda *args: modes.append(args))
+    monkeypatch.setattr(deployment.os, "fsync", lambda _fd: None)
+    monkeypatch.setattr(deployment.os, "fstat", lambda _fd: secure)
+    monkeypatch.setattr(deployment.os, "stat", lambda *_args, **_kwargs: secure)
+    monkeypatch.setattr(
+        deployment.os,
+        "link",
+        lambda *args, **kwargs: links.append((args, kwargs)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        deployment.os,
+        "unlink",
+        lambda *args, **kwargs: unlinks.append((args, kwargs)),
+    )
+    monkeypatch.setattr(deployment.os, "close", lambda _fd: None)
+
+    with deployment._control_known_hosts_lock(
+        target,
+        require_posix=True,
+    ) as directory_fd:
+        assert directory_fd == 10
+
+    assert ownership == [(11, 0, 0)]
+    assert modes == [(11, 0o600)]
+    assert links == [
+        (
+            (opens[2][0], ".known_hosts.lock"),
+            {"src_dir_fd": 10, "dst_dir_fd": 10, "follow_symlinks": False},
+        )
+    ]
+    assert unlinks == [((opens[2][0],), {"dir_fd": 10})]
+    assert locks == [(12, fcntl.LOCK_EX), (12, fcntl.LOCK_UN)]
+
+
+def test_control_trust_lock_repairs_legacy_metadata_under_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    target = Path("C:/etc/veltrix/known_hosts")
+    ownership = []
+    modes = []
+    opens = []
+    locks = []
+    fcntl = SimpleNamespace(
+        LOCK_EX=1,
+        LOCK_UN=2,
+        flock=lambda fd, operation: locks.append((fd, operation)),
+    )
+    legacy = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o640,
+        st_uid=33,
+        st_gid=33,
+        st_dev=1,
+        st_ino=2,
+    )
+    repaired = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_uid=0,
+        st_gid=0,
+        st_dev=1,
+        st_ino=2,
+    )
+    stats = [legacy, repaired]
+    monkeypatch.setattr(deployment.os, "name", "posix")
+    monkeypatch.setattr(deployment.os, "O_DIRECTORY", 0x10000, raising=False)
+    monkeypatch.setitem(sys.modules, "fcntl", fcntl)
+    monkeypatch.setattr(
+        deployment.os,
+        "open",
+        lambda *_args, **_kwargs: opens.append(None) or (9 + len(opens)),
+    )
+    monkeypatch.setattr(
+        deployment.os, "fchown", lambda *args: ownership.append(args), raising=False
+    )
+    monkeypatch.setattr(deployment.os, "fchmod", lambda *args: modes.append(args))
+    monkeypatch.setattr(deployment.os, "fsync", lambda _fd: None)
+    monkeypatch.setattr(deployment.os, "fstat", lambda _fd: stats.pop(0))
+    monkeypatch.setattr(deployment.os, "stat", lambda *_args, **_kwargs: legacy)
+    monkeypatch.setattr(deployment.os, "close", lambda _fd: None)
+
+    with deployment._control_known_hosts_lock(target, require_posix=True):
+        pass
+
+    assert ownership == [(11, 0, 0)]
+    assert modes == [(11, 0o600)]
+    assert locks == [(11, fcntl.LOCK_EX), (11, fcntl.LOCK_UN)]
+
+
+def test_control_trust_appends_distinct_target_and_preserves_existing_bytes(
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    first = b"node-one " + key.export_public_key("openssh").rstrip(b"\n")
+    second = b"[node-two]:2222 " + key.export_public_key("openssh")
+    _private_file(target, first)
+
+    assert deployment.install_control_known_hosts(
+        second,
+        target=target,
+        host="node-two",
+        port=2222,
+        reader_gid=parent.stat().st_gid,
+        require_posix=False,
+    ) == "installed"
+    assert target.read_bytes() == first + b"\n" + second
+
+
+def test_control_trust_same_pin_is_unchanged_and_rotation_is_refused(
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    original_key = asyncssh.generate_private_key("ssh-ed25519")
+    replacement_key = asyncssh.generate_private_key("ssh-ed25519")
+    original = b"node-one " + original_key.export_public_key("openssh").rstrip(b"\n")
+    _private_file(target, original)
+    before = target.stat()
+    reader_gid = parent.stat().st_gid
+
+    assert deployment.install_control_known_hosts(
+        original + b"\n",
+        target=target,
+        host="node-one",
+        port=22,
+        reader_gid=reader_gid,
+        require_posix=False,
+    ) == "unchanged"
+    assert target.read_bytes() == original
+    assert target.stat().st_ino == before.st_ino
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment.install_control_known_hosts(
+            b"node-one " + replacement_key.export_public_key("openssh"),
+            target=target,
+            host="node-one",
+            port=22,
+            reader_gid=reader_gid,
+            require_posix=False,
+        )
+    assert target.read_bytes() == original
+
+
+def test_control_trust_rejects_multi_entry_input_and_oversize_merge_without_mutation(
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    reader_gid = parent.stat().st_gid
+    first = b"node-one " + key.export_public_key("openssh")
+    second = b"node-two " + key.export_public_key("openssh")
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment.install_control_known_hosts(
+            first + second,
+            target=target,
+            host="node-one",
+            port=22,
+            reader_gid=reader_gid,
+            require_posix=False,
+        )
+    assert not target.exists()
+
+    incoming = b"new-node " + key.export_public_key("openssh")
+    suffix = b" " + key.export_public_key("openssh").rstrip(b"\n") + b"\n"
+    existing = b""
+    index = 0
+    while True:
+        for host_length in range(1, 254):
+            final_size = len(existing) + host_length + len(suffix)
+            if (
+                MAX_KNOWN_HOSTS_BYTES - len(incoming)
+                < final_size
+                <= MAX_KNOWN_HOSTS_BYTES
+            ):
+                labels = []
+                remaining = host_length
+                while remaining > 63:
+                    label_length = 62 if remaining == 64 else 63
+                    labels.append("z" * label_length)
+                    remaining -= label_length + 1
+                labels.append("z" * remaining)
+                existing += ".".join(labels).encode() + suffix
+                break
+        else:
+            existing += f"node-{index}".encode() + suffix
+            index += 1
+            continue
+        break
+    assert len(existing) <= MAX_KNOWN_HOSTS_BYTES < len(existing) + len(incoming)
+    _private_file(target, existing)
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment.install_control_known_hosts(
+            incoming,
+            target=target,
+            host="new-node",
+            port=22,
+            reader_gid=reader_gid,
+            require_posix=False,
+        )
+    assert target.read_bytes() == existing
+
+
+def test_control_trust_replace_failure_preserves_existing_content(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    original = b"node-one " + key.export_public_key("openssh")
+    incoming = b"node-two " + key.export_public_key("openssh")
+    _private_file(target, original)
+    replace_calls = []
+
+    def fail_replace(*args, **kwargs):
+        replace_calls.append((args, kwargs))
+        raise OSError("synthetic replace failure")
+
+    monkeypatch.setattr(deployment.os, "replace", fail_replace)
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment.install_control_known_hosts(
+            incoming,
+            target=target,
+            host="node-two",
+            port=22,
+            reader_gid=parent.stat().st_gid,
+            require_posix=False,
+        )
+    assert replace_calls
+    assert target.read_bytes() == original
+    assert not list(parent.glob(".known_hosts.*.tmp"))
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+def test_control_trust_post_replace_fsync_failure_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    preexisting: bool,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    original = b"node-one " + key.export_public_key("openssh")
+    incoming = b"node-two " + key.export_public_key("openssh")
+    if preexisting:
+        _private_file(target, original)
+    failed = False
+
+    def fail_after_new_target_is_published(_directory: Path) -> None:
+        nonlocal failed
+        if target.exists() and b"node-two " in target.read_bytes() and not failed:
+            failed = True
+            raise OSError("synthetic post-replace fsync failure")
+
+    monkeypatch.setattr(deployment, "_sync_directory", fail_after_new_target_is_published)
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment.install_control_known_hosts(
+            incoming,
+            target=target,
+            host="node-two",
+            port=22,
+            reader_gid=parent.stat().st_gid,
+            require_posix=False,
+        )
+
+    assert failed
+    if preexisting:
+        assert target.read_bytes() == original
+    else:
+        assert not target.exists()
+    assert not list(parent.glob(".known_hosts.*"))
+
+
+def test_control_trust_failed_rollback_retains_private_backup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    original = b"node-one " + key.export_public_key("openssh")
+    incoming = b"node-two " + key.export_public_key("openssh")
+    _private_file(target, original)
+    real_replace = deployment.os.replace
+    replace_calls = []
+    fsync_failed = False
+
+    def fail_rollback(source, destination, *args, **kwargs):
+        replace_calls.append((source, destination))
+        if str(source).endswith(".bak"):
+            raise OSError("synthetic rollback failure")
+        return real_replace(source, destination, *args, **kwargs)
+
+    def fail_after_new_target_is_published(_directory: Path) -> None:
+        nonlocal fsync_failed
+        if target.exists() and b"node-two " in target.read_bytes() and not fsync_failed:
+            fsync_failed = True
+            raise OSError("synthetic post-replace fsync failure")
+
+    monkeypatch.setattr(deployment.os, "replace", fail_rollback)
+    monkeypatch.setattr(deployment, "_sync_directory", fail_after_new_target_is_published)
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment.install_control_known_hosts(
+            incoming,
+            target=target,
+            host="node-two",
+            port=22,
+            reader_gid=parent.stat().st_gid,
+            require_posix=False,
+        )
+
+    backups = list(parent.glob(".known_hosts.*.bak"))
+    assert fsync_failed
+    assert len(replace_calls) == 2
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+
+
+@pytest.mark.skipif(os.name != "posix", reason="stdlib flock is POSIX-only")
+def test_control_trust_concurrent_distinct_appends_retain_both(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    parent = tmp_path / "control-trust"
+    parent.mkdir(mode=0o700)
+    target = parent / "known_hosts"
+    key = asyncssh.generate_private_key("ssh-ed25519")
+    reader_gid = parent.stat().st_gid
+    barrier = Barrier(2)
+    monkeypatch.setattr(deployment, "_secure_ancestors", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        vpn_node_transport,
+        "_validate_ancestors",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def install(host: str) -> str:
+        raw = host.encode() + b" " + key.export_public_key("openssh")
+        barrier.wait()
+        return deployment.install_control_known_hosts(
+            raw,
+            target=target,
+            host=host,
+            port=22,
+            reader_gid=reader_gid,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(install, ("node-one", "node-two")))
+
+    assert results == ["installed", "installed"]
+    assert set(target.read_bytes().splitlines()) == {
+        b"node-one " + key.export_public_key("openssh").rstrip(b"\n"),
+        b"node-two " + key.export_public_key("openssh").rstrip(b"\n"),
+    }
 
 
 def test_deployment_helper_is_deterministic_and_runs_one_shot(tmp_path: Path) -> None:

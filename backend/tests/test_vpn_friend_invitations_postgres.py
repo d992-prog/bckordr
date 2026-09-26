@@ -7,8 +7,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from test_vpn_endpoint_migrations import PostgresSchema
+from test_vpn_endpoint_migrations import (
+    postgres_schema as postgres_schema,  # noqa: PLC0414
+)
 
 from app.core.config import Settings
 from app.db.base import Base
@@ -31,11 +35,6 @@ from app.services.vpn_friend_invitations import (
     redeem_friend_invitation,
 )
 from app.services.vpn_telegram_identity import TelegramIdentity
-from test_vpn_endpoint_migrations import (
-    PostgresSchema,
-    postgres_schema as postgres_schema,
-)
-
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 RELEASE_ID = "a" * 64
@@ -99,10 +98,13 @@ async def postgres_friend_control(
                     vpn_enabled=True,
                     vpn_role="vpn_node",
                     vpn_runtime_status="ready",
+                    vpn_public_host="vpn.example.test",
+                    vpn_inbound_id=11,
                     ssh_host="192.0.2.10",
                     ssh_port=22,
                     ssh_username="root",
                     ssh_password="synthetic-test-password",
+                    vpn_last_checked_at=NOW,
                 ),
             ]
         )
@@ -123,7 +125,8 @@ async def postgres_friend_control(
                 fingerprint="chrome",
                 flow="xtls-rprx-vision",
                 status="ready",
-                verified_at=NOW - timedelta(hours=1),
+                verified_at=NOW - timedelta(minutes=1),
+                max_active_profiles=4,
             )
         )
         await db.commit()
@@ -266,7 +269,7 @@ async def test_two_identities_racing_one_token_have_one_winner_and_generic_rejec
 
 
 @pytest.mark.asyncio
-async def test_endpoint_change_before_staging_rolls_back_entire_redemption(
+async def test_endpoint_change_during_staging_rolls_back_entire_redemption(
     postgres_friend_control: PostgresFriendControl,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -281,47 +284,37 @@ async def test_endpoint_change_before_staging_rolls_back_entire_redemption(
         await db.commit()
     token = _token(issued.link)
     original_stage = invitations.stage_vpn_control_operation
-    stage_started = asyncio.Event()
-    endpoint_changed = asyncio.Event()
 
-    async def delayed_stage(
+    async def change_endpoint_then_stage(
         db: AsyncSession,
         access_key_id: int,
         action: str,
         *,
         now: datetime,
     ) -> VpnControlOperation:
-        stage_started.set()
-        await asyncio.wait_for(endpoint_changed.wait(), timeout=15)
+        endpoint = await db.get(VpnEndpoint, 1)
+        assert endpoint is not None
+        endpoint.status = "disabled"
+        await db.flush()
         return await original_stage(db, access_key_id, action, now=now)
 
-    monkeypatch.setattr(invitations, "stage_vpn_control_operation", delayed_stage)
+    monkeypatch.setattr(
+        invitations,
+        "stage_vpn_control_operation",
+        change_endpoint_then_stage,
+    )
 
-    async def change_endpoint() -> None:
-        await asyncio.wait_for(stage_started.wait(), timeout=15)
-        async with control.sessions() as db:
-            await db.execute(
-                update(VpnEndpoint)
-                .where(VpnEndpoint.id == 1)
-                .values(status="disabled")
+    async with control.sessions() as db:
+        with pytest.raises(FriendInvitationUnavailable) as error:
+            await redeem_friend_invitation(
+                db,
+                _settings(),
+                token,
+                TelegramIdentity("800003", "friend_800003"),
+                NOW,
             )
-            await db.commit()
-        endpoint_changed.set()
-
-    async def redeem() -> None:
-        async with control.sessions() as db:
-            with pytest.raises(FriendInvitationUnavailable) as error:
-                await redeem_friend_invitation(
-                    db,
-                    _settings(),
-                    token,
-                    TelegramIdentity("800003", "friend_800003"),
-                    NOW,
-                )
-            assert str(error.value) == "friend_beta_unavailable"
-            await db.commit()
-
-    await asyncio.wait_for(asyncio.gather(redeem(), change_endpoint()), timeout=30)
+        assert str(error.value) == "friend_beta_unavailable"
+        await db.commit()
 
     async with control.sessions() as db:
         invitation = await db.get(VpnFriendInvitation, 1)
@@ -330,7 +323,7 @@ async def test_endpoint_change_before_staging_rolls_back_entire_redemption(
         assert invitation.redeemed_at is None
         assert invitation.telegram_user_id is None
         assert invitation.access_key_id is None
-        assert endpoint is not None and endpoint.status == "disabled"
+        assert endpoint is not None and endpoint.status == "ready"
         assert await _count(db, VpnCustomer) == 0
         assert await _count(db, VpnSubscription) == 0
         assert await _count(db, VpnAccessKey) == 0

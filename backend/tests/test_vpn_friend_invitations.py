@@ -144,7 +144,7 @@ async def _seed_ready_environment(
                 fingerprint="chrome",
                 flow="xtls-rprx-vision",
                 status="ready",
-                verified_at=NOW - timedelta(hours=1),
+                verified_at=NOW,
                 max_active_profiles=4,
             )
         )

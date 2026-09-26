@@ -473,6 +473,20 @@ export type VpnEndpointCapacityUpdate = {
   capacity_warning_percent: number;
 };
 
+export type VpnReleaseCheck = {
+  code: string;
+  state: "pass" | "warn" | "fail";
+  message: string;
+  entity_id: number | null;
+  observed_at: string | null;
+};
+
+export type VpnReleaseReadiness = {
+  ready: boolean;
+  checked_at: string;
+  checks: VpnReleaseCheck[];
+};
+
 export type VpnFriendInvitation = {
   slot: number;
   invite_state:
@@ -1043,6 +1057,21 @@ export const api = {
     request<VpnEndpointCapacity>(`/control/vpn/endpoints/${id}/capacity`, {
       method: "PATCH",
       body: JSON.stringify(payload),
+    }),
+  getVpnReleaseReadiness: () =>
+    request<VpnReleaseReadiness>("/control/vpn/release-readiness"),
+  confirmVpnEndpointExternalVerification: (id: number) =>
+    request<{ endpoint_id: number; confirmed: true; confirmed_at: string }>(
+      `/control/vpn/endpoints/${id}/external-verification`,
+      {
+        method: "POST",
+        body: JSON.stringify({ confirmed: true }),
+      },
+    ),
+  commitVpnReleaseReadiness: () =>
+    request<{ detail: string }>("/control/vpn/release-readiness/commit", {
+      method: "POST",
+      body: JSON.stringify({ confirmation: "ГОТОВО К РЕЛИЗУ" }),
     }),
   getVpnFriendInvitations: () =>
     request<VpnFriendInvitation[]>("/control/vpn/friend-invitations"),

@@ -4,21 +4,31 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from collections.abc import Callable
-from dataclasses import dataclass, field
+import ipaddress
 import json
 import math
 import os
-from pathlib import Path
 import re
 import stat
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from inspect import isawaitable
+from pathlib import Path
 from typing import Literal
 from uuid import UUID
 
 import asyncssh
 
+from app.services.vpn_node_health import (
+    MAX_HEALTH_PAYLOAD_BYTES,
+    VpnNodeHealthReceipt,
+    VpnNodeHealthRequest,
+    parse_node_health_receipt,
+    serialize_node_health_request,
+)
 
 FIXED_NODE_COMMAND = "/usr/bin/python3 -I -S /opt/veltrix-vpn/current/vpn-node.pyz"
+FIXED_NODE_HEALTH_COMMAND = FIXED_NODE_COMMAND + " --health"
 FIXED_NODE_RECEIPT_LOOKUP_COMMAND = FIXED_NODE_COMMAND + " --lookup-receipt"
 MAX_KNOWN_HOSTS_BYTES = 64 * 1024
 MAX_PRIVATE_KEY_BYTES = 64 * 1024
@@ -27,6 +37,7 @@ MAX_STDERR_BYTES = 64 * 1024
 CONNECT_TIMEOUT = 10.0
 LOGIN_TIMEOUT = 10.0
 REMOTE_OPERATION_TIMEOUT = 30.0
+TRANSPORT_CLEANUP_TIMEOUT = 1.0
 
 _RECEIPTS = frozenset(
     {
@@ -40,6 +51,13 @@ _RECEIPTS = frozenset(
     }
 )
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_DNS_HOST = re.compile(
+    r"(?=.{1,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
+    r"(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*\Z"
+)
+_DOTTED_QUAD = re.compile(r"(?:[0-9]+\.){3}[0-9]+\Z")
+_IPV4_NUMBER = r"(?:0[xX][0-9a-fA-F]+|[0-9]+)"
+_LEGACY_IPV4 = re.compile(rf"{_IPV4_NUMBER}(?:\.{_IPV4_NUMBER}){{0,3}}\Z")
 
 
 class VpnNodeTransportError(RuntimeError):
@@ -68,6 +86,12 @@ class VpnNodeTransportSnapshot:
     client_key: object | None = field(default=None, repr=False)
 
 
+@dataclass(frozen=True)
+class _KnownHostEntry:
+    line: str
+    key: bytes
+
+
 def _fail(phase: Literal["preflight", "mutation"] = "preflight") -> None:
     error = VpnNodeTransportError(phase)
     try:
@@ -78,6 +102,11 @@ def _fail(phase: Literal["preflight", "mutation"] = "preflight") -> None:
 
 def _effective_uid() -> int:
     getter = getattr(os, "geteuid", None)
+    return getter() if getter is not None else -1
+
+
+def _effective_gid() -> int:
+    getter = getattr(os, "getegid", None)
     return getter() if getter is not None else -1
 
 
@@ -94,6 +123,7 @@ def _identity(info: os.stat_result) -> tuple[object, ...]:
         info.st_ctime_ns,
         info.st_mode,
         info.st_uid,
+        info.st_gid,
     )
 
 
@@ -115,8 +145,14 @@ def _validate_ancestors(path: Path, owner_uid: int) -> None:
         _fail()
 
 
-def _read_private_file(path: Path, *, limit: int, owner_uid: int) -> bytes:
-    _validate_ancestors(path, owner_uid)
+def _read_stable_file(
+    path: Path,
+    *,
+    limit: int,
+    owner_uid: int,
+    mode: int,
+    expected_gid: int | None = None,
+) -> bytes:
     descriptor = None
     try:
         before = os.lstat(path)
@@ -125,7 +161,8 @@ def _read_private_file(path: Path, *, limit: int, owner_uid: int) -> bytes:
             or stat.S_ISLNK(before.st_mode)
             or _reparse(before)
             or before.st_uid != owner_uid
-            or stat.S_IMODE(before.st_mode) != 0o600
+            or (expected_gid is not None and before.st_gid != expected_gid)
+            or stat.S_IMODE(before.st_mode) != mode
             or not 0 < before.st_size <= limit
         ):
             _fail()
@@ -157,28 +194,99 @@ def _read_private_file(path: Path, *, limit: int, owner_uid: int) -> bytes:
                 _fail()
 
 
-def _parse_known_hosts(raw: bytes, host: str, port: int):
+def _read_private_file(path: Path, *, limit: int, owner_uid: int) -> bytes:
+    _validate_ancestors(path, owner_uid)
+    return _read_stable_file(
+        path,
+        limit=limit,
+        owner_uid=owner_uid,
+        mode=0o600,
+    )
+
+
+def _read_known_hosts_file(path: Path, *, expected_reader_gid: int) -> bytes:
+    if type(expected_reader_gid) is not int or expected_reader_gid < 0:
+        _fail()
+    _validate_ancestors(path, 0)
+    return _read_stable_file(
+        path,
+        limit=MAX_KNOWN_HOSTS_BYTES,
+        owner_uid=0,
+        expected_gid=expected_reader_gid,
+        mode=0o640,
+    )
+
+
+def _canonical_known_hosts_host(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return (
+            _LEGACY_IPV4.fullmatch(host) is None
+            and _DOTTED_QUAD.fullmatch(host) is None
+            and _DNS_HOST.fullmatch(host) is not None
+        )
+    return str(address) == host
+
+
+def _canonical_known_hosts_target(target: str) -> bool:
+    if (
+        not target
+        or any(character in target for character in "*,?!|")
+        or target.startswith("@")
+        or any(character.isspace() for character in target)
+    ):
+        return False
+    if target.startswith("["):
+        match = re.fullmatch(r"\[([^\[\]]+)\]:([1-9][0-9]{0,4})", target)
+        if match is None:
+            return False
+        host, port_text = match.groups()
+        port = int(port_text)
+        return (
+            _canonical_known_hosts_host(host)
+            and port != 22
+            and port <= 65535
+            and port_text == str(port)
+        )
+    if "[" in target or "]" in target:
+        return False
+    return _canonical_known_hosts_host(target)
+
+
+def _known_hosts_target(host: str, port: int) -> str:
+    if type(host) is not str or type(port) is not int or not 1 <= port <= 65535:
+        _fail()
+    target = host if port == 22 else f"[{host}]:{port}"
+    if not _canonical_known_hosts_target(target):
+        _fail()
+    return target
+
+
+def _parse_literal_known_hosts(raw: bytes) -> dict[str, _KnownHostEntry]:
     try:
         text = raw.decode("ascii", errors="strict")
         lines = [line for line in text.splitlines() if line.strip()]
-        if len(lines) != 1:
+        if not lines:
             _fail()
-        fields = lines[0].split()
-        if len(fields) < 3 or fields[0].startswith("@"):
-            _fail()
-        expected = host if port == 22 else f"[{host}]:{port}"
-        hostname, key_type, encoded_key = fields[:3]
-        if (
-            hostname != expected
-            or any(character in hostname for character in "*,?!")
-            or hostname.startswith("|")
-            or key_type != "ssh-ed25519"
-        ):
-            _fail()
-        decoded = base64.b64decode(encoded_key, validate=True)
-        if not decoded:
-            _fail()
-        return asyncssh.import_known_hosts(text)
+        entries: dict[str, _KnownHostEntry] = {}
+        for line in lines:
+            fields = line.split()
+            if len(fields) != 3:
+                _fail()
+            target, key_type, encoded_key = fields[:3]
+            if (
+                not _canonical_known_hosts_target(target)
+                or key_type != "ssh-ed25519"
+                or target in entries
+            ):
+                _fail()
+            decoded = base64.b64decode(encoded_key, validate=True)
+            if not decoded:
+                _fail()
+            asyncssh.import_public_key(f"{key_type} {encoded_key}")
+            entries[target] = _KnownHostEntry(line, decoded)
+        return entries
     except VpnNodeTransportError:
         raise
     except (
@@ -189,6 +297,21 @@ def _parse_known_hosts(raw: bytes, host: str, port: int):
         asyncssh.KeyImportError,
     ):
         _fail()
+
+
+def _parse_known_hosts(raw: bytes, host: str, port: int):
+    entries = _parse_literal_known_hosts(raw)
+    entry = entries.get(_known_hosts_target(host, port))
+    if entry is None:
+        _fail()
+    return asyncssh.import_known_hosts(entry.line + "\n")
+
+
+def validate_known_hosts_file(path: Path, *, expected_reader_gid: int) -> None:
+    raw = _read_known_hosts_file(
+        Path(path), expected_reader_gid=expected_reader_gid
+    )
+    _parse_literal_known_hosts(raw)
 
 
 def load_transport_snapshot(worker, known_hosts_path: Path) -> VpnNodeTransportSnapshot:
@@ -210,10 +333,11 @@ def load_transport_snapshot(worker, known_hosts_path: Path) -> VpnNodeTransportS
     ):
         _fail()
     owner_uid = _effective_uid()
-    if owner_uid < 0:
+    reader_gid = _effective_gid()
+    if owner_uid < 0 or reader_gid < 0:
         _fail()
-    known_hosts_raw = _read_private_file(
-        Path(known_hosts_path), limit=MAX_KNOWN_HOSTS_BYTES, owner_uid=owner_uid
+    known_hosts_raw = _read_known_hosts_file(
+        Path(known_hosts_path), expected_reader_gid=reader_gid
     )
     _parse_known_hosts(known_hosts_raw, host, port)
     if password_mode:
@@ -321,10 +445,13 @@ async def _bounded_read(
 
 
 async def _read_process_output(
-    process, phase: Literal["preflight", "mutation"] = "mutation"
+    process,
+    phase: Literal["preflight", "mutation"] = "mutation",
+    *,
+    stdout_limit: int = MAX_STDOUT_BYTES,
 ) -> tuple[bytes, bytes]:
     tasks = (
-        asyncio.create_task(_bounded_read(process.stdout, MAX_STDOUT_BYTES, phase)),
+        asyncio.create_task(_bounded_read(process.stdout, stdout_limit, phase)),
         asyncio.create_task(_bounded_read(process.stderr, MAX_STDERR_BYTES, phase)),
     )
     try:
@@ -422,8 +549,167 @@ async def execute_vpn_node_request(
         raise
     except VpnNodeTransportError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 - collapse transport details into a safe code
         _fail(phase)
+
+
+def _consume_task_result(task: asyncio.Task) -> None:
+    try:
+        task.exception()
+    except BaseException:  # noqa: BLE001,S110 - cleanup must never escape
+        pass
+
+
+async def _execute_health_operation(
+    connection,
+    request_bytes: bytes,
+    process_holder: list[object],
+) -> VpnNodeHealthReceipt:
+    async with connection:
+        process = await connection.create_process(
+            FIXED_NODE_HEALTH_COMMAND,
+            term_type=None,
+            encoding=None,
+        )
+        process_holder.append(process)
+        process.stdin.write(request_bytes)
+        await process.stdin.drain()
+        process.stdin.write_eof()
+        stdout, stderr = await _read_process_output(
+            process,
+            "preflight",
+            stdout_limit=MAX_HEALTH_PAYLOAD_BYTES,
+        )
+        await process.wait()
+        if process.exit_status != 0 or stderr:
+            _fail()
+        return parse_node_health_receipt(stdout)
+
+
+async def _bounded_health_cleanup(
+    connection,
+    process,
+    operation_task: asyncio.Task | None,
+) -> None:
+    if process is not None:
+        try:
+            process.close()
+        except Exception:  # noqa: BLE001,S110 - best-effort secret-free cleanup
+            pass
+    try:
+        connection.abort()
+    except Exception:  # noqa: BLE001,S110 - best-effort secret-free cleanup
+        pass
+
+    tasks: set[asyncio.Task] = set()
+    if operation_task is not None:
+        tasks.add(operation_task)
+        if not operation_task.done():
+            operation_task.cancel()
+    for owner in (process, connection):
+        if owner is None:
+            continue
+        try:
+            waiter = owner.wait_closed()
+            if isawaitable(waiter):
+                tasks.add(asyncio.ensure_future(waiter))
+        except Exception:  # noqa: BLE001,S110 - best-effort secret-free cleanup
+            pass
+
+    pending = {task for task in tasks if not task.done()}
+    slice_timeout = TRANSPORT_CLEANUP_TIMEOUT / 4
+    try:
+        for attempt in range(4):
+            if not pending:
+                break
+            if attempt:
+                for task in pending:
+                    task.cancel()
+            done, pending = await asyncio.wait(pending, timeout=slice_timeout)
+            for task in done:
+                _consume_task_result(task)
+    finally:
+        for task in tasks:
+            if task.done():
+                _consume_task_result(task)
+            else:
+                task.cancel()
+                task.add_done_callback(_consume_task_result)
+
+
+async def _cleanup_health_transport(
+    connection,
+    process,
+    operation_task: asyncio.Task | None,
+) -> None:
+    cleanup_task = asyncio.create_task(
+        _bounded_health_cleanup(connection, process, operation_task)
+    )
+    try:
+        await asyncio.shield(cleanup_task)
+    except asyncio.CancelledError:
+        cleanup_task.add_done_callback(_consume_task_result)
+        raise
+    except Exception:  # noqa: BLE001,S110 - cleanup never changes public failure
+        pass
+
+
+async def execute_vpn_node_health_over_ssh(
+    snapshot: VpnNodeTransportSnapshot,
+    request: VpnNodeHealthRequest,
+    *,
+    now_ms: int | None = None,
+    connector: Callable[..., object] = asyncssh.connect,
+) -> VpnNodeHealthReceipt:
+    """Execute one read-only health observation through pinned strict SSH."""
+    try:
+        request_bytes = serialize_node_health_request(request, now_ms=now_ms)
+    except Exception:  # noqa: BLE001 - collapse request details into a safe code
+        _fail()
+    options = _connection_options(snapshot)
+    connection = None
+    operation_task = None
+    process_holder: list[object] = []
+    try:
+        async with asyncio.timeout(CONNECT_TIMEOUT + LOGIN_TIMEOUT):
+            connection = await connector(
+                snapshot.host,
+                snapshot.port,
+                username=snapshot.username,
+                **options,
+            )
+        operation_task = asyncio.create_task(
+            _execute_health_operation(connection, request_bytes, process_holder)
+        )
+        done, _pending = await asyncio.wait(
+            {operation_task}, timeout=REMOTE_OPERATION_TIMEOUT
+        )
+        if not done:
+            await _cleanup_health_transport(
+                connection,
+                process_holder[0] if process_holder else None,
+                operation_task,
+            )
+            _fail()
+        return operation_task.result()
+    except asyncio.CancelledError:
+        if connection is not None:
+            await _cleanup_health_transport(
+                connection,
+                process_holder[0] if process_holder else None,
+                operation_task,
+            )
+        raise
+    except VpnNodeTransportError:
+        raise
+    except Exception:  # noqa: BLE001 - collapse transport details into a safe code
+        if connection is not None:
+            await _cleanup_health_transport(
+                connection,
+                process_holder[0] if process_holder else None,
+                operation_task,
+            )
+        _fail()
 
 
 def _parse_exact_lookup_receipt(
@@ -561,5 +847,5 @@ async def lookup_vpn_node_receipt(
         raise
     except VpnNodeTransportError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 - collapse transport details into a safe code
         _fail()

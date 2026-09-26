@@ -44,6 +44,33 @@ def _settings(**overrides: object) -> Settings:
     return Settings(_env_file=None, **values)
 
 
+def test_vpn_fleet_health_settings_are_disabled_and_bounded_by_default() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.vpn_fleet_health_enabled is False
+    assert settings.vpn_fleet_health_interval_seconds == 120.0
+
+
+@pytest.mark.parametrize("value", [30.0, 3600.0])
+def test_vpn_fleet_health_settings_accept_aliases_and_exact_bounds(value: float) -> None:
+    settings = Settings(
+        _env_file=None,
+        VPN_FLEET_HEALTH_ENABLED=True,
+        VPN_FLEET_HEALTH_INTERVAL_SECONDS=value,
+    )
+
+    assert settings.vpn_fleet_health_enabled is True
+    assert settings.vpn_fleet_health_interval_seconds == value
+
+
+@pytest.mark.parametrize("value", [29.999, 3600.001, math.nan, math.inf, -math.inf])
+def test_vpn_fleet_health_interval_rejects_out_of_bounds_or_non_finite(
+    value: float,
+) -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, VPN_FLEET_HEALTH_INTERVAL_SECONDS=value)
+
+
 def test_vpn_control_postgres_engine_options_are_bounded() -> None:
     settings = _settings(DB_URL="postgresql+asyncpg://test:test@localhost/test")
 
@@ -389,6 +416,650 @@ def _orchestrator(
         vpn_control_dispatcher=dispatcher,
         vpn_control_snapshot_loader=snapshot_loader,
     )
+
+
+def _health_orchestrator(
+    factory: async_sessionmaker[AsyncSession],
+    settings: Settings | None,
+    probe,
+) -> ControlRuntimeOrchestrator:
+    return ControlRuntimeOrchestrator(
+        factory,
+        settings=settings,
+        vpn_fleet_health_probe=probe,
+    )
+
+
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_is_disabled_by_default(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+) -> None:
+    factory, _engine = runtime_database
+    calls = 0
+
+    async def probe(*_args) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_CONTROL_DISPATCH_ENABLED=False,
+        ),
+        probe,
+    )
+
+    await runtime.run_cycle()
+    await asyncio.sleep(0)
+    await runtime.shutdown()
+
+    assert runtime._vpn_fleet_health_task is None
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_starts_after_commit_with_exact_main_factory_and_path(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, _engine = runtime_database
+    close_calls = 0
+    original_close = AsyncSession.close
+    calls: list[tuple[object, Path, bool]] = []
+    started = asyncio.Event()
+
+    async def tracked_close(session: AsyncSession) -> None:
+        nonlocal close_calls
+        await original_close(session)
+        close_calls += 1
+
+    async def probe(session_factory, known_hosts_path: Path) -> bool:
+        calls.append((session_factory, known_hosts_path, close_calls > 0))
+        started.set()
+        return False
+
+    monkeypatch.setattr(AsyncSession, "close", tracked_close)
+    settings = _runtime_settings(
+        VPN_FLEET_HEALTH_ENABLED=True,
+        VPN_FLEET_HEALTH_INTERVAL_SECONDS=30,
+        VPN_FRIEND_BETA_ENABLED=False,
+        VPN_FRIEND_BETA_RELEASE_ID="",
+        VPN_PUBLIC_TRIAL_ENABLED=False,
+        VPN_PUBLIC_TRIAL_RELEASE_ID="",
+        VPN_CONTROL_DISPATCH_ENABLED=False,
+        VPN_PORTAL_PUBLIC_ACCESS=True,
+    )
+    runtime = _health_orchestrator(factory, settings, probe)
+
+    await runtime.run_cycle()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task = runtime._vpn_fleet_health_task
+    assert task is not None
+    await task
+    await runtime.shutdown()
+
+    assert task.get_name() == "vpn-fleet-health"
+    assert calls == [
+        (factory, Path(settings.vpn_control_known_hosts_path), True)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_captures_trimmed_path_before_task_starts(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+) -> None:
+    factory, _engine = runtime_database
+    paths: list[Path] = []
+
+    async def probe(_session_factory, known_hosts_path: Path) -> bool:
+        paths.append(known_hosts_path)
+        return False
+
+    settings = _runtime_settings(
+        VPN_FLEET_HEALTH_ENABLED=True,
+        VPN_FLEET_HEALTH_INTERVAL_SECONDS=30,
+        VPN_CONTROL_KNOWN_HOSTS_PATH="  C:/veltrix/original_known_hosts  ",
+    )
+    runtime = _health_orchestrator(factory, settings, probe)
+
+    runtime._start_vpn_fleet_health(NOW)
+    settings.vpn_control_known_hosts_path = "C:/veltrix/mutated_known_hosts"
+    assert runtime._vpn_fleet_health_task is not None
+    await runtime._vpn_fleet_health_task
+    await runtime.shutdown()
+
+    assert paths == [Path("C:/veltrix/original_known_hosts")]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("vpn_fleet_health_enabled", False),
+        ("vpn_fleet_health_enabled", 1),
+        ("vpn_fleet_health_enabled", "true"),
+        ("vpn_control_known_hosts_path", None),
+        ("vpn_control_known_hosts_path", 123),
+        ("vpn_control_known_hosts_path", ""),
+        ("vpn_control_known_hosts_path", " \t "),
+        ("vpn_fleet_health_interval_seconds", True),
+        ("vpn_fleet_health_interval_seconds", "30"),
+        ("vpn_fleet_health_interval_seconds", None),
+        ("vpn_fleet_health_interval_seconds", math.nan),
+        ("vpn_fleet_health_interval_seconds", math.inf),
+        ("vpn_fleet_health_interval_seconds", -math.inf),
+        ("vpn_fleet_health_interval_seconds", 29.999),
+        ("vpn_fleet_health_interval_seconds", 3600.001),
+    ],
+)
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_mutated_settings_fail_closed(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    field: str,
+    value: object,
+) -> None:
+    factory, _engine = runtime_database
+    calls = 0
+
+    async def probe(*_args) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    settings = _runtime_settings(
+        VPN_FLEET_HEALTH_ENABLED=True,
+        VPN_FLEET_HEALTH_INTERVAL_SECONDS=30,
+        VPN_FRIEND_BETA_ENABLED=False,
+        VPN_CONTROL_DISPATCH_ENABLED=False,
+    )
+    setattr(settings, field, value)
+    runtime = _health_orchestrator(factory, settings, probe)
+
+    await runtime.run_cycle()
+    await asyncio.sleep(0)
+    await runtime.shutdown()
+
+    assert runtime._vpn_fleet_health_task is None
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_requires_settings(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+) -> None:
+    factory, _engine = runtime_database
+    calls = 0
+
+    async def probe(*_args) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    runtime = _health_orchestrator(factory, None, probe)
+
+    await runtime.run_cycle()
+    await asyncio.sleep(0)
+    await runtime.shutdown()
+
+    assert runtime._vpn_fleet_health_task is None
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_keeps_only_one_in_flight_task(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, _engine = runtime_database
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def probe(*_args) -> bool:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return False
+
+    monkeypatch.setattr("app.services.control_runtime.utcnow", lambda: NOW)
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FLEET_HEALTH_ENABLED=True,
+            VPN_FLEET_HEALTH_INTERVAL_SECONDS=30,
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_CONTROL_DISPATCH_ENABLED=False,
+        ),
+        probe,
+    )
+
+    await runtime.run_cycle()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    first_task = runtime._vpn_fleet_health_task
+    await runtime.run_cycle()
+
+    assert runtime._vpn_fleet_health_task is first_task
+    assert calls == 1
+
+    release.set()
+    await runtime.shutdown()
+
+
+@pytest.mark.parametrize("result", [False, RuntimeError("probe failed")])
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_completed_probe_waits_for_next_interval(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    monkeypatch: pytest.MonkeyPatch,
+    result: bool | Exception,
+) -> None:
+    factory, _engine = runtime_database
+    current_time = [NOW]
+    calls = 0
+
+    async def probe(*_args) -> bool:
+        nonlocal calls
+        calls += 1
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.utcnow",
+        lambda: current_time[0],
+    )
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FLEET_HEALTH_ENABLED=True,
+            VPN_FLEET_HEALTH_INTERVAL_SECONDS=30,
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_CONTROL_DISPATCH_ENABLED=False,
+        ),
+        probe,
+    )
+
+    await runtime.run_cycle()
+    assert runtime._vpn_fleet_health_task is not None
+    await runtime._vpn_fleet_health_task
+    await runtime.run_cycle()
+    assert calls == 1
+
+    current_time[0] += timedelta(seconds=30)
+    await runtime.run_cycle()
+    assert runtime._vpn_fleet_health_task is not None
+    await runtime._vpn_fleet_health_task
+    await runtime.shutdown()
+
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_exception_logs_only_static_message(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    factory, _engine = runtime_database
+    secret = "host=secret.example path=C:/private/known_hosts"
+
+    async def probe(*_args) -> bool:
+        raise RuntimeError(secret)
+
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FLEET_HEALTH_ENABLED=True,
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_CONTROL_DISPATCH_ENABLED=False,
+        ),
+        probe,
+    )
+
+    await runtime.run_cycle()
+    assert runtime._vpn_fleet_health_task is not None
+    await runtime._vpn_fleet_health_task
+    await runtime.shutdown()
+
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "VPN fleet health probe failed"
+    ]
+    assert len(records) == 1
+    assert records[0].exc_info is None
+    assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_wrapper_propagates_cancellation(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+) -> None:
+    factory, _engine = runtime_database
+    started = asyncio.Event()
+
+    async def probe(*_args) -> bool:
+        started.set()
+        await asyncio.Event().wait()
+        return False
+
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(VPN_FLEET_HEALTH_ENABLED=True),
+        probe,
+    )
+    task = asyncio.create_task(
+        runtime._run_vpn_fleet_health(Path("C:/veltrix/known_hosts"))
+    )
+
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_timeout_detaches_cancellation_resistant_probe(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    factory, _engine = runtime_database
+    started = asyncio.Event()
+    second_started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    current_time = [NOW]
+    calls = 0
+
+    async def probe(*_args) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            second_started.set()
+            return False
+        started.set()
+        try:
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+            return False
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.utcnow",
+        lambda: current_time[0],
+    )
+    monkeypatch.setattr(
+        "app.services.control_runtime.VPN_FLEET_HEALTH_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        "app.services.control_runtime.VPN_FLEET_HEALTH_CLEANUP_TIMEOUT_SECONDS",
+        0.01,
+    )
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FLEET_HEALTH_ENABLED=True,
+            VPN_FLEET_HEALTH_INTERVAL_SECONDS=30,
+        ),
+        probe,
+    )
+    runtime._start_vpn_fleet_health(NOW)
+    task = runtime._vpn_fleet_health_task
+    assert task is not None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        done, _pending = await asyncio.wait({task}, timeout=0.25)
+
+        assert task in done
+        assert cancelled.is_set()
+        probe_task = runtime._vpn_fleet_health_probe_task
+        assert probe_task is not None
+        assert not probe_task.done()
+
+        current_time[0] = NOW + timedelta(seconds=31)
+        runtime._start_vpn_fleet_health(current_time[0])
+        await asyncio.sleep(0)
+        assert runtime._vpn_fleet_health_task is task
+        assert calls == 1
+
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert runtime._vpn_fleet_health_probe_task is None
+        terminal_at = runtime._last_vpn_fleet_health_terminal_at
+        assert terminal_at == current_time[0]
+
+        current_time[0] = terminal_at + timedelta(seconds=29)
+        runtime._start_vpn_fleet_health(current_time[0])
+        await asyncio.sleep(0)
+        assert calls == 1
+
+        current_time[0] = terminal_at + timedelta(seconds=30)
+        runtime._start_vpn_fleet_health(current_time[0])
+        await asyncio.wait_for(second_started.wait(), timeout=1)
+        assert runtime._vpn_fleet_health_task is not None
+        await runtime._vpn_fleet_health_task
+        assert calls == 2
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        probe_task = getattr(runtime, "_vpn_fleet_health_probe_task", None)
+        if probe_task is not None:
+            await asyncio.gather(probe_task, return_exceptions=True)
+        await asyncio.gather(task, return_exceptions=True)
+        await runtime.shutdown()
+        await asyncio.sleep(0)
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.services.control_runtime"
+    ]
+    assert messages == ["VPN fleet health probe timed out"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_and_awaits_vpn_fleet_health_task(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+) -> None:
+    factory, _engine = runtime_database
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def probe(*_args) -> bool:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+        return False
+
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FLEET_HEALTH_ENABLED=True,
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_CONTROL_DISPATCH_ENABLED=False,
+        ),
+        probe,
+    )
+
+    await runtime.run_cycle()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task = runtime._vpn_fleet_health_task
+    assert task is not None
+    await runtime.shutdown()
+    await runtime.shutdown()
+
+    assert cancelled.is_set()
+    assert task.done()
+    assert runtime._vpn_fleet_health_task is None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_detaches_cancellation_resistant_vpn_fleet_health_probe(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    factory, _engine = runtime_database
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+    secret = "host=shutdown-secret.example path=C:/private/known_hosts"
+    current_time = [NOW]
+
+    async def probe(*_args) -> bool:
+        started.set()
+        try:
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    cancelled.set()
+            raise RuntimeError(secret)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(
+        "app.services.control_runtime.VPN_FLEET_HEALTH_TIMEOUT_SECONDS",
+        10.0,
+    )
+    monkeypatch.setattr(
+        "app.services.control_runtime.VPN_FLEET_HEALTH_CLEANUP_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        "app.services.control_runtime.utcnow",
+        lambda: current_time[0],
+    )
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FLEET_HEALTH_ENABLED=True,
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_CONTROL_DISPATCH_ENABLED=False,
+        ),
+        probe,
+    )
+
+    await runtime.run_cycle()
+    await asyncio.wait_for(started.wait(), timeout=1)
+    fleet_task = runtime._vpn_fleet_health_task
+    assert fleet_task is not None
+    probe_task = getattr(runtime, "_vpn_fleet_health_probe_task", None)
+    shutdown_task = asyncio.create_task(runtime.shutdown())
+    try:
+        assert probe_task is not None
+        done, _pending = await asyncio.wait({shutdown_task}, timeout=0.25)
+
+        assert shutdown_task in done
+        assert shutdown_task.exception() is None
+        assert cancelled.is_set()
+        assert fleet_task.done()
+        assert runtime._vpn_fleet_health_task is None
+        assert runtime._vpn_fleet_health_probe_task is probe_task
+        assert not probe_task.done()
+
+        await runtime.shutdown()
+        assert runtime._vpn_fleet_health_probe_task is probe_task
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        if probe_task is not None:
+            await asyncio.gather(probe_task, return_exceptions=True)
+        await asyncio.gather(shutdown_task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    assert runtime._vpn_fleet_health_probe_task is None
+    assert runtime._last_vpn_fleet_health_terminal_at == current_time[0]
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "app.services.control_runtime"
+    ]
+    assert messages == ["VPN fleet health probe failed"]
+    assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stale_probe_callback_does_not_clear_replacement_task(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+) -> None:
+    factory, _engine = runtime_database
+
+    async def complete() -> bool:
+        return False
+
+    async def block() -> bool:
+        await asyncio.Event().wait()
+        return False
+
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(VPN_FLEET_HEALTH_ENABLED=True),
+        complete,
+    )
+    callback = getattr(runtime, "_vpn_fleet_health_probe_done", None)
+    assert callback is not None
+    old_task = asyncio.create_task(complete())
+    replacement_task = asyncio.create_task(block())
+    runtime._vpn_fleet_health_probe_task = old_task
+    old_task.add_done_callback(callback)
+    runtime._vpn_fleet_health_probe_task = replacement_task
+
+    await old_task
+    await asyncio.sleep(0)
+
+    assert runtime._vpn_fleet_health_probe_task is replacement_task
+    replacement_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await replacement_task
+
+
+@pytest.mark.asyncio
+async def test_vpn_fleet_health_commit_failure_does_not_start_probe(
+    runtime_database: tuple[async_sessionmaker[AsyncSession], object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, _engine = runtime_database
+    calls = 0
+
+    async def probe(*_args) -> bool:
+        nonlocal calls
+        calls += 1
+        return False
+
+    async def fail_commit(_session: AsyncSession) -> None:
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(AsyncSession, "commit", fail_commit)
+    runtime = _health_orchestrator(
+        factory,
+        _runtime_settings(
+            VPN_FLEET_HEALTH_ENABLED=True,
+            VPN_FRIEND_BETA_ENABLED=False,
+            VPN_CONTROL_DISPATCH_ENABLED=False,
+        ),
+        probe,
+    )
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await runtime.run_cycle()
+    await asyncio.sleep(0)
+    await runtime.shutdown()
+
+    assert calls == 0
+    assert runtime._vpn_fleet_health_task is None
+    assert runtime._last_vpn_fleet_health_at is None
 
 
 @pytest.mark.parametrize(

@@ -4,23 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from dataclasses import dataclass
 import hashlib
 import ipaddress
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
 import subprocess
 import sys
-from uuid import uuid4
 import zipfile
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from uuid import uuid4
 
 from app.services.vpn_node_bundle import IMPORT_PROBE_SENTINEL
 from app.services.vpn_node_journal import initialize_node_journal
-
 
 MAX_BUNDLE_BYTES = 4 * 1024 * 1024
 MAX_CONFIG_BYTES = 64 * 1024
@@ -755,7 +755,7 @@ async def deploy_node_helper_over_ssh(
         raise
     except NodeDeploymentError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 - collapse deployment details into safe status
         raise NodeDeploymentError(
             "vpn_node_deployment_incomplete"
             if phase == "mutation"
@@ -824,8 +824,219 @@ async def deploy_prebuilt_node_release(
         raise
     except NodeDeploymentError:
         raise
-    except Exception:
+    except Exception:  # noqa: BLE001 - collapse deployment details into safe status
         _fail()
+
+
+@contextmanager
+def _control_known_hosts_lock(
+    target: Path,
+    *,
+    require_posix: bool,
+):
+    if not require_posix:
+        yield None
+        return
+    if os.name != "posix":
+        _fail()
+
+    try:
+        import fcntl
+    except ImportError:
+        _fail()
+
+    directory_fd = None
+    lock_fd = None
+    locked = False
+    try:
+        directory_fd = os.open(
+            target.parent,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        lock_name = f".{target.name}.lock"
+        flags = (
+            os.O_RDWR
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            lock_fd = os.open(lock_name, flags, dir_fd=directory_fd)
+        except FileNotFoundError:
+            temporary_name = f"{lock_name}.{uuid4().hex}.tmp"
+            temporary_fd = None
+            try:
+                temporary_fd = os.open(
+                    temporary_name,
+                    flags | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                os.fchown(temporary_fd, 0, 0)
+                os.fchmod(temporary_fd, 0o600)
+                os.fsync(temporary_fd)
+                temporary_info = os.fstat(temporary_fd)
+                if (
+                    not stat.S_ISREG(temporary_info.st_mode)
+                    or temporary_info.st_uid != 0
+                    or temporary_info.st_gid != 0
+                    or stat.S_IMODE(temporary_info.st_mode) != 0o600
+                ):
+                    _fail()
+                try:
+                    os.link(
+                        temporary_name,
+                        lock_name,
+                        src_dir_fd=directory_fd,
+                        dst_dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    os.fsync(directory_fd)
+                except FileExistsError:
+                    pass
+            finally:
+                if temporary_fd is not None:
+                    os.close(temporary_fd)
+                try:
+                    os.unlink(temporary_name, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                except FileNotFoundError:
+                    pass
+            lock_fd = os.open(lock_name, flags, dir_fd=directory_fd)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        locked = True
+        opened = os.fstat(lock_fd)
+        linked = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(linked.st_mode)
+            or (opened.st_dev, opened.st_ino) != (linked.st_dev, linked.st_ino)
+        ):
+            _fail()
+        if (
+            opened.st_uid != 0
+            or opened.st_gid != 0
+            or stat.S_IMODE(opened.st_mode) != 0o600
+        ):
+            os.fchown(lock_fd, 0, 0)
+            os.fchmod(lock_fd, 0o600)
+            os.fsync(lock_fd)
+            opened = os.fstat(lock_fd)
+            linked = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
+        if (
+            opened.st_uid != 0
+            or opened.st_gid != 0
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or (opened.st_dev, opened.st_ino) != (linked.st_dev, linked.st_ino)
+        ):
+            _fail()
+        yield directory_fd
+    finally:
+        if lock_fd is not None:
+            if locked:
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            os.close(lock_fd)
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def _replace_control_known_hosts(
+    target: Path,
+    raw: bytes,
+    *,
+    reader_gid: int,
+    require_posix: bool,
+    directory_fd: int | None,
+    existed: bool,
+) -> None:
+    candidate = target.parent / f".{target.name}.{uuid4().hex}.tmp"
+    backup = target.parent / f".{target.name}.{uuid4().hex}.bak"
+    backup_created = False
+    retain_backup = False
+
+    def sync_directory() -> None:
+        if directory_fd is None:
+            _sync_directory(target.parent)
+        else:
+            os.fsync(directory_fd)
+
+    def unlink(name: Path) -> None:
+        if directory_fd is None:
+            name.unlink(missing_ok=True)
+        else:
+            try:
+                os.unlink(name.name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
+    try:
+        _write_exclusive(candidate, raw, directory_fd=directory_fd)
+        descriptor = os.open(
+            candidate.name if directory_fd is not None else candidate,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_fd,
+        )
+        try:
+            if require_posix:
+                os.fchown(descriptor, 0, reader_gid)
+                os.fchmod(descriptor, 0o640)
+                os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if existed:
+            if directory_fd is None:
+                os.link(target, backup, follow_symlinks=False)
+            else:
+                os.link(
+                    target.name,
+                    backup.name,
+                    src_dir_fd=directory_fd,
+                    dst_dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            backup_created = True
+            sync_directory()
+        if directory_fd is None:
+            os.replace(candidate, target)
+        else:
+            os.replace(
+                candidate.name,
+                target.name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+        try:
+            sync_directory()
+        except OSError:
+            if backup_created:
+                try:
+                    if directory_fd is None:
+                        os.replace(backup, target)
+                    else:
+                        os.replace(
+                            backup.name,
+                            target.name,
+                            src_dir_fd=directory_fd,
+                            dst_dir_fd=directory_fd,
+                        )
+                except OSError:
+                    retain_backup = True
+                    raise
+                else:
+                    backup_created = False
+            else:
+                unlink(target)
+            sync_directory()
+            raise
+        if backup_created:
+            unlink(backup)
+            backup_created = False
+    finally:
+        unlink(candidate)
+        if backup_created and not retain_backup:
+            unlink(backup)
 
 
 def install_control_known_hosts(
@@ -834,101 +1045,79 @@ def install_control_known_hosts(
     target: Path,
     host: str,
     port: int,
-    owner_uid: int,
+    reader_gid: int,
     require_posix: bool = True,
 ) -> str:
-    """Install one immutable literal Ed25519 pin for the control service."""
-    from app.services.vpn_node_transport import VpnNodeTransportError, _parse_known_hosts
+    """Merge one immutable literal Ed25519 pin into control-service trust."""
+    from app.services.vpn_node_transport import (
+        MAX_KNOWN_HOSTS_BYTES,
+        VpnNodeTransportError,
+        _known_hosts_target,
+        _parse_literal_known_hosts,
+        _read_known_hosts_file,
+    )
 
     try:
-        _parse_known_hosts(raw, host, port)
-        _secure_ancestors(target, owner_uid, require_posix=require_posix)
-        if target.exists() or target.is_symlink():
-            _private_regular(
-                target,
-                owner_uid,
-                bounded=64 * 1024,
-                enforce_metadata=require_posix,
-            )
-            if target.read_bytes() != raw:
-                _fail()
-            return "unchanged"
+        if (
+            type(raw) is not bytes
+            or not 0 < len(raw) <= MAX_KNOWN_HOSTS_BYTES
+            or type(reader_gid) is not int
+            or reader_gid < 0
+        ):
+            _fail()
+        incoming = _parse_literal_known_hosts(raw)
+        expected_target = _known_hosts_target(host, port)
+        if len(incoming) != 1 or expected_target not in incoming:
+            _fail()
+        _secure_ancestors(target, 0, require_posix=require_posix)
+        with _control_known_hosts_lock(
+            target,
+            require_posix=require_posix,
+        ) as directory_fd:
+            existed = target.exists() or target.is_symlink()
+            if existed:
+                if require_posix:
+                    existing_raw = _read_known_hosts_file(
+                        target,
+                        expected_reader_gid=reader_gid,
+                    )
+                else:
+                    _private_regular(
+                        target,
+                        0,
+                        bounded=MAX_KNOWN_HOSTS_BYTES,
+                        enforce_metadata=False,
+                    )
+                    existing_raw = target.read_bytes()
+                existing = _parse_literal_known_hosts(existing_raw)
+            else:
+                existing_raw = b""
+                existing = {}
 
-        candidate = target.parent / f".{target.name}.{uuid4().hex}.tmp"
-        linked = False
-        directory_fd = None
-        try:
-            if os.name == "posix":
-                directory_fd = os.open(
-                    target.parent,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                )
-            _write_exclusive(candidate, raw, directory_fd=directory_fd)
-            if require_posix:
-                descriptor = os.open(
-                    candidate.name if directory_fd is not None else candidate,
-                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-                    dir_fd=directory_fd,
-                )
-                try:
-                    os.fchown(descriptor, owner_uid, -1)
-                    os.fchmod(descriptor, 0o600)
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-            if directory_fd is None:
-                os.link(candidate, target, follow_symlinks=False)
-                _sync_directory(target.parent)
-            else:
-                os.link(
-                    candidate.name,
-                    target.name,
-                    src_dir_fd=directory_fd,
-                    dst_dir_fd=directory_fd,
-                    follow_symlinks=False,
-                )
-                os.fsync(directory_fd)
-            linked = True
-            candidate_info = candidate.lstat()
-            target_info = _private_regular(
-                target,
-                owner_uid,
-                bounded=64 * 1024,
-                enforce_metadata=require_posix,
+            incoming_entry = incoming[expected_target]
+            existing_entry = existing.get(expected_target)
+            if existing_entry is not None:
+                if existing_entry.key != incoming_entry.key:
+                    _fail()
+                return "unchanged"
+
+            normalized = incoming_entry.line.encode("ascii") + b"\n"
+            merged = (
+                existing_raw
+                + (b"" if not existing_raw or existing_raw.endswith(b"\n") else b"\n")
+                + normalized
             )
-            if (
-                (candidate_info.st_dev, candidate_info.st_ino)
-                != (target_info.st_dev, target_info.st_ino)
-                or target.read_bytes() != raw
-            ):
+            if len(merged) > MAX_KNOWN_HOSTS_BYTES:
                 _fail()
-        except BaseException:
-            if linked:
-                try:
-                    linked_info = target.lstat()
-                    candidate_info = candidate.lstat()
-                    if (linked_info.st_dev, linked_info.st_ino) == (
-                        candidate_info.st_dev,
-                        candidate_info.st_ino,
-                    ):
-                        target.unlink()
-                        if directory_fd is None:
-                            _sync_directory(target.parent)
-                        else:
-                            os.fsync(directory_fd)
-                except OSError:
-                    pass
-            raise
-        finally:
-            if directory_fd is None:
-                candidate.unlink(missing_ok=True)
-            else:
-                try:
-                    os.unlink(candidate.name, dir_fd=directory_fd)
-                except FileNotFoundError:
-                    pass
-                os.close(directory_fd)
-        return "installed"
+            _replace_control_known_hosts(
+                target,
+                merged,
+                reader_gid=reader_gid,
+                require_posix=require_posix,
+                directory_fd=directory_fd,
+                existed=existed,
+            )
+            return "installed"
     except NodeDeploymentError:
         raise
     except (OSError, TypeError, ValueError, VpnNodeTransportError):
@@ -1084,8 +1273,7 @@ def _recover_interrupted(
         )
         if list(token_identity) != state["token_identity"]:
             raise NodeDeploymentError("vpn_node_deployment_incomplete") from None
-        if state["config_preexisting"]:
-            if (
+        if state["config_preexisting"] and (
                 layout.config.read_bytes() != node_config
                 or list(
                     _identity(
@@ -1096,8 +1284,8 @@ def _recover_interrupted(
                     )
                 )
                 != state["config_identity"]
-            ):
-                raise NodeDeploymentError("vpn_node_deployment_incomplete") from None
+        ):
+            raise NodeDeploymentError("vpn_node_deployment_incomplete") from None
         if state["journal_preexisting"]:
             current_journal = _journal_identity(
                 layout.journal,

@@ -30,6 +30,9 @@ ENDPOINT_COLUMNS = {
     "flow",
     "status",
     "verified_at",
+    "health_checked_at",
+    "external_verified_at",
+    "external_config_fingerprint",
     "last_error_code",
     "max_active_profiles",
     "capacity_warning_percent",
@@ -136,6 +139,17 @@ def _as_utc(value: datetime) -> datetime:
 
 def test_models_metadata_exposes_vpn_endpoints_table():
     assert "vpn_endpoints" in Base.metadata.tables
+
+
+def test_models_metadata_exposes_external_verification_fields():
+    table = models.VpnEndpoint.__table__
+
+    assert table.c.health_checked_at.nullable is True
+    assert table.c.health_checked_at.type.timezone is True
+    assert table.c.external_verified_at.nullable is True
+    assert table.c.external_verified_at.type.timezone is True
+    assert table.c.external_config_fingerprint.nullable is True
+    assert table.c.external_config_fingerprint.type.length == 64
 
 
 def test_models_metadata_exposes_exact_control_operation_schema():
@@ -443,6 +457,7 @@ async def test_fresh_schema_has_only_safe_endpoint_columns_and_staged_defaults()
         assert stored.security == "none"
         assert stored.status == "staged"
         assert stored.verified_at is None
+        assert stored.health_checked_at is None
         assert stored.created_at is not None
         assert stored.updated_at is not None
     finally:
@@ -617,6 +632,11 @@ def test_endpoint_migrations_remain_contiguous_with_named_constraints():
     )
     migration_sql = "\n".join(VPN_ENDPOINT_MIGRATIONS)
     assert "CREATE TABLE IF NOT EXISTS vpn_endpoints" in migration_sql
+    assert "health_checked_at TIMESTAMPTZ NULL" in VPN_ENDPOINT_MIGRATIONS[0]
+    assert (
+        "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS "
+        "health_checked_at TIMESTAMPTZ NULL"
+    ) in VPN_ENDPOINT_MIGRATIONS
     assert "CONSTRAINT uq_vpn_endpoint_worker_inbound UNIQUE (worker_id, inbound_id)" in migration_sql
     assert "CONSTRAINT uq_vpn_endpoint_id_worker UNIQUE (id, worker_id)" in migration_sql
     assert "CONSTRAINT ck_vpn_endpoint_ready" in migration_sql
