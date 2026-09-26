@@ -24,7 +24,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: postgres
         ports:
-          - 5432:5432
+          - 55432:5432
         options: >-
           --health-cmd "pg_isready -U postgres -d postgres"
           --health-interval 5s
@@ -47,10 +47,10 @@ jobs:
         env:
           PGPASSWORD: postgres
         run: |
-          createdb -h 127.0.0.1 -U postgres veltrix_portal_test
-          createdb -h 127.0.0.1 -U postgres veltrix_accept_source
-          createdb -h 127.0.0.1 -U postgres veltrix_accept_restore
-          psql -h 127.0.0.1 -U postgres -d veltrix_accept_source -v ON_ERROR_STOP=1 <<'SQL'
+          createdb -h 127.0.0.1 -p 55432 -U postgres veltrix_portal_test
+          createdb -h 127.0.0.1 -p 55432 -U postgres veltrix_accept_source
+          createdb -h 127.0.0.1 -p 55432 -U postgres veltrix_accept_restore
+          psql -h 127.0.0.1 -p 55432 -U postgres -d veltrix_accept_source -v ON_ERROR_STOP=1 <<'SQL'
           CREATE TABLE acceptance_items (
             id integer PRIMARY KEY,
             label text NOT NULL,
@@ -67,7 +67,7 @@ jobs:
         env:
           PGPASSWORD: postgres
           PYTHONDONTWRITEBYTECODE: "1"
-          VPN_PORTAL_TEST_PG_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/veltrix_portal_test
+          VPN_PORTAL_TEST_PG_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:55432/veltrix_portal_test
         run: >-
           sudo --preserve-env=PGPASSWORD,PYTHONDONTWRITEBYTECODE,VPN_PORTAL_TEST_PG_URL
           "$(command -v python)" -m pytest -q -p no:cacheprovider
@@ -145,7 +145,7 @@ jobs:
       - name: Rehearse validated PostgreSQL backup and restore
         working-directory: backend
         env:
-          DB_URL: postgresql://postgres:postgres@127.0.0.1:5432/veltrix_accept_source
+          DB_URL: postgresql://postgres:postgres@127.0.0.1:55432/veltrix_accept_source
           PGPASSWORD: postgres
           PYTHONDONTWRITEBYTECODE: "1"
           VPN_BACKUP_DIRECTORY: /tmp/veltrix-acceptance-backups
@@ -183,9 +183,9 @@ jobs:
             /tmp/veltrix-acceptance-backups/latest-success.json \
             "/tmp/veltrix-acceptance-backups/$SET_NAME/backup.json"
           sudo --preserve-env=PGPASSWORD pg_restore --exit-on-error \
-            --host=127.0.0.1 --username=postgres \
+            --host=127.0.0.1 --port=55432 --username=postgres \
             --dbname=veltrix_accept_restore "$DUMP"
           RESULT="$(PGPASSWORD=postgres psql \
-            -h 127.0.0.1 -U postgres -d veltrix_accept_restore -Atqc \
+            -h 127.0.0.1 -p 55432 -U postgres -d veltrix_accept_restore -Atqc \
             "SELECT count(*) || ':' || sum(amount) || ':' || string_agg(label, ',' ORDER BY id) FROM acceptance_items")"
           test "$RESULT" = '3:60:alpha,beta,gamma'

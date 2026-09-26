@@ -544,7 +544,7 @@ def _file_identity(info: os.stat_result) -> tuple[int, int]:
     return info.st_dev, info.st_ino
 
 
-def _create_private_dump(path: Path) -> tuple[int, int]:
+def _create_private_dump(path: Path) -> tuple[int, tuple[int, int]]:
     descriptor = -1
     try:
         descriptor = os.open(
@@ -557,30 +557,43 @@ def _create_private_dump(path: Path) -> tuple[int, int]:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
             raise OSError
-        return _file_identity(info)
+        return descriptor, _file_identity(info)
     except OSError:
-        raise BackupError("backup_dump_failed") from None
-    finally:
         if descriptor >= 0:
-            os.close(descriptor)
+            owned = descriptor
+            descriptor = -1
+            try:
+                os.close(owned)
+            except OSError:
+                pass
+        raise BackupError("backup_dump_failed") from None
 
 
 def _secure_dump_after_command(
-    path: Path, identity: tuple[int, int]
-) -> tuple[int, os.stat_result]:
-    descriptor = -1
+    path: Path, descriptor: int, identity: tuple[int, int]
+) -> os.stat_result:
     try:
-        flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags)
         info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or _file_identity(info) != identity:
+        linked = path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or not stat.S_ISREG(linked.st_mode)
+            or _file_identity(info) != identity
+            or _file_identity(linked) != identity
+        ):
             raise OSError
         os.fchmod(descriptor, 0o600)
         os.fsync(descriptor)
-        return descriptor, os.fstat(descriptor)
+        secured = os.fstat(descriptor)
+        linked = path.lstat()
+        if (
+            not stat.S_ISREG(linked.st_mode)
+            or _file_identity(secured) != identity
+            or _file_identity(linked) != identity
+        ):
+            raise OSError
+        return secured
     except OSError:
-        if descriptor >= 0:
-            os.close(descriptor)
         raise BackupError("backup_dump_failed") from None
 
 
@@ -1609,32 +1622,32 @@ def _create_validated_backup_locked(
     try:
         _reject_source_overlap(config, root)
         dump = partial / "database.dump"
-        dump_identity = _create_private_dump(dump)
-        command_error: BackupError | None = None
+        dump_fd, dump_identity = _create_private_dump(dump)
         try:
-            _run_command(
-                runner,
-                [
-                    _PG_DUMP,
-                    "--format=custom",
-                    "--file",
-                    str(dump),
-                    "--dbname",
-                    database,
-                ],
-                environment=pg_environment,
-                timeout=budget.command_timeout(),
-                error_code="backup_dump_failed",
-                file_size_limit=(
-                    min(config.max_file_bytes, config.max_total_bytes)
-                    if runner is _default_runner
-                    else None
-                ),
-            )
-        except BackupError as error:
-            command_error = error
-        dump_fd, dump_info = _secure_dump_after_command(dump, dump_identity)
-        try:
+            command_error: BackupError | None = None
+            try:
+                _run_command(
+                    runner,
+                    [
+                        _PG_DUMP,
+                        "--format=custom",
+                        "--file",
+                        str(dump),
+                        "--dbname",
+                        database,
+                    ],
+                    environment=pg_environment,
+                    timeout=budget.command_timeout(),
+                    error_code="backup_dump_failed",
+                    file_size_limit=(
+                        min(config.max_file_bytes, config.max_total_bytes)
+                        if runner is _default_runner
+                        else None
+                    ),
+                )
+            except BackupError as error:
+                command_error = error
+            dump_info = _secure_dump_after_command(dump, dump_fd, dump_identity)
             if command_error is not None:
                 raise command_error
             dump_record = _record_dump(dump_fd, dump.name, dump_info, budget)
@@ -1650,7 +1663,9 @@ def _create_validated_backup_locked(
             ) or not _matches_stable_file(dump.lstat(), dump_info):
                 raise BackupError("backup_source_changed")
         finally:
-            os.close(dump_fd)
+            owned_dump_fd = dump_fd
+            dump_fd = -1
+            os.close(owned_dump_fd)
 
         records = [dump_record, *_copy_sources(config, partial, budget)]
 
