@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import stat
 import subprocess
@@ -34,7 +35,7 @@ def _settings(**overrides: object) -> Settings:
         "VPN_PORTAL_PUBLIC_ORIGIN": "https://vpn.example.test",
         "VPN_BACKUP_ENABLED": True,
         "VPN_BACKUP_DIRECTORY": "/var/backups/domain-drop-catcher",
-        "VPN_CONTROL_KNOWN_HOSTS_PATH": "/root/.ssh/known_hosts",
+        "VPN_CONTROL_KNOWN_HOSTS_PATH": "/etc/veltrix/known_hosts",
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -679,6 +680,14 @@ class _HttpResponse:
             yield chunk
 
 
+class _SlowHttpResponse(_HttpResponse):
+    async def aiter_bytes(self):
+        while True:
+            await asyncio.sleep(0.02)
+            self.yielded += 1
+            yield b" "
+
+
 class _HttpStream:
     def __init__(self, response: _HttpResponse) -> None:
         self.response = response
@@ -784,6 +793,38 @@ async def test_invalid_public_origin_does_not_skip_local_health() -> None:
     assert client.urls == [local_url]
 
 
+@pytest.mark.asyncio
+async def test_each_http_probe_has_overall_deadline_and_timeout_does_not_skip_rest() -> None:
+    local_url = "http://127.0.0.1:8000/api/health"
+    public_url = "https://vpn.example.test/api/health"
+    cabinet_url = "https://vpn.example.test/cabinet/"
+    slow = _SlowHttpResponse(200)
+    client = _HttpClient(
+        {
+            local_url: slow,
+            public_url: _HttpResponse(200, b'{"status":"ok"}'),
+            cabinet_url: _HttpResponse(200, b"cabinet"),
+        }
+    )
+    deadlines: list[float] = []
+
+    def probe_timeout(seconds: float):
+        deadlines.append(seconds)
+        return asyncio.timeout(0.01)
+
+    result = await watchdog.collect_http_observations(
+        _settings(),
+        NOW,
+        client_factory=lambda **_kwargs: client,
+        probe_timeout=probe_timeout,
+    )
+
+    assert tuple(item.state for item in result) == ("fail", "pass", "pass")
+    assert client.urls == [local_url, public_url, cabinet_url]
+    assert deadlines == [3.0, 3.0, 3.0]
+    assert slow.yielded == 0
+
+
 @pytest.mark.parametrize(
     ("total", "free", "expected"),
     ((100, 10, "pass"), (100, 9, "fail"), (0, 0, "fail")),
@@ -809,52 +850,128 @@ def test_disk_observation_enforces_ten_percent_boundary(
     assert paths == ["/var/backups/domain-drop-catcher"]
 
 
-@pytest.mark.parametrize(
-    "info",
-    (
-        SimpleNamespace(st_mode=stat.S_IFLNK | 0o600, st_size=10, st_uid=0),
-        SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_size=10, st_uid=0),
-        SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=0, st_uid=0),
-        SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=65_537, st_uid=0),
-        SimpleNamespace(st_mode=stat.S_IFREG | 0o620, st_size=10, st_uid=0),
-        SimpleNamespace(st_mode=stat.S_IFREG | 0o602, st_size=10, st_uid=0),
-        SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=10, st_uid=123),
-    ),
-)
-def test_known_hosts_observation_rejects_unsafe_file_metadata(info) -> None:
-    observation = watchdog.collect_known_hosts_observation(
-        _settings(),
-        NOW,
-        lstat=lambda _path: info,
-    )
+def test_known_hosts_observation_uses_control_service_uid_and_transport_validator() -> None:
+    runner_calls: list[tuple[list[str], dict[str, object]]] = []
+    lookup_calls: list[str] = []
+    validator_calls: list[tuple[Path, int]] = []
 
-    assert observation.state == "fail"
+    def runner(command: list[str], **kwargs: object):
+        runner_calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=b"www-data\n")
 
+    def user_lookup(username: str):
+        lookup_calls.append(username)
+        return SimpleNamespace(pw_uid=33)
 
-def test_known_hosts_observation_accepts_only_absolute_root_owned_private_file() -> None:
-    observed_paths: list[Path] = []
-
-    def lstat(path: Path):
-        observed_paths.append(path)
-        return SimpleNamespace(
-            st_mode=stat.S_IFREG | 0o640,
-            st_size=65_536,
-            st_uid=0,
-        )
+    def validator(path: Path, *, owner_uid: int) -> None:
+        validator_calls.append((path, owner_uid))
 
     observation = watchdog.collect_known_hosts_observation(
-        _settings(),
+        _settings(VPN_CONTROL_KNOWN_HOSTS_PATH="/etc/veltrix/known_hosts"),
         NOW,
-        lstat=lstat,
+        runner=runner,
+        user_lookup=user_lookup,
+        validator=validator,
     )
 
     assert observation.state == "pass"
-    assert observed_paths == [Path("/root/.ssh/known_hosts")]
-    assert watchdog.collect_known_hosts_observation(
-        _settings(VPN_CONTROL_KNOWN_HOSTS_PATH="relative-known-hosts"),
+    assert runner_calls == [
+        (
+            [
+                "/usr/bin/systemctl",
+                "show",
+                "-p",
+                "User",
+                "--value",
+                "domain-drop-control.service",
+            ],
+            {
+                "check": False,
+                "shell": False,
+                "timeout": 3.0,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.DEVNULL,
+            },
+        )
+    ]
+    assert lookup_calls == ["www-data"]
+    assert validator_calls == [(Path("/etc/veltrix/known_hosts"), 33)]
+
+
+def test_known_hosts_observation_maps_empty_service_user_to_root() -> None:
+    lookup_calls: list[str] = []
+    validator_calls: list[tuple[Path, int]] = []
+
+    observation = watchdog.collect_known_hosts_observation(
+        _settings(VPN_CONTROL_KNOWN_HOSTS_PATH="/etc/veltrix/known_hosts"),
         NOW,
-        lstat=lstat,
-    ).state == "fail"
+        runner=lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=b"\n",
+        ),
+        user_lookup=lambda username: (
+            lookup_calls.append(username) or SimpleNamespace(pw_uid=0)
+        ),
+        validator=lambda path, *, owner_uid: validator_calls.append(
+            (path, owner_uid)
+        ),
+    )
+
+    assert observation.state == "pass"
+    assert lookup_calls == ["root"]
+    assert validator_calls == [(Path("/etc/veltrix/known_hosts"), 0)]
+
+
+@pytest.mark.parametrize(
+    ("path", "result", "lookup", "validator"),
+    (
+        (
+            "relative-known-hosts",
+            SimpleNamespace(returncode=0, stdout=b"www-data\n"),
+            lambda _username: SimpleNamespace(pw_uid=33),
+            lambda *_args, **_kwargs: None,
+        ),
+        (
+            "/etc/veltrix/known_hosts",
+            SimpleNamespace(returncode=1, stdout=b""),
+            lambda _username: SimpleNamespace(pw_uid=33),
+            lambda *_args, **_kwargs: None,
+        ),
+        (
+            "/etc/veltrix/known_hosts",
+            SimpleNamespace(returncode=0, stdout=b"x" * 257),
+            lambda _username: SimpleNamespace(pw_uid=33),
+            lambda *_args, **_kwargs: None,
+        ),
+        (
+            "/etc/veltrix/known_hosts",
+            SimpleNamespace(returncode=0, stdout=b"missing\n"),
+            lambda _username: (_ for _ in ()).throw(KeyError("missing")),
+            lambda *_args, **_kwargs: None,
+        ),
+        (
+            "/etc/veltrix/known_hosts",
+            SimpleNamespace(returncode=0, stdout=b"www-data\n"),
+            lambda _username: SimpleNamespace(pw_uid=33),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad pin")),
+        ),
+    ),
+)
+def test_known_hosts_observation_fails_closed(
+    path: str,
+    result: object,
+    lookup,
+    validator,
+) -> None:
+    observation = watchdog.collect_known_hosts_observation(
+        _settings(VPN_CONTROL_KNOWN_HOSTS_PATH=path),
+        NOW,
+        runner=lambda *_args, **_kwargs: result,
+        user_lookup=lookup,
+        validator=validator,
+    )
+
+    assert observation.state == "fail"
 
 
 @pytest.mark.parametrize(
@@ -983,6 +1100,118 @@ async def test_database_orchestration_persists_observations_before_dispose() -> 
         "evaluate",
         "store",
     ]
+
+
+@pytest.mark.asyncio
+async def test_missing_failed_backup_timestamp_persists_without_database_failure() -> None:
+    operational = _observations()
+    backup = BackupObservation("fail", None, 36 * 60 * 60)
+    events: list[str] = []
+
+    class Result:
+        def scalar_one_or_none(self):
+            return None
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def execute(self, _statement):
+            return Result()
+
+        def add(self, _row) -> None:
+            events.append("add")
+
+        async def flush(self) -> None:
+            events.append("flush")
+
+        async def commit(self) -> None:
+            events.append("commit")
+
+    class Engine:
+        async def dispose(self) -> None:
+            events.append("dispose")
+
+    async def load_snapshot(*_args, **_kwargs):
+        return "snapshot"
+
+    result = await watchdog.collect_failing_codes(
+        _settings(),
+        now=lambda: NOW,
+        collect_observations=lambda *_args: (operational, backup),
+        database_factory=lambda _settings: SimpleNamespace(
+            engine=Engine(),
+            session_factory=lambda: Session(),
+        ),
+        snapshot_loader=load_snapshot,
+        evaluate=lambda _snapshot, *, now: SimpleNamespace(
+            checks=(ReleaseCheck("backup_health", "fail", str(now)),)
+        ),
+    )
+
+    assert result == ("backup_health",)
+    assert events == ["add", "flush", "commit", "dispose"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dispose_mode", ("raise", "hang"))
+async def test_database_cleanup_failure_is_bounded_and_preserves_database_checks(
+    dispose_mode: str,
+) -> None:
+    operational = _observations()
+    backup = BackupObservation("pass", NOW, 36 * 60 * 60)
+    deadlines: list[float] = []
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def commit(self) -> None:
+            return None
+
+    class Engine:
+        async def dispose(self) -> None:
+            if dispose_mode == "raise":
+                raise RuntimeError("private database cleanup failure")
+            await asyncio.sleep(60)
+
+    async def load_snapshot(*_args, **_kwargs):
+        return "snapshot"
+
+    async def store(*_args) -> None:
+        return None
+
+    def cleanup_timeout(seconds: float):
+        deadlines.append(seconds)
+        return asyncio.timeout(0.01 if dispose_mode == "hang" else 1)
+
+    result = await watchdog.collect_failing_codes(
+        _settings(),
+        now=lambda: NOW,
+        collect_observations=lambda *_args: (operational, backup),
+        database_factory=lambda _settings: SimpleNamespace(
+            engine=Engine(),
+            session_factory=lambda: Session(),
+        ),
+        snapshot_loader=load_snapshot,
+        evaluate=lambda _snapshot, *, now: SimpleNamespace(
+            checks=(ReleaseCheck("release_id", "fail", str(now)),)
+        ),
+        store_observations=store,
+        evaluate_operations=lambda *_args: pytest.fail(
+            "successful database checks were replaced"
+        ),
+        cleanup_timeout=cleanup_timeout,
+    )
+
+    assert result == ("control_database_unavailable", "release_id")
+    assert deadlines == [3.0]
 
 
 def test_main_is_fail_closed_silent_and_runs_one_enabled_cycle(

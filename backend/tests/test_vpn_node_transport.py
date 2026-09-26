@@ -25,6 +25,7 @@ from app.services.vpn_node_transport import (
     FIXED_NODE_COMMAND,
     FIXED_NODE_HEALTH_COMMAND,
     FIXED_NODE_RECEIPT_LOOKUP_COMMAND,
+    MAX_KNOWN_HOSTS_BYTES,
     MAX_STDERR_BYTES,
     NodeControlReceipt,
     VpnNodeTransportError,
@@ -537,6 +538,51 @@ def test_private_transport_file_is_nofollow_bounded_and_identity_checked(monkeyp
     reads[:] = [b"abcd"]
     with pytest.raises(VpnNodeTransportError):
         _read_private_file(path, limit=3, owner_uid=1000)
+
+
+def test_known_hosts_file_validator_reuses_strict_private_reader(monkeypatch):
+    path = Path("/etc/veltrix/known_hosts")
+    calls = []
+    validator = getattr(vpn_node_transport, "validate_known_hosts_file", None)
+    assert validator is not None
+    monkeypatch.setattr(
+        vpn_node_transport,
+        "_read_private_file",
+        lambda target, *, limit, owner_uid: calls.append(
+            (target, limit, owner_uid)
+        )
+        or VALID_HOST_PIN,
+    )
+
+    validator(path, owner_uid=33)
+
+    assert calls == [(path, MAX_KNOWN_HOSTS_BYTES, 33)]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b"host ssh-rsa AAAA\n",
+        b"*.example.test ssh-ed25519 AAAA\n",
+        VALID_HOST_PIN.replace(b"host ", b"host,alias ", 1),
+        VALID_HOST_PIN + VALID_HOST_PIN,
+    ),
+)
+def test_known_hosts_file_validator_rejects_nonliteral_or_non_ed25519_content(
+    monkeypatch,
+    raw,
+):
+    validator = getattr(vpn_node_transport, "validate_known_hosts_file", None)
+    assert validator is not None
+    monkeypatch.setattr(
+        vpn_node_transport,
+        "_read_private_file",
+        lambda *_args, **_kwargs: raw,
+    )
+    monkeypatch.setattr(asyncssh, "import_known_hosts", lambda _text: object())
+
+    with pytest.raises(VpnNodeTransportError):
+        validator(Path("/etc/veltrix/known_hosts"), owner_uid=33)
 
 
 def test_secure_ancestors_allow_only_root_or_service_uid(monkeypatch):

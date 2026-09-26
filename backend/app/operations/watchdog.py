@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import inspect
 import json
 import os
 import shutil
-import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
@@ -23,6 +23,7 @@ from app.core.config import Settings
 from app.db.session import create_vpn_control_database
 from app.operations.backup import validated_latest_success_at
 from app.services.app_settings import set_vpn_watchdog_observations
+from app.services.vpn_node_transport import validate_known_hosts_file
 from app.services.vpn_portal_auth import public_origin
 from app.services.vpn_release_readiness import (
     BackupObservation,
@@ -69,8 +70,8 @@ CHECK_TIMEOUT_SECONDS = 3.0
 HTTP_RESPONSE_BYTE_LIMIT = 4096
 OPERATIONAL_MAX_AGE_SECONDS = 600
 BACKUP_MAX_AGE_SECONDS = 36 * 60 * 60
-KNOWN_HOSTS_BYTE_LIMIT = 64 * 1024
 DATABASE_TIMEOUT_SECONDS = 10.0
+SERVICE_USER_BYTE_LIMIT = 256
 
 
 class AlertStateError(RuntimeError):
@@ -356,23 +357,25 @@ async def _http_observation(
     observed_at: datetime,
     *,
     require_health_json: bool,
+    probe_timeout: Callable[[float], Any] = asyncio.timeout,
 ) -> ReadinessObservation:
     state = "fail"
     try:
-        body = bytearray()
-        async with client.stream("GET", url) as response:
-            if response.status_code != 200:
-                return _readiness_observation(state, observed_at)
-            async for chunk in response.aiter_bytes():
-                body.extend(chunk)
-                if len(body) > HTTP_RESPONSE_BYTE_LIMIT:
+        async with probe_timeout(CHECK_TIMEOUT_SECONDS):
+            body = bytearray()
+            async with client.stream("GET", url) as response:
+                if response.status_code != 200:
                     return _readiness_observation(state, observed_at)
-        if not require_health_json:
-            state = "pass"
-        else:
-            payload = json.loads(body)
-            if isinstance(payload, dict) and payload.get("status") == "ok":
+                async for chunk in response.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > HTTP_RESPONSE_BYTE_LIMIT:
+                        return _readiness_observation(state, observed_at)
+            if not require_health_json:
                 state = "pass"
+            else:
+                payload = json.loads(body)
+                if isinstance(payload, dict) and payload.get("status") == "ok":
+                    state = "pass"
     except Exception:  # noqa: BLE001 - every probe failure is a static state.
         state = "fail"
     return _readiness_observation(state, observed_at)
@@ -383,6 +386,7 @@ async def collect_http_observations(
     observed_at: datetime,
     *,
     client_factory: Callable[..., Any] = httpx.AsyncClient,
+    probe_timeout: Callable[[float], Any] = asyncio.timeout,
 ) -> tuple[ReadinessObservation, ReadinessObservation, ReadinessObservation]:
     local_url = f"http://127.0.0.1:8000{settings.api_prefix}/health"
     failed = _readiness_observation("fail", observed_at)
@@ -405,6 +409,7 @@ async def collect_http_observations(
             local_url,
             observed_at,
             require_health_json=True,
+            probe_timeout=probe_timeout,
         )
         if origin is None:
             return local, failed, failed
@@ -413,12 +418,14 @@ async def collect_http_observations(
             f"{origin}{settings.api_prefix}/health",
             observed_at,
             require_health_json=True,
+            probe_timeout=probe_timeout,
         )
         cabinet = await _http_observation(
             client,
             f"{origin}/cabinet/",
             observed_at,
             require_health_json=False,
+            probe_timeout=probe_timeout,
         )
     return local, public, cabinet
 
@@ -441,9 +448,10 @@ def collect_known_hosts_observation(
     settings: Settings,
     observed_at: datetime,
     *,
-    lstat: Callable[[Path], Any] | None = None,
+    runner: Callable[..., Any] = subprocess.run,
+    user_lookup: Callable[[str], Any] | None = None,
+    validator: Callable[..., None] = validate_known_hosts_file,
 ) -> ReadinessObservation:
-    inspect_path = (lambda path: path.lstat()) if lstat is None else lstat
     try:
         configured = settings.vpn_control_known_hosts_path.strip()
         candidate = Path(configured)
@@ -452,13 +460,42 @@ def collect_known_hosts_observation(
             or PureWindowsPath(configured).is_absolute()
         ):
             raise ValueError("known_hosts_path_invalid")
-        metadata = inspect_path(candidate)
-        passed = bool(
-            stat.S_ISREG(metadata.st_mode)
-            and 0 < metadata.st_size <= KNOWN_HOSTS_BYTE_LIMIT
-            and metadata.st_uid == 0
-            and metadata.st_mode & 0o022 == 0
+        result = runner(
+            [
+                "/usr/bin/systemctl",
+                "show",
+                "-p",
+                "User",
+                "--value",
+                "domain-drop-control.service",
+            ],
+            check=False,
+            shell=False,
+            timeout=CHECK_TIMEOUT_SECONDS,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
         )
+        raw_user = result.stdout
+        if (
+            result.returncode != 0
+            or type(raw_user) is not bytes
+            or len(raw_user) > SERVICE_USER_BYTE_LIMIT
+        ):
+            raise ValueError("control_service_user_invalid")
+        username = raw_user.decode("ascii", errors="strict").removesuffix("\n")
+        if "\n" in username or "\r" in username or username != username.strip():
+            raise ValueError("control_service_user_invalid")
+        lookup = (
+            importlib.import_module("pwd").getpwnam
+            if user_lookup is None
+            else user_lookup
+        )
+        account = lookup(username or "root")
+        owner_uid = account.pw_uid
+        if type(owner_uid) is not int or owner_uid < 0:
+            raise ValueError("control_service_user_invalid")
+        validator(candidate, owner_uid=owner_uid)
+        passed = True
     except Exception:  # noqa: BLE001 - every local failure is a static state.
         passed = False
     return _readiness_observation("pass" if passed else "fail", observed_at)
@@ -556,11 +593,13 @@ async def collect_failing_codes(
     store_observations: Callable[..., Any] = set_vpn_watchdog_observations,
     evaluate_operations: Callable[..., Any] = evaluate_operational_checks,
     timeout: Callable[[float], Any] = asyncio.timeout,
+    cleanup_timeout: Callable[[float], Any] = asyncio.timeout,
 ) -> tuple[str, ...]:
     current = datetime.now(UTC) if now is None else now()
     operational, backup = await _resolve(collect_observations(settings, current))
     database = None
-    database_failed = False
+    transaction_failed = False
+    cleanup_failed = False
     checks: Iterable[Any] = ()
     try:
         database = database_factory(settings)
@@ -579,15 +618,16 @@ async def collect_failing_codes(
             await store_observations(session, operational, backup)
             await session.commit()
     except Exception:  # noqa: BLE001 - database details must never escape.
-        database_failed = True
+        transaction_failed = True
     finally:
         if database is not None:
             try:
-                await database.engine.dispose()
+                async with cleanup_timeout(CHECK_TIMEOUT_SECONDS):
+                    await database.engine.dispose()
             except Exception:  # noqa: BLE001 - disposal failure is fail-closed.
-                database_failed = True
+                cleanup_failed = True
 
-    if database_failed:
+    if transaction_failed:
         try:
             checks = evaluate_operations(
                 operational,
@@ -602,7 +642,7 @@ async def collect_failing_codes(
         for check in checks
         if check.state == "fail" and check.code in SAFE_CHECK_CODES
     }
-    if database_failed:
+    if transaction_failed or cleanup_failed:
         codes.add("control_database_unavailable")
     return tuple(sorted(codes))
 

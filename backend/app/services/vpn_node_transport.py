@@ -167,7 +167,7 @@ def _read_private_file(path: Path, *, limit: int, owner_uid: int) -> bytes:
                 _fail()
 
 
-def _parse_known_hosts(raw: bytes, host: str, port: int):
+def _parse_literal_known_hosts(raw: bytes):
     try:
         text = raw.decode("ascii", errors="strict")
         lines = [line for line in text.splitlines() if line.strip()]
@@ -176,11 +176,9 @@ def _parse_known_hosts(raw: bytes, host: str, port: int):
         fields = lines[0].split()
         if len(fields) < 3 or fields[0].startswith("@"):
             _fail()
-        expected = host if port == 22 else f"[{host}]:{port}"
         hostname, key_type, encoded_key = fields[:3]
         if (
-            hostname != expected
-            or any(character in hostname for character in "*,?!")
+            any(character in hostname for character in "*,?!")
             or hostname.startswith("|")
             or key_type != "ssh-ed25519"
         ):
@@ -188,7 +186,7 @@ def _parse_known_hosts(raw: bytes, host: str, port: int):
         decoded = base64.b64decode(encoded_key, validate=True)
         if not decoded:
             _fail()
-        return asyncssh.import_known_hosts(text)
+        return hostname, asyncssh.import_known_hosts(text)
     except VpnNodeTransportError:
         raise
     except (
@@ -199,6 +197,23 @@ def _parse_known_hosts(raw: bytes, host: str, port: int):
         asyncssh.KeyImportError,
     ):
         _fail()
+
+
+def _parse_known_hosts(raw: bytes, host: str, port: int):
+    hostname, known_hosts = _parse_literal_known_hosts(raw)
+    expected = host if port == 22 else f"[{host}]:{port}"
+    if hostname != expected:
+        _fail()
+    return known_hosts
+
+
+def validate_known_hosts_file(path: Path, *, owner_uid: int) -> None:
+    raw = _read_private_file(
+        Path(path),
+        limit=MAX_KNOWN_HOSTS_BYTES,
+        owner_uid=owner_uid,
+    )
+    _parse_literal_known_hosts(raw)
 
 
 def load_transport_snapshot(worker, known_hosts_path: Path) -> VpnNodeTransportSnapshot:

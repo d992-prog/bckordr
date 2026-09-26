@@ -85,12 +85,20 @@ def _watchdog_timestamp(value: datetime | None) -> str:
 
 def _watchdog_observation_payload(
     value: ReadinessObservation | BackupObservation | None,
-) -> dict[str, str]:
+    *,
+    allow_failed_without_timestamp: bool = False,
+) -> dict[str, str | None]:
     if value is None or value.state not in _VPN_WATCHDOG_STATES:
         raise ValueError("vpn_watchdog_observation_invalid")
+    if value.observed_at is None:
+        if not allow_failed_without_timestamp or value.state != "fail":
+            raise ValueError("vpn_watchdog_observation_invalid")
+        observed_at = None
+    else:
+        observed_at = _watchdog_timestamp(value.observed_at)
     return {
         "state": value.state,
-        "observed_at": _watchdog_timestamp(value.observed_at),
+        "observed_at": observed_at,
     }
 
 
@@ -107,18 +115,27 @@ def _parse_watchdog_observation(
     value: object,
     *,
     max_age_seconds: int,
+    allow_failed_without_timestamp: bool = False,
 ) -> ReadinessObservation:
     if not isinstance(value, dict) or set(value) != {"state", "observed_at"}:
         raise ValueError("vpn_watchdog_observation_invalid")
     state = value["state"]
     observed_at = value["observed_at"]
-    if state not in _VPN_WATCHDOG_STATES or not isinstance(observed_at, str):
+    if state not in _VPN_WATCHDOG_STATES:
         raise ValueError("vpn_watchdog_observation_invalid")
-    if not observed_at.endswith("Z"):
-        raise ValueError("vpn_watchdog_observation_invalid")
-    timestamp = datetime.fromisoformat(f"{observed_at[:-1]}+00:00")
-    if timestamp.tzinfo is None or timestamp.utcoffset() != UTC.utcoffset(timestamp):
-        raise ValueError("vpn_watchdog_observation_invalid")
+    if observed_at is None:
+        if not allow_failed_without_timestamp or state != "fail":
+            raise ValueError("vpn_watchdog_observation_invalid")
+        timestamp = None
+    else:
+        if not isinstance(observed_at, str) or not observed_at.endswith("Z"):
+            raise ValueError("vpn_watchdog_observation_invalid")
+        timestamp = datetime.fromisoformat(f"{observed_at[:-1]}+00:00")
+        if (
+            timestamp.tzinfo is None
+            or timestamp.utcoffset() != UTC.utcoffset(timestamp)
+        ):
+            raise ValueError("vpn_watchdog_observation_invalid")
     return ReadinessObservation(
         state=state,
         observed_at=timestamp,
@@ -160,6 +177,7 @@ async def get_vpn_watchdog_observations(
         parsed_backup = _parse_watchdog_observation(
             payload["backup"],
             max_age_seconds=_VPN_WATCHDOG_BACKUP_MAX_AGE_SECONDS,
+            allow_failed_without_timestamp=True,
         )
     except (TypeError, UnicodeError, ValueError):
         return None, None
@@ -181,7 +199,10 @@ async def set_vpn_watchdog_observations(
             name: _watchdog_observation_payload(getattr(operational, name))
             for name in _VPN_WATCHDOG_OPERATIONAL_KEYS
         },
-        "backup": _watchdog_observation_payload(backup),
+        "backup": _watchdog_observation_payload(
+            backup,
+            allow_failed_without_timestamp=True,
+        ),
     }
     raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
     if len(raw.encode("utf-8")) > _VPN_WATCHDOG_OBSERVATIONS_MAX_BYTES:

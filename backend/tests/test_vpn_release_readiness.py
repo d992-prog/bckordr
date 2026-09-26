@@ -855,6 +855,41 @@ async def test_watchdog_observations_round_trip_as_strict_safe_json(
 
 
 @pytest.mark.asyncio
+async def test_failed_backup_without_timestamp_round_trips_as_exact_null(
+    session_factory,
+) -> None:
+    _engine, factory = session_factory
+    backup = BackupObservation(
+        state="fail",
+        observed_at=None,
+        max_age_seconds=36 * 60 * 60,
+    )
+
+    async with factory() as session:
+        await app_settings.set_vpn_watchdog_observations(
+            session,
+            operations(),
+            backup,
+        )
+        raw = await session.scalar(
+            select(AppSetting.value).where(
+                AppSetting.key == app_settings.VPN_WATCHDOG_OBSERVATIONS_KEY
+            )
+        )
+        _stored_operational, stored_backup = (
+            await app_settings.get_vpn_watchdog_observations(session)
+        )
+
+    assert raw is not None
+    assert json.loads(raw)["backup"] == {"state": "fail", "observed_at": None}
+    assert stored_backup == BackupObservation(
+        state="fail",
+        observed_at=None,
+        max_age_seconds=36 * 60 * 60,
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -863,6 +898,8 @@ async def test_watchdog_observations_round_trip_as_strict_safe_json(
         lambda payload: payload["operational"].pop("disk"),
         lambda payload: payload["operational"].update(extra={}),
         lambda payload: payload["backup"].update(state="unknown"),
+        lambda payload: payload["backup"].update(observed_at=None),
+        lambda payload: payload["operational"]["system"].update(observed_at=None),
         lambda payload: payload["backup"].update(observed_at="2026-09-24T15:00:00+03:00"),
         lambda payload: payload["backup"].update(raw_message="private"),
     ],
