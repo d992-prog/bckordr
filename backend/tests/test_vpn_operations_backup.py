@@ -9,12 +9,13 @@ import subprocess
 import sys
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace as replace_config
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-import app.operations.backup as backup_module
 import pytest
+
+import app.operations.backup as backup_module
 from app.operations.backup import (
     BackupConfig,
     BackupError,
@@ -22,7 +23,7 @@ from app.operations.backup import (
     main,
 )
 
-NOW = datetime(2026, 9, 24, 3, 10, 11, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 24, 3, 10, 11, tzinfo=UTC)
 NONCE = "abcdef0123456789"
 PASSWORD = "never-print-this-password"
 POSIX_SNAPSHOT_ONLY = pytest.mark.skipif(
@@ -138,7 +139,8 @@ def _allow_test_platform(
         and not backup_module._DIR_FD_SUPPORTED
     ):
         @contextmanager
-        def bound_test_root(path: Path):
+        def bound_test_root(path: Path, *, stable: bool = False):
+            del stable
             yield backup_module._validated_root(path), -1, lambda: None
 
         monkeypatch.setattr(backup_module, "_require_secure_platform", lambda: None)
@@ -235,7 +237,7 @@ def _write_success(root: Path, name: str) -> Path:
     manifest = b'{"files":[],"version":1}\n'
     (directory / "manifest.json").write_bytes(manifest)
     digest = hashlib.sha256(manifest).hexdigest()
-    created = datetime.strptime(name[:15], "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+    created = datetime.strptime(name[:15], "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
     metadata = {
         "created_at": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "manifest_sha256": digest,
@@ -265,8 +267,8 @@ def test_validated_latest_success_returns_utc_without_mutation(tmp_path: Path) -
 
     created_at = backup_module.validated_latest_success_at(config.backup_root)
 
-    assert created_at == datetime(2026, 9, 24, 3, 10, 11, tzinfo=timezone.utc)
-    assert created_at.tzinfo is timezone.utc
+    assert created_at == datetime(2026, 9, 24, 3, 10, 11, tzinfo=UTC)
+    assert created_at.tzinfo is UTC
     assert {path.name for path in config.backup_root.iterdir()} == before_entries
     after_root = config.backup_root.stat()
     assert stat.S_IMODE(after_root.st_mode) == stat.S_IMODE(before_root.st_mode)
@@ -295,7 +297,7 @@ def test_validated_latest_success_returns_future_timestamp_for_caller_policy(
     marker.write_bytes((success / "backup.json").read_bytes())
 
     assert backup_module.validated_latest_success_at(config.backup_root) == datetime(
-        2099, 1, 1, tzinfo=timezone.utc
+        2099, 1, 1, tzinfo=UTC
     )
 
 
@@ -387,14 +389,14 @@ def test_validated_latest_success_rejects_root_swap_during_read(
 
     def swapping_read_file(
         directory_fd: int, name: str, limit: int
-    ) -> bytes:
+    ) -> backup_module._SnapshotFile:
         nonlocal swapped
-        raw = real_read_file(directory_fd, name, limit)
+        snapshot = real_read_file(directory_fd, name, limit)
         if name == "latest-success.json" and not swapped:
             swapped = True
             config.backup_root.rename(original)
             shutil.copytree(original, config.backup_root)
-        return raw
+        return snapshot
 
     monkeypatch.setattr(
         backup_module, "_read_bounded_file_at", swapping_read_file, raising=False
@@ -439,7 +441,7 @@ def test_trusted_snapshot_parser_validates_exact_metadata_and_manifest(
         snapshot, metadata, metadata, manifest
     )
 
-    assert created_at == datetime(2026, 9, 24, 3, 10, 11, tzinfo=timezone.utc)
+    assert created_at == datetime(2026, 9, 24, 3, 10, 11, tzinfo=UTC)
     with pytest.raises(BackupError, match="^backup_snapshot_invalid$"):
         backup_module._validated_snapshot_timestamp(
             snapshot, metadata, metadata + b" ", manifest
@@ -502,6 +504,67 @@ def test_validated_latest_success_rejects_file_race_during_snapshot(
     assert mutated
 
 
+@pytest.mark.parametrize(
+    "file_name", ["latest-success.json", "backup.json", "manifest.json"]
+)
+@pytest.mark.parametrize("mutation", ["grow", "replace"])
+@POSIX_SNAPSHOT_ONLY
+def test_validated_latest_success_rechecks_files_after_all_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    file_name: str,
+    mutation: str,
+) -> None:
+    config = _config(tmp_path)
+    success = _write_success(
+        config.backup_root, "20260924T031011.000000Z-aaaaaaaa"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((success / "backup.json").read_bytes())
+    target = marker if file_name == marker.name else success / file_name
+    original = target.read_bytes()
+    real_read_file = backup_module._read_bounded_file_at
+    real_open = backup_module.os.open
+    real_close = backup_module.os.close
+    open_descriptors: set[int] = set()
+    mutated = False
+
+    def tracked_open(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        open_descriptors.add(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor: int) -> None:
+        real_close(descriptor)
+        open_descriptors.discard(descriptor)
+
+    def mutate_after_final_read(
+        directory_fd: int, name: str, limit: int
+    ) -> backup_module._SnapshotFile:
+        nonlocal mutated
+        snapshot = real_read_file(directory_fd, name, limit)
+        if name == "manifest.json" and not mutated:
+            mutated = True
+            if mutation == "grow":
+                with target.open("ab") as stream:
+                    stream.write(b" ")
+            else:
+                replacement = target.with_name(f".{target.name}.post-read")
+                replacement.write_bytes(original)
+                os.replace(replacement, target)
+        return snapshot
+
+    monkeypatch.setattr(
+        backup_module, "_read_bounded_file_at", mutate_after_final_read
+    )
+    monkeypatch.setattr(backup_module.os, "open", tracked_open)
+    monkeypatch.setattr(backup_module.os, "close", tracked_close)
+
+    assert backup_module.validated_latest_success_at(config.backup_root) is None
+    assert mutated
+    assert not open_descriptors
+
+
 @POSIX_SNAPSHOT_ONLY
 def test_validated_latest_success_does_not_walk_backup_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -520,8 +583,38 @@ def test_validated_latest_success_does_not_walk_backup_tree(
     monkeypatch.setattr(backup_module.os, "walk", reject_tree_walk)
 
     assert backup_module.validated_latest_success_at(config.backup_root) == datetime(
-        2026, 9, 24, 3, 10, 11, tzinfo=timezone.utc
+        2026, 9, 24, 3, 10, 11, tzinfo=UTC
     )
+
+
+@POSIX_SNAPSHOT_ONLY
+def test_validated_latest_success_does_not_rewalk_root_after_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    success = _write_success(
+        config.backup_root, "20260924T031011.000000Z-aaaaaaaa"
+    )
+    marker = config.backup_root / "latest-success.json"
+    marker.write_bytes((success / "backup.json").read_bytes())
+    real_validate_ancestors = backup_module._validate_root_ancestors
+    path_walks = 0
+
+    def reject_rewalk(path: Path) -> None:
+        nonlocal path_walks
+        path_walks += 1
+        if path_walks > 1:
+            raise AssertionError("root path was walked after descriptor binding")
+        real_validate_ancestors(path)
+
+    monkeypatch.setattr(
+        backup_module, "_validate_root_ancestors", reject_rewalk
+    )
+
+    assert backup_module.validated_latest_success_at(config.backup_root) == datetime(
+        2026, 9, 24, 3, 10, 11, tzinfo=UTC
+    )
+    assert path_walks <= 1
 
 
 @pytest.mark.parametrize("swap", ["root", "set"])
@@ -541,9 +634,11 @@ def test_validated_latest_success_is_anchored_during_transient_path_swap(
     swapped = False
     restored = False
 
-    def swapping_read_file(directory_fd: int, name: str, limit: int) -> bytes:
+    def swapping_read_file(
+        directory_fd: int, name: str, limit: int
+    ) -> backup_module._SnapshotFile:
         nonlocal swapped, restored
-        raw = real_read_file(directory_fd, name, limit)
+        snapshot = real_read_file(directory_fd, name, limit)
         if not swapped and (
             (swap == "root" and name == "latest-success.json")
             or (swap == "set" and name == "backup.json")
@@ -563,18 +658,13 @@ def test_validated_latest_success_is_anchored_during_transient_path_swap(
             else:
                 success.rmdir()
                 parked_set.rename(success)
-        return raw
+        return snapshot
 
     monkeypatch.setattr(backup_module, "_read_bounded_file_at", swapping_read_file)
 
     created_at = backup_module.validated_latest_success_at(config.backup_root)
 
-    expected = (
-        datetime(2026, 9, 24, 3, 10, 11, tzinfo=timezone.utc)
-        if swap == "root"
-        else None
-    )
-    assert created_at == expected
+    assert created_at is None
     assert swapped and restored
 
 
@@ -1650,7 +1740,7 @@ def test_retention_keeps_current_marker_target_if_clock_moves_backward(
         config,
         f"postgresql://backup:{PASSWORD}@db.internal:5432/veltrix",
         runner=FakeRunner(),
-        now=lambda: datetime(2026, 9, 20, 3, 10, 11, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 9, 20, 3, 10, 11, tzinfo=UTC),
         nonce=lambda: NONCE,
     )
 

@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -105,6 +105,32 @@ class _SnapshotMetadata:
     set_name: str
     created_at: datetime
     manifest_sha256: str
+
+
+@dataclass(slots=True)
+class _SnapshotFile:
+    directory_fd: int
+    name: str
+    descriptor: int
+    opened: os.stat_result
+    raw: bytes
+
+    def validate(self) -> None:
+        after = os.fstat(self.descriptor)
+        linked = os.stat(
+            self.name,
+            dir_fd=self.directory_fd,
+            follow_symlinks=False,
+        )
+        if not _matches_stable_file(
+            after, self.opened
+        ) or not _matches_stable_file(linked, self.opened):
+            raise BackupError("backup_snapshot_invalid")
+
+    def close(self) -> None:
+        if self.descriptor >= 0:
+            os.close(self.descriptor)
+            self.descriptor = -1
 
 
 @dataclass(slots=True)
@@ -225,52 +251,149 @@ def _validated_root(path: Path) -> Path:
 
 
 def _validate_bound_root(
-    root: Path, descriptor: int, expected: os.stat_result
+    root: Path,
+    parent_fd: int,
+    parent_expected: os.stat_result,
+    root_name: str,
+    root_fd: int,
+    root_expected: os.stat_result,
+    *,
+    stable: bool,
 ) -> None:
-    _validate_root_ancestors(root)
+    if not stable:
+        _validate_root_ancestors(root)
     try:
-        opened = os.fstat(descriptor)
-        linked = root.lstat()
+        parent = os.fstat(parent_fd)
+        opened = os.fstat(root_fd)
+        linked = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+        path_linked = None if stable else root.lstat()
         effective_uid = os.geteuid()
     except (OSError, RuntimeError, ValueError):
         raise BackupError("backup_root_invalid") from None
+    bound = [
+        (parent, parent_expected),
+        (opened, root_expected),
+        (linked, root_expected),
+    ]
+    if path_linked is not None:
+        bound.append((path_linked, root_expected))
+    for info, expected in bound:
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or _is_reparse(info)
+            or _file_identity(info) != _file_identity(expected)
+            or (
+                stable
+                and (
+                    info.st_mtime_ns != expected.st_mtime_ns
+                    or info.st_ctime_ns != expected.st_ctime_ns
+                )
+            )
+        ):
+            raise BackupError("backup_root_invalid")
     if (
-        not stat.S_ISDIR(opened.st_mode)
-        or not stat.S_ISDIR(linked.st_mode)
-        or _is_reparse(opened)
-        or _is_reparse(linked)
-        or _file_identity(opened) != _file_identity(expected)
-        or _file_identity(linked) != _file_identity(expected)
-        or opened.st_uid != effective_uid
+        opened.st_uid != effective_uid
         or linked.st_uid != effective_uid
+        or (path_linked is not None and path_linked.st_uid != effective_uid)
         or stat.S_IMODE(opened.st_mode) & 0o077
         or stat.S_IMODE(linked.st_mode) & 0o077
+        or (
+            path_linked is not None
+            and stat.S_IMODE(path_linked.st_mode) & 0o077
+        )
     ):
         raise BackupError("backup_root_invalid")
 
 
 @contextmanager
-def _bound_backup_root(path: Path):
-    root, expected = _validated_root_details(path)
-    descriptor = -1
+def _bound_backup_root(path: Path, *, stable: bool = False):
+    absolute = Path(os.path.abspath(path))
+    parent_fd = -1
+    root_fd = -1
     try:
-        descriptor = os.open(
-            root,
+        if not path.is_absolute() or not _same_path(path, absolute) or absolute == Path(
+            absolute.anchor
+        ):
+            raise BackupError("backup_root_invalid")
+        flags = (
             os.O_RDONLY
             | os.O_DIRECTORY
             | os.O_NOFOLLOW
-            | getattr(os, "O_CLOEXEC", 0),
+            | getattr(os, "O_CLOEXEC", 0)
         )
-        validate = partial(_validate_bound_root, root, descriptor, expected)
+        effective_uid = os.geteuid()
+        parent_fd = os.open(absolute.anchor, flags)
+        parent_expected = os.fstat(parent_fd)
+        for component in absolute.parts[1:-1]:
+            before = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+            mode = stat.S_IMODE(before.st_mode)
+            sticky_system_temp = (
+                before.st_uid == 0
+                and bool(mode & stat.S_ISVTX)
+                and bool(mode & 0o002)
+            )
+            if (
+                not stat.S_ISDIR(before.st_mode)
+                or _is_reparse(before)
+                or before.st_uid not in {0, effective_uid}
+                or (mode & 0o022 and not sticky_system_temp)
+            ):
+                raise BackupError("backup_root_invalid")
+            child_fd = os.open(component, flags, dir_fd=parent_fd)
+            opened = os.fstat(child_fd)
+            if not _matches_identity(opened, before, directory=True):
+                os.close(child_fd)
+                raise BackupError("backup_root_invalid")
+            previous_fd = parent_fd
+            parent_fd = child_fd
+            os.close(previous_fd)
+            parent_expected = opened
+        root_name = absolute.name
+        root_before = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(root_before.st_mode)
+            or _is_reparse(root_before)
+            or root_before.st_uid != effective_uid
+            or stat.S_IMODE(root_before.st_mode) & 0o077
+        ):
+            raise BackupError("backup_root_invalid")
+        root_fd = os.open(root_name, flags, dir_fd=parent_fd)
+        root_expected = os.fstat(root_fd)
+        if not _matches_identity(root_expected, root_before, directory=True):
+            raise BackupError("backup_root_invalid")
+        validate = partial(
+            _validate_bound_root,
+            absolute,
+            parent_fd,
+            parent_expected,
+            root_name,
+            root_fd,
+            root_expected,
+            stable=stable,
+        )
         validate()
     except BackupError:
+        for descriptor in (root_fd, parent_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
         raise
-    except OSError:
+    except (OSError, RuntimeError, ValueError):
+        for descriptor in (root_fd, parent_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
         raise BackupError("backup_root_invalid") from None
     try:
-        yield root, descriptor, validate
+        yield absolute, root_fd, validate
     finally:
-        if descriptor >= 0:
+        for descriptor in (root_fd, parent_fd):
+            if descriptor < 0:
+                continue
             try:
                 os.close(descriptor)
             except OSError:
@@ -1100,7 +1223,7 @@ def _trusted_success(directory: Path, root: Path) -> bool:
         digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
         created_at = datetime.strptime(
             str(metadata.get("created_at")), "%Y-%m-%dT%H:%M:%SZ"
-        ).replace(tzinfo=timezone.utc)
+        ).replace(tzinfo=UTC)
         return (
             set(metadata)
             == {"created_at", "manifest_sha256", "set_name", "status", "version"}
@@ -1122,7 +1245,9 @@ def _trusted_success(directory: Path, root: Path) -> bool:
         return False
 
 
-def _read_bounded_file_at(directory_fd: int, name: str, limit: int) -> bytes:
+def _read_bounded_file_at(
+    directory_fd: int, name: str, limit: int
+) -> _SnapshotFile:
     descriptor = -1
     try:
         before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
@@ -1159,10 +1284,19 @@ def _read_bounded_file_at(directory_fd: int, name: str, limit: int) -> bytes:
             or not _matches_stable_file(linked, opened)
         ):
             raise BackupError("backup_snapshot_invalid")
-        return bytes(raw)
-    finally:
+        snapshot = _SnapshotFile(
+            directory_fd,
+            name,
+            descriptor,
+            opened,
+            bytes(raw),
+        )
+        snapshot.validate()
+        return snapshot
+    except (BackupError, OSError):
         if descriptor >= 0:
             os.close(descriptor)
+        raise
 
 
 def _parse_snapshot_metadata(raw: bytes) -> _SnapshotMetadata:
@@ -1185,7 +1319,7 @@ def _parse_snapshot_metadata(raw: bytes) -> _SnapshotMetadata:
         ):
             raise ValueError
         created_at = datetime.strptime(created_raw, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
+            tzinfo=UTC
         )
         if created_at.strftime("%Y%m%dT%H%M%S") != set_name[:15]:
             raise ValueError
@@ -1215,15 +1349,17 @@ def _validated_snapshot_timestamp(
 
 
 def _inspect_latest_success_fd(root_fd: int) -> datetime | None:
+    files: list[_SnapshotFile] = []
     try:
-        marker = _read_bounded_file_at(
+        marker_file = _read_bounded_file_at(
             root_fd, "latest-success.json", _MAX_METADATA_BYTES
         )
     except FileNotFoundError:
         return None
-    snapshot = _parse_snapshot_metadata(marker)
+    files.append(marker_file)
     set_descriptor = -1
     try:
+        snapshot = _parse_snapshot_metadata(marker_file.raw)
         before = os.stat(
             snapshot.set_name,
             dir_fd=root_fd,
@@ -1239,12 +1375,22 @@ def _inspect_latest_success_fd(root_fd: int) -> datetime | None:
         opened = os.fstat(set_descriptor)
         if not _matches_identity(opened, before, directory=True):
             raise BackupError("backup_snapshot_invalid")
-        metadata = _read_bounded_file_at(
+        metadata_file = _read_bounded_file_at(
             set_descriptor, "backup.json", _MAX_METADATA_BYTES
         )
-        manifest = _read_bounded_file_at(
+        files.append(metadata_file)
+        manifest_file = _read_bounded_file_at(
             set_descriptor, "manifest.json", _MAX_MANIFEST_BYTES
         )
+        files.append(manifest_file)
+        created_at = _validated_snapshot_timestamp(
+            snapshot,
+            marker_file.raw,
+            metadata_file.raw,
+            manifest_file.raw,
+        )
+        for snapshot_file in files:
+            snapshot_file.validate()
         after = os.fstat(set_descriptor)
         linked = os.stat(
             snapshot.set_name,
@@ -1255,8 +1401,10 @@ def _inspect_latest_success_fd(root_fd: int) -> datetime | None:
             after, opened, directory=True
         ) or not _matches_identity(linked, opened, directory=True):
             raise BackupError("backup_snapshot_invalid")
-        return _validated_snapshot_timestamp(snapshot, marker, metadata, manifest)
+        return created_at
     finally:
+        for snapshot_file in reversed(files):
+            snapshot_file.close()
         if set_descriptor >= 0:
             os.close(set_descriptor)
 
@@ -1265,7 +1413,11 @@ def validated_latest_success_at(root: Path) -> datetime | None:
     """Return one descriptor-anchored backup timestamp, or None if untrusted."""
     try:
         _require_secure_platform()
-        with _bound_backup_root(root) as (_bound_root, root_fd, validate_root):
+        with _bound_backup_root(root, stable=True) as (
+            _bound_root,
+            root_fd,
+            validate_root,
+        ):
             validate_root()
             try:
                 return _inspect_latest_success_fd(root_fd)
@@ -1347,7 +1499,7 @@ def _apply_retention(root: Path, retention: int, current: str) -> int:
 def _format_created_at(value: datetime) -> tuple[str, str]:
     if value.tzinfo is None or value.utcoffset() is None:
         raise BackupError("backup_clock_invalid")
-    utc = value.astimezone(timezone.utc)
+    utc = value.astimezone(UTC)
     return (
         utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         utc.strftime("%Y%m%dT%H%M%S.%fZ"),
@@ -1365,7 +1517,7 @@ def create_validated_backup(
     db_url: str,
     *,
     runner: Callable[..., Any] = _default_runner,
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
     nonce: Callable[[], str] = lambda: secrets.token_hex(8),
     monotonic: Callable[[], float] = time.monotonic,
     replace: Callable[[Path, Path], None] | None = None,
