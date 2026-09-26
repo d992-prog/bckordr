@@ -174,16 +174,18 @@ external proof. Payment and public trial activation are not part of this work.
   and VPN links are never included.
 - The hardened systemd units expose only their required read/write paths, run
   with no effective capabilities and are installed separately from enablement.
-  Both timers and both feature flags remain off until Linux acceptance,
-  disposable restore rehearsal and alert/recovery rehearsal have passed.
+  Linux acceptance and the disposable restore rehearsal have passed. Both
+  timers and both feature flags remain off until the operations slice is
+  deployed disabled and fresh production backup, restore and alert/recovery
+  rehearsals have passed.
 
-Remaining release work is to complete Linux acceptance, deploy the operations
-slice disabled, obtain fresh operational/watchdog and backup evidence, bring the
-complete strict fleet to fresh health, add and externally verify the second
-production node, and then repeat the operator flow: set capacity, obtain strict
-health, run the external tests, inspect the panel, type the exact phrase
-`ГОТОВО К РЕЛИЗУ`, and commit the marker. Public-trial enablement remains a
-separate release requiring a fresh reviewed backup and observations.
+Remaining release work is to deploy the operations slice disabled, obtain fresh
+production operational/watchdog and backup evidence, bring the complete strict
+fleet to fresh health, add and externally verify the second production node,
+and then repeat the operator flow: set capacity, obtain strict health, run the
+external tests, inspect the panel, type the exact phrase `ГОТОВО К РЕЛИЗУ`, and
+commit the marker. Public-trial enablement remains a separate release requiring
+a fresh reviewed backup and observations.
 The public-trial and payment flags remain off; nothing in this checkpoint is
 deployed or green in production.
 
@@ -195,7 +197,7 @@ the strict dispatcher, a second externally verified production VPN node, a
 reviewed migration backup and separate deployment approval. The public-trial and
 ready-notification flags remain off; this checkpoint performs no rollout.
 
-### Local release-gate evidence
+### Release-gate evidence
 
 - The fresh final Windows backend run passed 2,911 tests and skipped 123
   environment-gated PostgreSQL, POSIX and filesystem cases. The operations,
@@ -203,12 +205,12 @@ ready-notification flags remain off; this checkpoint performs no rollout.
   37 Windows-only skips; scoped Ruff passed. The final backup lifecycle passed
   67 tests with 36 POSIX skips, and independent review found no remaining
   Critical or Important issue.
-- `.github/workflows/veltrix-release-gate.yml` now defines the missing disposable
-  Linux gate: the complete backend suite with PostgreSQL 16, all POSIX/flock
-  tests as root, strict Ruff, recursive systemd verification, an actual
-  root-owned/group-readable trust-file check with zero effective capabilities,
-  and a synthetic validated PostgreSQL backup/restore. This checkpoint does not
-  claim that remote gate passed until the workflow result is recorded.
+- GitHub Actions [Veltrix release gate run #3](https://github.com/d992-prog/bckordr/actions/runs/36277002659)
+  passed at commit `2d49fc2`: **3,032 passed, 2 skipped in 223.36s** on Ubuntu
+  24.04 with PostgreSQL 16. Scoped Ruff, recursive systemd verification, the
+  actual root-owned/group-readable trust-file check with zero effective
+  capabilities, and the synthetic validated PostgreSQL backup/restore all
+  completed successfully.
 - The frontend passed all 90 tests. Its TypeScript/Vite production build
   transformed 45 modules and emitted both admin and cabinet HTML entries.
 - The desktop and mobile browser smoke used a disposable SQLite database, a fake
