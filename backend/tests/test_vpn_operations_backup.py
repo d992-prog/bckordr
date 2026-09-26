@@ -959,12 +959,14 @@ def test_dump_replacement_is_rejected_even_when_command_succeeds(
 ) -> None:
     config = _config(tmp_path)
     replacement: Path | None = None
+    replacement_mode: int | None = None
 
     def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
-        nonlocal replacement
+        nonlocal replacement, replacement_mode
         replacement = Path(command[3])
         replacement.unlink()
         replacement.write_bytes(b"replacement archive")
+        replacement_mode = stat.S_IMODE(replacement.stat().st_mode)
         return subprocess.CompletedProcess(command, 0)
 
     with pytest.raises(BackupError, match="^backup_dump_failed$"):
@@ -978,7 +980,10 @@ def test_dump_replacement_is_rejected_even_when_command_succeeds(
 
     assert replacement is not None and replacement.is_file()
     if os.name != "nt":
-        assert stat.S_IMODE(replacement.stat().st_mode) == 0o600
+        # A replacement inode is untrusted and must not be chmod'd. The private
+        # partial directory is the confidentiality boundary after rejection.
+        assert stat.S_IMODE(replacement.stat().st_mode) == replacement_mode
+        assert stat.S_IMODE(replacement.parent.stat().st_mode) == 0o700
 
 
 def test_unexpected_runner_exception_cannot_expose_database_secret(
