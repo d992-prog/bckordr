@@ -500,6 +500,41 @@ async def test_stage_rejects_archived_worker_and_same_worker_conflicts(
 
 
 @pytest.mark.asyncio
+async def test_stage_rejects_second_ready_reality_endpoint_on_same_worker(database) -> None:
+    module = importlib.import_module("app.services.vpn_reality_endpoint_registration")
+    await _seed_worker(database)
+    async with database() as db:
+        db.add(
+            VpnEndpoint(
+                worker_id=15,
+                inbound_id=99,
+                public_host="other.example.test",
+                port=444,
+                protocol="vless",
+                transport="raw",
+                security="reality",
+                server_name="other-front.example.test",
+                public_key=PUBLIC_KEY,
+                short_id="aabb",
+                fingerprint="chrome",
+                flow="xtls-rprx-vision",
+                status="ready",
+                verified_at=NOW,
+            )
+        )
+        await db.commit()
+
+    async with database() as db:
+        with pytest.raises(
+            module.EndpointRegistrationError,
+            match="^vpn_endpoint_registration_conflict$",
+        ):
+            await module.stage_protected_endpoint(
+                db, _receipt(), controlled_worker_id=15
+            )
+
+
+@pytest.mark.asyncio
 async def test_promotion_atomically_sets_ready_acceptance_metadata_and_exact_marker(database) -> None:
     module = importlib.import_module("app.services.vpn_reality_endpoint_registration")
     await _seed_worker(database)
