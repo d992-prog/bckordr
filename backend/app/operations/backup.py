@@ -44,6 +44,7 @@ _REPARSE_POINT = 0x400
 _CHUNK_SIZE = 1024 * 1024
 _MAX_METADATA_BYTES = 16 * 1024
 _MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+_NGINX_MODULES_DIRECTORY = Path("/usr/share/nginx/modules-available")
 
 
 class BackupError(RuntimeError):
@@ -154,11 +155,18 @@ class _Budget:
             raise BackupError("backup_deadline_exceeded")
         return min(self.config.command_timeout_seconds, remaining)
 
-    def add_file(self, size: int) -> None:
+    def reserve_file(self) -> None:
+        self.check_deadline()
+        self.files += 1
+        if self.files > self.config.max_files:
+            raise BackupError("backup_limits_exceeded")
+
+    def add_file(self, size: int, *, reserved: bool = False) -> None:
         self.check_deadline()
         if size < 0 or size > self.config.max_file_bytes:
             raise BackupError("backup_limits_exceeded")
-        self.files += 1
+        if not reserved:
+            self.files += 1
         self.total_bytes += size
         if (
             self.files > self.config.max_files
@@ -602,6 +610,7 @@ _DIR_FD_SUPPORTED = (
     and hasattr(os, "O_DIRECTORY")
     and hasattr(os, "O_NOFOLLOW")
     and os.open in os.supports_dir_fd
+    and os.readlink in os.supports_dir_fd
     and os.stat in os.supports_dir_fd
     and os.stat in os.supports_follow_symlinks
     and os.scandir in os.supports_fd
@@ -670,6 +679,17 @@ def _matches_stable_file(info: os.stat_result, expected: os.stat_result) -> bool
         and info.st_size == expected.st_size
         and info.st_mtime_ns == expected.st_mtime_ns
         and (os.name != "posix" or info.st_ctime_ns == expected.st_ctime_ns)
+    )
+
+
+def _matches_stable_symlink(info: os.stat_result, expected: os.stat_result) -> bool:
+    return (
+        stat.S_ISLNK(info.st_mode)
+        and not _is_reparse(info)
+        and _file_identity(info) == _file_identity(expected)
+        and info.st_size == expected.st_size
+        and info.st_mtime_ns == expected.st_mtime_ns
+        and info.st_ctime_ns == expected.st_ctime_ns
     )
 
 
@@ -765,7 +785,7 @@ def _open_absolute_directory(path: Path, budget: _Budget) -> tuple[int, os.stat_
 
 
 def _scan_directory_fd(
-    descriptor: int, depth: int, budget: _Budget
+    descriptor: int, depth: int, budget: _Budget, *, allow_symlinks: bool
 ) -> list[tuple[str, os.stat_result]]:
     entries: list[tuple[str, os.stat_result]] = []
     try:
@@ -773,9 +793,11 @@ def _scan_directory_fd(
             for entry in iterator:
                 budget.check_deadline()
                 info = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
-                if _is_reparse(info) or stat.S_ISLNK(info.st_mode):
+                if _is_reparse(info):
                     raise BackupError("backup_source_invalid")
-                if stat.S_ISDIR(info.st_mode):
+                if stat.S_ISLNK(info.st_mode) and allow_symlinks:
+                    budget.reserve_file()
+                elif stat.S_ISDIR(info.st_mode):
                     if depth + 1 > budget.config.max_depth:
                         raise BackupError("backup_limits_exceeded")
                     budget.add_directory()
@@ -789,6 +811,123 @@ def _scan_directory_fd(
     except OSError:
         raise BackupError("backup_source_invalid") from None
     return sorted(entries, key=lambda item: item[0])
+
+
+def _approved_symlink_target(
+    parent: Path, text: str, roots: tuple[Path, ...]
+) -> Path:
+    if text.endswith(("/", "/.", "/..")):
+        raise BackupError("backup_source_invalid")
+    seen_component = False
+    for component in text.split("/"):
+        if not component:
+            continue
+        if component in {".", ".."}:
+            if seen_component or (component == ".." and text.startswith("/")):
+                raise BackupError("backup_source_invalid")
+        else:
+            seen_component = True
+    target = Path(os.path.normpath(os.path.join(parent, text)))
+    for root in roots:
+        try:
+            target.relative_to(Path(os.path.normpath(root)))
+            return target
+        except ValueError:
+            continue
+    raise BackupError("backup_source_invalid")
+
+
+def _copy_approved_symlink(
+    parent_fd: int,
+    parent: Path,
+    name: str,
+    expected: os.stat_result,
+    destination: Path,
+    relative: Path,
+    roots: tuple[Path, ...],
+    budget: _Budget,
+) -> dict[str, object]:
+    target_parent_fd = -1
+    target_fd = -1
+    completed = False
+    try:
+        try:
+            text = os.readlink(name, dir_fd=parent_fd)
+            linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError:
+            raise BackupError("backup_source_changed") from None
+        if not _matches_stable_symlink(linked, expected):
+            raise BackupError("backup_source_changed")
+        target = _approved_symlink_target(parent, text, roots)
+        target_parent_fd, parent_info = _open_absolute_directory(target.parent, budget)
+        target_info = os.stat(
+            target.name, dir_fd=target_parent_fd, follow_symlinks=False
+        )
+        if _is_reparse(target_info) or not stat.S_ISREG(target_info.st_mode):
+            raise BackupError("backup_source_invalid")
+        budget.add_file(target_info.st_size, reserved=True)
+        try:
+            target_fd = os.open(
+                target.name,
+                os.O_RDONLY
+                | os.O_NOFOLLOW
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_BINARY", 0),
+                dir_fd=target_parent_fd,
+            )
+        except OSError:
+            try:
+                current = os.stat(
+                    target.name, dir_fd=target_parent_fd, follow_symlinks=False
+                )
+            except OSError:
+                raise BackupError("backup_source_changed") from None
+            if not _matches_stable_file(current, target_info):
+                raise BackupError("backup_source_changed") from None
+            raise
+        record = _copy_descriptor(
+            target_fd, destination, relative, target_info, budget
+        )
+        try:
+            target_linked = os.stat(
+                target.name, dir_fd=target_parent_fd, follow_symlinks=False
+            )
+            target_parent_opened = os.fstat(target_parent_fd)
+            target_parent_linked = target.parent.lstat()
+            symlink_linked = os.stat(
+                name, dir_fd=parent_fd, follow_symlinks=False
+            )
+            symlink_text = os.readlink(name, dir_fd=parent_fd)
+        except OSError:
+            raise BackupError("backup_source_changed") from None
+        if (
+            not _matches_stable_file(target_linked, target_info)
+            or not _matches_identity(
+                target_parent_opened, parent_info, directory=True
+            )
+            or not _matches_identity(
+                target_parent_linked, parent_info, directory=True
+            )
+            or not _matches_stable_symlink(symlink_linked, expected)
+            or symlink_text != text
+        ):
+            raise BackupError("backup_source_changed")
+        completed = True
+        return record
+    except BackupError:
+        raise
+    except (OSError, ValueError):
+        raise BackupError("backup_source_invalid") from None
+    finally:
+        close_failed = False
+        for descriptor in (target_fd, target_parent_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    close_failed = True
+        if close_failed and completed:
+            raise BackupError("backup_copy_failed") from None
 
 
 @dataclass(slots=True)
@@ -809,6 +948,8 @@ def _copy_posix_tree(
     destination: Path,
     relative: Path,
     budget: _Budget,
+    *,
+    approved_symlink_roots: tuple[Path, ...] = (),
 ) -> list[dict[str, object]]:
     descriptor, expected = _open_absolute_directory(source, budget)
     budget.add_directory()
@@ -821,7 +962,10 @@ def _copy_posix_tree(
             if frame.entries is None:
                 _mkdir_private(frame.destination)
                 frame.entries = _scan_directory_fd(
-                    frame.descriptor, frame.depth, budget
+                    frame.descriptor,
+                    frame.depth,
+                    budget,
+                    allow_symlinks=bool(approved_symlink_roots),
                 )
             if frame.index >= len(frame.entries):
                 if not _matches_identity(
@@ -849,6 +993,20 @@ def _copy_posix_tree(
             frame.index += 1
             child_destination = frame.destination / name
             child_relative = frame.relative / name
+            if stat.S_ISLNK(entry_info.st_mode):
+                records.append(
+                    _copy_approved_symlink(
+                        frame.descriptor,
+                        frame.source,
+                        name,
+                        entry_info,
+                        child_destination,
+                        child_relative,
+                        approved_symlink_roots,
+                        budget,
+                    )
+                )
+                continue
             if stat.S_ISDIR(entry_info.st_mode):
                 child_fd = os.open(
                     name,
@@ -968,6 +1126,10 @@ def _copy_sources(
                 partial / "nginx",
                 Path("nginx"),
                 budget,
+                approved_symlink_roots=(
+                    config.nginx_directory,
+                    _NGINX_MODULES_DIRECTORY,
+                ),
             )
         )
         records.extend(

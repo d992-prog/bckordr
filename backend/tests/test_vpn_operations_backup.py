@@ -1031,6 +1031,447 @@ def test_failed_copy_preserves_previous_success_marker_and_partial(
     assert (config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial").is_dir()
 
 
+@POSIX_SNAPSHOT_ONLY
+def test_approved_nginx_symlinks_are_materialized_as_regular_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    sites_available = config.nginx_directory / "sites-available"
+    sites_enabled = config.nginx_directory / "sites-enabled"
+    modules_enabled = config.nginx_directory / "modules-enabled"
+    module_root = tmp_path / "modules-available"
+    for directory in (sites_available, sites_enabled, modules_enabled, module_root):
+        directory.mkdir()
+    site_bytes = b"server { listen 80; }\n"
+    module_bytes = b"load_module modules/ngx_http_test_module.so;\n"
+    (sites_available / "site.conf").write_bytes(site_bytes)
+    (module_root / "module.conf").write_bytes(module_bytes)
+    (sites_enabled / "site.conf").symlink_to("../sites-available/site.conf")
+    (modules_enabled / "module.conf").symlink_to(module_root / "module.conf")
+    monkeypatch.setattr(backup_module, "_NGINX_MODULES_DIRECTORY", module_root)
+
+    result = _run(config, FakeRunner())
+    expected = {
+        "nginx/sites-enabled/site.conf": site_bytes,
+        "nginx/modules-enabled/module.conf": module_bytes,
+    }
+    records = {
+        item["path"]: item
+        for item in _read_json(result.directory / "manifest.json")["files"]
+    }
+    for relative, content in expected.items():
+        copied = result.directory / relative
+        assert copied.read_bytes() == content
+        assert stat.S_ISREG(copied.lstat().st_mode)
+        assert not copied.is_symlink()
+        assert records[relative] == {
+            "path": relative,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size": len(content),
+        }
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["missing_parent", "trailing_slash", "file_parent", "symlink_parent"],
+)
+@POSIX_SNAPSHOT_ONLY
+def test_nginx_symlink_rejects_normalization_that_changes_target_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    config = _config(tmp_path)
+    sites_available = config.nginx_directory / "sites-available"
+    sites_enabled = config.nginx_directory / "sites-enabled"
+    module_root = tmp_path / "modules-available"
+    for directory in (sites_available, sites_enabled, module_root):
+        directory.mkdir()
+    (sites_available / "site.conf").write_bytes(b"server safe;\n")
+    (module_root / "site.conf").write_bytes(b"load_module safe;\n")
+    outside = tmp_path / "outside"
+    (outside / "nested").mkdir(parents=True)
+    (outside / "site.conf").write_bytes(b"outside secret\n")
+    (module_root / "redirect").symlink_to(outside / "nested", target_is_directory=True)
+    link_text = {
+        "missing_parent": "../missing/../sites-available/site.conf",
+        "trailing_slash": "../sites-available/site.conf/",
+        "file_parent": "../sites-available/site.conf/../site.conf",
+        "symlink_parent": f"{module_root}/redirect/../site.conf",
+    }[case]
+    normalized = Path(os.path.normpath(os.path.join(sites_enabled, link_text)))
+    assert normalized.is_file()
+    (sites_enabled / "invalid.conf").symlink_to(link_text)
+    monkeypatch.setattr(backup_module, "_NGINX_MODULES_DIRECTORY", module_root)
+
+    with pytest.raises(BackupError, match="^backup_source_invalid$"):
+        _run(config, FakeRunner())
+
+    partial = config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial"
+    assert not (partial / "nginx/sites-enabled/invalid.conf").exists()
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
+@pytest.mark.parametrize(
+    "link_text",
+    [
+        "../missing/../sites-available/site.conf",
+        "../sites-available/site.conf/",
+        "../sites-available/site.conf/.",
+        "../sites-available/site.conf/..",
+        "../sites-available/site.conf/../site.conf",
+        "../sites-available/redirect/../site.conf",
+        "../sites-available/site.conf/./site.conf",
+        "absolute_with_cancellation",
+    ],
+)
+def test_approved_symlink_target_rejects_semantic_cancellation(
+    tmp_path: Path, link_text: str
+) -> None:
+    config = _config(tmp_path)
+    parent = config.nginx_directory / "sites-enabled"
+    if link_text == "absolute_with_cancellation":
+        link_text = (
+            config.nginx_directory
+            / "sites-available"
+            / "missing"
+            / ".."
+            / "site.conf"
+        ).as_posix()
+    with pytest.raises(BackupError, match="^backup_source_invalid$"):
+        backup_module._approved_symlink_target(
+            parent, link_text, (config.nginx_directory,)
+        )
+
+
+def test_approved_symlink_target_keeps_direct_relative_and_absolute_paths(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    parent = config.nginx_directory / "sites-enabled"
+    target = config.nginx_directory / "sites-available" / "site.conf"
+    for link_text in ("../sites-available/site.conf", str(target)):
+        assert backup_module._approved_symlink_target(
+            parent, link_text, (config.nginx_directory,)
+        ) == target
+
+
+@pytest.mark.parametrize("target_kind", ["broken", "directory", "link-to-link"])
+@POSIX_SNAPSHOT_ONLY
+def test_approved_nginx_symlink_rejects_unsupported_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_kind: str
+) -> None:
+    config = _config(tmp_path)
+    modules_enabled = config.nginx_directory / "modules-enabled"
+    module_root = tmp_path / "modules-available"
+    modules_enabled.mkdir()
+    module_root.mkdir()
+    target = module_root / "module.conf"
+    if target_kind == "directory":
+        target.mkdir()
+    elif target_kind == "link-to-link":
+        (module_root / "real.conf").write_text("load_module test;\n", encoding="utf-8")
+        target.symlink_to("real.conf")
+    (modules_enabled / "module.conf").symlink_to(target)
+    monkeypatch.setattr(backup_module, "_NGINX_MODULES_DIRECTORY", module_root)
+
+    with pytest.raises(BackupError, match="^backup_source_invalid$"):
+        _run(config, FakeRunner())
+
+    partial = config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial"
+    assert not (partial / "nginx/modules-enabled/module.conf").exists()
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
+@POSIX_SNAPSHOT_ONLY
+def test_relative_nginx_symlink_cannot_escape_approved_roots(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    sites_enabled = config.nginx_directory / "sites-enabled"
+    sites_enabled.mkdir()
+    secret = tmp_path / "outside-secret"
+    secret_bytes = b"secret outside approved nginx roots\n"
+    secret.write_bytes(secret_bytes)
+    link = sites_enabled / "outside.conf"
+    link.symlink_to("../../../outside-secret")
+    assert link.resolve(strict=True) == secret
+
+    with pytest.raises(BackupError, match="^backup_source_invalid$"):
+        _run(config, FakeRunner())
+
+    partial = config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial"
+    assert not (partial / "nginx/sites-enabled/outside.conf").exists()
+    assert all(
+        secret_bytes not in path.read_bytes()
+        for path in partial.rglob("*")
+        if path.is_file()
+    )
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
+@POSIX_SNAPSHOT_ONLY
+def test_frontend_symlink_remains_invalid(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    (config.frontend_dist / "real.js").write_text("real asset\n", encoding="utf-8")
+    (config.frontend_dist / "linked.js").symlink_to("real.js")
+
+    with pytest.raises(BackupError, match="^backup_source_invalid$"):
+        _run(config, FakeRunner())
+
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
+@POSIX_SNAPSHOT_ONLY
+def test_nginx_symlink_retarget_during_copy_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    sites_available = config.nginx_directory / "sites-available"
+    sites_enabled = config.nginx_directory / "sites-enabled"
+    sites_available.mkdir()
+    sites_enabled.mkdir()
+    (sites_available / "original.conf").write_text("server original;\n", encoding="utf-8")
+    (sites_available / "replacement.conf").write_text(
+        "server replacement;\n", encoding="utf-8"
+    )
+    link = sites_enabled / "veltrix.conf"
+    link.symlink_to("../sites-available/original.conf")
+    real_copy = backup_module._copy_descriptor
+    retargeted = False
+
+    def copy_then_retarget(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal retargeted
+        record = real_copy(*args, **kwargs)
+        if record["path"] == "nginx/sites-enabled/veltrix.conf" and not retargeted:
+            retargeted = True
+            link.unlink()
+            link.symlink_to("../sites-available/replacement.conf")
+        return record
+
+    monkeypatch.setattr(backup_module, "_copy_descriptor", copy_then_retarget)
+
+    with pytest.raises(BackupError, match="^backup_source_changed$"):
+        _run(config, FakeRunner())
+
+    assert retargeted
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
+def _mock_approved_symlink_source(
+    monkeypatch: pytest.MonkeyPatch, target: Path
+) -> tuple[os.stat_result, os.stat_result, os.stat_result]:
+    target_info = target.lstat()
+    parent_info = target.parent.lstat()
+    real_lstat = Path.lstat
+    link_info = SimpleNamespace(
+        st_mode=stat.S_IFLNK | 0o777,
+        st_dev=1,
+        st_ino=2,
+        st_size=len(str(target)),
+        st_mtime_ns=1,
+        st_ctime_ns=1,
+        st_file_attributes=0,
+    )
+    monkeypatch.setattr(
+        backup_module, "_open_absolute_directory", lambda *_: (42, parent_info)
+    )
+    monkeypatch.setattr(
+        backup_module.os, "readlink", lambda *_, **__: str(target)
+    )
+    monkeypatch.setattr(
+        backup_module.os,
+        "stat",
+        lambda *_, dir_fd=None, **__: link_info if dir_fd == 41 else target_info,
+    )
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda path: (
+            target_info
+            if path == target
+            else parent_info
+            if path == target.parent
+            else real_lstat(path)
+        ),
+    )
+    monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0x10000000, raising=False)
+    monkeypatch.setattr(backup_module.os, "O_NONBLOCK", 0x20000000, raising=False)
+    return link_info, target_info, parent_info
+
+
+def test_nginx_symlink_scan_bounds_global_file_count_before_sorting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = replace_config(_config(tmp_path), max_files=1)
+    budget = backup_module._Budget(config, lambda: 0.0, 0.0)
+    scanned: list[str] = []
+    entries = (SimpleNamespace(name=f"link-{index}") for index in range(1000))
+    link_info = SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=0)
+
+    def fake_stat(name: str, **_kwargs: object) -> SimpleNamespace:
+        scanned.append(name)
+        return link_info
+
+    with monkeypatch.context() as patch:
+        patch.setattr(backup_module.os, "scandir", lambda _fd: nullcontext(entries))
+        patch.setattr(backup_module.os, "stat", fake_stat)
+        with pytest.raises(BackupError, match="^backup_limits_exceeded$"):
+            backup_module._scan_directory_fd(41, 0, budget, allow_symlinks=True)
+    assert scanned == ["link-0", "link-1"]
+
+
+def test_one_nginx_symlink_is_counted_once_and_charged_target_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = replace_config(_config(tmp_path), max_files=1)
+    target = config.nginx_directory / "veltrix.conf"
+    budget = backup_module._Budget(config, lambda: 0.0, 0.0)
+    with monkeypatch.context() as patch:
+        link_info, target_info, parent_info = _mock_approved_symlink_source(
+            patch, target
+        )
+        patch.setattr(
+            backup_module.os,
+            "scandir",
+            lambda _fd: nullcontext(iter([SimpleNamespace(name="linked")])),
+        )
+        patch.setattr(backup_module.os, "open", lambda *_args, **_kwargs: 43)
+        patch.setattr(
+            backup_module.os,
+            "fstat",
+            lambda descriptor: parent_info if descriptor == 42 else target_info,
+        )
+        patch.setattr(backup_module.os, "close", lambda _fd: None)
+        patch.setattr(backup_module, "_copy_descriptor", lambda *_: {})
+        entries = backup_module._scan_directory_fd(
+            41, 0, budget, allow_symlinks=True
+        )
+        assert entries == [("linked", link_info)]
+        backup_module._copy_approved_symlink(
+            41,
+            target.parent,
+            "linked",
+            link_info,
+            tmp_path / "copied",
+            Path("nginx/linked"),
+            (config.nginx_directory,),
+            budget,
+        )
+    assert budget.files == 1
+    assert budget.total_bytes == target.stat().st_size
+
+
+def test_approved_nginx_target_open_is_nonblocking_and_rejects_nonregular_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    target = config.nginx_directory / "veltrix.conf"
+    budget = backup_module._Budget(config, lambda: 0.0, 0.0)
+    with monkeypatch.context() as patch:
+        link_info, _, _ = _mock_approved_symlink_source(patch, target)
+        opened_flags: list[int] = []
+        closed: list[int] = []
+
+        def open_target(_name: str, flags: int, *, dir_fd: int) -> int:
+            assert dir_fd == 42
+            opened_flags.append(flags)
+            return 43
+
+        patch.setattr(backup_module.os, "open", open_target)
+        patch.setattr(
+            backup_module.os,
+            "fstat",
+            lambda _fd: SimpleNamespace(st_mode=stat.S_IFIFO, st_dev=3, st_ino=4),
+        )
+        patch.setattr(backup_module.os, "read", lambda *_: pytest.fail("FIFO read"))
+        patch.setattr(backup_module.os, "close", closed.append)
+        with pytest.raises(BackupError, match="^backup_source_changed$"):
+            backup_module._copy_approved_symlink(
+                41,
+                target.parent,
+                "linked",
+                link_info,
+                tmp_path / "copied",
+                Path("nginx/linked"),
+                (config.nginx_directory,),
+                budget,
+            )
+        assert opened_flags[0] & backup_module.os.O_NONBLOCK
+        assert closed == [43, 42]
+
+
+def test_approved_nginx_cleanup_closes_both_fds_after_first_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    target = config.nginx_directory / "veltrix.conf"
+    budget = backup_module._Budget(config, lambda: 0.0, 0.0)
+    with monkeypatch.context() as patch:
+        link_info, _, _ = _mock_approved_symlink_source(patch, target)
+        closed: list[int] = []
+        patch.setattr(backup_module.os, "open", lambda *_args, **_kwargs: 43)
+
+        def failed_copy(*_args: object) -> dict[str, object]:
+            raise BackupError("backup_source_changed")
+
+        def close(descriptor: int) -> None:
+            closed.append(descriptor)
+            if descriptor == 43:
+                raise OSError("synthetic close failure")
+
+        patch.setattr(backup_module, "_copy_descriptor", failed_copy)
+        patch.setattr(backup_module.os, "close", close)
+        with pytest.raises(BackupError, match="^backup_source_changed$"):
+            backup_module._copy_approved_symlink(
+                41,
+                target.parent,
+                "linked",
+                link_info,
+                tmp_path / "copied",
+                Path("nginx/linked"),
+                (config.nginx_directory,),
+                budget,
+            )
+        assert closed == [43, 42]
+
+
+def test_approved_nginx_cleanup_failure_uses_static_backup_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    target = config.nginx_directory / "veltrix.conf"
+    budget = backup_module._Budget(config, lambda: 0.0, 0.0)
+    with monkeypatch.context() as patch:
+        link_info, target_info, parent_info = _mock_approved_symlink_source(
+            patch, target
+        )
+        closed: list[int] = []
+        patch.setattr(backup_module.os, "open", lambda *_args, **_kwargs: 43)
+        patch.setattr(
+            backup_module.os,
+            "fstat",
+            lambda descriptor: parent_info if descriptor == 42 else target_info,
+        )
+        patch.setattr(backup_module, "_copy_descriptor", lambda *_: {})
+
+        def close(descriptor: int) -> None:
+            closed.append(descriptor)
+            if descriptor == 43:
+                raise OSError("synthetic secret close failure")
+
+        patch.setattr(backup_module.os, "close", close)
+        with pytest.raises(BackupError, match="^backup_copy_failed$") as raised:
+            backup_module._copy_approved_symlink(
+                41,
+                target.parent,
+                "linked",
+                link_info,
+                tmp_path / "copied",
+                Path("nginx/linked"),
+                (config.nginx_directory,),
+                budget,
+            )
+        assert "synthetic" not in repr(raised.value)
+        assert closed == [43, 42]
+
+
 def test_symlink_source_is_rejected_without_following_it(tmp_path: Path) -> None:
     config = _config(tmp_path)
     secret = tmp_path / "outside-secret"
