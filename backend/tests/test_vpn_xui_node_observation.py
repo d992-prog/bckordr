@@ -318,6 +318,79 @@ def test_wal_database_snapshot_includes_uncheckpointed_rows(observation, data):
         writer.close()
 
 
+def test_closed_wal_database_without_sidecars_fails_without_creating_files(
+    observation, data
+):
+    database = data["database"]
+    with closing(sqlite3.connect(database)) as writer:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("INSERT INTO inbounds VALUES (8)")
+        writer.commit()
+    assert all(
+        not Path(str(database) + suffix).exists()
+        for suffix in ("-wal", "-shm", "-journal")
+    )
+
+    def directory_state():
+        parent = os.lstat(database.parent)
+        return (
+            (parent.st_dev, parent.st_ino, parent.st_mode, parent.st_mtime_ns),
+            {
+                path.name: (
+                    hashlib.sha256(path.read_bytes()).digest(),
+                    path.stat().st_size,
+                    path.stat().st_mtime_ns,
+                    path.stat().st_mode,
+                )
+                for path in database.parent.iterdir()
+            },
+        )
+
+    before = directory_state()
+    with pytest.raises(VpnEndpointError) as caught:
+        observation._local_inbound_ids(database)
+    assert caught.value.code == str(caught.value) == "vpn_xui_inventory_unavailable"
+    assert directory_state() == before
+    assert all(
+        not Path(str(database) + suffix).exists()
+        for suffix in ("-wal", "-shm", "-journal")
+    )
+
+
+def test_wal_logical_snapshot_over_limit_fails_when_each_file_fits(
+    observation, tmp_path, monkeypatch
+):
+    database = tmp_path / "sized.sqlite"
+    writer = sqlite3.connect(database)
+    try:
+        writer.execute("PRAGMA page_size=4096")
+        writer.execute("CREATE TABLE inbounds (id INTEGER PRIMARY KEY, payload BLOB)")
+        writer.execute("INSERT INTO inbounds VALUES (2, zeroblob(20000))")
+        writer.commit()
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("INSERT INTO inbounds VALUES (7, zeroblob(20000))")
+        writer.commit()
+
+        limit = 40_000
+        monkeypatch.setattr(observation, "_DATABASE_LIMIT", limit)
+        page_size = writer.execute("PRAGMA page_size").fetchone()[0]
+        page_count = writer.execute("PRAGMA page_count").fetchone()[0]
+        assert page_count * page_size > limit
+        sizes = [
+            Path(str(database) + suffix).stat().st_size
+            for suffix in ("", "-wal", "-shm")
+        ]
+        assert 100 <= sizes[0] <= limit
+        assert all(0 < size <= limit for size in sizes[1:])
+
+        with pytest.raises(VpnEndpointError) as caught:
+            observation._local_inbound_ids(database)
+        assert caught.value.code == str(caught.value) == "vpn_xui_inventory_unavailable"
+    finally:
+        writer.close()
+
+
 @pytest.mark.parametrize("failure", ["symlink", "wrong_owner"])
 def test_wal_sidecar_metadata_fails_closed(observation, data, monkeypatch, failure):
     writer = sqlite3.connect(data["database"])
