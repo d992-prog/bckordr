@@ -55,23 +55,25 @@ FIXED_ENDPOINT_INSTALLER_COMMAND = (
 )
 ENDPOINT_OPERATION_TIMEOUT = 30.0
 _TIMESTAMP = (1980, 1, 1, 0, 0, 0)
-_MAIN = (
-    b"import sys\n"
-    b"import app.services.vpn_endpoint_types\n"
-    b"import app.services.vpn_xui_identity\n"
-    b"import app.services.vpn_xui_node_http\n"
-    b"import app.services.vpn_xui_node_observation\n"
-    b"import app.services.vpn_xray_runtime\n"
-    b"from app.services.vpn_reality_endpoint_installer import main\n"
-    b"if sys.argv[1:] == ['--import-probe']:\n"
-    b"    sys.stdout.buffer.write("
-    + repr(ENDPOINT_IMPORT_PROBE_SENTINEL).encode("ascii")
-    + b")\n"
-    b"    raise SystemExit(0)\n"
-    b"if sys.argv[1:]:\n"
-    b"    raise SystemExit(2)\n"
-    b"raise SystemExit(main())\n"
-)
+def _main(worker_id: int) -> bytes:
+    return (
+        "import sys\n"
+        "import app.services.vpn_endpoint_types\n"
+        "import app.services.vpn_xui_identity\n"
+        "import app.services.vpn_xui_node_http\n"
+        "import app.services.vpn_xui_node_observation\n"
+        "import app.services.vpn_xray_runtime\n"
+        "import app.services.vpn_reality_endpoint_installer as installer\n"
+        f"installer.CONTROLLED_WORKER_ID = {worker_id}\n"
+        "if sys.argv[1:] == ['--import-probe']:\n"
+        "    sys.stdout.buffer.write("
+        + repr(ENDPOINT_IMPORT_PROBE_SENTINEL)
+        + ")\n"
+        "    raise SystemExit(0)\n"
+        "if sys.argv[1:]:\n"
+        "    raise SystemExit(2)\n"
+        "raise SystemExit(installer.main())\n"
+    ).encode("ascii")
 
 
 def _candidate_admin_source(parent: PurePath, python_executable: PurePath) -> str:
@@ -326,13 +328,20 @@ def _entry(name: str) -> zipfile.ZipInfo:
     return info
 
 
-def build_endpoint_installer_bundle(source_root: Path, target: Path) -> str:
+def build_endpoint_installer_bundle(
+    source_root: Path,
+    target: Path,
+    *,
+    worker_id: int,
+) -> str:
     if (
         not isinstance(source_root, Path)
         or not isinstance(target, Path)
         or not source_root.is_dir()
         or not target.is_absolute()
         or not target.parent.is_dir()
+        or type(worker_id) is not int
+        or not 1 <= worker_id <= 2**63 - 1
     ):
         _fail()
     sources: list[tuple[str, bytes]] = []
@@ -346,7 +355,7 @@ def build_endpoint_installer_bundle(source_root: Path, target: Path) -> str:
     temporary = target.parent / f".{target.name}.{uuid4().hex}.tmp"
     try:
         with zipfile.ZipFile(temporary, "x") as archive:
-            archive.writestr(_entry("__main__.py"), _MAIN)
+            archive.writestr(_entry("__main__.py"), _main(worker_id))
             for member, raw in sources:
                 archive.writestr(_entry(member), raw)
         result = subprocess.run(
