@@ -470,7 +470,8 @@ def test_valid_request_maps_trusted_input_failures_to_one_static_receipt(
     config, token, _checked = install_trusted_inputs(
         monkeypatch, entrypoint, node, tmp_path
     )
-    uid = lambda: 1000 if failure == "non_root" else 0
+    def uid():
+        return 1000 if failure == "non_root" else 0
 
     if failure == "config_file":
         monkeypatch.setattr(
