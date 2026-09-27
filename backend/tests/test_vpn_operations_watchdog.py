@@ -1290,7 +1290,8 @@ def test_main_is_fail_closed_silent_and_runs_one_enabled_cycle(
             (codes, Path(state_path), environ)
         ),
     )
-    disabled_run = lambda _settings: pytest.fail("disabled watchdog ran")
+    def disabled_run(_settings):
+        pytest.fail("disabled watchdog ran")
     assert watchdog.main({}, run=disabled_run) == 0
     assert watchdog.main({"VPN_WATCHDOG_ENABLED": "false"}, run=disabled_run) == 0
     assert watchdog.main({"VPN_WATCHDOG_ENABLED": "maybe"}, run=run) == 1
