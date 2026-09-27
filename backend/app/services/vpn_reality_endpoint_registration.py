@@ -18,7 +18,6 @@ from app.services.vpn_reality_endpoint_installer import (
 
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
-CONTROLLED_WORKER_ID = 15
 VPN_FRIEND_BETA_RELEASE_READY_KEY = "vpn_friend_beta_release_ready_v1"
 VPN_ENDPOINT_ACCEPTANCE_KEY = "vpn_endpoint_external_acceptance_v1"
 MAX_ACCEPTANCE_AGE = timedelta(minutes=30)
@@ -100,8 +99,16 @@ def _endpoint_matches(endpoint: VpnEndpoint, receipt: EndpointInstallReceipt) ->
     return all(getattr(endpoint, key) == value for key, value in _endpoint_values(receipt).items())
 
 
-async def _lock_worker(session: AsyncSession, worker_id: int) -> WorkerNode:
-    if worker_id != CONTROLLED_WORKER_ID:
+async def _lock_worker(
+    session: AsyncSession,
+    worker_id: int,
+    controlled_worker_id: int,
+) -> WorkerNode:
+    if (
+        type(controlled_worker_id) is not int
+        or not 1 <= controlled_worker_id < 2**63
+        or worker_id != controlled_worker_id
+    ):
         _fail("vpn_endpoint_registration_worker_unavailable")
     with session.no_autoflush:
         worker = await session.scalar(
@@ -145,7 +152,11 @@ def _find_endpoint(
         if (
             (endpoint.worker_id == receipt.worker_id and endpoint.inbound_id == receipt.inbound_id)
             or (endpoint.worker_id == receipt.worker_id and endpoint.port == receipt.port)
-            or (endpoint.status == "ready" and endpoint.security == "reality")
+            or (
+                endpoint.worker_id == receipt.worker_id
+                and endpoint.status == "ready"
+                and endpoint.security == "reality"
+            )
         ):
             _fail("vpn_endpoint_registration_conflict")
     return exact[0] if exact else None
@@ -154,6 +165,8 @@ def _find_endpoint(
 async def stage_protected_endpoint(
     session: AsyncSession,
     receipt: EndpointInstallReceipt,
+    *,
+    controlled_worker_id: int,
 ) -> VpnEndpoint:
     """Stage one exact endpoint; caller owns commit or rollback."""
     receipt = _validated_receipt(receipt)
@@ -164,7 +177,7 @@ async def stage_protected_endpoint(
         "acceptance_client_removed",
     }:
         _fail("vpn_endpoint_registration_not_clean")
-    await _lock_worker(session, receipt.worker_id)
+    await _lock_worker(session, receipt.worker_id, controlled_worker_id)
     endpoints = await _lock_endpoints(session)
     endpoint = _find_endpoint(endpoints, receipt)
     if endpoint is not None:
@@ -193,8 +206,14 @@ def _acceptance_json(
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-async def _lock_settings(session: AsyncSession) -> dict[str, AppSetting]:
-    keys = (VPN_ENDPOINT_ACCEPTANCE_KEY, VPN_FRIEND_BETA_RELEASE_READY_KEY)
+def _acceptance_key(receipt: EndpointInstallReceipt) -> str:
+    return f"{VPN_ENDPOINT_ACCEPTANCE_KEY}:{receipt.worker_id}:{receipt.inbound_id}"
+
+
+async def _lock_settings(
+    session: AsyncSession, evidence_key: str
+) -> dict[str, AppSetting]:
+    keys = (evidence_key, VPN_FRIEND_BETA_RELEASE_READY_KEY)
     with session.no_autoflush:
         result = await session.execute(
             select(AppSetting)
@@ -225,6 +244,7 @@ async def promote_protected_endpoint(
     receipt: EndpointInstallReceipt,
     acceptance: ExternalEndpointAcceptance,
     *,
+    controlled_worker_id: int,
     now: datetime | None = None,
 ) -> VpnEndpoint:
     """Atomically promote the endpoint, evidence metadata, and release marker."""
@@ -247,14 +267,15 @@ async def promote_protected_endpoint(
         or acceptance.checked_at > current + MAX_ACCEPTANCE_CLOCK_SKEW
     )
 
-    await _lock_worker(session, receipt.worker_id)
+    await _lock_worker(session, receipt.worker_id, controlled_worker_id)
     endpoint = _find_endpoint(await _lock_endpoints(session), receipt)
     if endpoint is None or endpoint.status not in {"staged", "ready"}:
         _fail("vpn_endpoint_registration_endpoint_unavailable")
-    settings = await _lock_settings(session)
+    evidence_key = _acceptance_key(receipt)
+    settings = await _lock_settings(session, evidence_key)
     metadata = _acceptance_json(receipt, acceptance)
     marker_setting = settings.get(VPN_FRIEND_BETA_RELEASE_READY_KEY)
-    evidence_setting = settings.get(VPN_ENDPOINT_ACCEPTANCE_KEY)
+    evidence_setting = settings.get(evidence_key)
     if marker_setting is not None and marker_setting.value != acceptance.release_id:
         _fail("vpn_endpoint_registration_release_conflict")
     if evidence_setting is not None and evidence_setting.value != metadata:
@@ -277,7 +298,7 @@ async def promote_protected_endpoint(
     _set_exact_setting(
         session,
         settings,
-        key=VPN_ENDPOINT_ACCEPTANCE_KEY,
+        key=evidence_key,
         value=metadata,
     )
     endpoint.status = "ready"
