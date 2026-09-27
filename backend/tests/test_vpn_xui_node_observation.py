@@ -216,9 +216,7 @@ def test_endpoint_listener_probe_receives_selected_row_and_target(
     assert calls == [(data["inbounds"]["obj"][0], data["target"])]
 
 
-def test_default_endpoint_listener_uses_observed_bind(
-    observation, data, monkeypatch
-):
+def test_default_endpoint_listener_uses_observed_bind(observation, data, monkeypatch):
     calls = []
     row = data["inbounds"]["obj"][0]
     row["listen"] = "203.0.113.10"
@@ -440,6 +438,111 @@ def test_rollback_database_snapshot_does_not_change_directory(observation, data)
     assert after == before
 
 
+def test_rollback_vacuum_cannot_expand_backup_beyond_checked_limit(
+    observation, tmp_path, monkeypatch
+):
+    database = tmp_path / "vacuum.sqlite"
+    with closing(sqlite3.connect(database)) as writer:
+        writer.execute("PRAGMA page_size=512")
+        writer.execute("CREATE TABLE inbounds (id)")
+        writer.executemany("INSERT INTO inbounds VALUES (?)", [(2,), (7,)])
+        writer.commit()
+        assert writer.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+        assert writer.execute("PRAGMA page_size").fetchone() == (512,)
+        assert writer.execute("PRAGMA page_count").fetchone()[0] > 0
+
+    limit = 100_000
+    assert 100 <= database.stat().st_size < limit
+    monkeypatch.setattr(observation, "_DATABASE_LIMIT", limit)
+    real_connect = sqlite3.connect
+    vacuum_attempted = False
+    copied_bytes = []
+
+    class Connection(sqlite3.Connection):
+        def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
+            nonlocal vacuum_attempted
+            assert progress is not None
+            vacuum_attempted = True
+            with closing(real_connect(database, timeout=0)) as writer:
+                writer.execute("PRAGMA page_size=65536")
+                try:
+                    writer.execute("VACUUM")
+                except sqlite3.OperationalError as exc:
+                    assert "locked" in str(exc).lower()
+                    assert self.in_transaction
+                else:
+                    assert writer.execute("PRAGMA page_size").fetchone() == (65536,)
+                    assert (
+                        writer.execute("PRAGMA page_count").fetchone()[0] * 65536
+                        > limit
+                    )
+
+            def record_progress(status, remaining, total):
+                actual_page_size = target.execute("PRAGMA page_size").fetchone()[0]
+                copied_bytes.append(total * actual_page_size)
+                progress(status, remaining, total)
+
+            return super().backup(
+                target,
+                pages=pages,
+                progress=record_progress,
+                name=name,
+                sleep=sleep,
+            )
+
+    def connect(*args, **kwargs):
+        return real_connect(*args, factory=Connection, **kwargs)
+
+    monkeypatch.setattr(observation.sqlite3, "connect", connect)
+    try:
+        assert observation._local_inbound_ids(database) == (2, 7)
+    except VpnEndpointError as exc:
+        assert exc.code == str(exc) == "vpn_xui_inventory_unavailable"
+    assert vacuum_attempted
+    assert all(size <= limit for size in copied_bytes), copied_bytes
+
+
+def test_rollback_exclusive_lock_fails_before_sqlite_busy_timeout(observation, data):
+    database = data["database"]
+    locker = sqlite3.connect(database)
+    started = threading.Event()
+    finished = threading.Event()
+    outcomes = []
+
+    def read_locked_database():
+        started.set()
+        try:
+            outcomes.append(observation._local_inbound_ids(database))
+        except Exception as exc:
+            outcomes.append(exc)
+        finally:
+            finished.set()
+
+    worker = threading.Thread(target=read_locked_database)
+    completed_while_locked = False
+    try:
+        assert locker.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+        locker.execute("BEGIN EXCLUSIVE")
+        assert locker.in_transaction
+        with closing(sqlite3.connect(database, timeout=0)) as probe:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                probe.execute("SELECT name FROM sqlite_master").fetchone()
+        worker.start()
+        assert started.wait(1)
+        completed_while_locked = finished.wait(0.5)
+    finally:
+        locker.rollback()
+        locker.close()
+        if worker.ident is not None:
+            worker.join(3)
+
+    assert not worker.is_alive()
+    assert completed_while_locked
+    assert len(outcomes) == 1
+    assert isinstance(outcomes[0], VpnEndpointError)
+    assert outcomes[0].code == str(outcomes[0]) == "vpn_xui_inventory_unavailable"
+
+
 def test_rollback_journal_fails_closed_without_changes(observation, panel, data):
     Path(str(data["database"]) + "-journal").write_bytes(b"pending")
     before = {
@@ -481,7 +584,9 @@ def test_wal_database_backup_deadline_closes_both_connections(
                 closed.append(self)
                 super().close()
 
-            def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
+            def backup(
+                self, target, *, pages=-1, progress=None, name="main", sleep=0.25
+            ):
                 nonlocal backup_returned
                 assert progress is not None
 
@@ -680,9 +785,9 @@ def test_reality_nested_settings_mismatch(observation, panel, data, field, value
 
 
 def test_3x_ui_default_nested_spider_path_is_supported(observation, panel, data):
-    data["inbounds"]["obj"][0]["streamSettings"]["realitySettings"][
-        "settings"
-    ]["spiderX"] = "/"
+    data["inbounds"]["obj"][0]["streamSettings"]["realitySettings"]["settings"][
+        "spiderX"
+    ] = "/"
     assert observe(observation, panel, data).transport == "matched"
 
 
@@ -734,8 +839,14 @@ def test_local_reads_select_only_ids_and_use_read_only_connection(
 ):
     real_connect = sqlite3.connect
     opened, connections, statements, closed, progress, destinations = (
-        [], [], [], [], [], []
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
     )
+    operations = []
 
     class Connection(sqlite3.Connection):
         def close(self):
@@ -746,15 +857,24 @@ def test_local_reads_select_only_ids_and_use_read_only_connection(
             progress.append((self, callback, steps))
             super().set_progress_handler(callback, steps)
 
+        def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
+            operations.append((self, "BACKUP"))
+            return super().backup(
+                target, pages=pages, progress=progress, name=name, sleep=sleep
+            )
+
     def connect(database, **kwargs):
         opened.append((database, kwargs))
         connection = real_connect(database, factory=Connection, **kwargs)
         connections.append(connection)
         if database == ":memory:":
             destinations.append(connection)
-        connection.set_trace_callback(
-            lambda statement: statements.append((database, statement))
-        )
+
+        def trace(statement):
+            statements.append((database, statement))
+            operations.append((connection, statement))
+
+        connection.set_trace_callback(trace)
         return connection
 
     monkeypatch.setattr(observation.sqlite3, "connect", connect)
@@ -769,18 +889,38 @@ def test_local_reads_select_only_ids_and_use_read_only_connection(
         for database, kwargs in opened
         if database == ":memory:"
     )
-    assert sum(
-        isinstance(database, str)
-        and "mode=ro" in database
-        and kwargs.get("uri") is True
-        for database, kwargs in opened
-    ) == 2
+    assert (
+        sum(
+            isinstance(database, str)
+            and "mode=ro" in database
+            and kwargs.get("uri") is True
+            for database, kwargs in opened
+        )
+        == 2
+    )
     assert [
         statement for database, statement in statements if database == ":memory:"
     ].count("PRAGMA query_only=ON") == 2
     assert [
         statement for database, statement in statements if database != ":memory:"
     ].count("PRAGMA query_only=ON") == 2
+    for source in set(connections) - set(destinations):
+        source_operations = [
+            statement for owner, statement in operations if owner is source
+        ]
+        expected = (
+            "PRAGMA busy_timeout=0",
+            "PRAGMA query_only=ON",
+            "BEGIN",
+            "PRAGMA page_size",
+            "PRAGMA page_count",
+            "BACKUP",
+        )
+        assert all(statement in source_operations for statement in expected), (
+            source_operations
+        )
+        positions = [source_operations.index(statement) for statement in expected]
+        assert positions == sorted(positions), source_operations
     assert [
         statement for _, statement in statements if statement.startswith("SELECT")
     ] == ["SELECT id FROM inbounds ORDER BY id LIMIT 10001"] * 2
