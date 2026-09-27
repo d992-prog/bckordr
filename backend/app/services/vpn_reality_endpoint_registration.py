@@ -152,7 +152,6 @@ def _find_endpoint(
         if (
             (endpoint.worker_id == receipt.worker_id and endpoint.inbound_id == receipt.inbound_id)
             or (endpoint.worker_id == receipt.worker_id and endpoint.port == receipt.port)
-            or (endpoint.status == "ready" and endpoint.security == "reality")
         ):
             _fail("vpn_endpoint_registration_conflict")
     return exact[0] if exact else None
@@ -202,8 +201,14 @@ def _acceptance_json(
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-async def _lock_settings(session: AsyncSession) -> dict[str, AppSetting]:
-    keys = (VPN_ENDPOINT_ACCEPTANCE_KEY, VPN_FRIEND_BETA_RELEASE_READY_KEY)
+def _acceptance_key(receipt: EndpointInstallReceipt) -> str:
+    return f"{VPN_ENDPOINT_ACCEPTANCE_KEY}:{receipt.worker_id}:{receipt.inbound_id}"
+
+
+async def _lock_settings(
+    session: AsyncSession, evidence_key: str
+) -> dict[str, AppSetting]:
+    keys = (evidence_key, VPN_FRIEND_BETA_RELEASE_READY_KEY)
     with session.no_autoflush:
         result = await session.execute(
             select(AppSetting)
@@ -261,10 +266,11 @@ async def promote_protected_endpoint(
     endpoint = _find_endpoint(await _lock_endpoints(session), receipt)
     if endpoint is None or endpoint.status not in {"staged", "ready"}:
         _fail("vpn_endpoint_registration_endpoint_unavailable")
-    settings = await _lock_settings(session)
+    evidence_key = _acceptance_key(receipt)
+    settings = await _lock_settings(session, evidence_key)
     metadata = _acceptance_json(receipt, acceptance)
     marker_setting = settings.get(VPN_FRIEND_BETA_RELEASE_READY_KEY)
-    evidence_setting = settings.get(VPN_ENDPOINT_ACCEPTANCE_KEY)
+    evidence_setting = settings.get(evidence_key)
     if marker_setting is not None and marker_setting.value != acceptance.release_id:
         _fail("vpn_endpoint_registration_release_conflict")
     if evidence_setting is not None and evidence_setting.value != metadata:
@@ -287,7 +293,7 @@ async def promote_protected_endpoint(
     _set_exact_setting(
         session,
         settings,
-        key=VPN_ENDPOINT_ACCEPTANCE_KEY,
+        key=evidence_key,
         value=metadata,
     )
     endpoint.status = "ready"
