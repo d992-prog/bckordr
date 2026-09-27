@@ -18,6 +18,7 @@ from app.services.vpn_reality_endpoint_installer import make_endpoint_receipt
 NOW = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
 PUBLIC_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 RELEASE_ID = "b" * 64
+INVALID_WORKER_BINDINGS = ((1, True), (15, 0), (15, -1), (15, 2**63))
 
 
 @pytest_asyncio.fixture
@@ -221,13 +222,17 @@ async def test_stage_rejects_worker_binding_mismatch_without_writes(database) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("controlled_worker_id", [True, 0, -1, 2**63])
+@pytest.mark.parametrize(
+    ("worker_id", "controlled_worker_id"),
+    INVALID_WORKER_BINDINGS,
+)
 async def test_stage_rejects_invalid_worker_binding_without_writes(
     database,
+    worker_id: int,
     controlled_worker_id: object,
 ) -> None:
     module = importlib.import_module("app.services.vpn_reality_endpoint_registration")
-    await _seed_worker(database)
+    await _seed_worker(database, worker_id=worker_id)
 
     async with database() as db:
         with pytest.raises(
@@ -236,7 +241,7 @@ async def test_stage_rejects_invalid_worker_binding_without_writes(
         ):
             await module.stage_protected_endpoint(
                 db,
-                _receipt(),
+                _receipt(worker_id=worker_id),
                 controlled_worker_id=controlled_worker_id,
             )
         await db.commit()
@@ -252,16 +257,24 @@ async def test_stage_rejects_invalid_worker_binding_without_writes(
 
 
 @pytest.mark.asyncio
-async def test_promotion_rejects_worker_binding_mismatch_without_marker(database) -> None:
+@pytest.mark.parametrize(
+    ("worker_id", "controlled_worker_id"),
+    ((2, 15), *INVALID_WORKER_BINDINGS),
+)
+async def test_promotion_rejects_worker_binding_without_marker(
+    database,
+    worker_id: int,
+    controlled_worker_id: object,
+) -> None:
     module = importlib.import_module("app.services.vpn_reality_endpoint_registration")
-    await _seed_worker(database, worker_id=2)
-    cleaned = _receipt("observed", worker_id=2)
+    await _seed_worker(database, worker_id=worker_id)
+    cleaned = _receipt("observed", worker_id=worker_id)
 
     async with database() as db:
         await module.stage_protected_endpoint(
             db,
-            _receipt(worker_id=2),
-            controlled_worker_id=2,
+            _receipt(worker_id=worker_id),
+            controlled_worker_id=worker_id,
         )
         await db.commit()
 
@@ -274,7 +287,7 @@ async def test_promotion_rejects_worker_binding_mismatch_without_marker(database
                 db,
                 cleaned,
                 _acceptance(module, receipt_digest=cleaned.receipt_digest),
-                controlled_worker_id=15,
+                controlled_worker_id=controlled_worker_id,
                 now=NOW,
             )
         await db.commit()
