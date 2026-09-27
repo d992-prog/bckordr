@@ -58,6 +58,10 @@ def _acceptance(module, **overrides):
     return module.ExternalEndpointAcceptance(**values)
 
 
+def _evidence_key(module, *, worker_id=15, inbound_id=27):
+    return f"{module.VPN_ENDPOINT_ACCEPTANCE_KEY}:{worker_id}:{inbound_id}"
+
+
 async def _seed_worker(
     factory,
     *,
@@ -195,6 +199,89 @@ async def test_worker_2_can_stage_and_promote_with_explicit_binding(database) ->
 
 
 @pytest.mark.asyncio
+async def test_existing_ready_endpoint_does_not_block_second_worker_same_release(database) -> None:
+    module = importlib.import_module("app.services.vpn_reality_endpoint_registration")
+    await _seed_worker(database)
+    previous_verified_at = NOW - timedelta(days=1)
+    legacy_evidence = "legacy-unscoped-sentinel"
+    async with database() as db:
+        db.add(
+            WorkerNode(
+                id=2,
+                name="controlled-node-2",
+                status="ready",
+                is_enabled=True,
+                vpn_enabled=True,
+                vpn_role="vpn_node",
+                vpn_runtime_status="ready",
+            )
+        )
+        db.add(
+            VpnEndpoint(
+                worker_id=15,
+                inbound_id=27,
+                public_host="existing.example.test",
+                port=443,
+                protocol="vless",
+                transport="raw",
+                security="reality",
+                server_name="existing-front.example.test",
+                public_key=PUBLIC_KEY,
+                short_id="fedcba9876543210",
+                fingerprint="chrome",
+                flow="xtls-rprx-vision",
+                status="ready",
+                verified_at=previous_verified_at,
+            )
+        )
+        db.add(
+            AppSetting(
+                key=module.VPN_FRIEND_BETA_RELEASE_READY_KEY,
+                value=RELEASE_ID,
+            )
+        )
+        db.add(AppSetting(key=module.VPN_ENDPOINT_ACCEPTANCE_KEY, value=legacy_evidence))
+        await db.commit()
+
+    staged = _receipt(worker_id=2)
+    cleaned = _receipt("acceptance_client_removed", worker_id=2)
+    async with database() as db:
+        await module.stage_protected_endpoint(db, staged, controlled_worker_id=2)
+        await module.promote_protected_endpoint(
+            db,
+            cleaned,
+            _acceptance(module, receipt_digest=cleaned.receipt_digest),
+            controlled_worker_id=2,
+            now=NOW,
+        )
+        await db.commit()
+
+    async with database() as db:
+        worker_15 = await db.scalar(
+            module.select(VpnEndpoint).where(
+                VpnEndpoint.worker_id == 15,
+                VpnEndpoint.inbound_id == 27,
+            )
+        )
+        worker_2 = await db.scalar(
+            module.select(VpnEndpoint).where(
+                VpnEndpoint.worker_id == 2,
+                VpnEndpoint.inbound_id == 27,
+            )
+        )
+        settings = {
+            setting.key: setting.value
+            for setting in (await db.scalars(module.select(AppSetting))).all()
+        }
+
+    assert (worker_15.status, worker_15.verified_at) == ("ready", previous_verified_at)
+    assert (worker_2.status, worker_2.verified_at) == ("ready", NOW)
+    assert settings[module.VPN_FRIEND_BETA_RELEASE_READY_KEY] == RELEASE_ID
+    assert settings[module.VPN_ENDPOINT_ACCEPTANCE_KEY] == legacy_evidence
+    assert '"worker_id":2' in settings[_evidence_key(module, worker_id=2)]
+
+
+@pytest.mark.asyncio
 async def test_stage_rejects_worker_binding_mismatch_without_writes(database) -> None:
     module = importlib.import_module("app.services.vpn_reality_endpoint_registration")
     await _seed_worker(database, worker_id=2)
@@ -318,7 +405,15 @@ async def test_stage_accepts_enabled_legacy_dual_role_worker(database) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stage_rejects_archived_worker_and_port_or_identity_conflicts(database) -> None:
+@pytest.mark.parametrize(
+    ("conflicting_inbound_id", "conflicting_port"),
+    ((99, 443), (27, 444)),
+)
+async def test_stage_rejects_archived_worker_and_same_worker_conflicts(
+    database,
+    conflicting_inbound_id: int,
+    conflicting_port: int,
+) -> None:
     module = importlib.import_module("app.services.vpn_reality_endpoint_registration")
     await _seed_worker(database, archived_at=NOW)
     async with database() as db:
@@ -331,7 +426,7 @@ async def test_stage_rejects_archived_worker_and_port_or_identity_conflicts(data
     async with database() as db:
         worker = await db.get(WorkerNode, 15)
         worker.archived_at = None
-        db.add(VpnEndpoint(worker_id=15, inbound_id=99, public_host="other.example.test", port=443, protocol="vless", transport="raw", security="reality", server_name="other-front.example.test", public_key=PUBLIC_KEY, short_id="aabb", fingerprint="chrome", flow="xtls-rprx-vision", status="staged"))
+        db.add(VpnEndpoint(worker_id=15, inbound_id=conflicting_inbound_id, public_host="other.example.test", port=conflicting_port, protocol="vless", transport="raw", security="reality", server_name="other-front.example.test", public_key=PUBLIC_KEY, short_id="aabb", fingerprint="chrome", flow="xtls-rprx-vision", status="staged"))
         await db.commit()
     async with database() as db:
         with pytest.raises(module.EndpointRegistrationError, match="^vpn_endpoint_registration_conflict$"):
@@ -367,7 +462,9 @@ async def test_promotion_atomically_sets_ready_acceptance_metadata_and_exact_mar
     async with database() as db:
         endpoint = await db.get(VpnEndpoint, endpoint_id)
         marker = await db.scalar(module.select(AppSetting).where(AppSetting.key == module.VPN_FRIEND_BETA_RELEASE_READY_KEY))
-        evidence = await db.scalar(module.select(AppSetting).where(AppSetting.key == module.VPN_ENDPOINT_ACCEPTANCE_KEY))
+        evidence = await db.scalar(
+            module.select(AppSetting).where(AppSetting.key == _evidence_key(module))
+        )
     assert endpoint.status == "ready"
     assert marker.value == RELEASE_ID
     assert '"receipt_digest":"' + cleaned.receipt_digest + '"' in evidence.value
@@ -428,7 +525,9 @@ async def test_marker_conflict_rolls_back_ready_and_acceptance_metadata(database
 
     async with database() as db:
         endpoint = await db.scalar(module.select(VpnEndpoint).where(VpnEndpoint.inbound_id == 27))
-        evidence = await db.scalar(module.select(AppSetting).where(AppSetting.key == module.VPN_ENDPOINT_ACCEPTANCE_KEY))
+        evidence = await db.scalar(
+            module.select(AppSetting).where(AppSetting.key == _evidence_key(module))
+        )
     assert endpoint.status == "staged"
     assert endpoint.verified_at is None
     assert evidence is None
@@ -482,7 +581,7 @@ async def test_expected_acceptance_conflict_leaves_no_pending_marker_if_caller_c
         await module.stage_protected_endpoint(
             db, _receipt(), controlled_worker_id=15
         )
-        db.add(AppSetting(key=module.VPN_ENDPOINT_ACCEPTANCE_KEY, value="different"))
+        db.add(AppSetting(key=_evidence_key(module), value="different"))
         await db.commit()
 
     async with database() as db:
