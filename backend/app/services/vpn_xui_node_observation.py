@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import hashlib
 import os
 import re
 import sqlite3
@@ -131,31 +130,15 @@ def _positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-def _file_identity(info: os.stat_result) -> tuple[object, ...]:
-    return (
-        info.st_dev,
-        info.st_ino,
-        info.st_size,
-        info.st_mtime_ns,
-        info.st_ctime_ns,
-        info.st_mode,
-        info.st_uid,
-    )
-
-
 def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
     return (
         left.st_dev,
         left.st_ino,
-        left.st_size,
-        left.st_mtime_ns,
         left.st_mode,
         left.st_uid,
     ) == (
         right.st_dev,
         right.st_ino,
-        right.st_size,
-        right.st_mtime_ns,
         right.st_mode,
         right.st_uid,
     )
@@ -165,27 +148,42 @@ def _reparse(info: os.stat_result) -> bool:
     return bool(getattr(info, "st_file_attributes", 0) & 1024)
 
 
-def _sidecars_absent(path: Path) -> None:
-    for suffix in ("-wal", "-shm", "-journal"):
+def _wal_sidecars_are_safe(path: Path, database: os.stat_result) -> None:
+    found = []
+    for suffix in ("-wal", "-shm"):
         try:
-            os.lstat(str(path) + suffix)
+            found.append(os.lstat(str(path) + suffix))
         except FileNotFoundError:
-            continue
+            pass
+    try:
+        os.lstat(str(path) + "-journal")
+    except FileNotFoundError:
+        pass
+    else:
+        raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+    if len(found) not in (0, 2) or any(
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or _reparse(info)
+        or info.st_uid != database.st_uid
+        or stat.S_IMODE(info.st_mode) != stat.S_IMODE(database.st_mode)
+        or not 0 <= info.st_size <= _DATABASE_LIMIT
+        for info in found
+    ):
         raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
 
 
-def _database_snapshot(path: Path, deadline: float) -> bytes:
-    # Live WAL is intentionally unsupported: only a stable rollback-mode main
-    # file can be copied without touching the panel database directory.
+def _database_snapshot(path: Path, deadline: float) -> sqlite3.Connection:
     if not isinstance(path, Path) or not path.is_absolute() or ".." in path.parts:
         raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-    descriptor = None
+    source = None
+    snapshot = None
     try:
         for parent in path.parents:
             info = os.lstat(parent)
             if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or _reparse(info):
                 raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-        directory_before = _file_identity(os.lstat(path.parent))
+        directory_before = os.lstat(path.parent)
         before = os.lstat(path)
         if (
             not stat.S_ISREG(before.st_mode)
@@ -194,80 +192,58 @@ def _database_snapshot(path: Path, deadline: float) -> bytes:
             or not 100 <= before.st_size <= _DATABASE_LIMIT
         ):
             raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-        _sidecars_absent(path)
+        _wal_sidecars_are_safe(path, before)
         if time.monotonic() >= deadline:
             raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-        descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
-        if not _same_file(opened, before):
-            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-        result = bytearray()
-        while True:
+
+        source = sqlite3.connect(
+            f"{path.as_uri()}?mode=ro", uri=True, timeout=_DATABASE_TIMEOUT_SECONDS
+        )
+        source.execute("PRAGMA query_only=ON")
+        snapshot = sqlite3.connect(":memory:", timeout=_DATABASE_TIMEOUT_SECONDS)
+
+        def progress(_status: int, _remaining: int, _total: int) -> None:
             if time.monotonic() >= deadline:
                 raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-            chunk = os.read(descriptor, min(65536, _DATABASE_LIMIT + 1 - len(result)))
-            if not chunk:
-                break
-            result.extend(chunk)
-            if len(result) > _DATABASE_LIMIT:
-                raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-        digest = hashlib.sha256(result).digest()
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        confirmed = hashlib.sha256()
-        confirmed_size = 0
-        while confirmed_size <= _DATABASE_LIMIT:
-            if time.monotonic() >= deadline:
-                raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-            chunk = os.read(
-                descriptor,
-                min(65536, _DATABASE_LIMIT + 1 - confirmed_size),
-            )
-            if not chunk:
-                break
-            confirmed.update(chunk)
-            confirmed_size += len(chunk)
-        if confirmed_size != len(result) or confirmed.digest() != digest:
-            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-        after = os.fstat(descriptor)
-        linked = os.lstat(path)
-        _sidecars_absent(path)
-        directory_after = _file_identity(os.lstat(path.parent))
-        if not (
-            len(result) == opened.st_size
-            and _file_identity(after) == _file_identity(opened)
-            and _file_identity(linked) == _file_identity(before)
-            and _same_file(linked, opened)
-            and directory_after == directory_before
-        ):
-            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-        snapshot = bytes(result)
+
+        source.backup(snapshot, pages=64, progress=progress, sleep=0.01)
+        after = os.lstat(path)
+        directory_after = os.lstat(path.parent)
+        _wal_sidecars_are_safe(path, after)
         if (
-            snapshot[:16] != b"SQLite format 3\x00"
-            or snapshot[18] != 1
-            or snapshot[19] != 1
+            time.monotonic() >= deadline
+            or not _same_file(before, after)
+            or not _same_file(directory_before, directory_after)
         ):
             raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-        return snapshot
+        opened = source
+        source = None
+        opened.close()
+        result = snapshot
+        snapshot = None
+        return result
     except VpnEndpointError:
         raise
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError, sqlite3.Error):
         raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
     finally:
-        if descriptor is not None:
+        if source is not None:
             try:
-                os.close(descriptor)
-            except OSError:
-                raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+                source.close()
+            except sqlite3.Error:
+                pass
+        if snapshot is not None:
+            try:
+                snapshot.close()
+            except sqlite3.Error:
+                pass
 
 
 def _local_inbound_ids(path: Path) -> tuple[int, ...]:
     connection = None
     try:
         deadline = time.monotonic() + _DATABASE_TIMEOUT_SECONDS
-        snapshot = _database_snapshot(path, deadline)
-        connection = sqlite3.connect(":memory:", timeout=_DATABASE_TIMEOUT_SECONDS)
-        connection.deserialize(snapshot)
+        connection = _database_snapshot(path, deadline)
         connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
         connection.execute("PRAGMA query_only=ON")
         values = tuple(
