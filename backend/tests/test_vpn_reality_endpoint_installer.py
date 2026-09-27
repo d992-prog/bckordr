@@ -166,7 +166,7 @@ def test_request_encoding_rejects_mismatched_worker_binding() -> None:
 
 @pytest.mark.parametrize(
     ("worker_id", "controlled_worker_id"),
-    [(1, True), (15, 0), (15, -1), (15, 2**63)],
+    [(1, True), (15, None), (15, 0), (15, -1), (15, 2**63)],
 )
 def test_request_encoding_rejects_invalid_worker_binding(
     worker_id: int,
