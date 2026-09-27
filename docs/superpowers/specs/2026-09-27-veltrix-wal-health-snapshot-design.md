@@ -33,8 +33,11 @@ and is intentionally not added.
   SQLite opens the source if the pair is absent. Accept only regular,
   non-symlink sidecars with the main database's UID and permission mode, within
   the size limit. Reject any rollback journal and every malformed sidecar state.
-- Open the source with `mode=ro`, `uri=True`, a two-second busy timeout and
-  `PRAGMA query_only=ON`.
+- Open the source with `mode=ro` and `uri=True`, then apply
+  `PRAGMA busy_timeout=0`, `PRAGMA query_only=ON` and an explicit `BEGIN`.
+  `PRAGMA page_count` pins the read snapshot before `PRAGMA page_size` and the
+  backup. Rollback-mode locks therefore fail immediately, so successive SQLite
+  waits cannot exceed the shared two-second monotonic deadline.
 - Use `Connection.backup()` to a private in-memory connection. Abort when the
   existing monotonic deadline expires.
 - Query only inbound IDs from the completed in-memory snapshot. Keep the current

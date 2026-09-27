@@ -144,11 +144,14 @@ VPN_WATCHDOG_ENABLED=false
   inventory snapshot. It validates main-database and WAL/SHM metadata and header
   consistency before and after the backup. A stable closed WAL without its safe
   sidecar pair fails before SQLite opens; rollback with no sidecars and live WAL
-  with a safe pair are supported. Logical snapshot size is bounded, and unsafe
-  sidecars or deadlines fail with a static, closed result. An explicitly accepted
-  narrow last-writer race can let SQLite recreate safe coordination sidecars;
-  the runner does not mutate rows, configuration or journal mode. Strict zero
-  filesystem writes would require a custom VFS or filesystem boundary.
+  with a safe pair are supported. Source locks use zero SQLite busy timeout
+  within the shared two-second deadline; a transient rollback exclusive lock
+  fails closed until the next probe. Logical snapshot size is bounded, and
+  unsafe sidecars or deadlines fail with a static, closed result. An explicitly
+  accepted narrow last-writer race can let SQLite recreate safe coordination
+  sidecars; the runner does not mutate rows, configuration or journal mode.
+  Strict zero filesystem writes would require a custom VFS or filesystem
+  boundary.
 - Production `VPN_FLEET_HEALTH_ENABLED=false` remains in force until live rollout
   acceptance. Its interval defaults to 120 seconds and is constrained to
   30..3600. The legacy `vpn_check` path remains excluded from automation and
