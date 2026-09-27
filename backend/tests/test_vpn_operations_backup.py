@@ -1259,6 +1259,7 @@ def _mock_approved_symlink_source(
 ) -> tuple[os.stat_result, os.stat_result, os.stat_result]:
     target_info = target.lstat()
     parent_info = target.parent.lstat()
+    real_lstat = Path.lstat
     link_info = SimpleNamespace(
         st_mode=stat.S_IFLNK | 0o777,
         st_dev=1,
@@ -1278,6 +1279,17 @@ def _mock_approved_symlink_source(
         backup_module.os,
         "stat",
         lambda *_, dir_fd=None, **__: link_info if dir_fd == 41 else target_info,
+    )
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda path: (
+            target_info
+            if path == target
+            else parent_info
+            if path == target.parent
+            else real_lstat(path)
+        ),
     )
     monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0x10000000, raising=False)
     monkeypatch.setattr(backup_module.os, "O_NONBLOCK", 0x20000000, raising=False)
