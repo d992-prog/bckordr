@@ -1071,6 +1071,106 @@ def test_approved_nginx_symlinks_are_materialized_as_regular_files(
         }
 
 
+@pytest.mark.parametrize("target_kind", ["broken", "directory", "link-to-link"])
+@POSIX_SNAPSHOT_ONLY
+def test_approved_nginx_symlink_rejects_unsupported_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_kind: str
+) -> None:
+    config = _config(tmp_path)
+    modules_enabled = config.nginx_directory / "modules-enabled"
+    module_root = tmp_path / "modules-available"
+    modules_enabled.mkdir()
+    module_root.mkdir()
+    target = module_root / "module.conf"
+    if target_kind == "directory":
+        target.mkdir()
+    elif target_kind == "link-to-link":
+        (module_root / "real.conf").write_text("load_module test;\n", encoding="utf-8")
+        target.symlink_to("real.conf")
+    (modules_enabled / "module.conf").symlink_to(target)
+    monkeypatch.setattr(backup_module, "_NGINX_MODULES_DIRECTORY", module_root)
+
+    with pytest.raises(BackupError, match="^backup_source_invalid$"):
+        _run(config, FakeRunner())
+
+    partial = config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial"
+    assert not (partial / "nginx/modules-enabled/module.conf").exists()
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
+@POSIX_SNAPSHOT_ONLY
+def test_relative_nginx_symlink_cannot_escape_approved_roots(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    sites_enabled = config.nginx_directory / "sites-enabled"
+    sites_enabled.mkdir()
+    secret = tmp_path / "outside-secret"
+    secret_bytes = b"secret outside approved nginx roots\n"
+    secret.write_bytes(secret_bytes)
+    link = sites_enabled / "outside.conf"
+    link.symlink_to("../../../outside-secret")
+    assert link.resolve(strict=True) == secret
+
+    with pytest.raises(BackupError, match="^backup_source_invalid$"):
+        _run(config, FakeRunner())
+
+    partial = config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial"
+    assert not (partial / "nginx/sites-enabled/outside.conf").exists()
+    assert all(
+        secret_bytes not in path.read_bytes()
+        for path in partial.rglob("*")
+        if path.is_file()
+    )
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
+@POSIX_SNAPSHOT_ONLY
+def test_frontend_symlink_remains_invalid(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    (config.frontend_dist / "real.js").write_text("real asset\n", encoding="utf-8")
+    (config.frontend_dist / "linked.js").symlink_to("real.js")
+
+    with pytest.raises(BackupError, match="^backup_source_invalid$"):
+        _run(config, FakeRunner())
+
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
+@POSIX_SNAPSHOT_ONLY
+def test_nginx_symlink_retarget_during_copy_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    sites_available = config.nginx_directory / "sites-available"
+    sites_enabled = config.nginx_directory / "sites-enabled"
+    sites_available.mkdir()
+    sites_enabled.mkdir()
+    (sites_available / "original.conf").write_text("server original;\n", encoding="utf-8")
+    (sites_available / "replacement.conf").write_text(
+        "server replacement;\n", encoding="utf-8"
+    )
+    link = sites_enabled / "veltrix.conf"
+    link.symlink_to("../sites-available/original.conf")
+    real_copy = backup_module._copy_descriptor
+    retargeted = False
+
+    def copy_then_retarget(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal retargeted
+        record = real_copy(*args, **kwargs)
+        if record["path"] == "nginx/sites-enabled/veltrix.conf" and not retargeted:
+            retargeted = True
+            link.unlink()
+            link.symlink_to("../sites-available/replacement.conf")
+        return record
+
+    monkeypatch.setattr(backup_module, "_copy_descriptor", copy_then_retarget)
+
+    with pytest.raises(BackupError, match="^backup_source_changed$"):
+        _run(config, FakeRunner())
+
+    assert retargeted
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
 def _mock_approved_symlink_source(
     monkeypatch: pytest.MonkeyPatch, target: Path
 ) -> os.stat_result:
