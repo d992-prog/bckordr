@@ -102,7 +102,7 @@ def test_request_encoding_is_canonical_and_round_trips_exactly() -> None:
     module = _module()
     request = module.parse_install_request(_request(action="inspect"))
 
-    encoded = module.encode_install_request(request)
+    encoded = module.encode_install_request(request, controlled_worker_id=15)
 
     assert encoded == (
         b'{"version":1,"action":"inspect","worker_id":15,'
@@ -110,6 +110,47 @@ def test_request_encoding_is_canonical_and_round_trips_exactly() -> None:
         b'"short_id":"0123456789abcdef"}\n'
     )
     assert module.parse_install_request(module._json_object(encoded)) == request
+
+
+def _worker_2_request(module):
+    return module.EndpointInstallRequest(
+        action="inspect",
+        worker_id=2,
+        public_host="vpn.example.test",
+        server_name="front.example.test",
+        short_id="0123456789abcdef",
+    )
+
+
+def test_request_encoding_requires_explicit_worker_binding() -> None:
+    module = _module()
+
+    with pytest.raises(TypeError):
+        module.encode_install_request(module.parse_install_request(_request(action="inspect")))
+
+
+def test_request_encoding_accepts_matching_worker_2_binding() -> None:
+    module = _module()
+
+    encoded = module.encode_install_request(
+        _worker_2_request(module),
+        controlled_worker_id=2,
+    )
+
+    assert b'"worker_id":2' in encoded
+
+
+def test_request_encoding_rejects_mismatched_worker_binding() -> None:
+    module = _module()
+
+    with pytest.raises(
+        module.EndpointInstallError,
+        match="^vpn_endpoint_install_request_invalid$",
+    ):
+        module.encode_install_request(
+            _worker_2_request(module),
+            controlled_worker_id=15,
+        )
 
 
 @pytest.mark.parametrize("action", ["add_acceptance_client", "remove_acceptance_client"])

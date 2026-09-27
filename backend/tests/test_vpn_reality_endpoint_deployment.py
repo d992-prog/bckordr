@@ -16,6 +16,7 @@ import pytest
 
 from app.services.vpn_node_transport import VpnNodeTransportSnapshot
 from app.services.vpn_reality_endpoint_installer import (
+    EndpointInstallRequest,
     encode_install_receipt,
     encode_install_request,
     make_endpoint_receipt,
@@ -41,10 +42,20 @@ def _request(action="inspect", **overrides):
     return parse_install_request(value)
 
 
-def _receipt(state="observed"):
+def _worker_2_request(action="inspect"):
+    return EndpointInstallRequest(
+        action=action,
+        worker_id=2,
+        public_host="vpn.example.test",
+        server_name="front.example.test",
+        short_id="0123456789abcdef",
+    )
+
+
+def _receipt(state="observed", *, worker_id=15):
     return make_endpoint_receipt(
         state=state,
-        worker_id=15,
+        worker_id=worker_id,
         inbound_id=27,
         public_host="vpn.example.test",
         server_name="front.example.test",
@@ -261,15 +272,20 @@ class PasswordServer(asyncssh.SSHServer):
 
 
 @pytest.mark.asyncio
-async def test_strict_runner_uses_pin_fixed_command_and_exact_stdin_stdout() -> None:
+@pytest.mark.parametrize("worker_id", [15, 2])
+async def test_strict_runner_uses_explicit_worker_pin_fixed_command_and_exact_io(
+    worker_id: int,
+) -> None:
+    installer = importlib.import_module("app.services.vpn_reality_endpoint_installer")
     module = importlib.import_module("app.services.vpn_reality_endpoint_deployment")
+    assert installer.CONTROLLED_WORKER_ID == 15
     host_key = asyncssh.generate_private_key("ssh-ed25519")
     invocations = []
 
     async def process_factory(process):
         raw = await process.stdin.read()
         invocations.append((process.command, process.term_type, raw))
-        process.stdout.write(encode_install_receipt(_receipt()))
+        process.stdout.write(encode_install_receipt(_receipt(worker_id=worker_id)))
         process.exit(0)
 
     server = await asyncssh.listen(
@@ -289,17 +305,49 @@ async def test_strict_runner_uses_pin_fixed_command_and_exact_stdin_stdout() -> 
             known_hosts=f"[127.0.0.1]:{port} ".encode() + host_key.export_public_key("openssh"),
             password=PASSWORD,
         )
-        request = _request()
+        request = _request() if worker_id == 15 else _worker_2_request()
 
-        receipt = await module.execute_endpoint_installer_over_ssh(snapshot, request)
+        receipt = await module.execute_endpoint_installer_over_ssh(
+            snapshot,
+            request,
+            controlled_worker_id=worker_id,
+        )
     finally:
         server.close()
         await server.wait_closed()
 
-    assert receipt == _receipt()
+    assert receipt == _receipt(worker_id=worker_id)
     assert invocations == [
-        (module.FIXED_ENDPOINT_INSTALLER_COMMAND, None, encode_install_request(request))
+        (
+            module.FIXED_ENDPOINT_INSTALLER_COMMAND,
+            None,
+            encode_install_request(request, controlled_worker_id=worker_id),
+        )
     ]
+
+
+@pytest.mark.asyncio
+async def test_strict_runner_rejects_worker_mismatch_before_connector() -> None:
+    module = importlib.import_module("app.services.vpn_reality_endpoint_deployment")
+    connected = False
+
+    async def connector(*_args, **_kwargs):
+        nonlocal connected
+        connected = True
+        pytest.fail("worker mismatch attempted a connection")
+
+    with pytest.raises(
+        module.EndpointInstallerDeploymentError,
+        match="^vpn_endpoint_installer_transport_failed$",
+    ):
+        await module.execute_endpoint_installer_over_ssh(
+            None,
+            _worker_2_request(),
+            controlled_worker_id=15,
+            connector=connector,
+        )
+
+    assert connected is False
 
 
 @pytest.mark.asyncio
@@ -351,6 +399,7 @@ async def test_candidate_install_and_post_acceptance_cleanup_use_only_fixed_comm
             snapshot,
             digest,
             inspect_request=_request("inspect"),
+            controlled_worker_id=15,
         )
     finally:
         server.close()
@@ -421,7 +470,11 @@ async def test_mutating_runner_failure_after_stdin_is_classified_uncertain_witho
             password=PASSWORD,
         )
         with pytest.raises(module.EndpointInstallerDeploymentError) as caught:
-            await module.execute_endpoint_installer_over_ssh(snapshot, _request("ensure"))
+            await module.execute_endpoint_installer_over_ssh(
+                snapshot,
+                _request("ensure"),
+                controlled_worker_id=15,
+            )
     finally:
         server.close()
         await server.wait_closed()
@@ -460,7 +513,11 @@ async def test_runner_timeout_is_bounded(monkeypatch) -> None:
         )
         monkeypatch.setattr(module, "ENDPOINT_OPERATION_TIMEOUT", 0.01)
         with pytest.raises(module.EndpointInstallerDeploymentError) as caught:
-            await module.execute_endpoint_installer_over_ssh(snapshot, _request("ensure"))
+            await module.execute_endpoint_installer_over_ssh(
+                snapshot,
+                _request("ensure"),
+                controlled_worker_id=15,
+            )
         assert caught.value.mutation_uncertain is True
     finally:
         server.close()
