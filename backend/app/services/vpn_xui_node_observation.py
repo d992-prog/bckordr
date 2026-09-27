@@ -192,8 +192,8 @@ def _database_uses_wal(path: Path, expected: os.stat_result) -> bool:
 
 
 def _bounded_page_size(connection: sqlite3.Connection) -> int:
-    page_size = connection.execute("PRAGMA page_size").fetchone()
     page_count = connection.execute("PRAGMA page_count").fetchone()
+    page_size = connection.execute("PRAGMA page_size").fetchone()
     if (
         not isinstance(page_size, tuple)
         or len(page_size) != 1
