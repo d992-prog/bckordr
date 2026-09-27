@@ -19,6 +19,32 @@ NOW = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
 PUBLIC_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 RELEASE_ID = "b" * 64
 INVALID_WORKER_BINDINGS = ((1, True), (15, None), (15, 0), (15, -1), (15, 2**63))
+ENDPOINT_SNAPSHOT_FIELDS = (
+    "id",
+    "worker_id",
+    "inbound_id",
+    "public_host",
+    "port",
+    "protocol",
+    "transport",
+    "security",
+    "server_name",
+    "public_key",
+    "short_id",
+    "fingerprint",
+    "flow",
+    "status",
+    "verified_at",
+    "health_checked_at",
+    "external_verified_at",
+    "external_config_fingerprint",
+    "last_error_code",
+    "max_active_profiles",
+    "capacity_warning_percent",
+    "created_at",
+    "updated_at",
+)
+SETTING_SNAPSHOT_FIELDS = ("id", "key", "value", "updated_at")
 
 
 @pytest_asyncio.fixture
@@ -60,6 +86,34 @@ def _acceptance(module, **overrides):
 
 def _evidence_key(module, *, worker_id=15, inbound_id=27):
     return f"{module.VPN_ENDPOINT_ACCEPTANCE_KEY}:{worker_id}:{inbound_id}"
+
+
+def _snapshot(rows, fields):
+    return tuple(tuple(getattr(row, field) for field in fields) for row in rows)
+
+
+async def _existing_topology_snapshot(db, module):
+    endpoints = await db.scalars(
+        module.select(VpnEndpoint)
+        .where(VpnEndpoint.worker_id == 15)
+        .order_by(VpnEndpoint.id)
+    )
+    settings = await db.scalars(
+        module.select(AppSetting)
+        .where(
+            AppSetting.key.in_(
+                (
+                    module.VPN_ENDPOINT_ACCEPTANCE_KEY,
+                    module.VPN_FRIEND_BETA_RELEASE_READY_KEY,
+                )
+            )
+        )
+        .order_by(AppSetting.key)
+    )
+    return (
+        _snapshot(endpoints.all(), ENDPOINT_SNAPSHOT_FIELDS),
+        _snapshot(settings.all(), SETTING_SNAPSHOT_FIELDS),
+    )
 
 
 async def _seed_worker(
@@ -242,6 +296,11 @@ async def test_existing_ready_endpoint_does_not_block_second_worker_same_release
         )
         db.add(AppSetting(key=module.VPN_ENDPOINT_ACCEPTANCE_KEY, value=legacy_evidence))
         await db.commit()
+        before_endpoints, before_settings = await _existing_topology_snapshot(
+            db, module
+        )
+    assert len(before_endpoints) == 2
+    assert len(before_settings) == 2
 
     staged = _receipt(worker_id=2)
     cleaned = _receipt("acceptance_client_removed", worker_id=2)
@@ -257,11 +316,8 @@ async def test_existing_ready_endpoint_does_not_block_second_worker_same_release
         await db.commit()
 
     async with database() as db:
-        worker_15 = await db.scalar(
-            module.select(VpnEndpoint).where(
-                VpnEndpoint.worker_id == 15,
-                VpnEndpoint.inbound_id == 27,
-            )
+        after_endpoints, after_settings = await _existing_topology_snapshot(
+            db, module
         )
         worker_2 = await db.scalar(
             module.select(VpnEndpoint).where(
@@ -274,7 +330,8 @@ async def test_existing_ready_endpoint_does_not_block_second_worker_same_release
             for setting in (await db.scalars(module.select(AppSetting))).all()
         }
 
-    assert (worker_15.status, worker_15.verified_at) == ("ready", previous_verified_at)
+    assert after_endpoints == before_endpoints
+    assert after_settings == before_settings
     assert (worker_2.status, worker_2.verified_at) == ("ready", NOW)
     assert settings[module.VPN_FRIEND_BETA_RELEASE_READY_KEY] == RELEASE_ID
     assert settings[module.VPN_ENDPOINT_ACCEPTANCE_KEY] == legacy_evidence
