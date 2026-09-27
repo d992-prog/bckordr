@@ -400,6 +400,8 @@ def encode_install_request(
     *,
     controlled_worker_id: int,
 ) -> bytes:
+    if type(controlled_worker_id) is not int or not 1 <= controlled_worker_id < 2**63:
+        _fail("vpn_endpoint_install_request_invalid")
     if not isinstance(request, EndpointInstallRequest):
         _fail("vpn_endpoint_install_request_invalid")
     value: dict[str, object] = {
