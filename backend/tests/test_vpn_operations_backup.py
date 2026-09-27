@@ -1101,6 +1101,62 @@ def _mock_approved_symlink_source(
     return link_info
 
 
+def test_nginx_symlink_scan_bounds_global_file_count_before_sorting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = replace_config(_config(tmp_path), max_files=1)
+    budget = backup_module._Budget(config, lambda: 0.0, 0.0)
+    scanned: list[str] = []
+    entries = (SimpleNamespace(name=f"link-{index}") for index in range(1000))
+    link_info = SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=0)
+
+    def fake_stat(name: str, **_kwargs: object) -> SimpleNamespace:
+        scanned.append(name)
+        return link_info
+
+    with monkeypatch.context() as patch:
+        patch.setattr(backup_module.os, "scandir", lambda _fd: nullcontext(entries))
+        patch.setattr(backup_module.os, "stat", fake_stat)
+        with pytest.raises(BackupError, match="^backup_limits_exceeded$"):
+            backup_module._scan_directory_fd(41, 0, budget, allow_symlinks=True)
+    assert scanned == ["link-0", "link-1"]
+
+
+def test_one_nginx_symlink_is_counted_once_and_charged_target_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = replace_config(_config(tmp_path), max_files=1)
+    target = config.nginx_directory / "veltrix.conf"
+    budget = backup_module._Budget(config, lambda: 0.0, 0.0)
+    with monkeypatch.context() as patch:
+        link_info = _mock_approved_symlink_source(patch, target)
+        patch.setattr(
+            backup_module.os,
+            "scandir",
+            lambda _fd: nullcontext(iter([SimpleNamespace(name="linked")])),
+        )
+        patch.setattr(backup_module.os, "open", lambda *_args, **_kwargs: 43)
+        patch.setattr(backup_module.os, "fstat", lambda _fd: target.parent.lstat())
+        patch.setattr(backup_module.os, "close", lambda _fd: None)
+        patch.setattr(backup_module, "_copy_descriptor", lambda *_: {})
+        entries = backup_module._scan_directory_fd(
+            41, 0, budget, allow_symlinks=True
+        )
+        assert entries == [("linked", link_info)]
+        backup_module._copy_approved_symlink(
+            41,
+            target.parent,
+            "linked",
+            link_info,
+            tmp_path / "copied",
+            Path("nginx/linked"),
+            (config.nginx_directory,),
+            budget,
+        )
+    assert budget.files == 1
+    assert budget.total_bytes == target.stat().st_size
+
+
 def test_approved_nginx_target_open_is_nonblocking_and_rejects_nonregular_fd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

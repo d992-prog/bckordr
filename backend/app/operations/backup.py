@@ -155,11 +155,18 @@ class _Budget:
             raise BackupError("backup_deadline_exceeded")
         return min(self.config.command_timeout_seconds, remaining)
 
-    def add_file(self, size: int) -> None:
+    def reserve_file(self) -> None:
+        self.check_deadline()
+        self.files += 1
+        if self.files > self.config.max_files:
+            raise BackupError("backup_limits_exceeded")
+
+    def add_file(self, size: int, *, reserved: bool = False) -> None:
         self.check_deadline()
         if size < 0 or size > self.config.max_file_bytes:
             raise BackupError("backup_limits_exceeded")
-        self.files += 1
+        if not reserved:
+            self.files += 1
         self.total_bytes += size
         if (
             self.files > self.config.max_files
@@ -789,7 +796,7 @@ def _scan_directory_fd(
                 if _is_reparse(info):
                     raise BackupError("backup_source_invalid")
                 if stat.S_ISLNK(info.st_mode) and allow_symlinks:
-                    pass
+                    budget.reserve_file()
                 elif stat.S_ISDIR(info.st_mode):
                     if depth + 1 > budget.config.max_depth:
                         raise BackupError("backup_limits_exceeded")
@@ -847,7 +854,7 @@ def _copy_approved_symlink(
         )
         if _is_reparse(target_info) or not stat.S_ISREG(target_info.st_mode):
             raise BackupError("backup_source_invalid")
-        budget.add_file(target_info.st_size)
+        budget.add_file(target_info.st_size, reserved=True)
         try:
             target_fd = os.open(
                 target.name,
