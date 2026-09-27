@@ -535,6 +535,7 @@ async def remove_endpoint_installer_over_ssh(
     expected_sha256: str,
     *,
     inspect_request: EndpointInstallRequest,
+    controlled_worker_id: int,
     connector: Callable[..., object] = asyncssh.connect,
 ) -> EndpointInstallReceipt:
     if (
@@ -546,6 +547,7 @@ async def remove_endpoint_installer_over_ssh(
     observed = await execute_endpoint_installer_over_ssh(
         snapshot,
         inspect_request,
+        controlled_worker_id=controlled_worker_id,
         connector=connector,
     )
     await _execute_candidate_admin_over_ssh(
@@ -598,11 +600,15 @@ async def execute_endpoint_installer_over_ssh(
     snapshot: VpnNodeTransportSnapshot,
     request: EndpointInstallRequest,
     *,
+    controlled_worker_id: int,
     connector: Callable[..., object] = asyncssh.connect,
 ) -> EndpointInstallReceipt:
     attempted = False
     try:
-        raw_request = encode_install_request(request)
+        raw_request = encode_install_request(
+            request,
+            controlled_worker_id=controlled_worker_id,
+        )
         options = _connection_options(snapshot)
         async with asyncio.timeout(CONNECT_TIMEOUT + LOGIN_TIMEOUT):
             connection = await connector(

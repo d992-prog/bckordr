@@ -348,7 +348,11 @@ def _email(value: object) -> str:
     return value
 
 
-def parse_install_request(value: object) -> EndpointInstallRequest:
+def parse_install_request(
+    value: object,
+    *,
+    controlled_worker_id: int | None = None,
+) -> EndpointInstallRequest:
     if type(value) is not dict:
         _fail("vpn_endpoint_install_request_invalid")
     action = value.get("action")
@@ -369,7 +373,14 @@ def parse_install_request(value: object) -> EndpointInstallRequest:
     acceptance_uuid = _uuid(value["acceptance_uuid"]) if action in client_actions else None
     acceptance_email = _email(value["acceptance_email"]) if action in client_actions else None
     worker_id = _positive_int(value["worker_id"])
-    if worker_id != CONTROLLED_WORKER_ID:
+    expected_worker_id = (
+        CONTROLLED_WORKER_ID if controlled_worker_id is None else controlled_worker_id
+    )
+    if (
+        type(expected_worker_id) is not int
+        or not 1 <= expected_worker_id < 2**63
+        or worker_id != expected_worker_id
+    ):
         _fail("vpn_endpoint_install_request_invalid")
     return EndpointInstallRequest(
         action,
@@ -384,7 +395,11 @@ def parse_install_request(value: object) -> EndpointInstallRequest:
     )
 
 
-def encode_install_request(request: EndpointInstallRequest) -> bytes:
+def encode_install_request(
+    request: EndpointInstallRequest,
+    *,
+    controlled_worker_id: int,
+) -> bytes:
     if not isinstance(request, EndpointInstallRequest):
         _fail("vpn_endpoint_install_request_invalid")
     value: dict[str, object] = {
@@ -401,7 +416,7 @@ def encode_install_request(request: EndpointInstallRequest) -> bytes:
     if request.acceptance_uuid is not None:
         value["acceptance_uuid"] = str(request.acceptance_uuid)
         value["acceptance_email"] = request.acceptance_email
-    parsed = parse_install_request(value)
+    parsed = parse_install_request(value, controlled_worker_id=controlled_worker_id)
     if parsed != request:
         _fail("vpn_endpoint_install_request_invalid")
     encoded = json.dumps(
