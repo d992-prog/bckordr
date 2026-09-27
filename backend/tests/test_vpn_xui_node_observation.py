@@ -459,23 +459,33 @@ def test_rollback_vacuum_cannot_expand_backup_beyond_checked_limit(
     copied_bytes = []
 
     class Connection(sqlite3.Connection):
-        def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
+        def execute(self, sql, parameters=(), /):
             nonlocal vacuum_attempted
+            result = super().execute(sql, parameters)
+            if not vacuum_attempted and sql in (
+                "PRAGMA page_count",
+                "PRAGMA page_size",
+            ):
+                vacuum_attempted = True
+                with closing(real_connect(database, timeout=0)) as writer:
+                    writer.execute("PRAGMA page_size=65536")
+                    try:
+                        writer.execute("VACUUM")
+                    except sqlite3.OperationalError as exc:
+                        assert sql == "PRAGMA page_count"
+                        assert "locked" in str(exc).lower()
+                        assert self.in_transaction
+                    else:
+                        assert sql == "PRAGMA page_size"
+                        assert writer.execute("PRAGMA page_size").fetchone() == (65536,)
+                        assert (
+                            writer.execute("PRAGMA page_count").fetchone()[0] * 65536
+                            > limit
+                        )
+            return result
+
+        def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
             assert progress is not None
-            vacuum_attempted = True
-            with closing(real_connect(database, timeout=0)) as writer:
-                writer.execute("PRAGMA page_size=65536")
-                try:
-                    writer.execute("VACUUM")
-                except sqlite3.OperationalError as exc:
-                    assert "locked" in str(exc).lower()
-                    assert self.in_transaction
-                else:
-                    assert writer.execute("PRAGMA page_size").fetchone() == (65536,)
-                    assert (
-                        writer.execute("PRAGMA page_count").fetchone()[0] * 65536
-                        > limit
-                    )
 
             def record_progress(status, remaining, total):
                 actual_page_size = target.execute("PRAGMA page_size").fetchone()[0]
@@ -912,8 +922,8 @@ def test_local_reads_select_only_ids_and_use_read_only_connection(
             "PRAGMA busy_timeout=0",
             "PRAGMA query_only=ON",
             "BEGIN",
-            "PRAGMA page_size",
             "PRAGMA page_count",
+            "PRAGMA page_size",
             "BACKUP",
         )
         assert all(statement in source_operations for statement in expected), (
