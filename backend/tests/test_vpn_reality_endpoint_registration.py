@@ -18,7 +18,7 @@ from app.services.vpn_reality_endpoint_installer import make_endpoint_receipt
 NOW = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
 PUBLIC_KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
 RELEASE_ID = "b" * 64
-INVALID_WORKER_BINDINGS = ((1, True), (15, 0), (15, -1), (15, 2**63))
+INVALID_WORKER_BINDINGS = ((1, True), (15, None), (15, 0), (15, -1), (15, 2**63))
 
 
 @pytest_asyncio.fixture
