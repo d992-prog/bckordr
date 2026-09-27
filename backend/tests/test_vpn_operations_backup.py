@@ -1256,7 +1256,7 @@ def test_nginx_symlink_retarget_during_copy_is_rejected(
 
 def _mock_approved_symlink_source(
     monkeypatch: pytest.MonkeyPatch, target: Path
-) -> os.stat_result:
+) -> tuple[os.stat_result, os.stat_result, os.stat_result]:
     target_info = target.lstat()
     parent_info = target.parent.lstat()
     link_info = SimpleNamespace(
@@ -1281,7 +1281,7 @@ def _mock_approved_symlink_source(
     )
     monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0x10000000, raising=False)
     monkeypatch.setattr(backup_module.os, "O_NONBLOCK", 0x20000000, raising=False)
-    return link_info
+    return link_info, target_info, parent_info
 
 
 def test_nginx_symlink_scan_bounds_global_file_count_before_sorting(
@@ -1312,14 +1312,20 @@ def test_one_nginx_symlink_is_counted_once_and_charged_target_bytes(
     target = config.nginx_directory / "veltrix.conf"
     budget = backup_module._Budget(config, lambda: 0.0, 0.0)
     with monkeypatch.context() as patch:
-        link_info = _mock_approved_symlink_source(patch, target)
+        link_info, target_info, parent_info = _mock_approved_symlink_source(
+            patch, target
+        )
         patch.setattr(
             backup_module.os,
             "scandir",
             lambda _fd: nullcontext(iter([SimpleNamespace(name="linked")])),
         )
         patch.setattr(backup_module.os, "open", lambda *_args, **_kwargs: 43)
-        patch.setattr(backup_module.os, "fstat", lambda _fd: target.parent.lstat())
+        patch.setattr(
+            backup_module.os,
+            "fstat",
+            lambda descriptor: parent_info if descriptor == 42 else target_info,
+        )
         patch.setattr(backup_module.os, "close", lambda _fd: None)
         patch.setattr(backup_module, "_copy_descriptor", lambda *_: {})
         entries = backup_module._scan_directory_fd(
@@ -1347,7 +1353,7 @@ def test_approved_nginx_target_open_is_nonblocking_and_rejects_nonregular_fd(
     target = config.nginx_directory / "veltrix.conf"
     budget = backup_module._Budget(config, lambda: 0.0, 0.0)
     with monkeypatch.context() as patch:
-        link_info = _mock_approved_symlink_source(patch, target)
+        link_info, _, _ = _mock_approved_symlink_source(patch, target)
         opened_flags: list[int] = []
         closed: list[int] = []
 
@@ -1386,7 +1392,7 @@ def test_approved_nginx_cleanup_closes_both_fds_after_first_close_fails(
     target = config.nginx_directory / "veltrix.conf"
     budget = backup_module._Budget(config, lambda: 0.0, 0.0)
     with monkeypatch.context() as patch:
-        link_info = _mock_approved_symlink_source(patch, target)
+        link_info, _, _ = _mock_approved_symlink_source(patch, target)
         closed: list[int] = []
         patch.setattr(backup_module.os, "open", lambda *_args, **_kwargs: 43)
 
@@ -1421,10 +1427,16 @@ def test_approved_nginx_cleanup_failure_uses_static_backup_error(
     target = config.nginx_directory / "veltrix.conf"
     budget = backup_module._Budget(config, lambda: 0.0, 0.0)
     with monkeypatch.context() as patch:
-        link_info = _mock_approved_symlink_source(patch, target)
+        link_info, target_info, parent_info = _mock_approved_symlink_source(
+            patch, target
+        )
         closed: list[int] = []
         patch.setattr(backup_module.os, "open", lambda *_args, **_kwargs: 43)
-        patch.setattr(backup_module.os, "fstat", lambda _fd: target.parent.lstat())
+        patch.setattr(
+            backup_module.os,
+            "fstat",
+            lambda descriptor: parent_info if descriptor == 42 else target_info,
+        )
         patch.setattr(backup_module, "_copy_descriptor", lambda *_: {})
 
         def close(descriptor: int) -> None:
