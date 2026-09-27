@@ -137,7 +137,7 @@ def test_watchdog_service_owns_only_its_private_state_directory() -> None:
     ) == [""]
     assert service["StateDirectory"] == "veltrix-watchdog"
     assert service["StateDirectoryMode"] == "0700"
-    assert "Environment" not in service
+    assert service["Environment"] == "PGSSLMODE=disable"
     assert _directive_values(
         "veltrix-watchdog.service", "Service", "ReadOnlyPaths"
     ) == [
