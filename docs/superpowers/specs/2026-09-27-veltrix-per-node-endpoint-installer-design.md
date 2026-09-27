@@ -19,6 +19,20 @@ The source module keeps its current default ID for direct unit tests and the
 already deployed worker-15 artifact. No mutable node-side config, environment
 override, new dependency, database migration or public API is introduced.
 
+The control process must carry the same explicit selection independently of the
+remote process. `encode_install_request`, the strict SSH executor and candidate
+cleanup therefore require a positive `controlled_worker_id`; encoding rejects a
+request for any other worker before opening SSH. The parser keeps its current
+module binding only for the isolated remote entrypoint, whose generated bundle
+sets that binding before reading stdin. Control code never changes this module
+global, so concurrent onboarding of different workers cannot race.
+
+Staging and promotion require the same explicit `controlled_worker_id` and lock
+that exact enabled, ready VPN worker. A receipt for another worker fails before
+an endpoint or release marker can be written. The registration module no longer
+contains a worker-15 policy constant; worker 15 remains supported by passing 15
+at each boundary.
+
 ## Validation and failure behavior
 
 The builder rejects booleans, zero, negative values and integers above the
@@ -29,8 +43,13 @@ An invalid worker request continues to fail before any 3x-UI mutation.
 Tests prove the new argument is required, invalid IDs fail without publishing an
 artifact, identical worker bundles are deterministic, different worker IDs
 produce different bundles, and a worker-2 bundle accepts worker 2 while rejecting
-worker 15. The focused endpoint deployment and installer suites, Ruff and the
-broader VPN regression suite must pass before production onboarding resumes.
+worker 15. Separate control-process tests keep its module default at 15 while
+proving an explicit worker-2 request reaches the strict SSH boundary and a
+mismatched request does not. Registration tests prove worker 2 can be staged and
+promoted only when the explicit selection is 2, and that mismatches write
+nothing. The focused endpoint deployment, installer and registration suites,
+Ruff and the broader VPN regression suite must pass before production onboarding
+resumes.
 
 ## Production rollout boundary
 
