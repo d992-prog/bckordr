@@ -148,7 +148,7 @@ def _reparse(info: os.stat_result) -> bool:
     return bool(getattr(info, "st_file_attributes", 0) & 1024)
 
 
-def _wal_sidecars_are_safe(path: Path, database: os.stat_result) -> None:
+def _wal_sidecars_are_safe(path: Path, database: os.stat_result) -> bool:
     found = []
     for suffix in ("-wal", "-shm"):
         try:
@@ -171,6 +171,39 @@ def _wal_sidecars_are_safe(path: Path, database: os.stat_result) -> None:
         for info in found
     ):
         raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+    return len(found) == 2
+
+
+def _database_uses_wal(path: Path, expected: os.stat_result) -> bool:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        if not _same_file(os.fstat(descriptor), expected):
+            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+        header = os.read(descriptor, 20)
+    finally:
+        os.close(descriptor)
+    if header[:16] != b"SQLite format 3\x00" or header[18:20] not in (b"\x01\x01", b"\x02\x02"):
+        raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+    return header[18:20] == b"\x02\x02"
+
+
+def _bounded_page_size(connection: sqlite3.Connection) -> int:
+    page_size = connection.execute("PRAGMA page_size").fetchone()
+    page_count = connection.execute("PRAGMA page_count").fetchone()
+    if (
+        not isinstance(page_size, tuple)
+        or len(page_size) != 1
+        or type(page_size[0]) is not int
+        or page_size[0] <= 0
+        or not isinstance(page_count, tuple)
+        or len(page_count) != 1
+        or type(page_count[0]) is not int
+        or page_count[0] <= 0
+        or page_size[0] * page_count[0] > _DATABASE_LIMIT
+    ):
+        raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
+    return page_size[0]
 
 
 def _database_snapshot(path: Path, deadline: float) -> sqlite3.Connection:
@@ -192,7 +225,10 @@ def _database_snapshot(path: Path, deadline: float) -> sqlite3.Connection:
             or not 100 <= before.st_size <= _DATABASE_LIMIT
         ):
             raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
-        _wal_sidecars_are_safe(path, before)
+        sidecars_before = _wal_sidecars_are_safe(path, before)
+        wal_before = _database_uses_wal(path, before)
+        if wal_before != sidecars_before:
+            raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
         if time.monotonic() >= deadline:
             raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
 
@@ -200,18 +236,29 @@ def _database_snapshot(path: Path, deadline: float) -> sqlite3.Connection:
             f"{path.as_uri()}?mode=ro", uri=True, timeout=_DATABASE_TIMEOUT_SECONDS
         )
         source.execute("PRAGMA query_only=ON")
+        page_size = _bounded_page_size(source)
         snapshot = sqlite3.connect(":memory:", timeout=_DATABASE_TIMEOUT_SECONDS)
 
         def progress(_status: int, _remaining: int, _total: int) -> None:
-            if time.monotonic() >= deadline:
+            if (
+                time.monotonic() >= deadline
+                or type(_total) is not int
+                or _total <= 0
+                or _total * page_size > _DATABASE_LIMIT
+            ):
                 raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
 
         source.backup(snapshot, pages=64, progress=progress, sleep=0.01)
+        _bounded_page_size(snapshot)
         after = os.lstat(path)
         directory_after = os.lstat(path.parent)
-        _wal_sidecars_are_safe(path, after)
+        sidecars_after = _wal_sidecars_are_safe(path, after)
+        wal_after = _database_uses_wal(path, after)
         if (
             time.monotonic() >= deadline
+            or wal_after != wal_before
+            or wal_after != sidecars_after
+            or not 100 <= after.st_size <= _DATABASE_LIMIT
             or not _same_file(before, after)
             or not _same_file(directory_before, directory_after)
         ):
