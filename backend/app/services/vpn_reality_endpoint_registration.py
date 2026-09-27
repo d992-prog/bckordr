@@ -152,6 +152,11 @@ def _find_endpoint(
         if (
             (endpoint.worker_id == receipt.worker_id and endpoint.inbound_id == receipt.inbound_id)
             or (endpoint.worker_id == receipt.worker_id and endpoint.port == receipt.port)
+            or (
+                endpoint.worker_id == receipt.worker_id
+                and endpoint.status == "ready"
+                and endpoint.security == "reality"
+            )
         ):
             _fail("vpn_endpoint_registration_conflict")
     return exact[0] if exact else None
