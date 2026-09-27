@@ -332,7 +332,14 @@ async def test_existing_ready_endpoint_does_not_block_second_worker_same_release
 
     assert after_endpoints == before_endpoints
     assert after_settings == before_settings
-    assert (worker_2.status, worker_2.verified_at) == ("ready", NOW)
+    verified_at = worker_2.verified_at
+    assert verified_at is not None
+    verified_at = (
+        verified_at.replace(tzinfo=UTC)
+        if verified_at.tzinfo is None
+        else verified_at.astimezone(UTC)
+    )
+    assert (worker_2.status, verified_at) == ("ready", NOW)
     assert settings[module.VPN_FRIEND_BETA_RELEASE_READY_KEY] == RELEASE_ID
     assert settings[module.VPN_ENDPOINT_ACCEPTANCE_KEY] == legacy_evidence
     assert '"worker_id":2' in settings[_evidence_key(module, worker_id=2)]
