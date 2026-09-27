@@ -816,6 +816,17 @@ def _scan_directory_fd(
 def _approved_symlink_target(
     parent: Path, text: str, roots: tuple[Path, ...]
 ) -> Path:
+    if text.endswith(("/", "/.", "/..")):
+        raise BackupError("backup_source_invalid")
+    seen_component = False
+    for component in text.split("/"):
+        if not component:
+            continue
+        if component in {".", ".."}:
+            if seen_component or (component == ".." and text.startswith("/")):
+                raise BackupError("backup_source_invalid")
+        else:
+            seen_component = True
     target = Path(os.path.normpath(os.path.join(parent, text)))
     for root in roots:
         try:

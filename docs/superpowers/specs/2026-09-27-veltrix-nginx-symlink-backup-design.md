@@ -51,7 +51,8 @@ When it encounters a link in the Nginx tree, the backup:
 
 1. records the link inode metadata and target text through the already-open
    parent descriptor;
-2. normalizes the target lexically without resolving filesystem links;
+2. rejects cancellation of normal components and trailing directory syntax
+   before lexical normalization, without resolving filesystem links;
 3. requires the normalized target to remain below an approved root;
 4. opens every target parent component with `O_NOFOLLOW` and requires the final
    target to be a regular file;

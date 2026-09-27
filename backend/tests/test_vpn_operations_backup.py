@@ -1071,6 +1071,89 @@ def test_approved_nginx_symlinks_are_materialized_as_regular_files(
         }
 
 
+@pytest.mark.parametrize(
+    "case",
+    ["missing_parent", "trailing_slash", "file_parent", "symlink_parent"],
+)
+@POSIX_SNAPSHOT_ONLY
+def test_nginx_symlink_rejects_normalization_that_changes_target_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    config = _config(tmp_path)
+    sites_available = config.nginx_directory / "sites-available"
+    sites_enabled = config.nginx_directory / "sites-enabled"
+    module_root = tmp_path / "modules-available"
+    for directory in (sites_available, sites_enabled, module_root):
+        directory.mkdir()
+    (sites_available / "site.conf").write_bytes(b"server safe;\n")
+    (module_root / "site.conf").write_bytes(b"load_module safe;\n")
+    outside = tmp_path / "outside"
+    (outside / "nested").mkdir(parents=True)
+    (outside / "site.conf").write_bytes(b"outside secret\n")
+    (module_root / "redirect").symlink_to(outside / "nested", target_is_directory=True)
+    link_text = {
+        "missing_parent": "../missing/../sites-available/site.conf",
+        "trailing_slash": "../sites-available/site.conf/",
+        "file_parent": "../sites-available/site.conf/../site.conf",
+        "symlink_parent": f"{module_root}/redirect/../site.conf",
+    }[case]
+    normalized = Path(os.path.normpath(os.path.join(sites_enabled, link_text)))
+    assert normalized.is_file()
+    (sites_enabled / "invalid.conf").symlink_to(link_text)
+    monkeypatch.setattr(backup_module, "_NGINX_MODULES_DIRECTORY", module_root)
+
+    with pytest.raises(BackupError, match="^backup_source_invalid$"):
+        _run(config, FakeRunner())
+
+    partial = config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial"
+    assert not (partial / "nginx/sites-enabled/invalid.conf").exists()
+    assert not (config.backup_root / "latest-success.json").exists()
+
+
+@pytest.mark.parametrize(
+    "link_text",
+    [
+        "../missing/../sites-available/site.conf",
+        "../sites-available/site.conf/",
+        "../sites-available/site.conf/.",
+        "../sites-available/site.conf/..",
+        "../sites-available/site.conf/../site.conf",
+        "../sites-available/redirect/../site.conf",
+        "../sites-available/site.conf/./site.conf",
+        "absolute_with_cancellation",
+    ],
+)
+def test_approved_symlink_target_rejects_semantic_cancellation(
+    tmp_path: Path, link_text: str
+) -> None:
+    config = _config(tmp_path)
+    parent = config.nginx_directory / "sites-enabled"
+    if link_text == "absolute_with_cancellation":
+        link_text = (
+            config.nginx_directory
+            / "sites-available"
+            / "missing"
+            / ".."
+            / "site.conf"
+        ).as_posix()
+    with pytest.raises(BackupError, match="^backup_source_invalid$"):
+        backup_module._approved_symlink_target(
+            parent, link_text, (config.nginx_directory,)
+        )
+
+
+def test_approved_symlink_target_keeps_direct_relative_and_absolute_paths(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    parent = config.nginx_directory / "sites-enabled"
+    target = config.nginx_directory / "sites-available" / "site.conf"
+    for link_text in ("../sites-available/site.conf", str(target)):
+        assert backup_module._approved_symlink_target(
+            parent, link_text, (config.nginx_directory,)
+        ) == target
+
+
 @pytest.mark.parametrize("target_kind", ["broken", "directory", "link-to-link"])
 @POSIX_SNAPSHOT_ONLY
 def test_approved_nginx_symlink_rejects_unsupported_target(

@@ -513,22 +513,21 @@ Expected: timer remains `disabled` and `inactive`; the new successful marker val
 
 - [ ] **Step 6: Rehearse a full isolated database restore**
 
-Run on the control server. The trap removes only the newly named disposable
-database; it does not alter the running application's database:
+Run in a root shell on the control server. The trap is installed only after
+successful creation and removes only that disposable database; it does not
+alter the running application's database:
 
 ```bash
 set -euo pipefail
 SET_NAME="$(jq -er .set_name /var/backups/domain-drop-catcher/latest-success.json)"
-RESTORE_DB="veltrix_restore_$(date -u +%Y%m%d_%H%M%S)"
+RESTORE_DB="veltrix_restore_$(date -u +%Y%m%d_%H%M%S)_$$_$RANDOM"
 cleanup_restore() {
   sudo -u postgres dropdb --if-exists "$RESTORE_DB"
 }
-trap cleanup_restore EXIT
 sudo -u postgres createdb "$RESTORE_DB"
-sudo -u postgres /usr/bin/pg_restore \
-  --exit-on-error \
-  --dbname="$RESTORE_DB" \
-  "/var/backups/domain-drop-catcher/$SET_NAME/database.dump"
+trap cleanup_restore EXIT
+sudo sh -c 'exec sudo -u postgres /usr/bin/pg_restore --exit-on-error --dbname="$1" < "$2"' \
+  sh "$RESTORE_DB" "/var/backups/domain-drop-catcher/$SET_NAME/database.dump"
 sudo -u postgres psql --no-psqlrc --tuples-only --no-align \
   --dbname="$RESTORE_DB" \
   --command="SELECT count(*) FROM vpn_access_keys;"
