@@ -356,6 +356,62 @@ def test_worker_vpn_commands_manage_3x_ui():
     assert "systemctl restart x-ui.service" in "\n".join(restart_commands)
 
 
+def test_worker_vpn_install_is_pinned_private_and_normalizes_xray_ownership():
+    commands = build_worker_maintenance_commands("vpn_install")
+    joined = "\n".join(commands)
+    update_commands = build_worker_maintenance_commands("vpn_update")
+    update_joined = "\n".join(update_commands)
+
+    assert "15d82a5e47c68700a1b7a3e3492f245f139e033a" in joined
+    assert "4e3fe7fe00ef8e904ce6a0e9c36fd8a0c7179fe5e786f23e31801aee84c6347d" in joined
+    assert "XUI_NONINTERACTIVE=1" in joined
+    assert "v3.8.5" in joined
+    assert 'bind_local="y"' in joined
+    assert "tar --no-same-owner -zxvf x-ui-linux-$(arch).tar.gz" in joined
+    assert "find . -xdev -exec chown root:root -- {} +" in joined
+    assert "veltrix starts x-ui after ownership validation" in joined
+    assert "xray-path-ownership.before" in joined
+    assert "tree=/usr/local/x-ui" in joined
+    assert "set -euo pipefail" in joined
+    assert 'found=$(find "$tree" -xdev' in joined
+    assert 'find "$tree" -xdev -exec chown root:root -- {} +' in joined
+    assert "! -uid 0 -a ! -uid 1001" in joined
+    assert "! -gid 0 -a ! -gid 1001" in joined
+    assert "-xdev -type l -print -quit" in joined
+    assert "getent passwd 1001" in joined
+    assert "${ownership}.tmp.$$" in joined
+    assert 'mv -f -- "$tmp" "$ownership"' in joined
+    assert "/etc/x-ui/install-result.env" in joined
+    assert "mhsanaei/3x-ui/master/install.sh" not in joined.lower()
+    assert "xray-path-ownership.before" in update_joined
+    assert "systemctl stop x-ui.service" in update_joined
+    assert "8e06b4fd9b9c368ac3314f2b05ef5bef890ad7faae0c07c073a352bbdc8395ae" in update_joined
+    assert "XUI_UPDATE_TAG=v3.8.5" in update_joined
+    assert "tar --no-same-owner -zxvf x-ui-linux-$(arch).tar.gz" in update_joined
+    assert 'find "${xui_folder}" -xdev -exec chown root:root -- {} +' in update_joined
+    assert "veltrix starts x-ui after ownership validation" in update_joined
+    assert "${xui_folder}/x-ui migrate || exit 1 # veltrix keeps the required noninteractive migration" in update_joined
+    assert "then x-ui update" not in update_joined
+
+    install_index = next(index for index, command in enumerate(commands) if "3x-ui-install.sh" in command)
+    normalize_index = next(index for index, command in enumerate(commands) if "xray-path-ownership.before" in command)
+    start_index = next(index for index, command in enumerate(commands) if command.startswith("systemctl enable --now"))
+    assert install_index < normalize_index < start_index
+    assert any("stop_xui" in command for command in commands[install_index + 1 : normalize_index])
+
+    update_index = next(index for index, command in enumerate(update_commands) if "3x-ui-update.sh" in command)
+    update_normalize_indexes = [
+        index for index, command in enumerate(update_commands) if "xray-path-ownership.before" in command
+    ]
+    update_start_index = next(
+        index for index, command in enumerate(update_commands) if command.startswith("systemctl enable --now")
+    )
+    assert len(update_normalize_indexes) == 2
+    assert update_normalize_indexes[0] < update_index < update_normalize_indexes[1] < update_start_index
+    assert any("stop_xui" in command for command in update_commands[: update_normalize_indexes[0]])
+    assert any("stop_xui" in command for command in update_commands[update_index + 1 : update_normalize_indexes[1]])
+
+
 @pytest.mark.asyncio
 async def test_worker_install_job_can_be_started_once_from_control_panel(monkeypatch: pytest.MonkeyPatch):
     engine = create_async_engine(

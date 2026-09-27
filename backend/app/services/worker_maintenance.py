@@ -48,6 +48,10 @@ VPN_AUTOCONFIG_KEYS = {
     "inbound_create_error",
     "autoconfig_db_error",
 }
+XUI_INSTALL_COMMIT = "15d82a5e47c68700a1b7a3e3492f245f139e033a"
+XUI_INSTALL_SHA256 = "4e3fe7fe00ef8e904ce6a0e9c36fd8a0c7179fe5e786f23e31801aee84c6347d"
+XUI_UPDATE_SHA256 = "8e06b4fd9b9c368ac3314f2b05ef5bef890ad7faae0c07c073a352bbdc8395ae"
+XUI_VERSION = "v3.8.5"
 
 
 def _shell_quote(value: str | int | float | bool) -> str:
@@ -164,6 +168,26 @@ def _bash(command: str) -> str:
     return f"bash -lc {_shell_quote(command)}"
 
 
+def _xui_stop_function() -> str:
+    return "\n".join(
+        [
+            "stop_xui() {",
+            "  systemctl stop x-ui.service >/dev/null 2>&1 || true",
+            "  systemctl stop x-ui >/dev/null 2>&1 || true",
+            "  systemctl stop 3x-ui.service >/dev/null 2>&1 || true",
+            "  systemctl is-active --quiet x-ui.service && return 1",
+            "  systemctl is-active --quiet x-ui && return 1",
+            "  systemctl is-active --quiet 3x-ui.service && return 1",
+            "  return 0",
+            "}",
+        ]
+    )
+
+
+def _build_xui_stop_command() -> str:
+    return _bash(f"set -eu\n{_xui_stop_function()}\nstop_xui")
+
+
 def _build_vpn_status_command() -> str:
     return _bash(
         "systemctl is-active x-ui.service "
@@ -175,10 +199,160 @@ def _build_vpn_status_command() -> str:
 
 def _build_vpn_ready_command() -> str:
     return _bash(
-        "systemctl is-active x-ui.service "
-        "|| systemctl is-active x-ui "
-        "|| systemctl is-active 3x-ui.service"
+        "\n".join(
+            [
+                "set -eu",
+                _xui_stop_function(),
+                "verified=false",
+                "trap 'status=$?; trap - EXIT; if [ \"$verified\" != true ]; then stop_xui || true; fi; exit \"$status\"' EXIT",
+                "pid=0",
+                "for unit in x-ui.service x-ui 3x-ui.service; do",
+                "  candidate=$(systemctl show \"$unit\" -p MainPID --value 2>/dev/null || true)",
+                "  if test \"${candidate:-0}\" -gt 0; then pid=$candidate; break; fi",
+                "done",
+                "test \"$pid\" -gt 0",
+                "test \"$(stat -c %u \"/proc/$pid\")\" -eq 0",
+                "verified=true",
+            ]
+        )
     )
+
+
+def _build_vpn_install_command() -> str:
+    script = "/var/lib/veltrix-vpn/3x-ui-install.sh"
+    log = "/var/lib/veltrix-vpn/3x-ui-install.log"
+    return _bash(
+        "\n".join(
+            [
+                "set -eu",
+                "if command -v x-ui >/dev/null 2>&1 || systemctl list-unit-files | grep -Eq '^x-ui(\\.service)?'; then",
+                "  echo '3x-ui already installed'",
+                "else",
+                "  install -d -o root -g root -m 0700 /var/lib/veltrix-vpn",
+                "  umask 077",
+                f"  script={_shell_quote(script)}",
+                f"  log={_shell_quote(log)}",
+                _xui_stop_function(),
+                "  completed=false",
+                "  trap 'status=$?; trap - EXIT; rm -f -- \"$script\"; if [ \"$completed\" != true ]; then stop_xui || true; fi; exit \"$status\"' EXIT",
+                f"  curl -fsSL https://raw.githubusercontent.com/mhsanaei/3x-ui/{XUI_INSTALL_COMMIT}/install.sh -o \"$script\"",
+                f"  printf '%s  %s\\n' {XUI_INSTALL_SHA256} \"$script\" | sha256sum -c - >/dev/null",
+                "  test \"$(grep -Fxc '                bind_local=\"n\"' \"$script\")\" -eq 1",
+                "  sed -i 's/^                bind_local=\"n\"$/                bind_local=\"y\"/' \"$script\"",
+                "  test \"$(grep -Fxc '                bind_local=\"y\"' \"$script\")\" -eq 1",
+                "  test \"$(grep -Fxc '    tar zxvf x-ui-linux-$(arch).tar.gz' \"$script\")\" -eq 1",
+                "  sed -i 's|^    tar zxvf x-ui-linux-\\$(arch)\\.tar\\.gz$|    tar --no-same-owner -zxvf x-ui-linux-$(arch).tar.gz|' \"$script\"",
+                "  test \"$(grep -Fxc '    tar --no-same-owner -zxvf x-ui-linux-$(arch).tar.gz' \"$script\")\" -eq 1",
+                "  test \"$(grep -Fxc '    chmod +x x-ui' \"$script\")\" -eq 1",
+                "  sed -i '/^    chmod +x x-ui$/i\\    find . -xdev -exec chown root:root -- {} + # veltrix normalizes the verified release before first execution' \"$script\"",
+                "  test \"$(grep -Fxc '    find . -xdev -exec chown root:root -- {} + # veltrix normalizes the verified release before first execution' \"$script\")\" -eq 1",
+                "  test \"$(grep -Fxc '            systemctl start x-ui' \"$script\")\" -eq 1",
+                "  sed -i 's|^            systemctl start x-ui$|            : # veltrix starts x-ui after ownership validation|' \"$script\"",
+                "  test \"$(grep -Fxc '            : # veltrix starts x-ui after ownership validation' \"$script\")\" -eq 1",
+                "  : > \"$log\"",
+                "  chmod 0600 \"$log\"",
+                f"  if ! XUI_NONINTERACTIVE=1 timeout 600 bash \"$script\" {XUI_VERSION} >\"$log\" 2>&1; then",
+                "    echo '3x-ui install failed; inspect the root-only install log' >&2",
+                "    exit 1",
+                "  fi",
+                "  stop_xui",
+                "  rm -f -- \"$log\" /etc/x-ui/install-result.env",
+                "  completed=true",
+                f"  echo '3x-ui {XUI_VERSION} installed'",
+                "fi",
+            ]
+        )
+    )
+
+
+def _build_vpn_update_command() -> str:
+    script = "/var/lib/veltrix-vpn/3x-ui-update.sh"
+    log = "/var/lib/veltrix-vpn/3x-ui-update.log"
+    return _bash(
+        "\n".join(
+            [
+                "set -eu",
+                "install -d -o root -g root -m 0700 /var/lib/veltrix-vpn",
+                "umask 077",
+                f"script={_shell_quote(script)}",
+                f"log={_shell_quote(log)}",
+                _xui_stop_function(),
+                "completed=false",
+                "trap 'status=$?; trap - EXIT; rm -f -- \"$script\"; if [ \"$completed\" != true ]; then stop_xui || true; fi; exit \"$status\"' EXIT",
+                f"curl -fsSL https://raw.githubusercontent.com/mhsanaei/3x-ui/{XUI_INSTALL_COMMIT}/update.sh -o \"$script\"",
+                f"printf '%s  %s\n' {XUI_UPDATE_SHA256} \"$script\" | sha256sum -c - >/dev/null",
+                "test \"$(grep -Fxc '    tar zxvf x-ui-linux-$(arch).tar.gz > /dev/null 2>&1' \"$script\")\" -eq 1",
+                "sed -i 's|^    tar zxvf x-ui-linux-\\$(arch)\\.tar\\.gz > /dev/null 2>&1$|    tar --no-same-owner -zxvf x-ui-linux-$(arch).tar.gz > /dev/null 2>\\&1|' \"$script\"",
+                "test \"$(grep -Fxc '    tar --no-same-owner -zxvf x-ui-linux-$(arch).tar.gz > /dev/null 2>&1' \"$script\")\" -eq 1",
+                "test \"$(grep -Fxc '    chown -R root:root ${xui_folder} > /dev/null 2>&1' \"$script\")\" -eq 1",
+                "sed -i '\\|^    chown -R root:root ${xui_folder} > /dev/null 2>&1$|c\\    find \"${xui_folder}\" -xdev -exec chown root:root -- {} + > /dev/null 2>&1' \"$script\"",
+                "test \"$(grep -Fxc '    find \"${xui_folder}\" -xdev -exec chown root:root -- {} + > /dev/null 2>&1' \"$script\")\" -eq 1",
+                "test \"$(grep -Fxc '        systemctl start x-ui > /dev/null 2>&1' \"$script\")\" -eq 1",
+                "sed -i 's|^        systemctl start x-ui > /dev/null 2>&1$|        : # veltrix starts x-ui after ownership validation|' \"$script\"",
+                "test \"$(grep -Fxc '        : # veltrix starts x-ui after ownership validation' \"$script\")\" -eq 1",
+                "test \"$(grep -Fxc '    config_after_update' \"$script\")\" -eq 1",
+                "sed -i 's@^    config_after_update$@    ${xui_folder}/x-ui migrate || exit 1 # veltrix keeps the required noninteractive migration@' \"$script\"",
+                "test \"$(grep -Fxc '    ${xui_folder}/x-ui migrate || exit 1 # veltrix keeps the required noninteractive migration' \"$script\")\" -eq 1",
+                ": > \"$log\"",
+                "chmod 0600 \"$log\"",
+                f"if ! XUI_UPDATE_TAG={XUI_VERSION} timeout 600 bash \"$script\" {XUI_VERSION} >\"$log\" 2>&1; then",
+                "  echo '3x-ui update failed; inspect the root-only update log' >&2",
+                "  exit 1",
+                "fi",
+                "stop_xui",
+                "rm -f -- \"$log\"",
+                "completed=true",
+                f"echo '3x-ui {XUI_VERSION} update staged'",
+            ]
+        )
+    )
+
+
+def _build_xray_owner_normalization_command() -> str:
+    lines = [
+        "set -euo pipefail",
+        "tree=/usr/local/x-ui",
+        _xui_stop_function(),
+        "verified=false",
+        "tmp=",
+        "trap 'status=$?; trap - EXIT; test -z \"${tmp:-}\" || rm -f -- \"$tmp\"; if [ \"$verified\" != true ]; then stop_xui || true; fi; exit \"$status\"' EXIT",
+        "! systemctl is-active --quiet x-ui.service",
+        "! systemctl is-active --quiet x-ui",
+        "! systemctl is-active --quiet 3x-ui.service",
+        "test -d \"$tree\"",
+        "test -f \"$tree/x-ui\"",
+        "test -f \"$tree/bin/xray-linux-amd64\"",
+        "found=$(find \"$tree\" -xdev -type l -print -quit)",
+        "test -z \"$found\"",
+        "found=$(find \"$tree\" -xdev -perm /022 -print -quit)",
+        "test -z \"$found\"",
+        "found=$(find \"$tree\" -xdev \\( \\( ! -uid 0 -a ! -uid 1001 \\) -o \\( ! -gid 0 -a ! -gid 1001 \\) \\) -print -quit)",
+        "test -z \"$found\"",
+        "found=$(find \"$tree\" -xdev -uid 1001 -print -quit)",
+        "if test -n \"$found\"; then ! getent passwd 1001 >/dev/null; fi",
+    ]
+    lines.extend(
+        [
+            "found=$(find \"$tree\" -xdev \\( ! -uid 0 -o ! -gid 0 \\) -print -quit)",
+            "if test -n \"$found\"; then",
+            "  install -d -o root -g root -m 0700 /var/lib/veltrix-vpn",
+            "  ownership=/var/lib/veltrix-vpn/xray-path-ownership.before",
+            "  if test ! -e \"$ownership\"; then",
+            "    umask 077",
+            "    tmp=${ownership}.tmp.$$",
+            "    find \"$tree\" -xdev -exec stat -c '%n %u %g %a' -- {} + | LC_ALL=C sort > \"$tmp\"",
+            "    chmod 0600 \"$tmp\"",
+            "    mv -f -- \"$tmp\" \"$ownership\"",
+            "    tmp=",
+            "  fi",
+            "  find \"$tree\" -xdev -exec chown root:root -- {} +",
+            "fi",
+            "found=$(find \"$tree\" -xdev \\( ! -uid 0 -o ! -gid 0 \\) -print -quit)",
+            "test -z \"$found\"",
+            "verified=true",
+        ]
+    )
+    return _bash("\n".join(lines))
 
 
 def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
@@ -961,23 +1135,21 @@ def build_worker_maintenance_commands(
         return [
             "apt-get update",
             "apt-get install -y curl socat jq tar",
-            _bash(
-                "set -e; "
-                "if command -v x-ui >/dev/null 2>&1 || systemctl list-unit-files | grep -Eq '^x-ui(\\.service)?'; "
-                "then echo '3x-ui already installed'; "
-                "else curl -fsSL https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh -o /tmp/3x-ui-install.sh "
-                "&& chmod +x /tmp/3x-ui-install.sh "
-                "&& yes '' | timeout 600 bash /tmp/3x-ui-install.sh; "
-                "fi"
-            ),
+            _build_vpn_install_command(),
+            _build_xui_stop_command(),
+            _build_xray_owner_normalization_command(),
             "systemctl enable --now x-ui.service || systemctl enable --now x-ui || systemctl enable --now 3x-ui.service",
             _build_vpn_ready_command(),
         ]
     if action == "vpn_update":
         return [
             "apt-get install -y curl || true",
-            _bash("if command -v x-ui >/dev/null 2>&1; then x-ui update; else echo 'x-ui command not found'; fi"),
-            "systemctl restart x-ui.service || systemctl restart x-ui || systemctl restart 3x-ui.service",
+            _build_xui_stop_command(),
+            _build_xray_owner_normalization_command(),
+            _build_vpn_update_command(),
+            _build_xui_stop_command(),
+            _build_xray_owner_normalization_command(),
+            "systemctl enable --now x-ui.service || systemctl enable --now x-ui || systemctl enable --now 3x-ui.service",
             _build_vpn_ready_command(),
         ]
     if action == "vpn_restart":
