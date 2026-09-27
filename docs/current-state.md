@@ -2,20 +2,25 @@
 
 ## WAL-safe fleet-health production rollout (2026-09-27)
 
-Production control is at exact merge `61caa05`. Node bundle
+The WAL-safe control rollout was deployed from merge `61caa05`. Node bundle
 `61984a239d17d6cdd89bc2dc242973e08017eb680ee16bbc20339898dd7dc1e6` is
 installed and verified. Rollback archive
 `vpn-node-before-wal-health-abb8dde85d2b4e9e9274f7c08a642a11.pyz` and the new
 `.previous` are preserved. Daily backup, the five-minute watchdog and fleet
-health are enabled and healthy; payment, public trial and ready notifications
-remain off.
+health are enabled; payment, public trial and ready notifications remain off.
 
 The manual strict probe was healthy for exactly one endpoint. The subsequent
 scheduled cycle advanced and remained healthy; local and public health returned
-200, Nginx configuration was valid, and the watchdog's next run completed with
-success/0 while its dedupe state stayed unchanged, so no identical alert was
-repeated. Release readiness remains blocked on a second distinct VPS, external
-proof and payment integration.
+200 and Nginx configuration was valid. An obsolete failed transient backup
+rehearsal was reset. The hardened watchdog then exposed asyncpg probing the
+hidden default client-key path under `/root`; its unit now disables TLS only for
+the confirmed local PostgreSQL target while retaining `ProtectHome=true`. The
+exact-sandbox database, snapshot and rollback rehearsal passed.
+
+Release readiness remains deliberately fail-closed on endpoint redundancy,
+per-endpoint and aggregate capacity, external proof, the public-trial plan and a
+release ID. Disabled payment passes the current readiness policy; payment
+integration remains a separate final product stage.
 
 ## Public-trial release-operations checkpoint (2026-09-27, local only)
 
