@@ -105,6 +105,7 @@ def test_registration_contract_is_importable() -> None:
 
     assert acceptance.release_id == "b" * 64
     assert acceptance.checked_at.tzinfo is UTC
+    assert not hasattr(module, "CONTROLLED_WORKER_ID")
 
 
 @pytest.mark.parametrize(
@@ -220,6 +221,37 @@ async def test_stage_rejects_worker_binding_mismatch_without_writes(database) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("controlled_worker_id", [True, 0, -1, 2**63])
+async def test_stage_rejects_invalid_worker_binding_without_writes(
+    database,
+    controlled_worker_id: object,
+) -> None:
+    module = importlib.import_module("app.services.vpn_reality_endpoint_registration")
+    await _seed_worker(database)
+
+    async with database() as db:
+        with pytest.raises(
+            module.EndpointRegistrationError,
+            match="^vpn_endpoint_registration_worker_unavailable$",
+        ):
+            await module.stage_protected_endpoint(
+                db,
+                _receipt(),
+                controlled_worker_id=controlled_worker_id,
+            )
+        await db.commit()
+
+    async with database() as db:
+        endpoint = await db.scalar(
+            module.select(VpnEndpoint).where(VpnEndpoint.inbound_id == 27)
+        )
+        setting = await db.scalar(module.select(AppSetting))
+
+    assert endpoint is None
+    assert setting is None
+
+
+@pytest.mark.asyncio
 async def test_promotion_rejects_worker_binding_mismatch_without_marker(database) -> None:
     module = importlib.import_module("app.services.vpn_reality_endpoint_registration")
     await _seed_worker(database, worker_id=2)
@@ -251,14 +283,11 @@ async def test_promotion_rejects_worker_binding_mismatch_without_marker(database
         endpoint = await db.scalar(
             module.select(VpnEndpoint).where(VpnEndpoint.inbound_id == 27)
         )
-        marker = await db.scalar(
-            module.select(AppSetting).where(
-                AppSetting.key == module.VPN_FRIEND_BETA_RELEASE_READY_KEY
-            )
-        )
+        settings = list((await db.scalars(module.select(AppSetting))).all())
 
     assert endpoint.status == "staged"
-    assert marker is None
+    assert endpoint.verified_at is None
+    assert settings == []
 
 
 @pytest.mark.asyncio

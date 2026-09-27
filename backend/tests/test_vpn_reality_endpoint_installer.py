@@ -129,8 +129,17 @@ def test_request_encoding_requires_explicit_worker_binding() -> None:
         module.encode_install_request(module.parse_install_request(_request(action="inspect")))
 
 
-def test_request_encoding_accepts_matching_worker_2_binding() -> None:
+def test_request_encoding_accepts_matching_worker_2_binding(monkeypatch) -> None:
     module = _module()
+    original_parser = module.parse_install_request
+    observed_globals = []
+
+    def parse_at_boundary(value, *, controlled_worker_id=None):
+        observed_globals.append(module.CONTROLLED_WORKER_ID)
+        return original_parser(value, controlled_worker_id=controlled_worker_id)
+
+    monkeypatch.setattr(module, "parse_install_request", parse_at_boundary)
+    assert module.CONTROLLED_WORKER_ID == 15
 
     encoded = module.encode_install_request(
         _worker_2_request(module),
@@ -138,6 +147,8 @@ def test_request_encoding_accepts_matching_worker_2_binding() -> None:
     )
 
     assert b'"worker_id":2' in encoded
+    assert observed_globals == [15]
+    assert module.CONTROLLED_WORKER_ID == 15
 
 
 def test_request_encoding_rejects_mismatched_worker_binding() -> None:
@@ -151,6 +162,24 @@ def test_request_encoding_rejects_mismatched_worker_binding() -> None:
             _worker_2_request(module),
             controlled_worker_id=15,
         )
+
+
+@pytest.mark.parametrize("controlled_worker_id", [True, 0, -1, 2**63])
+def test_request_encoding_rejects_invalid_worker_binding(
+    controlled_worker_id: object,
+) -> None:
+    module = _module()
+
+    with pytest.raises(
+        module.EndpointInstallError,
+        match="^vpn_endpoint_install_request_invalid$",
+    ):
+        module.encode_install_request(
+            module.parse_install_request(_request(action="inspect")),
+            controlled_worker_id=controlled_worker_id,
+        )
+
+    assert module.CONTROLLED_WORKER_ID == 15
 
 
 @pytest.mark.parametrize("action", ["add_acceptance_client", "remove_acceptance_client"])

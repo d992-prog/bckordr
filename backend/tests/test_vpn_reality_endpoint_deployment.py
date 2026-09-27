@@ -281,6 +281,11 @@ async def test_strict_runner_uses_explicit_worker_pin_fixed_command_and_exact_io
     assert installer.CONTROLLED_WORKER_ID == 15
     host_key = asyncssh.generate_private_key("ssh-ed25519")
     invocations = []
+    observed_globals = []
+
+    async def boundary_connector(*args, **kwargs):
+        observed_globals.append(installer.CONTROLLED_WORKER_ID)
+        return await asyncssh.connect(*args, **kwargs)
 
     async def process_factory(process):
         raw = await process.stdin.read()
@@ -311,12 +316,15 @@ async def test_strict_runner_uses_explicit_worker_pin_fixed_command_and_exact_io
             snapshot,
             request,
             controlled_worker_id=worker_id,
+            connector=boundary_connector,
         )
     finally:
         server.close()
         await server.wait_closed()
 
     assert receipt == _receipt(worker_id=worker_id)
+    assert observed_globals == [15]
+    assert installer.CONTROLLED_WORKER_ID == 15
     assert invocations == [
         (
             module.FIXED_ENDPOINT_INSTALLER_COMMAND,
@@ -329,6 +337,15 @@ async def test_strict_runner_uses_explicit_worker_pin_fixed_command_and_exact_io
 @pytest.mark.asyncio
 async def test_strict_runner_rejects_worker_mismatch_before_connector() -> None:
     module = importlib.import_module("app.services.vpn_reality_endpoint_deployment")
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    snapshot = VpnNodeTransportSnapshot(
+        host="127.0.0.1",
+        port=2222,
+        username="root",
+        known_hosts=b"[127.0.0.1]:2222 " + host_key.export_public_key("openssh"),
+        password=PASSWORD,
+    )
+    assert module._connection_options(snapshot)["password"] == PASSWORD
     connected = False
 
     async def connector(*_args, **_kwargs):
@@ -341,7 +358,7 @@ async def test_strict_runner_rejects_worker_mismatch_before_connector() -> None:
         match="^vpn_endpoint_installer_transport_failed$",
     ):
         await module.execute_endpoint_installer_over_ssh(
-            None,
+            snapshot,
             _worker_2_request(),
             controlled_worker_id=15,
             connector=connector,
