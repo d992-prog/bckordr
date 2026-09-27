@@ -78,7 +78,13 @@ def test_operations_services_are_root_only_hardened_oneshots(
         ENV_FILE,
         OPERATIONS_ENV_FILE,
     ]
-    assert service["ExecStart"] == f"{PYTHON} -m {module}"
+    expected_start = f"{PYTHON} -m {module}"
+    if name == "veltrix-watchdog.service":
+        expected_start = (
+            "/usr/bin/env PGSSLMODE=disable PGHOST=/var/run/postgresql "
+            + expected_start
+        )
+    assert service["ExecStart"] == expected_start
     assert service["UMask"] == "0077"
     assert service["TimeoutStartSec"] == runtime
     assert "RuntimeMaxSec" not in service
@@ -137,7 +143,7 @@ def test_watchdog_service_owns_only_its_private_state_directory() -> None:
     ) == [""]
     assert service["StateDirectory"] == "veltrix-watchdog"
     assert service["StateDirectoryMode"] == "0700"
-    assert service["Environment"] == "PGSSLMODE=disable"
+    assert "Environment" not in service
     assert _directive_values(
         "veltrix-watchdog.service", "Service", "ReadOnlyPaths"
     ) == [

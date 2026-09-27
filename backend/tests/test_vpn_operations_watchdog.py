@@ -1301,6 +1301,9 @@ def test_main_is_fail_closed_silent_and_runs_one_enabled_cycle(
         "VPN_WATCHDOG_STATE_PATH": str(state_path),
         "VPN_ALERT_TELEGRAM_USER_ID": "123456789",
         "VPN_TELEGRAM_BOT_TOKEN": "private-token",
+        "PGSSLMODE": "disable",
+        "PGHOST": "/var/run/postgresql",
+        "DB_URL": "postgresql+asyncpg:///veltrix",
     }
 
     assert watchdog.main(environment, run=run) == 0
@@ -1309,6 +1312,32 @@ def test_main_is_fail_closed_silent_and_runs_one_enabled_cycle(
     assert alert_calls == [
         (("control_health",), state_path, environment)
     ]
+    for overrides in (
+        {"DB_URL": "postgresql+asyncpg://user:password@db.internal/veltrix"},
+        {"DB_URL": "postgresql+asyncpg:///veltrix?host=db.internal"},
+        {
+            "DB_URL": (
+                "postgresql+asyncpg:///veltrix"
+                "?host=/var/run/postgresql,db.internal&port=5432,5432"
+            )
+        },
+        {
+            "DB_URL": (
+                "postgresql+asyncpg://user:password@localhost/veltrix"
+                "?sslmode=require"
+            )
+        },
+        {
+            "DB_URL": (
+                "postgresql+asyncpg:///veltrix?dsn="
+                "postgresql%3A%2F%2Fuser%3Apassword%40db.internal%2Fremote"
+            )
+        },
+        {"DB_URL": "postgresql+asyncpg:///veltrix", "PGHOST": "db.internal"},
+        {"DB_URL": "postgresql+asyncpg:///veltrix?host=", "PGHOST": "db.internal"},
+    ):
+        assert watchdog.main(environment | overrides, run=run) == 1
+    assert len(run_calls) == 1
     assert capsys.readouterr() == ("", "")
 
 

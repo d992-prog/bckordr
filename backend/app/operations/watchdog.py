@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, OpenerDirector, Request, build_opener
 
 import httpx
+from sqlalchemy.engine import make_url
 
 from app.core.config import Settings
 from app.db.session import create_vpn_control_database
@@ -317,6 +318,38 @@ def _readiness_observation(state: str, observed_at: datetime) -> ReadinessObserv
         observed_at=observed_at,
         max_age_seconds=OPERATIONAL_MAX_AGE_SECONDS,
     )
+
+
+def _require_local_database_when_tls_disabled(
+    settings: Settings,
+    environ: Mapping[str, str],
+) -> None:
+    if environ.get("PGSSLMODE", "").strip().lower() != "disable":
+        return
+    url = make_url(settings.db_url)
+    query_host = url.query.get("host")
+    local_hosts = {"localhost", "127.0.0.1", "::1"}
+
+    def local_host(value: object) -> bool:
+        return bool(
+            isinstance(value, str)
+            and value
+            and "," not in value
+            and (value.startswith("/") or value in local_hosts)
+        )
+
+    if (
+        not url.drivername.startswith("postgresql")
+        or url.host not in {None, "", *local_hosts}
+        or ("host" in url.query and not local_host(query_host))
+        or (
+            "host" not in url.query
+            and url.host in {None, ""}
+            and not local_host(environ.get("PGHOST"))
+        )
+        or any(key.lower() not in {"host", "port"} for key in url.query)
+    ):
+        raise ValueError("watchdog_database_transport_invalid")
 
 
 def collect_system_observations(
@@ -676,6 +709,7 @@ def main(
         return 1
     try:
         settings = Settings.model_validate(dict(environ))
+        _require_local_database_when_tls_disabled(settings, environ)
         failing_codes = asyncio.run(run(settings))
         run_alert_cycle(
             failing_codes,
