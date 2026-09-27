@@ -232,6 +232,9 @@ def _database_snapshot(path: Path, deadline: float) -> sqlite3.Connection:
         if time.monotonic() >= deadline:
             raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
 
+        # ponytail: a last writer can remove the prechecked WAL/SHM pair here;
+        # SQLite may recreate safe coordination files. A non-creating read-only
+        # VFS or filesystem boundary is needed if strict zero writes are required.
         source = sqlite3.connect(
             f"{path.as_uri()}?mode=ro", uri=True, timeout=_DATABASE_TIMEOUT_SECONDS
         )

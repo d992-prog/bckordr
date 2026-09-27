@@ -15,18 +15,24 @@ sets `query_only`, and copies one consistent SQLite snapshot into an in-memory
 connection. The existing bounded `SELECT id FROM inbounds` then runs against
 that in-memory snapshot.
 
-This is the smallest safe option because Python already ships the SQLite backup
-API. It needs no package, executable, persistent temporary file, new service, or
-new network path. The live database remains logically read-only; SQLite may use
-the existing WAL/SHM files for normal reader coordination.
+This uses Python's bundled SQLite backup API, with no new package, executable,
+temporary file, service or network path. The database remains logically read-only.
+A concurrent last-writer shutdown can remove the prechecked WAL/SHM pair before
+SQLite opens the source; SQLite may recreate safe coordination metadata in that
+interval. This narrow lifecycle is accepted with the postchecks below. It does
+not change rows, journal mode or configuration. A custom non-creating read-only
+VFS or filesystem boundary would be required for strict zero filesystem writes
+and is intentionally not added.
 
 ## Safety contract
 
 - Keep the existing absolute-path, ancestor, regular-file, ownership and size
   checks for the main database.
-- Accept only regular, non-symlink `-wal` and `-shm` sidecars owned by the same
-  UID as the main database. Reject an unexpected rollback journal while WAL is
-  present and reject every other malformed sidecar state.
+- Read the SQLite header before opening it: rollback mode permits zero sidecars;
+  stable WAL mode requires an existing safe `-wal`/`-shm` pair and fails before
+  SQLite opens the source if the pair is absent. Accept only regular,
+  non-symlink sidecars with the main database's UID and permission mode, within
+  the size limit. Reject any rollback journal and every malformed sidecar state.
 - Open the source with `mode=ro`, `uri=True`, a two-second busy timeout and
   `PRAGMA query_only=ON`.
 - Use `Connection.backup()` to a private in-memory connection. Abort when the
@@ -34,12 +40,15 @@ the existing WAL/SHM files for normal reader coordination.
 - Query only inbound IDs from the completed in-memory snapshot. Keep the current
   10,000-row bound, uniqueness checks and positive-integer validation.
 - Hold the source connection open for the complete backup. Re-stat the main
-  database, its parent and current sidecars afterward. The main database must
-  keep the same device/inode, type, owner and mode; size and timestamps may
-  legitimately change during a WAL checkpoint. Sidecars may rotate, but every
-  observed version must still be a regular non-symlink with the required owner
-  and mode. A main-file replacement, unsafe metadata or invalid sidecar state
-  fails closed with the existing `vpn_xui_inventory_unavailable` code.
+  database, its parent and current sidecars afterward, and recheck the SQLite
+  header and WAL mode. A pair removed after prevalidation may be recreated by
+  SQLite only as safe coordination metadata and must pass every postcheck. The
+  main database must keep the same device/inode, type, owner and mode; size and
+  timestamps may legitimately change during a WAL checkpoint. Sidecars may
+  rotate, but every observed version must still be a regular non-symlink with
+  the required owner and mode. A main-file replacement, unsafe metadata or
+  invalid sidecar state fails closed with the existing
+  `vpn_xui_inventory_unavailable` code.
 - Never expose database rows, paths, connection URLs or SQLite exception text in
   controller logs, node receipts or Telegram alerts.
 
@@ -69,6 +78,8 @@ Add focused tests to `backend/tests/test_vpn_xui_node_observation.py`:
 - the same test proves the WAL row, rather than only the main-file rows, is seen;
 - symlinked or wrongly owned sidecars fail closed;
 - a deadline exceeded during backup fails closed;
+- a closed WAL database without sidecars fails before open without creating files;
+- a WAL logical snapshot over the size limit fails even when each file fits;
 - existing rollback-journal and malformed-database tests remain green.
 
 The focused observation, health-entrypoint, bundle and fleet-health suites run
