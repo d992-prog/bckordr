@@ -78,7 +78,13 @@ def test_operations_services_are_root_only_hardened_oneshots(
         ENV_FILE,
         OPERATIONS_ENV_FILE,
     ]
-    assert service["ExecStart"] == f"{PYTHON} -m {module}"
+    expected_start = f"{PYTHON} -m {module}"
+    if name == "veltrix-watchdog.service":
+        expected_start = (
+            "/usr/bin/env PGSSLMODE=disable PGHOST=/var/run/postgresql "
+            + expected_start
+        )
+    assert service["ExecStart"] == expected_start
     assert service["UMask"] == "0077"
     assert service["TimeoutStartSec"] == runtime
     assert "RuntimeMaxSec" not in service

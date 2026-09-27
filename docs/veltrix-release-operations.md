@@ -92,6 +92,11 @@ change this file and the matching `ReadWritePaths`/`ReadOnlyPaths` together in a
 reviewed unit override. Do not enable either timer merely because
 `systemd-analyze` accepts its syntax.
 
+The watchdog command pins `PGSSLMODE=disable` and the local PostgreSQL socket
+only for the confirmed on-host target; startup rejects remote, multi-host and
+DSN SSL overrides in that mode. Before moving PostgreSQL off-host, remove both
+pins and provision a reviewed TLS configuration.
+
 ## First manual backup
 
 Before the first run, confirm the database URL, free space, actual source paths

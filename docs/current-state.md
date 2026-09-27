@@ -1,12 +1,26 @@
 # Current State
 
-## WAL-safe fleet-health release candidate (2026-09-27, local only)
+## WAL-safe fleet-health production rollout (2026-09-27)
 
-Production control remains at `ecec20d` before this rollout. The daily backup
-and five-minute watchdog are enabled and healthy in production. Fleet health
-remains disabled pending this exact merge, node-bundle installation and manual
-acceptance on the live node. Payment, public trial and ready notifications
-remain off. This candidate has not been deployed or accepted in production.
+The WAL-safe control rollout was deployed from merge `61caa05`. Node bundle
+`61984a239d17d6cdd89bc2dc242973e08017eb680ee16bbc20339898dd7dc1e6` is
+installed and verified. Rollback archive
+`vpn-node-before-wal-health-abb8dde85d2b4e9e9274f7c08a642a11.pyz` and the new
+`.previous` are preserved. Daily backup, the five-minute watchdog and fleet
+health are enabled; payment, public trial and ready notifications remain off.
+
+The manual strict probe was healthy for exactly one endpoint. The subsequent
+scheduled cycle advanced and remained healthy; local and public health returned
+200 and Nginx configuration was valid. An obsolete failed transient backup
+rehearsal was reset. The hardened watchdog then exposed asyncpg probing the
+hidden default client-key path under `/root`; its unit now disables TLS only for
+the confirmed local PostgreSQL target while retaining `ProtectHome=true`. The
+exact-sandbox database, snapshot and rollback rehearsal passed.
+
+Release readiness remains deliberately fail-closed on endpoint redundancy,
+per-endpoint and aggregate capacity, external proof, the public-trial plan and a
+release ID. Disabled payment passes the current readiness policy; payment
+integration remains a separate final product stage.
 
 ## Public-trial release-operations checkpoint (2026-09-27, local only)
 
@@ -122,7 +136,7 @@ VPN_WATCHDOG_ENABLED=false
   evidence remains red, so a fresh successful backup and watchdog run are still
   required before the marker can be committed.
 
-### Strict fleet health (implemented on branch, not deployed)
+### Strict fleet health (deployed 2026-09-27)
 
 - The common deterministic node bundle now has one bounded read-only `--health`
   entrypoint. The controller reaches it only through strict SSH with the exact
@@ -152,10 +166,9 @@ VPN_WATCHDOG_ENABLED=false
   sidecars; the runner does not mutate rows, configuration or journal mode.
   Strict zero filesystem writes would require a custom VFS or filesystem
   boundary.
-- Production `VPN_FLEET_HEALTH_ENABLED=false` remains in force until live rollout
-  acceptance. Its interval defaults to 120 seconds and is constrained to
-  30..3600. The legacy `vpn_check` path remains excluded from automation and
-  readiness proof.
+- Production `VPN_FLEET_HEALTH_ENABLED=true` is in force after live acceptance.
+  Its interval defaults to 120 seconds and is constrained to 30..3600. The
+  legacy `vpn_check` path remains excluded from automation and readiness proof.
 - One shared strict trust file carries a canonical literal Ed25519 pin for each
   node. The strict transport selects only the requested host and port. One-time
   onboarding appends under a process-safe lock, preserves all existing pins,
@@ -167,11 +180,12 @@ VPN_WATCHDOG_ENABLED=false
 No per-node feature work is required. A node is onboarded once with its standard
 credentials, exact Ed25519 pin and the same deterministic bundle; later changes
 remain the existing fleet-wide `vpn-update-all` and `vpn-autoconfig-all`
-operations. Rollout must deploy code/migrations disabled, bulk-install the same
-bundle, manually and externally verify the current node, then enable only fleet
-health. Readiness must still fail until a second distinct VPS is onboarded the
-same way and both endpoints have fresh health, positive capacity and valid
-external proof. Payment and public trial activation are not part of this work.
+operations. The completed rollout deployed code/migrations with fleet health
+disabled, installed the same bundle, manually verified the current node and then
+enabled only fleet health. Readiness must still fail until a second distinct VPS
+is onboarded the same way and both endpoints have fresh health, positive
+capacity and valid external proof. Payment integration and public-trial
+activation remain separate future work.
 
 ### Backup and watchdog operations (historical local checkpoint)
 
