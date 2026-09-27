@@ -121,4 +121,3 @@ Ruff, diff checks and the Linux release gate must pass before deployment.
 
 The failed production partial set is retained until the corrected backup and
 restore rehearsal succeed. Its removal is a separate explicit cleanup action.
-
