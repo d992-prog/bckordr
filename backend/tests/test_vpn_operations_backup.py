@@ -1071,6 +1071,144 @@ def test_approved_nginx_symlinks_are_materialized_as_regular_files(
         }
 
 
+def _mock_approved_symlink_source(
+    monkeypatch: pytest.MonkeyPatch, target: Path
+) -> os.stat_result:
+    target_info = target.lstat()
+    parent_info = target.parent.lstat()
+    link_info = SimpleNamespace(
+        st_mode=stat.S_IFLNK | 0o777,
+        st_dev=1,
+        st_ino=2,
+        st_size=len(str(target)),
+        st_mtime_ns=1,
+        st_ctime_ns=1,
+        st_file_attributes=0,
+    )
+    monkeypatch.setattr(
+        backup_module, "_open_absolute_directory", lambda *_: (42, parent_info)
+    )
+    monkeypatch.setattr(
+        backup_module.os, "readlink", lambda *_, **__: str(target)
+    )
+    monkeypatch.setattr(
+        backup_module.os,
+        "stat",
+        lambda *_, dir_fd=None, **__: link_info if dir_fd == 41 else target_info,
+    )
+    monkeypatch.setattr(backup_module.os, "O_NOFOLLOW", 0x10000000, raising=False)
+    monkeypatch.setattr(backup_module.os, "O_NONBLOCK", 0x20000000, raising=False)
+    return link_info
+
+
+def test_approved_nginx_target_open_is_nonblocking_and_rejects_nonregular_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    target = config.nginx_directory / "veltrix.conf"
+    budget = backup_module._Budget(config, lambda: 0.0, 0.0)
+    with monkeypatch.context() as patch:
+        link_info = _mock_approved_symlink_source(patch, target)
+        opened_flags: list[int] = []
+        closed: list[int] = []
+
+        def open_target(_name: str, flags: int, *, dir_fd: int) -> int:
+            assert dir_fd == 42
+            opened_flags.append(flags)
+            return 43
+
+        patch.setattr(backup_module.os, "open", open_target)
+        patch.setattr(
+            backup_module.os,
+            "fstat",
+            lambda _fd: SimpleNamespace(st_mode=stat.S_IFIFO, st_dev=3, st_ino=4),
+        )
+        patch.setattr(backup_module.os, "read", lambda *_: pytest.fail("FIFO read"))
+        patch.setattr(backup_module.os, "close", closed.append)
+        with pytest.raises(BackupError, match="^backup_source_changed$"):
+            backup_module._copy_approved_symlink(
+                41,
+                target.parent,
+                "linked",
+                link_info,
+                tmp_path / "copied",
+                Path("nginx/linked"),
+                (config.nginx_directory,),
+                budget,
+            )
+        assert opened_flags[0] & backup_module.os.O_NONBLOCK
+        assert closed == [43, 42]
+
+
+def test_approved_nginx_cleanup_closes_both_fds_after_first_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    target = config.nginx_directory / "veltrix.conf"
+    budget = backup_module._Budget(config, lambda: 0.0, 0.0)
+    with monkeypatch.context() as patch:
+        link_info = _mock_approved_symlink_source(patch, target)
+        closed: list[int] = []
+        patch.setattr(backup_module.os, "open", lambda *_args, **_kwargs: 43)
+
+        def failed_copy(*_args: object) -> dict[str, object]:
+            raise BackupError("backup_source_changed")
+
+        def close(descriptor: int) -> None:
+            closed.append(descriptor)
+            if descriptor == 43:
+                raise OSError("synthetic close failure")
+
+        patch.setattr(backup_module, "_copy_descriptor", failed_copy)
+        patch.setattr(backup_module.os, "close", close)
+        with pytest.raises(BackupError, match="^backup_source_changed$"):
+            backup_module._copy_approved_symlink(
+                41,
+                target.parent,
+                "linked",
+                link_info,
+                tmp_path / "copied",
+                Path("nginx/linked"),
+                (config.nginx_directory,),
+                budget,
+            )
+        assert closed == [43, 42]
+
+
+def test_approved_nginx_cleanup_failure_uses_static_backup_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    target = config.nginx_directory / "veltrix.conf"
+    budget = backup_module._Budget(config, lambda: 0.0, 0.0)
+    with monkeypatch.context() as patch:
+        link_info = _mock_approved_symlink_source(patch, target)
+        closed: list[int] = []
+        patch.setattr(backup_module.os, "open", lambda *_args, **_kwargs: 43)
+        patch.setattr(backup_module.os, "fstat", lambda _fd: target.parent.lstat())
+        patch.setattr(backup_module, "_copy_descriptor", lambda *_: {})
+
+        def close(descriptor: int) -> None:
+            closed.append(descriptor)
+            if descriptor == 43:
+                raise OSError("synthetic secret close failure")
+
+        patch.setattr(backup_module.os, "close", close)
+        with pytest.raises(BackupError, match="^backup_copy_failed$") as raised:
+            backup_module._copy_approved_symlink(
+                41,
+                target.parent,
+                "linked",
+                link_info,
+                tmp_path / "copied",
+                Path("nginx/linked"),
+                (config.nginx_directory,),
+                budget,
+            )
+        assert "synthetic" not in repr(raised.value)
+        assert closed == [43, 42]
+
+
 def test_symlink_source_is_rejected_without_following_it(tmp_path: Path) -> None:
     config = _config(tmp_path)
     secret = tmp_path / "outside-secret"

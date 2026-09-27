@@ -831,6 +831,7 @@ def _copy_approved_symlink(
 ) -> dict[str, object]:
     target_parent_fd = -1
     target_fd = -1
+    completed = False
     try:
         try:
             text = os.readlink(name, dir_fd=parent_fd)
@@ -850,7 +851,10 @@ def _copy_approved_symlink(
         try:
             target_fd = os.open(
                 target.name,
-                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_BINARY", 0),
+                os.O_RDONLY
+                | os.O_NOFOLLOW
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_BINARY", 0),
                 dir_fd=target_parent_fd,
             )
         except OSError:
@@ -890,16 +894,22 @@ def _copy_approved_symlink(
             or symlink_text != text
         ):
             raise BackupError("backup_source_changed")
+        completed = True
         return record
     except BackupError:
         raise
     except (OSError, ValueError):
         raise BackupError("backup_source_invalid") from None
     finally:
-        if target_fd >= 0:
-            os.close(target_fd)
-        if target_parent_fd >= 0:
-            os.close(target_parent_fd)
+        close_failed = False
+        for descriptor in (target_fd, target_parent_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    close_failed = True
+        if close_failed and completed:
+            raise BackupError("backup_copy_failed") from None
 
 
 @dataclass(slots=True)
