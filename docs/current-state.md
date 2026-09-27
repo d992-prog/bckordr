@@ -1,15 +1,23 @@
 # Current State
 
+## WAL-safe fleet-health release candidate (2026-09-27, local only)
+
+Production control remains at `ecec20d` before this rollout. The daily backup
+and five-minute watchdog are enabled and healthy in production. Fleet health
+remains disabled pending this exact merge, node-bundle installation and manual
+acceptance on the live node. Payment, public trial and ready notifications
+remain off. This candidate has not been deployed or accepted in production.
+
 ## Public-trial release-operations checkpoint (2026-09-27, local only)
 
-The product now has a release-shaped, non-payment public trial path, but this
-checkpoint is deliberately fail-closed and **not deployed**. No production
+At this checkpoint, the product had a release-shaped, non-payment public trial
+path, but it was deliberately fail-closed and **not deployed**. No production
 database, Telegram webhook, VPN node or feature flag was changed. Payments are
-still intentionally absent and remain the final integration stage. Strict fleet
-health, validated backups and the independent watchdog are implemented on this
-branch, but have not been deployed or enabled. Production still has one VPN
-node; fleet health, backup, watchdog, public-trial, ready-notification and
-payment flags remain off.
+still intentionally absent and remain the final integration stage. At this
+checkpoint, strict fleet health, validated backups and the independent watchdog
+were implemented locally but not enabled. Production then had one VPN node;
+fleet health, backup, watchdog, public-trial, ready-notification and payment
+flags were off. The newer production status is recorded above.
 
 ### Customer, bot and provisioning behavior
 
@@ -76,7 +84,10 @@ payment flags remain off.
   accepted a message but the process died before recording success, the stale
   claim can be retried and the customer can receive a duplicate notification.
 
-### Fail-closed defaults and production boundary
+### Fail-closed defaults at this checkpoint
+
+These branch defaults are not a statement of current production flag values;
+backup and watchdog are now enabled as recorded above.
 
 ```env
 VPN_PUBLIC_TRIAL_ENABLED=false
@@ -129,14 +140,19 @@ VPN_WATCHDOG_ENABLED=false
   and preserves the last successful health time, endpoint identity, existing
   profiles and matching external proof. A changed public fingerprint alone
   clears that external proof.
-- The node inventory reader accepts a stable rollback-journal SQLite main file
-  and fails closed on live WAL/SHM/journal sidecars without modifying the
-  database. A real 3x-UI switch to WAL therefore requires a reviewed read-only
-  consistent-snapshot filesystem boundary before fleet health can be enabled;
-  an immutable-file workaround is not acceptable.
-- `VPN_FLEET_HEALTH_ENABLED=false` is the required production default. Its
-  interval defaults to 120 seconds and is constrained to 30..3600. The legacy
-  `vpn_check` path remains excluded from automation and readiness proof.
+- The node runner uses SQLite online backup into memory for a consistent
+  inventory snapshot. It validates main-database and WAL/SHM metadata and header
+  consistency before and after the backup. A stable closed WAL without its safe
+  sidecar pair fails before SQLite opens; rollback with no sidecars and live WAL
+  with a safe pair are supported. Logical snapshot size is bounded, and unsafe
+  sidecars or deadlines fail with a static, closed result. An explicitly accepted
+  narrow last-writer race can let SQLite recreate safe coordination sidecars;
+  the runner does not mutate rows, configuration or journal mode. Strict zero
+  filesystem writes would require a custom VFS or filesystem boundary.
+- Production `VPN_FLEET_HEALTH_ENABLED=false` remains in force until live rollout
+  acceptance. Its interval defaults to 120 seconds and is constrained to
+  30..3600. The legacy `vpn_check` path remains excluded from automation and
+  readiness proof.
 - One shared strict trust file carries a canonical literal Ed25519 pin for each
   node. The strict transport selects only the requested host and port. One-time
   onboarding appends under a process-safe lock, preserves all existing pins,
@@ -154,7 +170,7 @@ health. Readiness must still fail until a second distinct VPS is onboarded the
 same way and both endpoints have fresh health, positive capacity and valid
 external proof. Payment and public trial activation are not part of this work.
 
-### Backup and watchdog operations (implemented locally, disabled)
+### Backup and watchdog operations (historical local checkpoint)
 
 - The daily root backup creates a private atomic set containing a custom-format
   PostgreSQL dump, the private application environment, the actual control unit,
@@ -174,20 +190,21 @@ external proof. Payment and public trial activation are not part of this work.
   and VPN links are never included.
 - The hardened systemd units expose only their required read/write paths, run
   with no effective capabilities and are installed separately from enablement.
-  Linux acceptance and the disposable restore rehearsal have passed. Both
-  timers and both feature flags remain off until the operations slice is
-  deployed disabled and fresh production backup, restore and alert/recovery
-  rehearsals have passed.
+  Linux acceptance and the disposable restore rehearsal had passed. At this
+  checkpoint, both timers and both feature flags remained off pending the
+  operations rollout and fresh production backup, restore and alert/recovery
+  rehearsals.
 
-Remaining release work is to deploy the operations slice disabled, obtain fresh
-production operational/watchdog and backup evidence, bring the complete strict
-fleet to fresh health, add and externally verify the second production node,
+At that checkpoint, remaining release work was to deploy the operations slice
+disabled, obtain fresh production operational/watchdog and backup evidence,
+bring the complete strict fleet to fresh health, add and externally verify the
+second production node,
 and then repeat the operator flow: set capacity, obtain strict health, run the
 external tests, inspect the panel, type the exact phrase `ГОТОВО К РЕЛИЗУ`, and
 commit the marker. Public-trial enablement remains a separate release requiring
 a fresh reviewed backup and observations.
-The public-trial and payment flags remain off; nothing in this checkpoint is
-deployed or green in production.
+At that checkpoint, public trial and payment were off; none of its changes had
+been deployed or accepted in production.
 
 Production enablement requires all of the following in addition to reviewed
 code: the exact `vpn_public_release_ready_v1` database marker matching a
