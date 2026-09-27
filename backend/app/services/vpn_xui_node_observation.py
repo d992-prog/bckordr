@@ -183,7 +183,10 @@ def _database_uses_wal(path: Path, expected: os.stat_result) -> bool:
         header = os.read(descriptor, 20)
     finally:
         os.close(descriptor)
-    if header[:16] != b"SQLite format 3\x00" or header[18:20] not in (b"\x01\x01", b"\x02\x02"):
+    if header[:16] != b"SQLite format 3\x00" or header[18:20] not in (
+        b"\x01\x01",
+        b"\x02\x02",
+    ):
         raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
     return header[18:20] == b"\x02\x02"
 
@@ -214,7 +217,11 @@ def _database_snapshot(path: Path, deadline: float) -> sqlite3.Connection:
     try:
         for parent in path.parents:
             info = os.lstat(parent)
-            if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or _reparse(info):
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or stat.S_ISLNK(info.st_mode)
+                or _reparse(info)
+            ):
                 raise VpnEndpointError("vpn_xui_inventory_unavailable") from None
         directory_before = os.lstat(path.parent)
         before = os.lstat(path)
@@ -238,7 +245,9 @@ def _database_snapshot(path: Path, deadline: float) -> sqlite3.Connection:
         source = sqlite3.connect(
             f"{path.as_uri()}?mode=ro", uri=True, timeout=_DATABASE_TIMEOUT_SECONDS
         )
+        source.execute("PRAGMA busy_timeout=0")
         source.execute("PRAGMA query_only=ON")
+        source.execute("BEGIN")
         page_size = _bounded_page_size(source)
         snapshot = sqlite3.connect(":memory:", timeout=_DATABASE_TIMEOUT_SECONDS)
 
