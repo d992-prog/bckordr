@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import threading
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, asdict, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -299,32 +300,52 @@ def test_database_drift_between_reads_rejects(observation, panel, data):
     assert_error(observation, panel, data, "vpn_xui_inventory_incomplete")
 
 
-def test_wal_database_is_rejected_without_changing_directory(
-    observation, panel, data
-):
-    connection = sqlite3.connect(data["database"])
+def test_wal_database_snapshot_includes_uncheckpointed_rows(observation, data):
+    writer = sqlite3.connect(data["database"])
     try:
-        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
-        connection.execute("INSERT INTO inbounds VALUES (8)")
-        connection.commit()
-        before = {
-            path.name: hashlib.sha256(path.read_bytes()).digest()
-            for path in data["database"].parent.iterdir()
-            if path.is_file()
-        }
-        events = list(data["events"])
-
-        assert_error(observation, panel, data, "vpn_xui_inventory_unavailable")
-
-        after = {
-            path.name: hashlib.sha256(path.read_bytes()).digest()
-            for path in data["database"].parent.iterdir()
-            if path.is_file()
-        }
-        assert after == before
-        assert data["events"] == events
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("INSERT INTO inbounds VALUES (8)")
+        writer.commit()
+        with closing(
+            sqlite3.connect(f"{data['database'].as_uri()}?immutable=1", uri=True)
+        ) as stale:
+            assert tuple(stale.execute("SELECT id FROM inbounds ORDER BY id")) == (
+                (2,),
+                (7,),
+            )
+        assert observation._local_inbound_ids(data["database"]) == (2, 7, 8)
     finally:
-        connection.close()
+        writer.close()
+
+
+@pytest.mark.parametrize("failure", ["symlink", "wrong_owner"])
+def test_wal_sidecar_metadata_fails_closed(observation, data, monkeypatch, failure):
+    writer = sqlite3.connect(data["database"])
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("INSERT INTO inbounds VALUES (8)")
+        writer.commit()
+        wal = Path(str(data["database"]) + "-wal")
+        assert wal.is_file()
+        real_lstat = os.lstat
+
+        def lstat(path):
+            info = real_lstat(path)
+            if Path(path) == wal:
+                values = list(info)
+                if failure == "symlink":
+                    values[0] = stat.S_IFLNK | 0o777
+                else:
+                    values[4] = info.st_uid + 1
+                return os.stat_result(values)
+            return info
+
+        monkeypatch.setattr(observation.os, "lstat", lstat)
+        with pytest.raises(VpnEndpointError) as caught:
+            observation._local_inbound_ids(data["database"])
+        assert caught.value.code == str(caught.value) == "vpn_xui_inventory_unavailable"
+    finally:
+        writer.close()
 
 
 def test_rollback_database_snapshot_does_not_change_directory(observation, data):
@@ -346,16 +367,8 @@ def test_rollback_database_snapshot_does_not_change_directory(observation, data)
     assert after == before
 
 
-@pytest.mark.parametrize("failure", ["wal_header", "rollback_sidecar"])
-def test_unsupported_database_state_fails_closed_without_changes(
-    observation, panel, data, failure
-):
-    if failure == "wal_header":
-        raw = bytearray(data["database"].read_bytes())
-        raw[18:20] = b"\x02\x02"
-        data["database"].write_bytes(raw)
-    else:
-        Path(str(data["database"]) + "-journal").write_bytes(b"pending")
+def test_rollback_journal_fails_closed_without_changes(observation, panel, data):
+    Path(str(data["database"]) + "-journal").write_bytes(b"pending")
     before = {
         path.name: hashlib.sha256(path.read_bytes()).digest()
         for path in data["database"].parent.iterdir()
@@ -374,27 +387,77 @@ def test_unsupported_database_state_fails_closed_without_changes(
     assert data["events"] == events
 
 
-def test_database_snapshot_rejects_content_drift(
-    observation, panel, data, monkeypatch
+def test_wal_database_backup_deadline_closes_both_connections(
+    observation, data, monkeypatch
 ):
-    real_read = os.read
-    reads = 0
+    writer = sqlite3.connect(data["database"])
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("INSERT INTO inbounds VALUES (8)")
+        writer.commit()
+        real_connect = sqlite3.connect
+        opened = []
+        closed = []
+        backup_returned = False
+        expired = False
+        calls = 0
+        callback_checked_deadline = False
 
-    def drifting_read(descriptor, size):
-        nonlocal reads
-        reads += 1
-        chunk = real_read(descriptor, size)
-        if reads == 3 and chunk:
-            return chunk[:-1] + bytes([chunk[-1] ^ 1])
-        return chunk
+        class Connection(sqlite3.Connection):
+            def close(self):
+                closed.append(self)
+                super().close()
 
-    monkeypatch.setattr(observation.os, "read", drifting_read)
-    events = list(data["events"])
+            def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
+                nonlocal backup_returned
+                assert progress is not None
 
-    assert_error(observation, panel, data, "vpn_xui_inventory_unavailable")
+                def expire_during_backup(status, remaining, total):
+                    nonlocal expired, callback_checked_deadline
+                    expired = True
+                    before = calls
+                    try:
+                        progress(status, remaining, total)
+                    finally:
+                        callback_checked_deadline = calls > before
 
-    assert reads >= 3
-    assert data["events"] == events
+                result = super().backup(
+                    target,
+                    pages=pages,
+                    progress=expire_during_backup,
+                    name=name,
+                    sleep=sleep,
+                )
+                backup_returned = True
+                return result
+
+        def monotonic():
+            nonlocal calls
+            calls += 1
+            return 3.0 if expired else 0.0
+
+        def connect(*args, **kwargs):
+            connection = real_connect(*args, factory=Connection, **kwargs)
+            opened.append(connection)
+            return connection
+
+        monkeypatch.setattr(
+            observation.sqlite3,
+            "connect",
+            connect,
+        )
+        monkeypatch.setattr(observation.time, "monotonic", monotonic)
+        with pytest.raises(VpnEndpointError) as caught:
+            observation._local_inbound_ids(data["database"])
+        assert caught.value.code == str(caught.value) == "vpn_xui_inventory_unavailable"
+        assert calls >= 3
+        assert callback_checked_deadline
+        assert not backup_returned
+        assert len(opened) == len(closed) == 2
+        assert set(opened) == set(closed)
+        assert len(set(closed)) == 2
+    finally:
+        writer.close()
 
 
 @pytest.mark.parametrize(
@@ -597,66 +660,111 @@ def test_local_reads_select_only_ids_and_use_read_only_connection(
     observation, panel, data, monkeypatch
 ):
     real_connect = sqlite3.connect
-    opened, statements, closed, progress = [], [], [], []
+    opened, connections, statements, closed, progress, destinations = (
+        [], [], [], [], [], []
+    )
 
     class Connection(sqlite3.Connection):
         def close(self):
-            closed.append(True)
+            closed.append(self)
             super().close()
 
         def set_progress_handler(self, callback, steps):
-            progress.append((callback, steps))
+            progress.append((self, callback, steps))
             super().set_progress_handler(callback, steps)
 
     def connect(database, **kwargs):
         opened.append((database, kwargs))
         connection = real_connect(database, factory=Connection, **kwargs)
-        connection.set_trace_callback(statements.append)
+        connections.append(connection)
+        if database == ":memory:":
+            destinations.append(connection)
+        connection.set_trace_callback(
+            lambda statement: statements.append((database, statement))
+        )
         return connection
 
     monkeypatch.setattr(observation.sqlite3, "connect", connect)
     observe(observation, panel, data)
-    assert len(opened) == len(closed) == len(progress) == 2
+    assert len(opened) == len(connections) == len(closed) == 4
+    assert set(connections) == set(closed)
+    assert len(set(closed)) == 4
+    assert len(destinations) == 2
+    assert sum(database == ":memory:" for database, _ in opened) == 2
     assert all(
-        database == ":memory:" and kwargs == {"timeout": 2}
+        kwargs == {"timeout": 2}
         for database, kwargs in opened
+        if database == ":memory:"
     )
-    assert (
-        statements
-        == [
-            "ATTACH x AS 'main'",
-            "PRAGMA query_only=ON",
-            "SELECT id FROM inbounds ORDER BY id LIMIT 10001",
-        ]
-        * 2
-    )
-    assert all(steps > 0 for _, steps in progress)
+    assert sum(
+        isinstance(database, str)
+        and "mode=ro" in database
+        and kwargs.get("uri") is True
+        for database, kwargs in opened
+    ) == 2
+    assert [
+        statement for database, statement in statements if database == ":memory:"
+    ].count("PRAGMA query_only=ON") == 2
+    assert [
+        statement for database, statement in statements if database != ":memory:"
+    ].count("PRAGMA query_only=ON") == 2
+    assert [
+        statement for _, statement in statements if statement.startswith("SELECT")
+    ] == ["SELECT id FROM inbounds ORDER BY id LIMIT 10001"] * 2
+    destination_progress = [
+        (owner, steps) for owner, _, steps in progress if owner in destinations
+    ]
+    assert len(destination_progress) == 2
+    assert {owner for owner, _ in destination_progress} == set(destinations)
+    assert all(steps > 0 for _, steps in destination_progress)
 
 
 def test_sqlite_deadline_error_is_static_and_connection_closes(
-    observation, panel, data, monkeypatch
+    observation, data, monkeypatch
 ):
     real_connect = sqlite3.connect
     closed = []
+    unexpected = []
 
     class Connection(sqlite3.Connection):
         def close(self):
-            closed.append(True)
+            closed.append(self)
             super().close()
 
-    monkeypatch.setattr(
-        observation.sqlite3,
-        "connect",
-        lambda *args, **kwargs: real_connect(*args, factory=Connection, **kwargs),
-    )
-    snapshot = data["database"].read_bytes()
-    monkeypatch.setattr(
-        observation, "_database_snapshot", lambda _path, _deadline: snapshot
-    )
-    ticks = iter([0.0, 3.0])
-    monkeypatch.setattr(observation.time, "monotonic", lambda: next(ticks))
-    assert_error(observation, panel, data, "vpn_xui_inventory_unavailable")
-    assert closed == [True]
+    snapshot = real_connect(":memory:", factory=Connection)
+    try:
+        snapshot.deserialize(data["database"].read_bytes())
+
+        def connect(*args, **kwargs):
+            connection = real_connect(*args, factory=Connection, **kwargs)
+            unexpected.append(connection)
+            return connection
+
+        monkeypatch.setattr(observation.sqlite3, "connect", connect)
+        monkeypatch.setattr(
+            observation, "_database_snapshot", lambda _path, _deadline: snapshot
+        )
+        ticks = iter([0.0])
+        times = []
+
+        def monotonic():
+            now = next(ticks, 3.0)
+            times.append(now)
+            return now
+
+        monkeypatch.setattr(observation.time, "monotonic", monotonic)
+        with pytest.raises(VpnEndpointError) as caught:
+            observation._local_inbound_ids(data["database"])
+        assert caught.value.code == str(caught.value) == "vpn_xui_inventory_unavailable"
+        assert unexpected == []
+        assert times[0] == 0.0 and 3.0 in times
+        assert closed == [snapshot]
+    finally:
+        if snapshot not in closed:
+            snapshot.close()
+        for connection in unexpected:
+            if connection not in closed:
+                connection.close()
 
 
 def test_symlink_database_is_rejected_before_api(observation, panel, data, monkeypatch):
