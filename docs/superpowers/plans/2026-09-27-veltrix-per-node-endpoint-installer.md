@@ -267,7 +267,47 @@ git add backend/app/services/vpn_reality_endpoint_registration.py
 git commit -m "fix(vpn): bind endpoint registration to worker"
 ```
 
-### Task 7: Verify and deliver before production onboarding
+### Task 7: Support a second protected endpoint beside the existing node
+
+**Files:**
+- Modify: `backend/tests/test_vpn_reality_endpoint_registration.py`
+- Modify: `backend/app/services/vpn_reality_endpoint_registration.py`
+
+- [ ] **Step 1: Add the missing production-topology regression**
+
+Seed a ready worker-15 REALITY endpoint, its legacy unscoped acceptance evidence and the shared release marker. Then stage and promote worker 2 with the same release ID. Assert both endpoints are ready, worker 15 and its legacy evidence are unchanged, and worker 2 has its own scoped evidence. Retain tests for same-worker conflicts, per-endpoint evidence conflicts and a different global release ID.
+
+- [ ] **Step 2: Run the registration suite and verify RED**
+
+```powershell
+python -m pytest backend/tests/test_vpn_reality_endpoint_registration.py -q
+```
+
+Expected: worker-2 staging fails on the global ready-REALITY conflict.
+
+- [ ] **Step 3: Scope conflicts and evidence minimally**
+
+Remove only the cross-worker ready-REALITY conflict from `_find_endpoint`; keep same-worker inbound and port conflicts. Derive the evidence key as `vpn_endpoint_external_acceptance_v1:<worker_id>:<inbound_id>`, lock only that key plus the global release marker, and use it for idempotency and evidence conflict checks. Preserve the legacy unscoped evidence row without reading, changing or deleting it.
+
+- [ ] **Step 4: Run focused tests and lint**
+
+```powershell
+python -m ruff check backend/app/services/vpn_reality_endpoint_registration.py backend/tests/test_vpn_reality_endpoint_registration.py
+python -m pytest backend/tests/test_vpn_reality_endpoint_registration.py -q
+```
+
+Expected: Ruff clean and all registration tests pass.
+
+- [ ] **Step 5: Commit tests and implementation separately**
+
+```powershell
+git add backend/tests/test_vpn_reality_endpoint_registration.py
+git commit -m "test(vpn): cover existing protected endpoint topology"
+git add backend/app/services/vpn_reality_endpoint_registration.py
+git commit -m "fix(vpn): register protected endpoints per node"
+```
+
+### Task 8: Verify and deliver before production onboarding
 
 **Files:**
 - Verify only; no additional production file is required.
