@@ -1031,6 +1031,46 @@ def test_failed_copy_preserves_previous_success_marker_and_partial(
     assert (config.backup_root / f"20260924T031011.000000Z-{NONCE}.partial").is_dir()
 
 
+@POSIX_SNAPSHOT_ONLY
+def test_approved_nginx_symlinks_are_materialized_as_regular_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(tmp_path)
+    sites_available = config.nginx_directory / "sites-available"
+    sites_enabled = config.nginx_directory / "sites-enabled"
+    modules_enabled = config.nginx_directory / "modules-enabled"
+    module_root = tmp_path / "modules-available"
+    for directory in (sites_available, sites_enabled, modules_enabled, module_root):
+        directory.mkdir()
+    site_bytes = b"server { listen 80; }\n"
+    module_bytes = b"load_module modules/ngx_http_test_module.so;\n"
+    (sites_available / "site.conf").write_bytes(site_bytes)
+    (module_root / "module.conf").write_bytes(module_bytes)
+    (sites_enabled / "site.conf").symlink_to("../sites-available/site.conf")
+    (modules_enabled / "module.conf").symlink_to(module_root / "module.conf")
+    monkeypatch.setattr(backup_module, "_NGINX_MODULES_DIRECTORY", module_root)
+
+    result = _run(config, FakeRunner())
+    expected = {
+        "nginx/sites-enabled/site.conf": site_bytes,
+        "nginx/modules-enabled/module.conf": module_bytes,
+    }
+    records = {
+        item["path"]: item
+        for item in _read_json(result.directory / "manifest.json")["files"]
+    }
+    for relative, content in expected.items():
+        copied = result.directory / relative
+        assert copied.read_bytes() == content
+        assert stat.S_ISREG(copied.lstat().st_mode)
+        assert not copied.is_symlink()
+        assert records[relative] == {
+            "path": relative,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size": len(content),
+        }
+
+
 def test_symlink_source_is_rejected_without_following_it(tmp_path: Path) -> None:
     config = _config(tmp_path)
     secret = tmp_path / "outside-secret"
