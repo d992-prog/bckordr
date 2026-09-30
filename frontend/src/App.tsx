@@ -264,6 +264,8 @@ const DEFAULT_VPN_PLAN_FORM = {
   priceAmount: "0",
   currency: "RUB",
   isActive: true,
+  isPublic: false,
+  displayOrder: "0",
 };
 
 const DEFAULT_ACCOUNT_FORM = {
@@ -1116,6 +1118,7 @@ export default function App() {
   const [workerSetupRuntimeUrl, setWorkerSetupRuntimeUrl] = useState(DEFAULT_WORKER_RUNTIME_BASE_URL);
   const [workerSetupLoading, setWorkerSetupLoading] = useState(false);
   const [vpnPlanForm, setVpnPlanForm] = useState(DEFAULT_VPN_PLAN_FORM);
+  const [publishingVpnPlanId, setPublishingVpnPlanId] = useState<number | null>(null);
   const [accountForm, setAccountForm] = useState(DEFAULT_ACCOUNT_FORM);
   const [contactForm, setContactForm] = useState(DEFAULT_CONTACT_FORM);
   const [editingContactId, setEditingContactId] = useState<number | null>(null);
@@ -2401,12 +2404,30 @@ export default function App() {
         price_amount: Number(vpnPlanForm.priceAmount || 0),
         currency: vpnPlanForm.currency.trim() || "RUB",
         is_active: vpnPlanForm.isActive,
+        is_public: vpnPlanForm.isPublic,
+        display_order: Number(vpnPlanForm.displayOrder || 0),
       });
       setVpnPlanForm(DEFAULT_VPN_PLAN_FORM);
       await loadAll();
       setToast({ type: "success", text: "VPN тариф добавлен" });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка добавления VPN тарифа" });
+    }
+  }
+
+  async function toggleVpnPlanPublication(plan: VpnPlan) {
+    if (publishingVpnPlanId !== null) {
+      return;
+    }
+    setPublishingVpnPlanId(plan.id);
+    try {
+      await api.updateVpnPlan(plan.id, { is_public: !plan.is_public });
+      await loadAll();
+      setToast({ type: "success", text: plan.is_public ? "Тариф скрыт" : "Тариф опубликован" });
+    } catch (error) {
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка публикации VPN тарифа" });
+    } finally {
+      setPublishingVpnPlanId(null);
     }
   }
 
@@ -4515,7 +4536,9 @@ export default function App() {
                 <label><span>Устройств</span><input value={vpnPlanForm.maxDevices} onChange={(event) => setVpnPlanForm((current) => ({ ...current, maxDevices: event.target.value }))} /></label>
                 <label><span>Цена</span><input value={vpnPlanForm.priceAmount} onChange={(event) => setVpnPlanForm((current) => ({ ...current, priceAmount: event.target.value }))} /></label>
                 <label><span>Валюта</span><input value={vpnPlanForm.currency} onChange={(event) => setVpnPlanForm((current) => ({ ...current, currency: event.target.value }))} /></label>
+                <label><span>Порядок показа</span><input type="number" min="0" value={vpnPlanForm.displayOrder} onChange={(event) => setVpnPlanForm((current) => ({ ...current, displayOrder: event.target.value }))} /></label>
                 <label className="checkbox"><input type="checkbox" checked={vpnPlanForm.isActive} onChange={(event) => setVpnPlanForm((current) => ({ ...current, isActive: event.target.checked }))} /><span>Активен</span></label>
+                <label className="checkbox"><input type="checkbox" checked={vpnPlanForm.isPublic} onChange={(event) => setVpnPlanForm((current) => ({ ...current, isPublic: event.target.checked }))} /><span>Публичный</span></label>
               </div>
               <label><span>Описание</span><textarea rows={3} value={vpnPlanForm.description} onChange={(event) => setVpnPlanForm((current) => ({ ...current, description: event.target.value }))} /></label>
               <button type="submit">Добавить тариф</button>
@@ -4649,6 +4672,8 @@ export default function App() {
                   <th>Лимиты</th>
                   <th>Цена</th>
                   <th>Статус</th>
+                  <th>Публикация</th>
+                  <th>Порядок</th>
                   <th>Действия</th>
                 </tr>
               </thead>
@@ -4660,7 +4685,14 @@ export default function App() {
                     <td>{formatVpnTraffic(plan.traffic_limit_gb)} · {plan.max_devices} устройств</td>
                     <td>{plan.price_amount} {plan.currency}</td>
                     <td><span className={statusClass(plan.is_active ? "ready" : "disabled")}>{plan.is_active ? "активен" : "выключен"}</span></td>
-                    <td><button type="button" className="danger" onClick={() => void deleteVpnPlan(plan)}>Удалить</button></td>
+                    <td><span className={statusClass(plan.is_public ? "ready" : "disabled")}>{plan.is_public ? "Публичный" : "Скрыт"}</span></td>
+                    <td>{plan.display_order}</td>
+                    <td>
+                      <div className="actions">
+                        <button type="button" className="ghost" disabled={publishingVpnPlanId !== null} onClick={() => void toggleVpnPlanPublication(plan)}>{plan.is_public ? "Скрыть" : "Опубликовать"}</button>
+                        <button type="button" className="danger" onClick={() => void deleteVpnPlan(plan)}>Удалить</button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
