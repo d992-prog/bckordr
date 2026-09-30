@@ -624,8 +624,8 @@ class VpnPlanUpdateRequest(BaseModel):
     price_amount: float | None = Field(default=None, ge=0.0)
     currency: str | None = Field(default=None, min_length=3, max_length=8)
     is_active: bool | None = None
-    is_public: bool | None = None
-    display_order: int | None = Field(default=None, ge=0)
+    is_public: bool = None
+    display_order: int = Field(default=None, ge=0)
 
 
 class VpnPlanResponse(VpnPlanBase):
