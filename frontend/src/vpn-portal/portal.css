@@ -177,6 +177,14 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
   padding: 12px;
 }
 .veltrix-portal .connection-uri { resize: vertical; overflow-wrap: anywhere; word-break: break-all; }
+.veltrix-portal .qr-code {
+  display: block;
+  width: min(100%, 320px);
+  height: auto;
+  margin: 0 auto;
+  padding: 12px;
+  background: #fff;
+}
 .veltrix-portal .rename-form { display: grid; gap: 10px; }
 .veltrix-portal .button-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .veltrix-portal .message { margin: 0; line-height: 1.5; }
