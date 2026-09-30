@@ -61,6 +61,7 @@ from app.services.vpn_public_trial import (
     activate_public_trial,
     public_trial_status,
 )
+from app.services.vpn_friend_invitations import BOT_USERNAME
 from app.services.vpn_telegram_identity import TelegramIdentity, resolve_telegram_customer
 
 
@@ -127,6 +128,13 @@ def _callback_url(settings: Settings) -> str:
     return public_origin(settings) + settings.api_prefix.rstrip("/") + "/vpn-portal/auth/telegram/callback"
 
 
+def _bot_url(settings: Settings) -> str | None:
+    username = settings.vpn_telegram_bot_username
+    if BOT_USERNAME.fullmatch(username) is None or not username.lower().endswith("bot"):
+        return None
+    return f"https://t.me/{username}"
+
+
 @router.get("/config")
 async def config(request: Request) -> dict[str, object]:
     capabilities = portal_capabilities(_settings(request))
@@ -137,6 +145,7 @@ async def config(request: Request) -> dict[str, object]:
             if capabilities["browser_login_enabled"]
             else None
         ),
+        "bot_url": _bot_url(_settings(request)),
         "support_text": _settings(request).vpn_support_text,
     }
 

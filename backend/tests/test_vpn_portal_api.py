@@ -963,6 +963,7 @@ async def test_public_config_is_safe_fail_closed_and_never_cors_enabled(portal_a
         "browser_login_enabled": True,
         "mini_app_enabled": True,
         "login_path": "/api/vpn-portal/auth/telegram/start",
+        "bot_url": None,
         "support_text": "Обратитесь к администратору VPN.",
     }
     assert response.headers["cache-control"] == "no-store"
@@ -975,6 +976,39 @@ async def test_public_config_is_safe_fail_closed_and_never_cors_enabled(portal_a
     assert disabled.json()["enabled"] is False
     assert disabled.json()["browser_login_enabled"] is False
     assert disabled.json()["mini_app_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_public_config_exposes_only_a_valid_official_bot_url(portal_app) -> None:
+    portal_app.settings.vpn_telegram_bot_username = "Veltrix_Official_Bot"
+
+    response = await portal_app.client.get("/api/vpn-portal/config")
+
+    assert response.json()["bot_url"] == "https://t.me/Veltrix_Official_Bot"
+    assert "bot-token" not in response.text
+    assert "release_id" not in response.text
+    assert "/api/control" not in response.text
+
+
+@pytest.mark.parametrize(
+    "username",
+    [
+        "",
+        "bot",
+        "@veltrix_bot",
+        "veltrix-bot",
+        "veltrix_vpn_official",
+        "a" * 33,
+        "бот_bot",
+    ],
+)
+@pytest.mark.asyncio
+async def test_public_config_rejects_unsafe_bot_usernames(portal_app, username: str) -> None:
+    portal_app.settings.vpn_telegram_bot_username = username
+
+    response = await portal_app.client.get("/api/vpn-portal/config")
+
+    assert response.json()["bot_url"] is None
 
 
 @pytest.mark.asyncio

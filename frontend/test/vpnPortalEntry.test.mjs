@@ -20,12 +20,13 @@ test("cabinet HTML is an independent safe Russian Mini App entry", async () => {
   assert.doesNotMatch(html, /src\/main\.tsx/);
 });
 
-test("Vite declares both admin and cabinet pages with URL-based paths", async () => {
+test("Vite declares admin, cabinet, and public VPN pages with URL-based paths", async () => {
   const source = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
 
   assert.match(source, /fileURLToPath/);
   assert.match(source, /new URL\("index\.html", import\.meta\.url\)/);
   assert.match(source, /new URL\("cabinet\/index\.html", import\.meta\.url\)/);
+  assert.match(source, /vpn:\s*fileURLToPath\(new URL\("vpn\/index\.html", import\.meta\.url\)\)/);
   assert.match(source, /port:\s*5173/);
   assert.match(source, /target:\s*"http:\/\/localhost:8000"/);
   assert.ok(frontendRoot.endsWith("frontend\\") || frontendRoot.endsWith("frontend/"));

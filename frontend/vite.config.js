@@ -8,6 +8,7 @@ export default defineConfig({
             input: {
                 admin: fileURLToPath(new URL("index.html", import.meta.url)),
                 cabinet: fileURLToPath(new URL("cabinet/index.html", import.meta.url)),
+                vpn: fileURLToPath(new URL("vpn/index.html", import.meta.url)),
             },
         },
     },
@@ -16,7 +17,7 @@ export default defineConfig({
         proxy: {
             "/api": {
                 target: "http://localhost:8000",
-                changeOrigin: true,
+                changeOrigin: false,
             },
         },
     },

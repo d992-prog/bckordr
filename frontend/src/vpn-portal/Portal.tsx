@@ -724,6 +724,10 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
         <section id="help" className="portal-section">
           <div className="section-heading"><p className="eyebrow">Поддержка</p><h2>Помощь</h2></div>
           <p className="card support-text">{bootstrapResult.config?.support_text ?? ""}</p>
+          <div className="section-actions">
+            <a className="button button--ghost" href="/vpn/#privacy">Конфиденциальность</a>
+            <a className="button button--ghost" href="/vpn/#terms">Условия использования</a>
+          </div>
         </section>
         )}
       </main>

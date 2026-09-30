@@ -3,6 +3,7 @@ export interface PortalConfig {
   browser_login_enabled: boolean;
   mini_app_enabled: boolean;
   login_path: string | null;
+  bot_url: string | null;
   support_text: string;
 }
 
