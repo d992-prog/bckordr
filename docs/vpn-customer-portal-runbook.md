@@ -189,7 +189,8 @@ test1 прошли после перезапуска. Это ещё не под�
    `pg_restore --list` завершается успешно, а нужные Nginx include-файлы есть в
    manifest как обычные файлы. При любом несовпадении выпуск останавливается.
 3. Создать оба root-owned mode-0644 temp-файла в том же каталоге, что и активные
-   цели, затем атомарно заменить только эти два файла:
+   цели, затем атомарно заменить только эти два файла. Первым активировать HTTP-сниппет:
+   новый locations-сниппет ссылается на объявленные в нём map-переменные.
 
    ```sh
    sudo install -o root -g root -m 0644 deploy/nginx-vpn-portal-http.conf \
@@ -228,7 +229,8 @@ test1 прошли после перезапуска. Это ещё не под�
    webhook не получает клиентский limiter.
 7. Для отката взять ровно два прежних файла из записанного validated `SET_DIR`,
    стейджировать их в том же каталоге и вернуть атомарным rename, не копировать
-   весь `/etc/nginx`:
+   весь `/etc/nginx`. Первым активировать старый locations-сниппет: он не зависит от
+   новых map-переменных, поэтому промежуточная пара файлов остаётся совместимой:
 
    ```sh
    sudo install -o root -g root -m 0644 \
@@ -237,10 +239,10 @@ test1 прошли после перезапуска. Это ещё не под�
    sudo install -o root -g root -m 0644 \
      "$SET_DIR/nginx/snippets/nginx-vpn-portal-locations.conf" \
      /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.rollback
-   sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-http.conf.rollback \
-     /etc/nginx/snippets/nginx-vpn-portal-http.conf
    sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.rollback \
      /etc/nginx/snippets/nginx-vpn-portal-locations.conf
+   sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-http.conf.rollback \
+     /etc/nginx/snippets/nginx-vpn-portal-http.conf
    sudo nginx -t
    sudo systemctl reload nginx
    ```

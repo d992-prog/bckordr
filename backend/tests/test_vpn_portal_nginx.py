@@ -154,5 +154,15 @@ def test_runbook_uses_validated_backup_and_atomic_nginx_file_replacement() -> No
         "sudo mv -fT",
     ):
         assert required in runbook
+    assert runbook.index(
+        "sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-http.conf.new"
+    ) < runbook.index(
+        "sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.new"
+    )
+    assert runbook.index(
+        "sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.rollback"
+    ) < runbook.index(
+        "sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-http.conf.rollback"
+    )
     assert "Создать новый закрытый каталог резервной копии" not in runbook
     assert "Создать новую серверную копию полной БД" not in runbook
