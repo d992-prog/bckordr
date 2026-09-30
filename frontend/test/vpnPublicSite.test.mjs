@@ -28,8 +28,7 @@ test("public site loads only safe public APIs with independent retry states", as
   ]);
 
   assert.match(types, /bot_url:\s*string \| null/);
-  assert.match(types, /trial_enabled:\s*boolean/);
-  assert.doesNotMatch(types, /bot_token|release_id|admin_route/i);
+  assert.doesNotMatch(types, /trial_enabled|bot_token|release_id|admin_route/i);
   assert.match(source, /portalApi\.config\(\)/);
   assert.match(source, /portalApi\.plans\(\)/);
   assert.match(source, /void loadConfig\(\);\s*void loadPlans\(\);/);
@@ -84,18 +83,16 @@ test("public site contains honest product, trial, support, privacy, and terms co
   assert.match(portal, /bootstrapResult\.config\?\.support_text/);
 });
 
-test("public trial copy follows the safe server availability flag", async () => {
+test("public trial copy stays honest without duplicating readiness", async () => {
   const source = await readFile(siteUrl, "utf8");
   const trialSection = source.slice(
     source.indexOf('id="trial"'),
     source.indexOf('id="support"'),
   );
 
-  assert.match(trialSection, /configBusy\s*\?/);
-  assert.match(trialSection, /config\?\.trial_enabled\s*\?/);
-  assert.match(trialSection, /Уточняем доступность пробного периода/);
-  assert.match(trialSection, /Пробный доступ на 7 дней сейчас доступен/);
-  assert.match(trialSection, /Пробный запуск готовится/);
-  assert.match(trialSection, /Сейчас получить пробный доступ нельзя/);
-  assert.doesNotMatch(trialSection, /Один новый пользователь может получить/);
+  assert.match(trialSection, /Пробный доступ на 7 дней предоставляется поэтапно/);
+  assert.match(trialSection, /Актуальную доступность проверьте в боте/);
+  assert.match(trialSection, /выдача зависит от свободной мощности/);
+  assert.match(trialSection, /config\?\.bot_url\s*&&[\s\S]*label="Проверить доступность в боте"/);
+  assert.doesNotMatch(trialSection, /trial_enabled|сейчас доступен|может получить|configBusy\s*\?/i);
 });

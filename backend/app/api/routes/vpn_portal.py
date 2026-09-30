@@ -146,7 +146,6 @@ async def config(request: Request) -> dict[str, object]:
             else None
         ),
         "bot_url": _bot_url(_settings(request)),
-        "trial_enabled": _settings(request).vpn_public_trial_enabled,
         "support_text": _settings(request).vpn_support_text,
     }
 

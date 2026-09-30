@@ -161,16 +161,10 @@ function PublicVpnSite() {
             <p className="eyebrow">Знакомство с сервисом</p>
             <h2 id="trial-title">Пробный доступ</h2>
           </div>
-          {configBusy ? (
-            <p>Уточняем доступность пробного периода…</p>
-          ) : config?.trial_enabled ? (
-            <div>
-              <p><strong>Пробный доступ на 7 дней сейчас доступен.</strong> Он выдаётся один раз и включает один профиль; при отсутствии свободной мощности новые подключения могут быть временно приостановлены.</p>
-              <BotAction config={config} label="Получить пробный доступ" />
-            </div>
-          ) : (
-            <p><strong>Пробный запуск готовится.</strong> Сейчас получить пробный доступ нельзя.</p>
-          )}
+          <div>
+            <p><strong>Пробный доступ на 7 дней предоставляется поэтапно.</strong> Актуальную доступность проверьте в боте; выдача зависит от свободной мощности.</p>
+            {config?.bot_url && <BotAction config={config} label="Проверить доступность в боте" />}
+          </div>
         </section>
 
         <section id="support" className="section split" aria-labelledby="support-title">

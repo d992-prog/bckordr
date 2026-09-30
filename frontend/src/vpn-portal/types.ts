@@ -4,7 +4,6 @@ export interface PortalConfig {
   mini_app_enabled: boolean;
   login_path: string | null;
   bot_url: string | null;
-  trial_enabled: boolean;
   support_text: string;
 }
 
