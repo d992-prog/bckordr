@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const frontendRoot = fileURLToPath(new URL("../", import.meta.url));
+const cssUrl = new URL("../src/vpn-portal/portal.css", import.meta.url);
 
 test("cabinet HTML is an independent safe Russian Mini App entry", async () => {
   const html = await readFile(new URL("../cabinet/index.html", import.meta.url), "utf8");
@@ -20,13 +21,31 @@ test("cabinet HTML is an independent safe Russian Mini App entry", async () => {
   assert.doesNotMatch(html, /src\/main\.tsx/);
 });
 
-test("Vite declares both admin and cabinet pages with URL-based paths", async () => {
+test("Vite declares admin, cabinet, and public VPN pages with URL-based paths", async () => {
   const source = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
 
   assert.match(source, /fileURLToPath/);
   assert.match(source, /new URL\("index\.html", import\.meta\.url\)/);
   assert.match(source, /new URL\("cabinet\/index\.html", import\.meta\.url\)/);
+  assert.match(source, /vpn:\s*fileURLToPath\(new URL\("vpn\/index\.html", import\.meta\.url\)\)/);
   assert.match(source, /port:\s*5173/);
   assert.match(source, /target:\s*"http:\/\/localhost:8000"/);
   assert.ok(frontendRoot.endsWith("frontend\\") || frontendRoot.endsWith("frontend/"));
+});
+
+test("mobile cabinet header and buttons can shrink without horizontal overflow", async () => {
+  const css = await readFile(cssUrl, "utf8");
+
+  assert.match(
+    css,
+    /\.veltrix-portal \.button\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/,
+  );
+  assert.match(
+    css,
+    /@media \(max-width:\s*639px\)\s*\{[\s\S]*?\.veltrix-portal \.portal-header\s*\{[^}]*flex-wrap:\s*wrap;/,
+  );
+  assert.match(
+    css,
+    /@media \(max-width:\s*639px\)\s*\{[\s\S]*?\.veltrix-portal \.account\s*\{[^}]*max-width:\s*100%;/,
+  );
 });

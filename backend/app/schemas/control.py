@@ -606,6 +606,8 @@ class VpnPlanBase(BaseModel):
     price_amount: float = Field(default=0.0, ge=0.0)
     currency: str = Field(default="RUB", min_length=3, max_length=8)
     is_active: bool = True
+    is_public: bool = False
+    display_order: int = Field(default=0, ge=0)
 
 
 class VpnPlanCreateRequest(VpnPlanBase):
@@ -622,6 +624,8 @@ class VpnPlanUpdateRequest(BaseModel):
     price_amount: float | None = Field(default=None, ge=0.0)
     currency: str | None = Field(default=None, min_length=3, max_length=8)
     is_active: bool | None = None
+    is_public: bool = None
+    display_order: int = Field(default=None, ge=0)
 
 
 class VpnPlanResponse(VpnPlanBase):

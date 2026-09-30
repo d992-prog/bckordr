@@ -9,6 +9,7 @@ export default defineConfig({
       input: {
         admin: fileURLToPath(new URL("index.html", import.meta.url)),
         cabinet: fileURLToPath(new URL("cabinet/index.html", import.meta.url)),
+        vpn: fileURLToPath(new URL("vpn/index.html", import.meta.url)),
       },
     },
   },

@@ -123,7 +123,7 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
 }
 .veltrix-portal .card-grid, .veltrix-portal .profile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .veltrix-portal .card-row, .veltrix-portal .profile-card__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.veltrix-portal .card h2, .veltrix-portal .profile-card h3 { margin: 0; font-size: 21px; }
+.veltrix-portal .card h2, .veltrix-portal .card h3, .veltrix-portal .profile-card h3 { margin: 0; font-size: 21px; }
 .veltrix-portal .profile-card__heading .eyebrow { margin-bottom: 5px; }
 .veltrix-portal .profile-card__subscription { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
 
@@ -141,6 +141,11 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
 .veltrix-portal .trial-card { display: grid; gap: 16px; margin-bottom: 16px; }
 .veltrix-portal .trial-card__meta { margin: 0; color: var(--muted); line-height: 1.55; }
 .veltrix-portal .trial-card__actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.veltrix-portal .plan-card { display: grid; align-content: start; gap: 18px; }
+.veltrix-portal .plan-card__price { color: var(--green-700); white-space: nowrap; }
+.veltrix-portal .plan-card__description { margin: 0; color: var(--muted); line-height: 1.55; }
+.veltrix-portal .plan-card .facts { margin: 0; }
+.veltrix-portal .plan-card__action { align-self: end; margin-top: auto; }
 
 .veltrix-portal .button, .veltrix-portal .platform {
   display: inline-flex;
@@ -154,6 +159,7 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
   font-weight: 750;
   text-decoration: none;
 }
+.veltrix-portal .button { max-width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .veltrix-portal .button--primary { background: #267249; color: #fff; }
 .veltrix-portal .button--primary:hover { background: #173f2d; }
 .veltrix-portal .button--ghost { border-color: var(--line); background: transparent; color: var(--ink); }
@@ -172,6 +178,14 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
   padding: 12px;
 }
 .veltrix-portal .connection-uri { resize: vertical; overflow-wrap: anywhere; word-break: break-all; }
+.veltrix-portal .qr-code {
+  display: block;
+  width: min(100%, 320px);
+  height: auto;
+  margin: 0 auto;
+  padding: 12px;
+  background: #fff;
+}
 .veltrix-portal .rename-form { display: grid; gap: 10px; }
 .veltrix-portal .button-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .veltrix-portal .message { margin: 0; line-height: 1.5; }
@@ -198,8 +212,8 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
 .veltrix-portal .state-card p { line-height: 1.6; }
 
 @media (max-width: 639px) {
-  .veltrix-portal .portal-header { align-items: flex-start; }
-  .veltrix-portal .account { align-items: flex-end; flex-direction: column; gap: 6px; text-align: right; }
+  .veltrix-portal .portal-header { align-items: flex-start; flex-wrap: wrap; }
+  .veltrix-portal .account { max-width: 100%; align-items: flex-end; flex-direction: column; gap: 6px; text-align: right; }
   .veltrix-portal .account .button { min-height: 44px; }
   .veltrix-portal .portal-content {
     width: min(calc(100% - 28px - var(--portal-safe-inline) - var(--portal-safe-inline)), 1000px);
@@ -222,6 +236,7 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
 @media (max-width: 640px) {
   .veltrix-portal .trial-card__actions { width: 100%; }
   .veltrix-portal .trial-card__actions .button { width: 100%; }
+  .veltrix-portal .plan-card__action { width: 100%; }
 }
 
 @media (prefers-color-scheme: dark) {

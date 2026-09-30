@@ -65,6 +65,7 @@ test("exports only the typed portal client and safe error class", () => {
     "loginMiniApp",
     "logout",
     "me",
+    "plans",
     "profiles",
     "rename",
     "subscriptions",
@@ -91,6 +92,17 @@ test("portal reads use only the customer namespace and omit CSRF headers", async
     profiles_used: 1,
     traffic_limit_gb_per_profile: 100,
   }];
+  const plans = [{
+    id: 31,
+    name: "Базовый",
+    description: "Для одного устройства",
+    duration_days: 30,
+    traffic_limit_gb: 100,
+    max_devices: 1,
+    price_amount: 299,
+    currency: "RUB",
+    is_trial: false,
+  }];
   const profiles = [{
     id: 21,
     subscription_id: 11,
@@ -107,10 +119,11 @@ test("portal reads use only the customer namespace and omit CSRF headers", async
     expires_at: null,
   };
   const connection = { uri: "vless://connection-secret" };
-  const calls = installFetchRecorder([config, me, subscriptions, profiles, trial, connection]);
+  const calls = installFetchRecorder([config, me, plans, subscriptions, profiles, trial, connection]);
 
   assert.deepEqual(await portalApi.config(), config);
   assert.deepEqual(await portalApi.me(), me);
+  assert.deepEqual(await portalApi.plans(), plans);
   assert.deepEqual(await portalApi.subscriptions(), subscriptions);
   assert.deepEqual(await portalApi.profiles(), profiles);
   assert.equal(await portalApi.trial().then((value) => value.state), "available");
@@ -119,6 +132,7 @@ test("portal reads use only the customer namespace and omit CSRF headers", async
   assert.deepEqual(calls.map((call) => call.url), [
     "/api/vpn-portal/config",
     "/api/vpn-portal/me",
+    "/api/vpn-portal/plans",
     "/api/vpn-portal/subscriptions",
     "/api/vpn-portal/profiles",
     "/api/vpn-portal/trial",

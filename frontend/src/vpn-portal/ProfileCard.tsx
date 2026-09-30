@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { PortalError, portalApi } from "./api";
 import type { SessionGeneration } from "./bootstrap";
+import { createQrDataUrl } from "./qr";
 import type { PortalProfile } from "./types";
 import { stateLabel } from "./view";
 
@@ -39,11 +40,15 @@ export default function ProfileCard({
   const [connectionUri, setConnectionUri] = useState<string | null>(null);
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState("");
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [qrBusy, setQrBusy] = useState(false);
+  const [qrError, setQrError] = useState("");
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(profile.display_name);
   const [renameBusy, setRenameBusy] = useState(false);
   const [renameError, setRenameError] = useState("");
   const connectionEpoch = useRef(0);
+  const qrRequestInFlight = useRef(false);
   const renameEpoch = useRef(0);
 
   useEffect(() => {
@@ -55,6 +60,10 @@ export default function ProfileCard({
     setConnectionUri(null);
     setConnectionBusy(false);
     setConnectionMessage("");
+    qrRequestInFlight.current = false;
+    setQrDataUrl(null);
+    setQrBusy(false);
+    setQrError("");
   }, [connectionVersion]);
 
   const canReveal = profile.state === "active" && profile.can_connect;
@@ -72,6 +81,10 @@ export default function ProfileCard({
     const epoch = ++connectionEpoch.current;
     setConnectionBusy(true);
     setConnectionMessage("");
+    qrRequestInFlight.current = false;
+    setQrDataUrl(null);
+    setQrBusy(false);
+    setQrError("");
     try {
       const connection = await portalApi.connection(profile.id);
       if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
@@ -111,6 +124,39 @@ export default function ProfileCard({
     }
   }
 
+  async function showQrCode(): Promise<void> {
+    if (connectionUri === null || qrRequestInFlight.current) {
+      return;
+    }
+    const generation = sessionGeneration.current();
+    const epoch = connectionEpoch.current;
+    qrRequestInFlight.current = true;
+    setQrBusy(true);
+    setQrError("");
+    try {
+      const dataUrl = await createQrDataUrl(connectionUri);
+      if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
+        return;
+      }
+      setQrDataUrl(dataUrl);
+    } catch {
+      if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
+        return;
+      }
+      setQrError("Не удалось создать QR-код. Попробуйте ещё раз.");
+    } finally {
+      if (sessionGeneration.isCurrent(generation) && connectionEpoch.current === epoch) {
+        qrRequestInFlight.current = false;
+        setQrBusy(false);
+      }
+    }
+  }
+
+  function hideQrCode(): void {
+    setQrDataUrl(null);
+    setQrError("");
+  }
+
   async function saveName(): Promise<void> {
     const displayName = renameValue.trim();
     if (displayName.length === 0) {
@@ -120,8 +166,12 @@ export default function ProfileCard({
     const generation = sessionGeneration.current();
     const epoch = ++renameEpoch.current;
     connectionEpoch.current += 1;
+    qrRequestInFlight.current = false;
     onRenameStart(profile.id);
     setConnectionBusy(false);
+    setQrDataUrl(null);
+    setQrBusy(false);
+    setQrError("");
     setRenameBusy(true);
     setRenameError("");
     try {
@@ -226,9 +276,28 @@ export default function ProfileCard({
               rows={4}
               onFocus={(event) => event.currentTarget.select()}
             />
-            <button className="button button--primary" onClick={copyConnection}>
-              Скопировать
-            </button>
+            <div className="button-row">
+              <button className="button button--primary" onClick={copyConnection}>
+                Скопировать
+              </button>
+              {qrDataUrl === null ? (
+                <button className="button button--ghost" disabled={qrBusy} onClick={showQrCode}>
+                  {qrBusy ? "Создаём QR-код…" : "Показать QR-код"}
+                </button>
+              ) : (
+                <button className="button button--ghost" onClick={hideQrCode}>
+                  Скрыть QR-код
+                </button>
+              )}
+            </div>
+            {qrDataUrl !== null && (
+              <img
+                className="qr-code"
+                src={qrDataUrl}
+                alt={`QR-код для подключения профиля ${profile.display_name}`}
+              />
+            )}
+            {qrError && <p className="message message--error" role="alert">{qrError}</p>}
           </>
         )}
         {connectionMessage && (

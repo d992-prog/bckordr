@@ -523,6 +523,8 @@ export type VpnPlan = {
   price_amount: number;
   currency: string;
   is_active: boolean;
+  is_public: boolean;
+  display_order: number;
   created_at: string;
   updated_at: string;
 };

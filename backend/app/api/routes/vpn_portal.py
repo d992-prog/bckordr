@@ -5,14 +5,17 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.db.models import VpnPlan
 from app.db.session import get_db
 from app.schemas.vpn_portal import (
     MiniAppLogin,
     PortalConnection,
     PortalMe,
+    PortalPlan,
     PortalProfile,
     PortalSubscription,
     PortalTrial,
@@ -58,6 +61,7 @@ from app.services.vpn_public_trial import (
     activate_public_trial,
     public_trial_status,
 )
+from app.services.vpn_friend_invitations import BOT_USERNAME
 from app.services.vpn_telegram_identity import TelegramIdentity, resolve_telegram_customer
 
 
@@ -124,6 +128,13 @@ def _callback_url(settings: Settings) -> str:
     return public_origin(settings) + settings.api_prefix.rstrip("/") + "/vpn-portal/auth/telegram/callback"
 
 
+def _bot_url(settings: Settings) -> str | None:
+    username = settings.vpn_telegram_bot_username
+    if BOT_USERNAME.fullmatch(username) is None or not username.lower().endswith("bot"):
+        return None
+    return f"https://t.me/{username}"
+
+
 @router.get("/config")
 async def config(request: Request) -> dict[str, object]:
     capabilities = portal_capabilities(_settings(request))
@@ -134,6 +145,7 @@ async def config(request: Request) -> dict[str, object]:
             if capabilities["browser_login_enabled"]
             else None
         ),
+        "bot_url": _bot_url(_settings(request)),
         "support_text": _settings(request).vpn_support_text,
     }
 
@@ -141,6 +153,33 @@ async def config(request: Request) -> dict[str, object]:
 @router.get("/me", response_model=PortalMe)
 async def me(principal: PortalPrincipal = Depends(current_customer)) -> PortalMe:
     return _portal_me(principal)
+
+
+@router.get("/plans", response_model=list[PortalPlan])
+async def plans(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> list[PortalPlan]:
+    settings = _settings(request)
+    result = await db.scalars(
+        select(VpnPlan)
+        .where(VpnPlan.is_active.is_(True), VpnPlan.is_public.is_(True))
+        .order_by(VpnPlan.display_order.asc(), VpnPlan.id.asc())
+    )
+    return [
+        PortalPlan(
+            id=plan.id,
+            name=plan.name,
+            description=plan.description,
+            duration_days=plan.duration_days,
+            traffic_limit_gb=plan.traffic_limit_gb,
+            max_devices=plan.max_devices,
+            price_amount=plan.price_amount,
+            currency=plan.currency,
+            is_trial=plan.slug == settings.vpn_public_trial_plan_slug,
+        )
+        for plan in result
+    ]
 
 
 @router.get("/trial", response_model=PortalTrial)

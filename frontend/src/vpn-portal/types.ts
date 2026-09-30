@@ -3,12 +3,25 @@ export interface PortalConfig {
   browser_login_enabled: boolean;
   mini_app_enabled: boolean;
   login_path: string | null;
+  bot_url: string | null;
   support_text: string;
 }
 
 export interface PortalMe {
   display_name: string;
   csrf_token: string;
+}
+
+export interface PortalPlan {
+  id: number;
+  name: string;
+  description: string | null;
+  duration_days: number | null;
+  traffic_limit_gb: number | null;
+  max_devices: number;
+  price_amount: number;
+  currency: string;
+  is_trial: boolean;
 }
 
 export type PortalTrialState =

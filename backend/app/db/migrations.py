@@ -4,6 +4,26 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
 
 
+VPN_PLAN_CATALOG_MIGRATIONS = (
+    "ALTER TABLE vpn_plans ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE vpn_plans ADD COLUMN IF NOT EXISTS display_order INTEGER NOT NULL DEFAULT 0",
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid = 'vpn_plans'::regclass
+              AND conname = 'ck_vpn_plan_display_order'
+        ) THEN
+            ALTER TABLE vpn_plans
+                ADD CONSTRAINT ck_vpn_plan_display_order CHECK (display_order >= 0);
+        END IF;
+    END;
+    $$
+    """,
+)
+
+
 VPN_PUBLIC_TRIAL_MIGRATIONS = (
     "ALTER TABLE vpn_customers ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMPTZ NULL",
     "CREATE INDEX IF NOT EXISTS ix_vpn_customers_trial_started_at ON vpn_customers(trial_started_at)",
@@ -140,8 +160,11 @@ MIGRATIONS = (
         price_amount DOUBLE PRECISION NOT NULL DEFAULT 0.0,
         currency VARCHAR(8) NOT NULL DEFAULT 'RUB',
         is_active BOOLEAN NOT NULL DEFAULT true,
+        is_public BOOLEAN NOT NULL DEFAULT false,
+        display_order INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT ck_vpn_plan_display_order CHECK (display_order >= 0)
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_vpn_plans_slug ON vpn_plans(slug)",
@@ -554,7 +577,7 @@ MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_zone ON zone_scan_candidates(zone)",
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_lifecycle_stage ON zone_scan_candidates(lifecycle_stage)",
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_discovery_domain_id ON zone_scan_candidates(discovery_domain_id)",
-) + VPN_PUBLIC_TRIAL_MIGRATIONS + VPN_ENDPOINT_MIGRATIONS + (
+) + VPN_PLAN_CATALOG_MIGRATIONS + VPN_PUBLIC_TRIAL_MIGRATIONS + VPN_ENDPOINT_MIGRATIONS + (
     """
     CREATE TABLE IF NOT EXISTS vpn_friend_invitations (
         slot SMALLINT PRIMARY KEY,

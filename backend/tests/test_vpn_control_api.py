@@ -21,6 +21,7 @@ from app.db.models import (
     VpnAccessKey,
     VpnCustomer,
     VpnEndpoint,
+    VpnPlan,
     VpnSubscription,
     WorkerNode,
     WorkerTask,
@@ -64,6 +65,67 @@ def test_vpn_access_key_display_name_request_is_name_only_and_safe():
 def test_vpn_endpoint_capacity_request_rejects_invalid_or_secret_fields(payload):
     with pytest.raises(ValidationError):
         VpnEndpointCapacityUpdateRequest(**payload)
+
+
+@pytest.mark.asyncio
+async def test_vpn_plan_update_rejects_null_catalog_fields_without_mutation():
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
+        plan = VpnPlan(
+            slug="null-safe",
+            name="Null safe",
+            is_public=True,
+            display_order=7,
+        )
+        session.add(plan)
+        await session.commit()
+        plan_id = plan.id
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        omitted = await client.patch(f"/control/vpn/plans/{plan_id}", json={})
+        assert omitted.status_code == 200
+        assert omitted.json()["is_public"] is True
+        assert omitted.json()["display_order"] == 7
+
+        for field in ("is_public", "display_order"):
+            response = await client.patch(
+                f"/control/vpn/plans/{plan_id}",
+                json={field: None},
+            )
+            assert response.status_code == 422
+
+    async with session_factory() as session:
+        unchanged = await session.get(VpnPlan, plan_id)
+        assert unchanged is not None
+        assert unchanged.is_public is True
+        assert unchanged.display_order == 7
+
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -372,7 +434,31 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key(monkey
             },
         )
         assert plan_response.status_code == 201
+        assert plan_response.json()["is_public"] is False
+        assert plan_response.json()["display_order"] == 0
         plan_id = plan_response.json()["id"]
+
+        published_plan = await client.patch(
+            f"/control/vpn/plans/{plan_id}",
+            json={"is_public": True, "display_order": 20},
+        )
+        assert published_plan.status_code == 200
+        assert published_plan.json()["is_public"] is True
+        assert published_plan.json()["display_order"] == 20
+
+        hidden_plan = await client.patch(
+            f"/control/vpn/plans/{plan_id}",
+            json={"is_public": False, "display_order": 3},
+        )
+        assert hidden_plan.status_code == 200
+        assert hidden_plan.json()["is_public"] is False
+        assert hidden_plan.json()["display_order"] == 3
+
+        invalid_order = await client.patch(
+            f"/control/vpn/plans/{plan_id}",
+            json={"display_order": -1},
+        )
+        assert invalid_order.status_code == 422
 
         customer_response = await client.post(
             "/control/vpn/customers",
@@ -463,6 +549,18 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key(monkey
             assert rename_audit is not None
             assert rename_audit.details == f"access_key_id={key_id}"
             assert "Личный" not in (rename_audit.details or "")
+            plan_audits = list(
+                await session.scalars(
+                    select(AdminAuditLog)
+                    .where(AdminAuditLog.action.in_(("vpn_plan_create", "vpn_plan_update")))
+                    .order_by(AdminAuditLog.id)
+                )
+            )
+            assert [audit.action for audit in plan_audits] == [
+                "vpn_plan_create",
+                "vpn_plan_update",
+                "vpn_plan_update",
+            ]
             malformed_key = VpnAccessKey(
                 subscription_id=subscription_id,
                 display_name="Повреждённый",

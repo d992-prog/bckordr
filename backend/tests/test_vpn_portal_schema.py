@@ -104,6 +104,31 @@ def test_legacy_access_key_construction_defaults_display_name_to_none():
 
 
 @pytest.mark.asyncio
+async def test_vpn_plan_catalog_defaults_private_and_rejects_negative_order():
+    engine, session_factory = await _make_session_factory()
+
+    async with session_factory() as session:
+        plan = models.VpnPlan(slug="private-default", name="Private by default")
+        session.add(plan)
+        await session.flush()
+
+        assert plan.is_public is False
+        assert plan.display_order == 0
+
+        session.add(
+            models.VpnPlan(
+                slug="invalid-order",
+                name="Invalid order",
+                display_order=-1,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            await session.flush()
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_portal_records_and_access_key_display_name_round_trip():
     engine, session_factory = await _make_session_factory()
     now = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
@@ -323,6 +348,29 @@ def test_portal_settings_default_disabled_and_accept_explicit_aliases(monkeypatc
 
 def test_display_name_upgrade_migration_is_idempotent_postgres_sql():
     assert "ALTER TABLE vpn_access_keys ADD COLUMN IF NOT EXISTS display_name VARCHAR(64) NULL" in MIGRATIONS
+
+
+def test_public_plan_upgrade_migration_is_additive_idempotent_and_private_by_default():
+    migration_sql = "\n".join(MIGRATIONS)
+    constraint_migration = next(
+        statement
+        for statement in MIGRATIONS
+        if "ck_vpn_plan_display_order" in statement and "pg_constraint" in statement
+    )
+
+    assert (
+        "ALTER TABLE vpn_plans ADD COLUMN IF NOT EXISTS is_public "
+        "BOOLEAN NOT NULL DEFAULT false"
+    ) in MIGRATIONS
+    assert (
+        "ALTER TABLE vpn_plans ADD COLUMN IF NOT EXISTS display_order "
+        "INTEGER NOT NULL DEFAULT 0"
+    ) in MIGRATIONS
+    assert "ck_vpn_plan_display_order" in migration_sql
+    assert "display_order >= 0" in migration_sql
+    assert "IF NOT EXISTS" in constraint_migration
+    assert "END;\n    $$" in constraint_migration
+    assert "UPDATE vpn_plans" not in migration_sql
 
 
 def test_backend_declares_pyjwt_crypto_dependency():
