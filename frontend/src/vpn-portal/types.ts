@@ -11,6 +11,18 @@ export interface PortalMe {
   csrf_token: string;
 }
 
+export interface PortalPlan {
+  id: number;
+  name: string;
+  description: string | null;
+  duration_days: number | null;
+  traffic_limit_gb: number | null;
+  max_devices: number;
+  price_amount: number;
+  currency: string;
+  is_trial: boolean;
+}
+
 export type PortalTrialState =
   | "disabled"
   | "available"

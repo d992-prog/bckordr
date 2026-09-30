@@ -8,11 +8,13 @@ import {
   type TelegramLaunch,
 } from "./bootstrap";
 import ProfileCard from "./ProfileCard";
+import PlanCatalog from "./PlanCatalog";
 import TrialCard from "./TrialCard";
 import { nextTrialPoll, updateTrialPollCount } from "./trialPolling";
 import type {
   PortalConfig,
   PortalMe,
+  PortalPlan,
   PortalProfile,
   PortalSubscription,
   PortalTrial,
@@ -263,6 +265,9 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const [bootstrapResult, setBootstrapResult] = useState<PortalBootstrapResult | null>(null);
   const [screen, setScreen] = useState<ManualScreen>("ready");
   const [me, setMe] = useState<PortalMe | null>(null);
+  const [plans, setPlans] = useState<PortalPlan[]>([]);
+  const [plansBusy, setPlansBusy] = useState(false);
+  const [plansError, setPlansError] = useState("");
   const [subscriptions, setSubscriptions] = useState<PortalSubscription[]>([]);
   const [profiles, setProfiles] = useState<PortalProfile[]>([]);
   const [trial, setTrial] = useState<PortalTrial | null>(null);
@@ -276,16 +281,21 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const [profileOperations, setProfileOperations] = useState<Record<number, ProfileOperation>>({});
   const sessionGeneration = useMemo(() => new SessionGeneration(), []);
   const logoutCsrf = useRef<string | null>(null);
+  const plansLoadEpoch = useRef(0);
   const dataLoadEpoch = useRef(0);
   const trialRequestInFlight = useRef(false);
 
   function clearPrivateData(nextScreen: ManualScreen): void {
     sessionGeneration.invalidate();
+    plansLoadEpoch.current += 1;
     dataLoadEpoch.current += 1;
     setBootstrapResult((current) => current === null
       ? null
       : { kind: "login-required", config: current.config });
     setMe(null);
+    setPlans([]);
+    setPlansBusy(false);
+    setPlansError("");
     setSubscriptions([]);
     setProfiles([]);
     setTrial(null);
@@ -315,6 +325,32 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
         },
       };
     });
+  }
+
+  async function loadPlans(): Promise<void> {
+    const generation = sessionGeneration.current();
+    const loadEpoch = ++plansLoadEpoch.current;
+    const isCurrentLoad = () => (
+      sessionGeneration.isCurrent(generation) && plansLoadEpoch.current === loadEpoch
+    );
+    setPlansBusy(true);
+    setPlansError("");
+    try {
+      const nextPlans = await portalApi.plans();
+      if (isCurrentLoad()) {
+        setPlans(nextPlans);
+      }
+    } catch (error) {
+      if (isCurrentLoad()) {
+        setPlansError(error instanceof PortalError
+          ? error.message
+          : "Не удалось загрузить тарифы. Попробуйте ещё раз.");
+      }
+    } finally {
+      if (isCurrentLoad()) {
+        setPlansBusy(false);
+      }
+    }
   }
 
   async function loadPrivateData(silent = false): Promise<void> {
@@ -444,6 +480,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
       if (result.kind === "ready") {
         setMe(result.me);
         void loadPrivateData();
+        void loadPlans();
       }
     });
     return () => { active = false; };
@@ -453,6 +490,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
 
   useEffect(() => () => {
     sessionGeneration.invalidate();
+    plansLoadEpoch.current += 1;
     dataLoadEpoch.current += 1;
     trialRequestInFlight.current = false;
   }, [sessionGeneration]);
@@ -674,13 +712,12 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
         )}
 
         {activeSection === "plans" && (
-        <section id="plans" className="portal-section">
-          <div className="section-heading"><p className="eyebrow">Варианты</p><h2>Тарифы</h2></div>
-          <div className="card">
-            <p>Тарифы ещё не опубликованы</p>
-            <a className="button button--ghost" href="#help">Перейти в помощь</a>
-          </div>
-        </section>
+          <PlanCatalog
+            plans={plans}
+            busy={plansBusy}
+            error={plansError}
+            onRetry={() => void loadPlans()}
+          />
         )}
 
         {activeSection === "help" && (
