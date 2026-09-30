@@ -1081,6 +1081,7 @@ export default function App() {
   const lastAppliedLoadGenerationRef = useRef(0);
   const vpnCapacityMutationGenerationRef = useRef(0);
   const vpnReadinessRequestGateRef = useRef(createVpnReleaseRequestGate());
+  const vpnPlanPublicationLockRef = useRef<number | null>(null);
   const [vpnNodeEvents, setVpnNodeEvents] = useState<VpnNodeEvent[]>([]);
   const [vpnLifecycleStatus, setVpnLifecycleStatus] = useState<VpnLifecycleStatus | null>(null);
   const [vpnNodeEligibility, setVpnNodeEligibility] = useState<Record<number, VpnNodeEligibility>>({});
@@ -2416,17 +2417,19 @@ export default function App() {
   }
 
   async function toggleVpnPlanPublication(plan: VpnPlan) {
-    if (publishingVpnPlanId !== null) {
+    if (vpnPlanPublicationLockRef.current !== null) {
       return;
     }
+    vpnPlanPublicationLockRef.current = plan.id;
     setPublishingVpnPlanId(plan.id);
     try {
       await api.updateVpnPlan(plan.id, { is_public: !plan.is_public });
-      await loadAll();
+      await loadAll({ throwOnError: true });
       setToast({ type: "success", text: plan.is_public ? "Тариф скрыт" : "Тариф опубликован" });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка публикации VPN тарифа" });
     } finally {
+      vpnPlanPublicationLockRef.current = null;
       setPublishingVpnPlanId(null);
     }
   }

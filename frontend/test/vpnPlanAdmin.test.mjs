@@ -44,3 +44,31 @@ test("admin plan form and table manage public visibility without a second editor
   assert.match(source, /plan\.is_public \? "Скрыть" : "Опубликовать"/);
   assert.match(source, /disabled=\{publishingVpnPlanId !== null\}/);
 });
+
+test("publication mutation acquires a synchronous lock before its first await", async () => {
+  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const handler = source.match(
+    /async function toggleVpnPlanPublication[\s\S]*?\n  }\n\n  async function runVpnLifecycleMaintenance/,
+  )?.[0] ?? "";
+
+  assert.match(
+    handler,
+    /if \(vpnPlanPublicationLockRef\.current !== null\) \{\s*return;\s*\}\s*vpnPlanPublicationLockRef\.current = plan\.id;\s*setPublishingVpnPlanId\(plan\.id\);\s*try \{\s*await api\.updateVpnPlan/,
+  );
+  assert.match(
+    handler,
+    /finally \{\s*vpnPlanPublicationLockRef\.current = null;\s*setPublishingVpnPlanId\(null\);\s*\}/,
+  );
+});
+
+test("publication reload failures reach the error path before a success toast", async () => {
+  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const handler = source.match(
+    /async function toggleVpnPlanPublication[\s\S]*?\n  }\n\n  async function runVpnLifecycleMaintenance/,
+  )?.[0] ?? "";
+
+  assert.match(
+    handler,
+    /await loadAll\(\{ throwOnError: true \}\);\s*setToast\(\{ type: "success"/,
+  );
+});
