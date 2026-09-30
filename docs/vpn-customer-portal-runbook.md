@@ -156,6 +156,45 @@ test1 прошли после перезапуска. Это ещё не под�
    подменяют свежую. Хеши старой VPN-идентичности позволяют проверить отсутствие
    изменений, не выводя URI/UUID в журналы.
 
+## Установка и проверка Nginx edge-конфигурации
+
+1. Создать новый закрытый каталог резервной копии и скопировать туда активные
+   `nginx.conf`, `conf.d` и `snippets`. Записать путь копии; не перезаписывать
+   предыдущую. Установить проверенные `deploy/nginx-vpn-portal-http.conf` и
+   `deploy/nginx-vpn-portal-locations.conf` в каталог Nginx snippets.
+2. Подключить `nginx-vpn-portal-http.conf` ровно один раз внутри `http {}` до
+   `server`-блоков. Подключить `nginx-vpn-portal-locations.conf` только внутри
+   основного HTTPS `server {}`. Три безопасные директивы журналирования из начала
+   location-сниппета отдельно сохранить в HTTP redirect и worker-direct reject
+   server-блоках; proxy locations туда не копировать.
+3. До reload обязательно выполнить `sudo nginx -t`. При любой ошибке ничего не
+   перезагружать. Только после успешной проверки выполнить
+   `sudo systemctl reload nginx`; новый daemon и application-side limiter не нужны.
+4. Проверить публичную страницу без cookies и секретных заголовков:
+
+   ```sh
+   curl -sS -D - -o /dev/null https://veltrix.qzz.io/vpn/
+   ```
+
+   Ожидаются `Cache-Control: no-cache, max-age=0, must-revalidate`,
+   `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` и
+   `Referrer-Policy: no-referrer`. API и `/cabinet/` должны отвечать с `no-store`.
+5. Из одного тестового клиентского IP без query string, cookies и токенов создать
+   короткий параллельный burst к анонимному каталогу:
+
+   ```sh
+   seq 1 40 | xargs -P20 -I{} curl -sS -o /dev/null -w '%{http_code}\n' \
+     https://veltrix.qzz.io/api/vpn-portal/plans | sort | uniq -c
+   ```
+
+   В результате должен присутствовать HTTP 429. Общий лимит `5r/s` и burst 10
+   считаются на клиентский IP, поэтому общий NAT делит квоту; двухсекундный polling
+   укладывается в неё. Auth использует отдельный более строгий `10r/m`, а Telegram
+   webhook не получает клиентский limiter.
+6. Для отката вернуть из записанной копии только прежние Nginx-файлы, снова
+   выполнить `sudo nginx -t` и лишь после успеха `sudo systemctl reload nginx`.
+   Затем повторить проверку `/vpn/`, кабинета, webhook и health.
+
 ## Порядок выпуска
 
 Свежая копия для этого выпуска: `/opt/backups/veltrix-cabinet-20260921-003811`.

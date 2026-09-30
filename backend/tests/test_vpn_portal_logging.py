@@ -786,7 +786,6 @@ def test_nginx_snippets_separate_http_and_server_context_safety() -> None:
     assert server_config.count('add_header Cache-Control "no-store" always;') >= 2
     assert "proxy_hide_header Cache-Control;" in server_config
     assert 'add_header Referrer-Policy "no-referrer" always;' in server_config
-    assert "X-Frame-Options" not in server_config
     assert "proxy_pass http://127.0.0.1:8000;" in server_config
     assert "worker-direct-8080" in server_config
     assert "port-80" in server_config
