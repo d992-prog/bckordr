@@ -1,5 +1,47 @@
 # Current State
 
+## Public release shell production rollout (2026-09-30)
+
+Production control advanced from `109ccc3` to merge `87612c4` through
+[PR #8](https://github.com/d992-prog/bckordr/pull/8). The release adds the public
+`/vpn/` product page, a safe anonymous plan catalog, admin publication/order
+controls, the cabinet plan catalog and locally generated profile QR codes. Payment
+is still intentionally absent. All three existing plans remain private; the
+anonymous catalog therefore returns an empty list until an operator publishes a
+real plan.
+
+The public-admission gates remain fail closed:
+`VPN_PORTAL_PUBLIC_ACCESS=false`, `VPN_PUBLIC_TRIAL_ENABLED=false` and
+`VPN_READY_NOTIFICATIONS_ENABLED=false`. The existing admitted cabinet remains
+enabled. Production currently has two enabled VPN-ready workers and two ready
+REALITY endpoints; both endpoints have explicit capacity and external proof.
+The seven stored key identities were unchanged across the additive migration
+(one active, two suspended and four revoked).
+
+Fresh rollback set
+`/var/backups/domain-drop-catcher/20260930T171245.922930Z-cc670c3bcc0fc143`
+was created before deployment. Its marker and metadata match, every manifest
+SHA-256 passed, `pg_restore --list` passed, and a full isolated restore reached
+5.54 GB before completing; the temporary database was removed. The production
+database and VPN nodes were not mutated by the rehearsal.
+
+The actual Nginx include targets were updated atomically and validated before
+reload: `/etc/nginx/conf.d/veltrix-portal.conf` and
+`/etc/nginx/snippets/veltrix-vpn-portal-locations.conf`, plus the server-level
+header blocks in the HTTPS redirect and worker-direct reject vhosts. The active
+configuration restores client IPs only from the exact reviewed Cloudflare
+networks, ignores a spoofed direct `CF-Connecting-IP`, and applies independent
+portal/API and auth limits. The public burst returned 12 HTTP 200 and 28 HTTP
+429 responses. `/vpn/`, `/cabinet/`, health, the safe config and empty plan
+catalog passed external HTTP checks; mobile-width headless Chrome rendered the
+public page and anonymous Telegram login without exposing a VPN URI. Telegram
+`getMe` and webhook state were healthy, with no pending updates or last error.
+
+Final local release evidence was 467 backend tests passed with 7 platform skips,
+109 frontend tests passed, Ruff and the production build passed, and the
+production dependency audit reported zero vulnerabilities. Public trial and
+payment activation remain separate future releases.
+
 ## WAL-safe fleet-health production rollout (2026-09-27)
 
 The WAL-safe control rollout was deployed from merge `61caa05`. Node bundle
