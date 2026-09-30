@@ -3450,7 +3450,10 @@ async def create_vpn_plan(
         actor_user_id=admin.id,
         target_user_id=None,
         action="vpn_plan_create",
-        details=f"slug={payload.slug}",
+        details=(
+            f"slug={payload.slug} is_public={str(payload.is_public).lower()} "
+            f"display_order={payload.display_order}"
+        ),
     )
     await db.commit()
     await db.refresh(plan)
@@ -3484,7 +3487,10 @@ async def update_vpn_plan(
         actor_user_id=admin.id,
         target_user_id=None,
         action="vpn_plan_update",
-        details=f"plan_id={plan_id}",
+        details=(
+            f"plan_id={plan_id} is_public={str(plan.is_public).lower()} "
+            f"display_order={plan.display_order}"
+        ),
     )
     await db.commit()
     await db.refresh(plan)

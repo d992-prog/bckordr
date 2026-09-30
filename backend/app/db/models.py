@@ -640,6 +640,9 @@ class WorkerMaintenanceJob(Base):
 
 class VpnPlan(Base):
     __tablename__ = "vpn_plans"
+    __table_args__ = (
+        CheckConstraint("display_order >= 0", name="ck_vpn_plan_display_order"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
@@ -651,6 +654,8 @@ class VpnPlan(Base):
     price_amount: Mapped[float] = mapped_column(Float, default=0.0, server_default="0.0")
     currency: Mapped[str] = mapped_column(String(8), default="RUB", server_default="RUB")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    display_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utcnow,

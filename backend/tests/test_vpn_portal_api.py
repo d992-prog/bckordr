@@ -379,6 +379,110 @@ async def portal_app(monkeypatch):
     await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_anonymous_plan_catalog_is_safe_filtered_ordered_and_flag_independent(portal_app):
+    async with portal_app.factory() as session:
+        trial = VpnPlan(
+            slug="trial-7d",
+            name="Пробный",
+            description="Знакомство с Veltrix",
+            duration_days=7,
+            traffic_limit_gb=10,
+            max_devices=1,
+            price_amount=0,
+            currency="RUB",
+        )
+        paid_first = VpnPlan(
+            slug="paid-first-internal",
+            name="Базовый",
+            description="Для одного устройства",
+            duration_days=30,
+            traffic_limit_gb=100,
+            max_devices=1,
+            price_amount=299,
+            currency="RUB",
+        )
+        paid_second = VpnPlan(
+            slug="paid-second-internal",
+            name="Семейный",
+            duration_days=30,
+            traffic_limit_gb=None,
+            max_devices=5,
+            price_amount=599,
+            currency="RUB",
+        )
+        private = VpnPlan(slug="private-internal", name="Private internal")
+        inactive = VpnPlan(slug="inactive-internal", name="Inactive public", is_active=False)
+        for plan, is_public, display_order in (
+            (trial, True, 0),
+            (paid_first, True, 10),
+            (paid_second, True, 10),
+            (private, False, 0),
+            (inactive, True, 0),
+        ):
+            plan.is_public = is_public
+            plan.display_order = display_order
+        session.add_all([trial, paid_first, paid_second, private, inactive])
+        await session.commit()
+
+    response = await portal_app.client.get("/api/vpn-portal/plans")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "id": trial.id,
+            "name": "Пробный",
+            "description": "Знакомство с Veltrix",
+            "duration_days": 7,
+            "traffic_limit_gb": 10,
+            "max_devices": 1,
+            "price_amount": 0.0,
+            "currency": "RUB",
+            "is_trial": True,
+        },
+        {
+            "id": paid_first.id,
+            "name": "Базовый",
+            "description": "Для одного устройства",
+            "duration_days": 30,
+            "traffic_limit_gb": 100,
+            "max_devices": 1,
+            "price_amount": 299.0,
+            "currency": "RUB",
+            "is_trial": False,
+        },
+        {
+            "id": paid_second.id,
+            "name": "Семейный",
+            "description": None,
+            "duration_days": 30,
+            "traffic_limit_gb": None,
+            "max_devices": 5,
+            "price_amount": 599.0,
+            "currency": "RUB",
+            "is_trial": False,
+        },
+    ]
+    assert set(response.json()[0]) == {
+        "id",
+        "name",
+        "description",
+        "duration_days",
+        "traffic_limit_gb",
+        "max_devices",
+        "price_amount",
+        "currency",
+        "is_trial",
+    }
+    assert "paid-first-internal" not in response.text
+
+    portal_app.settings.vpn_portal_enabled = False
+    portal_app.settings.vpn_public_trial_enabled = False
+    disabled_response = await portal_app.client.get("/api/vpn-portal/plans")
+    assert disabled_response.status_code == 200
+    assert disabled_response.json() == response.json()
+
+
 async def seed_ready_public_trial(portal_app, monkeypatch) -> None:
     from app.services import vpn_public_trial
 

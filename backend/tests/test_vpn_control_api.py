@@ -372,7 +372,31 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key(monkey
             },
         )
         assert plan_response.status_code == 201
+        assert plan_response.json()["is_public"] is False
+        assert plan_response.json()["display_order"] == 0
         plan_id = plan_response.json()["id"]
+
+        published_plan = await client.patch(
+            f"/control/vpn/plans/{plan_id}",
+            json={"is_public": True, "display_order": 20},
+        )
+        assert published_plan.status_code == 200
+        assert published_plan.json()["is_public"] is True
+        assert published_plan.json()["display_order"] == 20
+
+        hidden_plan = await client.patch(
+            f"/control/vpn/plans/{plan_id}",
+            json={"is_public": False, "display_order": 3},
+        )
+        assert hidden_plan.status_code == 200
+        assert hidden_plan.json()["is_public"] is False
+        assert hidden_plan.json()["display_order"] == 3
+
+        invalid_order = await client.patch(
+            f"/control/vpn/plans/{plan_id}",
+            json={"display_order": -1},
+        )
+        assert invalid_order.status_code == 422
 
         customer_response = await client.post(
             "/control/vpn/customers",
@@ -463,6 +487,18 @@ async def test_vpn_control_api_creates_plan_customer_subscription_and_key(monkey
             assert rename_audit is not None
             assert rename_audit.details == f"access_key_id={key_id}"
             assert "Личный" not in (rename_audit.details or "")
+            plan_audits = list(
+                await session.scalars(
+                    select(AdminAuditLog)
+                    .where(AdminAuditLog.action.in_(("vpn_plan_create", "vpn_plan_update")))
+                    .order_by(AdminAuditLog.id)
+                )
+            )
+            assert [audit.action for audit in plan_audits] == [
+                "vpn_plan_create",
+                "vpn_plan_update",
+                "vpn_plan_update",
+            ]
             malformed_key = VpnAccessKey(
                 subscription_id=subscription_id,
                 display_name="Повреждённый",

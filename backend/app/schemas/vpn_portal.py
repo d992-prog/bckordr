@@ -13,6 +13,18 @@ class PortalMe(BaseModel):
     csrf_token: str
 
 
+class PortalPlan(BaseModel):
+    id: int
+    name: str
+    description: str | None
+    duration_days: int | None
+    traffic_limit_gb: int | None
+    max_devices: int
+    price_amount: float
+    currency: str
+    is_trial: bool
+
+
 class PortalTrial(BaseModel):
     state: Literal["disabled", "available", "capacity_paused", "preparing", "active", "used"]
     duration_days: int
