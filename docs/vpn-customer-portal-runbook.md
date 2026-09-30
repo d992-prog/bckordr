@@ -149,28 +149,63 @@ test1 прошли после перезапуска. Это ещё не под�
    задания учитывать отдельно; не выдавать их наличие за «сервер полностью простаивает».
 3. Проверить фактический unit, Nginx include-контексты, allowlist воркеров, свободное
    место и публичный `/api/health`.
-4. Создать новую серверную копию полной БД (`pg_dump` custom, закрытые права),
-   `.env`, unit, Nginx, прежней frontend-сборки и изменённого build cache.
-   Проверить TOC дампа и архивы. Не передавать БД и ключи на другой компьютер.
+4. До правок запустить `veltrix-backup.service` по разделу ниже и проверить
+   свежий validated set с БД, `.env`, фактическим unit, всем `/etc/nginx` и
+   frontend-сборкой. Не передавать backup set, БД и ключи на другой компьютер.
 5. Записать путь копии и исходную ревизию. Старые частичные/устаревшие копии не
    подменяют свежую. Хеши старой VPN-идентичности позволяют проверить отсутствие
    изменений, не выводя URI/UUID в журналы.
 
 ## Установка и проверка Nginx edge-конфигурации
 
-1. Создать новый закрытый каталог резервной копии и скопировать туда активные
-   `nginx.conf`, `conf.d` и `snippets`. Записать путь копии; не перезаписывать
-   предыдущую. Установить проверенные `deploy/nginx-vpn-portal-http.conf` и
-   `deploy/nginx-vpn-portal-locations.conf` в каталог Nginx snippets.
-2. Подключить `nginx-vpn-portal-http.conf` ровно один раз внутри `http {}` до
-   `server`-блоков. Подключить `nginx-vpn-portal-locations.conf` только внутри
-   основного HTTPS `server {}`. Три безопасные директивы журналирования из начала
-   location-сниппета отдельно сохранить в HTTP redirect и worker-direct reject
-   server-блоках; proxy locations туда не копировать.
-3. До reload обязательно выполнить `sudo nginx -t`. При любой ошибке ничего не
-   перезагружать. Только после успешной проверки выполнить
-   `sudo systemctl reload nginx`; новый daemon и application-side limiter не нужны.
-4. Проверить публичную страницу без cookies и секретных заголовков:
+Полная процедура validated backup закреплена в
+`docs/veltrix-release-operations.md`; ниже не замена ей, а release-чеклист для этих
+двух snippets. Новый daemon и application-side limiter не нужны.
+
+1. До изменений выполнить `sudo nginx -T`: зафиксировать include-контексты,
+   фактические пути обоих snippets и убедиться, что они находятся внутри
+   валидируемого `/etc/nginx`. HTTP-сниппет подключается ровно один раз внутри
+   `http {}` до `server`-блоков, locations-сниппет — только в основном HTTPS
+   `server {}`. Его server-level logging/header block также сохраняется в HTTP
+   redirect и worker-direct reject server-блоках; locations туда не копируются.
+2. Запустить именно уже установленный backup unit, который сохраняет весь
+   `/etc/nginx` и материализует разрешённые Nginx symlinks:
+
+   ```sh
+   sudo systemctl start veltrix-backup.service
+   sudo systemctl status --no-pager veltrix-backup.service
+   sudo stat -c '%U %G %a %y %n' /var/backups/domain-drop-catcher/latest-success.json
+   SET_NAME="$(sudo jq -er .set_name /var/backups/domain-drop-catcher/latest-success.json)"
+   SET_DIR="/var/backups/domain-drop-catcher/$SET_NAME"
+   sudo cmp -s /var/backups/domain-drop-catcher/latest-success.json "$SET_DIR/backup.json"
+   sudo jq -e '.version == 1 and (.files | length > 0)' "$SET_DIR/manifest.json" >/dev/null
+   sudo jq -r '.files[] | "\(.sha256)  \(.path)"' "$SET_DIR/manifest.json" | \
+     sudo sh -c 'cd "$1" && sha256sum --check --strict -' sh "$SET_DIR"
+   sudo /usr/bin/pg_restore --list "$SET_DIR/database.dump" >/dev/null
+   ```
+
+   Нужен свежий successful set без суффикса `.partial`: `backup.json`
+   побайтно равен `latest-success.json`, все SHA-256 из `manifest.json` совпадают,
+   `pg_restore --list` завершается успешно, а нужные Nginx include-файлы есть в
+   manifest как обычные файлы. При любом несовпадении выпуск останавливается.
+3. Создать оба root-owned mode-0644 temp-файла в том же каталоге, что и активные
+   цели, затем атомарно заменить только эти два файла:
+
+   ```sh
+   sudo install -o root -g root -m 0644 deploy/nginx-vpn-portal-http.conf \
+     /etc/nginx/snippets/.nginx-vpn-portal-http.conf.new
+   sudo install -o root -g root -m 0644 deploy/nginx-vpn-portal-locations.conf \
+     /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.new
+   sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-http.conf.new \
+     /etc/nginx/snippets/nginx-vpn-portal-http.conf
+   sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.new \
+     /etc/nginx/snippets/nginx-vpn-portal-locations.conf
+   ```
+
+4. До reload обязательно выполнить `sudo nginx -t`. При ошибке ничего не
+   перезагружать; откатить два файла из записанного `SET_DIR`. Только после
+   успешной проверки выполнить `sudo systemctl reload nginx`.
+5. Проверить публичную страницу без cookies и секретных заголовков:
 
    ```sh
    curl -sS -D - -o /dev/null https://veltrix.qzz.io/vpn/
@@ -179,7 +214,7 @@ test1 прошли после перезапуска. Это ещё не под�
    Ожидаются `Cache-Control: no-cache, max-age=0, must-revalidate`,
    `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` и
    `Referrer-Policy: no-referrer`. API и `/cabinet/` должны отвечать с `no-store`.
-5. Из одного тестового клиентского IP без query string, cookies и токенов создать
+6. Из одного тестового клиентского IP без query string, cookies и токенов создать
    короткий параллельный burst к анонимному каталогу:
 
    ```sh
@@ -191,9 +226,27 @@ test1 прошли после перезапуска. Это ещё не под�
    считаются на клиентский IP, поэтому общий NAT делит квоту; двухсекундный polling
    укладывается в неё. Auth использует отдельный более строгий `10r/m`, а Telegram
    webhook не получает клиентский limiter.
-6. Для отката вернуть из записанной копии только прежние Nginx-файлы, снова
-   выполнить `sudo nginx -t` и лишь после успеха `sudo systemctl reload nginx`.
-   Затем повторить проверку `/vpn/`, кабинета, webhook и health.
+7. Для отката взять ровно два прежних файла из записанного validated `SET_DIR`,
+   стейджировать их в том же каталоге и вернуть атомарным rename, не копировать
+   весь `/etc/nginx`:
+
+   ```sh
+   sudo install -o root -g root -m 0644 \
+     "$SET_DIR/nginx/snippets/nginx-vpn-portal-http.conf" \
+     /etc/nginx/snippets/.nginx-vpn-portal-http.conf.rollback
+   sudo install -o root -g root -m 0644 \
+     "$SET_DIR/nginx/snippets/nginx-vpn-portal-locations.conf" \
+     /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.rollback
+   sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-http.conf.rollback \
+     /etc/nginx/snippets/nginx-vpn-portal-http.conf
+   sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.rollback \
+     /etc/nginx/snippets/nginx-vpn-portal-locations.conf
+   sudo nginx -t
+   sudo systemctl reload nginx
+   ```
+
+   Если `nginx -t` не проходит, reload не выполнять. После успешного отката
+   повторить проверку `/vpn/`, кабинета, webhook и health.
 
 ## Порядок выпуска
 
