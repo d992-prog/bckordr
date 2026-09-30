@@ -2,27 +2,27 @@
 
 ## Current Scope
 
-The service supports manually created plans and subscriptions, automatic lifecycle maintenance, 3x-UI access keys, and Telegram delivery. Payments are intentionally disabled until the rest of the product is operational and verified.
+The service supports manually created plans and subscriptions, automatic lifecycle maintenance, 3x-UI access keys, Telegram delivery, a public product page and a protected customer cabinet. Operators explicitly publish and order plans; unpublished plans are never returned by the anonymous catalog. The cabinet generates profile QR codes locally in the browser only after the user reveals a connection URI. Payments are intentionally disabled until the rest of the product is operational and verified.
 
 The Telegram bot supports `/start`, `/status`, `/keys`, and `/support`. A VPN URI is a credential: only use the bot in a private chat, protect the webhook with both configured secrets, and never paste a URI into logs or public channels.
 
 ## Public Trial Release Candidate (Disabled)
 
-The public seven-day trial is implemented but is not a production rollout.
-Payments are intentionally absent. Keep these exact fail-closed defaults until a
-separate release-operations approval:
+The public seven-day trial is implemented but is not enabled for production.
+Payments are intentionally absent. Keep these public-entry gates fail closed
+until a separate release-operations approval:
 
 ```dotenv
 VPN_PUBLIC_TRIAL_ENABLED=false
 VPN_PUBLIC_TRIAL_RELEASE_ID=
 VPN_PUBLIC_TRIAL_PLAN_SLUG=trial-7d
-VPN_ENDPOINT_HEALTH_MAX_AGE_SECONDS=300
-VPN_FLEET_HEALTH_ENABLED=false
-VPN_FLEET_HEALTH_INTERVAL_SECONDS=120
+VPN_PORTAL_PUBLIC_ACCESS=false
 VPN_READY_NOTIFICATIONS_ENABLED=false
-VPN_BACKUP_ENABLED=false
-VPN_WATCHDOG_ENABLED=false
 ```
+
+Fleet health, backup and watchdog are independent operational controls and are
+enabled in the accepted production deployment. Do not disable them merely to
+keep public admission closed.
 
 Install, manual acceptance, isolated restore, alert/recovery rehearsal and
 rollback are documented in [Veltrix release operations](veltrix-release-operations.md).
@@ -156,10 +156,10 @@ it during a health check.
    installed bundle hash, read-only health result and one real external client
    connection. Confirm the external test only after that connection succeeds.
 4. Enable only `VPN_FLEET_HEALTH_ENABLED=true` and observe the readiness panel.
-   With the current single-node production fleet, readiness is still expected
-   to fail for the missing second distinct worker and for any unset capacity,
-   stale health or missing external proof.
-5. Add the second VPS through the same one-time onboarding: create the worker,
+   Production currently has two distinct ready workers and two ready REALITY
+   endpoints with capacity and external proof. Recheck freshness and every other
+   readiness item at release time; stored topology alone is not approval.
+5. Add later VPSes through the same one-time onboarding: create the worker,
    install credentials, append its exact Ed25519 pin to the shared trust file,
    install the common bundle,
    create the REALITY endpoint, set capacity, obtain fresh strict health, and

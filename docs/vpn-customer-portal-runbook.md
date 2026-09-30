@@ -21,7 +21,16 @@
 
 ## Проверенное состояние
 
-Текущая ревизия приложения: `e635f0b078cb4ee91f9b4d1dd5e6ce54fd7ea1b2`.
+Текущая production-ревизия приложения: `87612c42e49d592e1c443c9f8764b632895de5a9`.
+Текущий validated rollback set:
+`/var/backups/domain-drop-catcher/20260930T171245.922930Z-cc670c3bcc0fc143`.
+Его marker/metadata, все manifest SHA-256, `pg_restore --list` и полное
+изолированное восстановление проверены; временная БД удалена. Актуальный rollout,
+проверки и закрытые публичные флаги записаны в `docs/current-state.md`.
+
+### Историческое исправление Mini App (2026-09-21)
+
+Ревизия этого исправления: `e635f0b078cb4ee91f9b4d1dd5e6ce54fd7ea1b2`.
 Исправлен запуск Mini App после реального скриншота iPhone: reply-keyboard WebApp
 не получает данные авторизации, поэтому теперь используется inline-кнопка под
 сообщением. [Контракт Telegram](https://core.telegram.org/bots/webapps#webappinitdata).
@@ -185,11 +194,12 @@ sudo nginx -V 2>&1 | grep -F http_realip_module
    sudo systemctl start veltrix-backup.service
    sudo systemctl status --no-pager veltrix-backup.service
    sudo stat -c '%U %G %a %y %n' /var/backups/domain-drop-catcher/latest-success.json
-   SET_NAME="$(sudo jq -er .set_name /var/backups/domain-drop-catcher/latest-success.json)"
+   SET_NAME="$(sudo /usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["set_name"])' \
+     /var/backups/domain-drop-catcher/latest-success.json)"
    SET_DIR="/var/backups/domain-drop-catcher/$SET_NAME"
    sudo cmp -s /var/backups/domain-drop-catcher/latest-success.json "$SET_DIR/backup.json"
-   sudo jq -e '.version == 1 and (.files | length > 0)' "$SET_DIR/manifest.json" >/dev/null
-   sudo jq -r '.files[] | "\(.sha256)  \(.path)"' "$SET_DIR/manifest.json" | \
+   sudo /usr/bin/python3 -c 'import hashlib,json,sys; raw=open(sys.argv[1],"rb").read(); m=json.loads(raw); meta=json.load(open(sys.argv[2])); (m.get("version")==1 and m.get("files") and hashlib.sha256(raw).hexdigest()==meta.get("manifest_sha256")) or sys.exit("invalid manifest"); print("\n".join(x["sha256"]+"  "+x["path"] for x in m["files"]))' \
+     "$SET_DIR/manifest.json" "$SET_DIR/backup.json" | \
      sudo sh -c 'cd "$1" && sha256sum --check --strict -' sh "$SET_DIR"
    sudo /usr/bin/pg_restore --list "$SET_DIR/database.dump" >/dev/null
    ```
@@ -198,26 +208,36 @@ sudo nginx -V 2>&1 | grep -F http_realip_module
    побайтно равен `latest-success.json`, все SHA-256 из `manifest.json` совпадают,
    `pg_restore --list` завершается успешно, а нужные Nginx include-файлы есть в
    manifest как обычные файлы. При любом несовпадении выпуск останавливается.
-3. Создать оба root-owned mode-0644 temp-файла в том же каталоге, что и активные
-   цели, затем атомарно заменить только эти два файла. Первым активировать HTTP-сниппет:
+3. На текущем production HTTP-конфиг уже подключён как
+   `/etc/nginx/conf.d/veltrix-portal.conf`, а locations — как
+   `/etc/nginx/snippets/veltrix-vpn-portal-locations.conf`. Сначала подтвердить
+   эти пути через `nginx -T`, затем создать root-owned mode-0644 temp-файлы в тех
+   же каталогах и заменить их атомарно. Первым активировать HTTP-конфиг:
    новый locations-сниппет ссылается на объявленные в нём map-переменные.
 
    ```sh
    sudo install -o root -g root -m 0644 deploy/nginx-vpn-portal-http.conf \
-     /etc/nginx/snippets/.nginx-vpn-portal-http.conf.new
+     /etc/nginx/conf.d/.veltrix-portal.conf.new
    sudo install -o root -g root -m 0644 deploy/nginx-vpn-portal-locations.conf \
-     /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.new
-   sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-http.conf.new \
-     /etc/nginx/snippets/nginx-vpn-portal-http.conf
-   sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.new \
-     /etc/nginx/snippets/nginx-vpn-portal-locations.conf
+     /etc/nginx/snippets/.veltrix-vpn-portal-locations.conf.new
+   sudo mv -fT /etc/nginx/conf.d/.veltrix-portal.conf.new \
+     /etc/nginx/conf.d/veltrix-portal.conf
+   sudo mv -fT /etc/nginx/snippets/.veltrix-vpn-portal-locations.conf.new \
+     /etc/nginx/snippets/veltrix-vpn-portal-locations.conf
    ```
+
+   В `/etc/nginx/sites-available/domain-drop-control` (HTTP redirect) и
+   `/etc/nginx/sites-available/domain-drop-worker-runtime-direct` сохранить тот
+   же server-level блок из locations-сниппета: безопасные access/error logs и все
+   пять `add_header`. Стейджировать и заменять эти два server-файла тем же
+   same-directory atomic rename; не переписывать сертификаты, allowlist или
+   proxy locations.
 
 4. До reload обязательно выполнить `sudo nginx -t`, затем через `sudo nginx -T`
    убедиться, что эффективная конфигурация содержит все проверенные
    `set_real_ip_from`, `real_ip_header CF-Connecting-IP`, `real_ip_recursive on` и обе
    `limit_req_zone` в этом порядке. Вывод `nginx -T` не публиковать. При ошибке ничего не
-   перезагружать; откатить два файла из записанного `SET_DIR`. Только после
+   перезагружать; откатить все затронутые файлы из записанного `SET_DIR`. Только после
    успешной проверки выполнить `sudo systemctl reload nginx`.
 5. Проверить публичную страницу без cookies и секретных заголовков:
 
@@ -245,22 +265,32 @@ sudo nginx -V 2>&1 | grep -F http_realip_module
    единичному запросу из другой. Не журналировать CF-Connecting-IP, другие заголовки,
    query string или body. Подложный `CF-Connecting-IP` в прямой запрос к origin от адреса вне
    allowlist игнорируется: `$remote_addr` и limiter остаются привязаны к TCP peer.
-7. Для отката взять ровно два прежних файла из записанного validated `SET_DIR`,
-   стейджировать их в том же каталоге и вернуть атомарным rename, не копировать
-   весь `/etc/nginx`. Первым активировать старый locations-сниппет: он не зависит от
-   новых map-переменных, поэтому промежуточная пара файлов остаётся совместимой:
+7. Для отката взять прежние версии только четырёх затронутых файлов из
+   validated `SET_DIR`, стейджировать их в тех же каталогах и вернуть атомарным
+   rename, не копировать весь `/etc/nginx`. Сначала вернуть server-файлы и старый
+   locations-сниппет, которые не зависят от новых map-переменных, затем HTTP-конфиг:
 
    ```sh
    sudo install -o root -g root -m 0644 \
-     "$SET_DIR/nginx/snippets/nginx-vpn-portal-http.conf" \
-     /etc/nginx/snippets/.nginx-vpn-portal-http.conf.rollback
+     "$SET_DIR/nginx/sites-available/domain-drop-control" \
+     /etc/nginx/sites-available/.domain-drop-control.rollback
    sudo install -o root -g root -m 0644 \
-     "$SET_DIR/nginx/snippets/nginx-vpn-portal-locations.conf" \
-     /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.rollback
-   sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-locations.conf.rollback \
-     /etc/nginx/snippets/nginx-vpn-portal-locations.conf
-   sudo mv -fT /etc/nginx/snippets/.nginx-vpn-portal-http.conf.rollback \
-     /etc/nginx/snippets/nginx-vpn-portal-http.conf
+     "$SET_DIR/nginx/sites-available/domain-drop-worker-runtime-direct" \
+     /etc/nginx/sites-available/.domain-drop-worker-runtime-direct.rollback
+   sudo install -o root -g root -m 0644 \
+     "$SET_DIR/nginx/snippets/veltrix-vpn-portal-locations.conf" \
+     /etc/nginx/snippets/.veltrix-vpn-portal-locations.conf.rollback
+   sudo install -o root -g root -m 0644 \
+     "$SET_DIR/nginx/conf.d/veltrix-portal.conf" \
+     /etc/nginx/conf.d/.veltrix-portal.conf.rollback
+   sudo mv -fT /etc/nginx/sites-available/.domain-drop-control.rollback \
+     /etc/nginx/sites-available/domain-drop-control
+   sudo mv -fT /etc/nginx/sites-available/.domain-drop-worker-runtime-direct.rollback \
+     /etc/nginx/sites-available/domain-drop-worker-runtime-direct
+   sudo mv -fT /etc/nginx/snippets/.veltrix-vpn-portal-locations.conf.rollback \
+     /etc/nginx/snippets/veltrix-vpn-portal-locations.conf
+   sudo mv -fT /etc/nginx/conf.d/.veltrix-portal.conf.rollback \
+     /etc/nginx/conf.d/veltrix-portal.conf
    sudo nginx -t
    sudo systemctl reload nginx
    ```
@@ -270,11 +300,17 @@ sudo nginx -V 2>&1 | grep -F http_realip_module
 
 ## Порядок выпуска
 
-Свежая копия для этого выпуска: `/opt/backups/veltrix-cabinet-20260921-003811`.
+Для текущего выпуска использовать только production-ревизию и validated rollback
+set из раздела «Проверенное состояние» выше. Порядок backup, атомарной установки
+четырёх Nginx-файлов и отката задан непосредственно перед этим разделом.
+
+### Исторический исходный выпуск (2026-09-21)
+
+Свежая копия того выпуска: `/opt/backups/veltrix-cabinet-20260921-003811`.
 Дамп 1 133 002 179 байт, TOC обязательных таблиц и config/frontend архивы проверены.
 Это сохранённая копия для восстановления, не удалённая репетиционная БД.
 Тестовый Nginx 1.18 прошёл изолированную проверку 200/400/413/429/502, cookie,
-заголовков и секретов в журналах; тестовый экземпляр удалён. Продакшен обновлён
+заголовков и секретов в журналах; тестовый экземпляр удалён. Тогда продакшен обновлён
 до `46caa10`: перезапущен только control, Nginx проверен и перезагружен без остановки.
 VPN-ноды, транспорт и фактический systemd unit не менялись. При первоначальном выпуске
 вход был выключен; последующее включение одного пилота описано выше.
