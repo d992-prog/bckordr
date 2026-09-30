@@ -964,6 +964,7 @@ async def test_public_config_is_safe_fail_closed_and_never_cors_enabled(portal_a
         "mini_app_enabled": True,
         "login_path": "/api/vpn-portal/auth/telegram/start",
         "bot_url": None,
+        "trial_enabled": False,
         "support_text": "Обратитесь к администратору VPN.",
     }
     assert response.headers["cache-control"] == "no-store"
@@ -976,6 +977,18 @@ async def test_public_config_is_safe_fail_closed_and_never_cors_enabled(portal_a
     assert disabled.json()["enabled"] is False
     assert disabled.json()["browser_login_enabled"] is False
     assert disabled.json()["mini_app_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_public_config_reports_only_the_public_trial_flag(portal_app) -> None:
+    portal_app.settings.vpn_public_trial_enabled = True
+    portal_app.settings.vpn_public_trial_release_id = "internal-release-id"
+
+    response = await portal_app.client.get("/api/vpn-portal/config")
+
+    assert response.json()["trial_enabled"] is True
+    assert "internal-release-id" not in response.text
+    assert "release_id" not in response.text
 
 
 @pytest.mark.asyncio

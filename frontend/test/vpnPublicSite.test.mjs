@@ -28,6 +28,7 @@ test("public site loads only safe public APIs with independent retry states", as
   ]);
 
   assert.match(types, /bot_url:\s*string \| null/);
+  assert.match(types, /trial_enabled:\s*boolean/);
   assert.doesNotMatch(types, /bot_token|release_id|admin_route/i);
   assert.match(source, /portalApi\.config\(\)/);
   assert.match(source, /portalApi\.plans\(\)/);
@@ -81,4 +82,20 @@ test("public site contains honest product, trial, support, privacy, and terms co
   assert.match(portal, /href="\/vpn\/#privacy"/);
   assert.match(portal, /href="\/vpn\/#terms"/);
   assert.match(portal, /bootstrapResult\.config\?\.support_text/);
+});
+
+test("public trial copy follows the safe server availability flag", async () => {
+  const source = await readFile(siteUrl, "utf8");
+  const trialSection = source.slice(
+    source.indexOf('id="trial"'),
+    source.indexOf('id="support"'),
+  );
+
+  assert.match(trialSection, /configBusy\s*\?/);
+  assert.match(trialSection, /config\?\.trial_enabled\s*\?/);
+  assert.match(trialSection, /Уточняем доступность пробного периода/);
+  assert.match(trialSection, /Пробный доступ на 7 дней сейчас доступен/);
+  assert.match(trialSection, /Пробный запуск готовится/);
+  assert.match(trialSection, /Сейчас получить пробный доступ нельзя/);
+  assert.doesNotMatch(trialSection, /Один новый пользователь может получить/);
 });

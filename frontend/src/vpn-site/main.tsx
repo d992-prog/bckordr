@@ -156,12 +156,21 @@ function PublicVpnSite() {
           )}
         </section>
 
-        <section className="section split" aria-labelledby="trial-title">
+        <section id="trial" className="section split" aria-labelledby="trial-title">
           <div>
             <p className="eyebrow">Знакомство с сервисом</p>
-            <h2 id="trial-title">Пробный период на 7 дней</h2>
+            <h2 id="trial-title">Пробный доступ</h2>
           </div>
-          <p>Один новый пользователь может получить один пробный профиль. Доступность определяется сервером: если свободной мощности нет, новые подключения временно приостанавливаются без выдачи неработающего профиля.</p>
+          {configBusy ? (
+            <p>Уточняем доступность пробного периода…</p>
+          ) : config?.trial_enabled ? (
+            <div>
+              <p><strong>Пробный доступ на 7 дней сейчас доступен.</strong> Он выдаётся один раз и включает один профиль; при отсутствии свободной мощности новые подключения могут быть временно приостановлены.</p>
+              <BotAction config={config} label="Получить пробный доступ" />
+            </div>
+          ) : (
+            <p><strong>Пробный запуск готовится.</strong> Сейчас получить пробный доступ нельзя.</p>
+          )}
         </section>
 
         <section id="support" className="section split" aria-labelledby="support-title">
