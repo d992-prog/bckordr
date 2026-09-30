@@ -96,3 +96,13 @@ test("public trial copy stays honest without duplicating readiness", async () =>
   assert.match(trialSection, /config\?\.bot_url\s*&&[\s\S]*label="Проверить доступность в боте"/);
   assert.doesNotMatch(trialSection, /trial_enabled|сейчас доступен|может получить|configBusy\s*\?/i);
 });
+
+test("public mobile hero lets long Russian copy shrink within the viewport", async () => {
+  const css = await readFile(cssUrl, "utf8");
+
+  assert.match(css, /\.hero\s*>\s*\*\s*\{[^}]*min-width:\s*0;[^}]*overflow-wrap:\s*anywhere;/);
+  assert.match(
+    css,
+    /@media \(max-width:\s*900px\)\s*\{[\s\S]*?\.hero\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/,
+  );
+});

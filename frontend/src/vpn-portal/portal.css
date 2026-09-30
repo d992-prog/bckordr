@@ -159,6 +159,7 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
   font-weight: 750;
   text-decoration: none;
 }
+.veltrix-portal .button { max-width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .veltrix-portal .button--primary { background: #267249; color: #fff; }
 .veltrix-portal .button--primary:hover { background: #173f2d; }
 .veltrix-portal .button--ghost { border-color: var(--line); background: transparent; color: var(--ink); }
@@ -211,8 +212,8 @@ body { margin: 0; min-width: 0; min-height: 100vh; overflow-x: hidden; }
 .veltrix-portal .state-card p { line-height: 1.6; }
 
 @media (max-width: 639px) {
-  .veltrix-portal .portal-header { align-items: flex-start; }
-  .veltrix-portal .account { align-items: flex-end; flex-direction: column; gap: 6px; text-align: right; }
+  .veltrix-portal .portal-header { align-items: flex-start; flex-wrap: wrap; }
+  .veltrix-portal .account { max-width: 100%; align-items: flex-end; flex-direction: column; gap: 6px; text-align: right; }
   .veltrix-portal .account .button { min-height: 44px; }
   .veltrix-portal .portal-content {
     width: min(calc(100% - 28px - var(--portal-safe-inline) - var(--portal-safe-inline)), 1000px);
