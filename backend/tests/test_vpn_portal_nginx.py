@@ -3,6 +3,30 @@ from pathlib import Path
 
 DEPLOY_DIR = Path(__file__).resolve().parents[2] / "deploy"
 RUNBOOK = Path(__file__).resolve().parents[2] / "docs" / "vpn-customer-portal-runbook.md"
+CLOUDFLARE_RANGES = (
+    "173.245.48.0/20",
+    "103.21.244.0/22",
+    "103.22.200.0/22",
+    "103.31.4.0/22",
+    "141.101.64.0/18",
+    "108.162.192.0/18",
+    "190.93.240.0/20",
+    "188.114.96.0/20",
+    "197.234.240.0/22",
+    "198.41.128.0/17",
+    "162.158.0.0/15",
+    "104.16.0.0/13",
+    "104.24.0.0/14",
+    "172.64.0.0/13",
+    "131.0.72.0/22",
+    "2400:cb00::/32",
+    "2606:4700::/32",
+    "2803:f800::/32",
+    "2405:b500::/32",
+    "2405:8100::/32",
+    "2a06:98c0::/29",
+    "2c0f:f248::/32",
+)
 
 
 def _location(config: str, declaration: str) -> str:
@@ -25,6 +49,31 @@ def _map(config: str, variable: str) -> str:
 
 def _directives(block: str) -> set[str]:
     return {" ".join(line.split()) for line in block.splitlines() if line.strip()}
+
+
+def test_real_ip_trusts_only_current_cloudflare_ranges_before_limit_zones() -> None:
+    http_config = (DEPLOY_DIR / "nginx-vpn-portal-http.conf").read_text()
+    trusted_ranges = tuple(
+        line.strip().split()[1].removesuffix(";")
+        for line in http_config.splitlines()
+        if line.strip().startswith("set_real_ip_from ")
+    )
+
+    assert trusted_ranges == CLOUDFLARE_RANGES
+    assert "0.0.0.0/0" not in trusted_ranges
+    assert "::/0" not in trusted_ranges
+    header_index = http_config.index("real_ip_header CF-Connecting-IP;")
+    recursive_index = http_config.index("real_ip_recursive on;")
+    first_zone_index = http_config.index("limit_req_zone ")
+    assert max(http_config.index(f"set_real_ip_from {cidr};") for cidr in trusted_ranges) < (
+        header_index
+    )
+    assert header_index < recursive_index < first_zone_index
+    assert (
+        "log_format veltrix_safe '$remote_addr $request_method $veltrix_safe_uri "
+        "$status $body_bytes_sent';" in http_config
+    )
+    assert "$http_cf_connecting_ip" not in http_config.lower()
 
 
 def test_portal_api_limit_is_separate_from_auth_and_webhook() -> None:
@@ -166,3 +215,21 @@ def test_runbook_uses_validated_backup_and_atomic_nginx_file_replacement() -> No
     )
     assert "Создать новый закрытый каталог резервной копии" not in runbook
     assert "Создать новую серверную копию полной БД" not in runbook
+
+
+def test_runbook_verifies_cloudflare_real_ip_without_logging_headers() -> None:
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+
+    for required in (
+        "https://www.cloudflare.com/ips-v4",
+        "https://www.cloudflare.com/ips-v6",
+        "nginx -V",
+        "http_realip_module",
+        "set_real_ip_from",
+        "real_ip_header CF-Connecting-IP",
+        "real_ip_recursive on",
+        "двух реальных клиентских сетей",
+        "прямой запрос к origin",
+        "Не журналировать CF-Connecting-IP",
+    ):
+        assert required in runbook
