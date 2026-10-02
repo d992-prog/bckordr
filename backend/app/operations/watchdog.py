@@ -243,15 +243,16 @@ def send_telegram_message(
 
 def _failure_message(codes: tuple[str, ...]) -> str:
     return (
-        "Veltrix: готовность к релизу нарушена.\n"
-        f"Коды: {', '.join(codes)}\n"
-        "Действие: проверьте экран готовности."
+        "Veltrix VPN: мониторинг обнаружил устойчивую проблему.\n"
+        "Подключение может работать нестабильно. "
+        "Проверьте раздел «Готовность» в панели.\n"
+        f"Коды проверки: {', '.join(codes)}"
     )
 
 
 _RECOVERY_MESSAGE = (
-    "Veltrix: готовность к релизу восстановлена.\n"
-    "Действие: проверьте экран готовности."
+    "Veltrix VPN: работа сервиса восстановлена.\n"
+    "Проверки снова проходят. Дополнительных действий не требуется."
 )
 
 
@@ -266,23 +267,20 @@ def run_alert_cycle(
     delivery = send_telegram_message if sender is None else sender
     previous, state_valid = _read_alert_state(state_path)
     current = build_alert_state(failing_codes, notified=False)
-    preserve_previous = bool(
-        state_valid
-        and previous.notified
-        and previous.failing_codes
-        and current.failing_codes
-        and previous.digest != current.digest
-    )
 
     if current.failing_codes:
-        if (
-            state_valid
-            and previous.digest == current.digest
-            and previous.notified
-        ):
-            return previous
-        pending = current
-        message = _failure_message(current.failing_codes)
+        if state_valid and previous.digest == current.digest:
+            if previous.notified:
+                return previous
+            pending = current
+            message = _failure_message(current.failing_codes)
+        elif state_valid and previous.notified and previous.failing_codes:
+            reported = build_alert_state(current.failing_codes, notified=True)
+            save_alert_state(state_path, reported)
+            return reported
+        else:
+            save_alert_state(state_path, current)
+            return current
     elif previous.failing_codes:
         healthy = build_alert_state((), notified=True)
         if not previous.notified:
@@ -299,13 +297,12 @@ def run_alert_cycle(
             save_alert_state(state_path, healthy)
         return healthy
 
-    if not preserve_previous:
-        save_alert_state(state_path, pending)
+    save_alert_state(state_path, pending)
     try:
         token, user_id = _telegram_credentials(environment)
         delivery(token, user_id, message)
     except Exception:  # noqa: BLE001 - any sender failure must remain retryable.
-        return previous if preserve_previous else pending
+        return pending
 
     notified = build_alert_state(current.failing_codes, notified=True)
     save_alert_state(state_path, notified)

@@ -1,5 +1,30 @@
 # Current State
 
+## VPN stability incident response (2026-10-03)
+
+The reported Windows/Hiddify PUBG disconnect was traced to the owner's legacy
+plain VLESS profile on TCP 8443. The client log recorded simultaneous tunnel
+read timeouts and remote resets. At the same time, both VPN services stayed up,
+their host interfaces reported no errors or drops, and no maintenance or client
+mutation ran. Current reachability checks pass, so an open port alone is not
+accepted as evidence of sustained tunnel stability.
+
+The unrelated Telegram messages were the watchdog's alert/recovery pair after
+one short SSH health-transport failure. Ready-profile notifications remain off.
+The watchdog now treats the first observation of a failing-code set as pending
+and silent. It alerts only when the next five-minute cycle sees the same set,
+clears a pending transient silently, and sends one recovery only for a reported
+outage. A changed set during a reported outage updates stored evidence without
+another alert. The message now explains the effect and points to the
+`Готовность` panel while retaining bounded diagnostic codes.
+
+The operational response is one additional endpoint-bound REALITY/TCP 443
+profile named `Windows · Hiddify` on the second ready worker. The existing 8443
+credential must remain active as `Старый профиль · 8443` until the replacement
+has passed a real PUBG session. Hysteria2/TUIC is deferred unless that play test
+still disconnects. This code checkpoint does not itself provision or rename a
+production credential.
+
 ## Public release shell production rollout (2026-09-30)
 
 Production control advanced from `109ccc3` to merge `87612c4` through
