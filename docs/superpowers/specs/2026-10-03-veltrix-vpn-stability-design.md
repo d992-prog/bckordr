@@ -50,7 +50,9 @@ dependency.
 - If health returns after an alert was sent, send one recovery message.
 - Keep retrying a failed Telegram delivery on later runs without losing the
   pending state.
-- A changed failing-code set starts a new two-run confirmation window.
+- A changed failing-code set restarts the confirmation window while no alert has
+  been sent. During an already reported outage, update the stored codes without
+  sending another alert; send one recovery when all checks pass again.
 
 Use clear administrator-facing copy:
 
