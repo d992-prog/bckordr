@@ -88,6 +88,16 @@ Enabling the public trial is a separate release. Take a fresh reviewed backup
 and fresh operational observations before that release; do not treat a stored
 readiness marker as permission to turn on the flag later.
 
+### Watchdog notification policy
+
+The five-minute watchdog stores the first observation of a new failing-code set
+as pending and sends nothing. It sends one administrator alert only if the next
+cycle sees the same set. Recovery before confirmation clears the pending state
+silently. After an alert, changed failure codes are stored without duplicate
+messages and one recovery is sent when every check passes again. Failed
+Telegram delivery remains retryable on the next cycle. The state and messages
+contain only bounded check codes, never credentials, VPN URIs or raw errors.
+
 ### Strict fleet health (disabled by default)
 
 Strict fleet health is a read-only release signal, not an update or recovery
@@ -315,6 +325,7 @@ curl --request POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
 ## Recovery
 
 - If a client says connected but sites do not load, verify an actual HTTP/HTTPS request through the VPN. An open TCP port alone does not verify the tunnel. On the affected node, plain VLESS payload on port 443 was filtered before reaching Xray although TLS traffic reached it; moving the existing inbound to 8443 restored traffic. New auto-created plain VLESS inbounds therefore avoid 443. After changing an inbound port, update the node metadata and saved client links, then reimport the link in the client app.
+- If a game disconnects while an old plain-VLESS/8443 Hiddify profile is active, inspect the client log for tunnel timeouts or resets and confirm there was no node restart or maintenance. Issue a separate endpoint-bound REALITY/TCP 443 profile on another ready worker through the existing provisioning path. Keep the old credential active until a real play session passes; do not rewrite its UUID or infer stability from a TCP connect check alone.
 - `pending_sync`: restore or configure the assigned safe ready node, then run lifecycle or press `Повторить синхронизацию`. Previously issued keys without their assigned node are not silently moved to another node.
 - `pending_suspend`: subscription-driven shutdown is not yet confirmed; restore node safety and run lifecycle again. Until confirmation, the client may still have access.
 - `suspended`: the subscription expired, was paused, or has not started. The client is disabled without deleting its UUID or traffic counters. Renew/reactivate the subscription to restore the same link after synchronization.
