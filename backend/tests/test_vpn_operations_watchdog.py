@@ -299,33 +299,45 @@ def test_save_alert_state_redacts_temporary_file_creation_error(
     assert raw_error not in str(caught.value)
 
 
-def test_first_failure_sends_fixed_safe_alert(tmp_path: Path) -> None:
+def test_first_failure_is_pending_and_silent(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
-    sent: list[tuple[str, str, str]] = []
+    messages: list[str] = []
 
-    state = watchdog.run_alert_cycle(
+    pending = watchdog.run_alert_cycle(
         ["public_health", "control_health"],
         state_path=state_path,
         environ=ALERT_ENV,
-        sender=lambda token, user_id, message: sent.append(
-            (token, user_id, message)
-        ),
+        sender=lambda _token, _user_id, message: messages.append(message),
     )
 
+    assert pending == watchdog.build_alert_state(
+        ["control_health", "public_health"], notified=False
+    )
+    assert messages == []
+    assert watchdog.load_alert_state(state_path) == pending
+
+
+def test_second_identical_failure_sends_clear_alert(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    messages: list[str] = []
+
+    for _ in range(2):
+        state = watchdog.run_alert_cycle(
+            ["control_health"],
+            state_path=state_path,
+            environ=ALERT_ENV,
+            sender=lambda _token, _user_id, message: messages.append(message),
+        )
+
     assert state.notified is True
-    assert state.failing_codes == ("control_health", "public_health")
-    assert sent == [
+    assert messages == [
         (
-            "private-bot-token",
-            "123456789",
-            (
-                "Veltrix: готовность к релизу нарушена.\n"
-                "Коды: control_health, public_health\n"
-                "Действие: проверьте экран готовности."
-            ),
+            "Veltrix VPN: мониторинг обнаружил устойчивую проблему.\n"
+            "Подключение может работать нестабильно. "
+            "Проверьте раздел «Готовность» в панели.\n"
+            "Коды проверки: control_health"
         )
     ]
-    assert watchdog.load_alert_state(state_path) == state
 
 
 def test_identical_notified_failure_is_silent(tmp_path: Path) -> None:
@@ -335,6 +347,7 @@ def test_identical_notified_failure_is_silent(tmp_path: Path) -> None:
     for codes in (
         ["control_health", "public_health"],
         ["public_health", "control_health", "control_health"],
+        ["control_health", "public_health"],
     ):
         watchdog.run_alert_cycle(
             codes,
@@ -346,11 +359,15 @@ def test_identical_notified_failure_is_silent(tmp_path: Path) -> None:
     assert len(messages) == 1
 
 
-def test_changed_failure_reason_sends_a_new_alert(tmp_path: Path) -> None:
+def test_changed_pending_failure_restarts_confirmation(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     messages: list[str] = []
 
-    for codes in (["control_health"], ["public_health"]):
+    for codes in (
+        ["control_health"],
+        ["public_health"],
+        ["public_health"],
+    ):
         watchdog.run_alert_cycle(
             codes,
             state_path=state_path,
@@ -358,61 +375,85 @@ def test_changed_failure_reason_sends_a_new_alert(tmp_path: Path) -> None:
             sender=lambda _token, _user_id, message: messages.append(message),
         )
 
-    assert len(messages) == 2
-    assert "Коды: control_health" in messages[0]
-    assert "Коды: public_health" in messages[1]
+    assert len(messages) == 1
+    assert "Коды проверки: public_health" in messages[0]
 
 
-def test_failed_changed_alert_preserves_notified_failure_until_recovery(
+def test_changed_notified_failure_stays_silent_until_recovery(
     tmp_path: Path,
 ) -> None:
     state_path = tmp_path / "state.json"
     delivered: list[str] = []
-    first = watchdog.run_alert_cycle(
-        ["control_health"],
-        state_path=state_path,
-        environ=ALERT_ENV,
-        sender=lambda _token, _user_id, message: delivered.append(message),
-    )
+    send = lambda _token, _user_id, message: delivered.append(message)
 
-    def fail_changed(_token: str, _user_id: str, _message: str) -> None:
-        raise RuntimeError("private changed-alert failure")
+    for _ in range(2):
+        watchdog.run_alert_cycle(
+            ["control_health"],
+            state_path=state_path,
+            environ=ALERT_ENV,
+            sender=send,
+        )
 
-    after_failure = watchdog.run_alert_cycle(
+    changed = watchdog.run_alert_cycle(
         ["public_health"],
         state_path=state_path,
         environ=ALERT_ENV,
-        sender=fail_changed,
+        sender=send,
     )
 
-    assert after_failure == first
-    assert watchdog.load_alert_state(state_path) == first
+    assert changed == watchdog.build_alert_state(
+        ["public_health"], notified=True
+    )
+    assert watchdog.load_alert_state(state_path) == changed
+    assert len(delivered) == 1
 
     recovered = watchdog.run_alert_cycle(
         [],
         state_path=state_path,
         environ=ALERT_ENV,
-        sender=lambda _token, _user_id, message: delivered.append(message),
+        sender=send,
     )
     watchdog.run_alert_cycle(
         [],
         state_path=state_path,
         environ=ALERT_ENV,
-        sender=lambda _token, _user_id, message: delivered.append(message),
+        sender=send,
     )
 
     assert recovered == watchdog.build_alert_state((), notified=True)
     assert delivered == [
         (
-            "Veltrix: готовность к релизу нарушена.\n"
-            "Коды: control_health\n"
-            "Действие: проверьте экран готовности."
+            "Veltrix VPN: мониторинг обнаружил устойчивую проблему.\n"
+            "Подключение может работать нестабильно. "
+            "Проверьте раздел «Готовность» в панели.\n"
+            "Коды проверки: control_health"
         ),
         (
-            "Veltrix: готовность к релизу восстановлена.\n"
-            "Действие: проверьте экран готовности."
+            "Veltrix VPN: работа сервиса восстановлена.\n"
+            "Проверки снова проходят. Дополнительных действий не требуется."
         ),
     ]
+
+
+def test_pending_failure_recovers_without_message(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    messages: list[str] = []
+
+    watchdog.run_alert_cycle(
+        ["endpoint_health"],
+        state_path=state_path,
+        environ=ALERT_ENV,
+        sender=lambda _token, _user_id, message: messages.append(message),
+    )
+    healthy = watchdog.run_alert_cycle(
+        [],
+        state_path=state_path,
+        environ=ALERT_ENV,
+        sender=lambda _token, _user_id, message: messages.append(message),
+    )
+
+    assert healthy == watchdog.build_alert_state((), notified=True)
+    assert messages == []
 
 
 def test_recovery_after_notified_failure_sends_once(tmp_path: Path) -> None:
@@ -422,6 +463,12 @@ def test_recovery_after_notified_failure_sends_once(tmp_path: Path) -> None:
     def send(_token: str, _user_id: str, message: str) -> None:
         messages.append(message)
 
+    watchdog.run_alert_cycle(
+        ["backup_health"],
+        state_path=state_path,
+        environ=ALERT_ENV,
+        sender=send,
+    )
     watchdog.run_alert_cycle(
         ["backup_health"],
         state_path=state_path,
@@ -442,8 +489,8 @@ def test_recovery_after_notified_failure_sends_once(tmp_path: Path) -> None:
     )
 
     assert messages[-1] == (
-        "Veltrix: готовность к релизу восстановлена.\n"
-        "Действие: проверьте экран готовности."
+        "Veltrix VPN: работа сервиса восстановлена.\n"
+        "Проверки снова проходят. Дополнительных действий не требуется."
     )
     assert len(messages) == 2
     assert recovered == watchdog.build_alert_state((), notified=True)
@@ -481,6 +528,15 @@ def test_telegram_failure_persists_unnotified_state_for_retry(
         assert "vless://secret" not in message
         assert "00000000-0000-0000-0000-000000000001" not in message
         raise RuntimeError(unsafe_error)
+
+    first = watchdog.run_alert_cycle(
+        ["backup_health"],
+        state_path=state_path,
+        environ=ALERT_ENV,
+        sender=fail,
+    )
+
+    assert first.notified is False
 
     pending = watchdog.run_alert_cycle(
         ["backup_health"],
@@ -612,10 +668,9 @@ def test_run_alert_cycle_uses_environment_and_default_sender(
         lambda token, user_id, message: sent.append((token, user_id, message)),
     )
 
-    state = watchdog.run_alert_cycle(
-        ["system_health"],
-        state_path=tmp_path / "state.json",
-    )
+    state_path = tmp_path / "state.json"
+    watchdog.run_alert_cycle(["system_health"], state_path=state_path)
+    state = watchdog.run_alert_cycle(["system_health"], state_path=state_path)
 
     assert state.notified is True
     assert sent[0][:2] == ("environment-token", "987654321")
