@@ -1,4 +1,4 @@
-"""Node-only Xray 26.9.9 observations; no authorization or transport proof.
+"""Node-only Xray 26.7.28 observations; no authorization or transport proof.
 
 The API enumerates its email map, not anonymous dynamic users. Neither a match
 nor ``not_observed`` proves global inventory coverage, applied transport, or
@@ -401,7 +401,7 @@ def _observe(port: int, uid: UUID, email: str, flow: str,
     namespace = _network_namespace(process, deadline)
     listener = _listener(process, api_port, deadline)
     version = _run([str(executable), "version"], deadline)
-    _require(re.match(rb"Xray 26\.9\.9(?:\s|$)", version))
+    _require(re.match(rb"Xray 26\.7\.28(?:\s|$)", version))
     matched = False
     for tag in tags:
         seconds = _remaining(deadline)

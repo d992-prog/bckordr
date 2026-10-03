@@ -277,7 +277,7 @@ def node(runtime, monkeypatch):
     }
     calls = []
     identity_overrides = {}
-    responses = [b"Xray 26.9.9 (Xray, Penetrates Everything.)\n", json.dumps({"users": [account()]}).encode(), b"{}"]
+    responses = [b"Xray 26.7.28 (Xray, Penetrates Everything.)\n", json.dumps({"users": [account()]}).encode(), b"{}"]
     def read(path, *args):
         return data[path]
     def readlink(path, *args):
@@ -331,7 +331,10 @@ def test_observe_empty_users(runtime, node):
     assert runtime.observe_xray_client(**inputs()).state == "not_observed"
 
 
-@pytest.mark.parametrize("version", [b"Xray 26.9.8\n", b"Xray 26.9.90\n", b"secret"])
+@pytest.mark.parametrize(
+    "version",
+    [b"Xray 26.9.9\n", b"Xray 26.7.27\n", b"Xray 26.7.280\n", b"secret"],
+)
 def test_unsupported_binary_version(runtime, node, version):
     node["responses"][0] = version
     with pytest.raises(runtime.XrayRuntimeError) as caught:
