@@ -15,8 +15,8 @@
     {
       "id": "brand-name",
       "kind": "text",
-      "grid": "B0:E0",
-      "note": "Veltrix VPN wordmark text."
+      "box": { "x": 0.175, "y": 0.05, "w": 0.29, "h": 0.035 },
+      "note": "Isolated Veltrix VPN wordmark text, excluding the three-lens mark."
     },
     {
       "id": "help-action",
@@ -27,14 +27,14 @@
     {
       "id": "status-lens",
       "kind": "plate",
-      "grid": "A1:J4",
-      "note": "Complete asymmetric glass status lens; regenerate as an empty optical plate without text, icons, signal orb, or primary-action content."
+      "box": { "x": 0.025, "y": 0.095, "w": 0.95, "h": 0.26 },
+      "note": "Tight crop of the complete asymmetric glass status lens; regenerate as an empty optical plate without text, icons, signal orb, or the intentionally overlapping primary action."
     },
     {
       "id": "signal-orb",
       "kind": "plate",
-      "grid": "B2:E4",
-      "note": "Mint and blue signal orb with concentric connection arcs; regenerate without surrounding copy or the overlapping primary-action content."
+      "box": { "x": 0.11, "y": 0.19, "w": 0.32, "h": 0.14 },
+      "note": "Tight near-square crop of the mint and blue signal orb with concentric connection arcs; no surrounding copy or controls."
     },
     {
       "id": "status-label",
@@ -51,8 +51,8 @@
     {
       "id": "hero-detail",
       "kind": "text",
-      "grid": "E2:J3",
-      "note": "Profile state and expiry detail below the hero title."
+      "box": { "x": 0.47, "y": 0.27, "w": 0.44, "h": 0.045 },
+      "note": "Isolated two-line gray profile state and expiry detail below the hero title."
     },
     {
       "id": "primary-action",
@@ -93,8 +93,8 @@
     {
       "id": "access-value",
       "kind": "text",
-      "grid": "C7:F8",
-      "note": "Access duration value."
+      "box": { "x": 0.245, "y": 0.78, "w": 0.4, "h": 0.035 },
+      "note": "Isolated access duration value below the eyebrow label."
     },
     {
       "id": "access-status",
