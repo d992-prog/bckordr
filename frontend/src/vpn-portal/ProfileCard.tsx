@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { PortalError, portalApi } from "./api";
 import type { SessionGeneration } from "./bootstrap";
+import { copyConnectionUri, loadConnectionUri } from "./connection";
 import { createQrDataUrl } from "./qr";
 import type { PortalProfile } from "./types";
 import { stateLabel } from "./view";
@@ -86,11 +87,11 @@ export default function ProfileCard({
     setQrBusy(false);
     setQrError("");
     try {
-      const connection = await portalApi.connection(profile.id);
+      const uri = await loadConnectionUri(profile.id);
       if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
         return;
       }
-      setConnectionUri(connection.uri);
+      setConnectionUri(uri);
     } catch (error) {
       if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
         return;
@@ -111,13 +112,18 @@ export default function ProfileCard({
     if (connectionUri === null) {
       return;
     }
+    const generation = sessionGeneration.current();
+    const epoch = connectionEpoch.current;
     try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error("clipboard unavailable");
+      await copyConnectionUri(connectionUri);
+      if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
+        return;
       }
-      await navigator.clipboard.writeText(connectionUri);
       setConnectionMessage("Скопировано.");
     } catch {
+      if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
+        return;
+      }
       setConnectionMessage(
         "Не удалось скопировать автоматически. Выделите ссылку в поле и скопируйте вручную.",
       );
