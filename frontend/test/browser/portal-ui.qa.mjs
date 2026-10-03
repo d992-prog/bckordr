@@ -179,6 +179,150 @@ function assertNoHorizontalOverflow(page) {
   });
 }
 
+async function assertAccessibleSubscriptionLayout(page) {
+  const layout = await page.locator(".portal-access .card-grid").evaluate((grid) => {
+    const gridBox = grid.getBoundingClientRect();
+    const style = getComputedStyle(grid);
+    const cards = [...grid.querySelectorAll(".subscription-card")].map((card) => {
+      const box = card.getBoundingClientRect();
+      return {
+        left: box.left,
+        right: box.right,
+        width: box.width,
+        height: box.height,
+        display: getComputedStyle(card).display,
+        visibility: getComputedStyle(card).visibility,
+      };
+    });
+    return {
+      cards,
+      clientWidth: grid.clientWidth,
+      scrollWidth: grid.scrollWidth,
+      overflowX: style.overflowX,
+      gridLeft: gridBox.left,
+      gridRight: gridBox.right,
+    };
+  });
+
+  assert.ok(layout.cards.length >= 2, "subscription layout fixture must contain two cards");
+  assert.ok(
+    layout.scrollWidth <= layout.clientWidth + 1,
+    `subscriptions require hidden horizontal scrolling: ${JSON.stringify(layout)}`,
+  );
+  assert.notEqual(layout.overflowX, "scroll");
+  assert.notEqual(layout.overflowX, "auto");
+  assert.equal(
+    layout.cards.every((card) => (
+      card.display !== "none"
+      && card.visibility !== "hidden"
+      && card.width > 0
+      && card.height > 0
+      && card.left >= layout.gridLeft - 1
+      && card.right <= layout.gridRight + 1
+    )),
+    true,
+    `a subscription is not visibly discoverable: ${JSON.stringify(layout)}`,
+  );
+}
+
+async function assertPrimaryActionContrast(page) {
+  const actions = await page.locator(".button--primary:not(:disabled)").evaluateAll((elements) => {
+    const parseColor = (value) => {
+      const match = value.match(/^rgba?\(([^)]+)\)$/);
+      if (!match) return null;
+      const values = match[1].split(/[\s,\/]+/).filter(Boolean).map(Number);
+      if (values.length < 3 || values.slice(0, 3).some(Number.isNaN)) return null;
+      return { rgb: values.slice(0, 3), alpha: values[3] ?? 1 };
+    };
+    const channel = (value) => {
+      const normalized = value / 255;
+      return normalized <= 0.04045
+        ? normalized / 12.92
+        : ((normalized + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = (rgb) => (
+      0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2])
+    );
+    return elements.map((element) => {
+      const style = getComputedStyle(element);
+      const foreground = parseColor(style.color);
+      const background = parseColor(style.backgroundColor);
+      const ratio = foreground && background && background.alpha === 1
+        ? (Math.max(luminance(foreground.rgb), luminance(background.rgb)) + 0.05)
+          / (Math.min(luminance(foreground.rgb), luminance(background.rgb)) + 0.05)
+        : 0;
+      return {
+        label: element.textContent?.trim(),
+        foreground: style.color,
+        background: style.backgroundColor,
+        backgroundImage: style.backgroundImage,
+        ratio,
+      };
+    });
+  });
+
+  assert.ok(actions.length > 0, "no enabled primary actions were rendered");
+  assert.equal(
+    actions.every(({ backgroundImage }) => backgroundImage === "none"),
+    true,
+    `primary action contrast cannot be measured through a gradient: ${JSON.stringify(actions)}`,
+  );
+  assert.equal(
+    actions.every(({ ratio }) => ratio >= 4.5),
+    true,
+    `primary action contrast is below 4.5:1: ${JSON.stringify(actions)}`,
+  );
+}
+
+async function assertNavSafeAreaAndReserve(page, expectedSafeBottom = 0) {
+  const geometry = await page.evaluate(async () => {
+    const shell = document.querySelector(".portal-shell");
+    const nav = document.querySelector(".portal-nav");
+    const lastContent = document.querySelector(".portal-content")?.lastElementChild;
+    if (!shell || !nav || !lastContent) throw new Error("portal navigation geometry is incomplete");
+    const shellStyle = getComputedStyle(shell);
+    const safeBottomProbe = document.createElement("span");
+    safeBottomProbe.style.cssText = "position:fixed;bottom:var(--portal-safe-bottom);width:1px;height:1px;";
+    document.querySelector(".veltrix-portal").append(safeBottomProbe);
+    const safeBottom = parseFloat(getComputedStyle(safeBottomProbe).bottom) || 0;
+    safeBottomProbe.remove();
+    const initialScrollY = scrollY;
+    const initialScrollBehavior = document.documentElement.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = "auto";
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const navBox = nav.getBoundingClientRect();
+    const lastBox = lastContent.getBoundingClientRect();
+    const result = {
+      navHeight: navBox.height,
+      navTop: navBox.top,
+      navBottomGap: innerHeight - navBox.bottom,
+      shellBottomPadding: parseFloat(shellStyle.paddingBottom),
+      safeBottom,
+      lastContentBottom: lastBox.bottom,
+    };
+    window.scrollTo(0, initialScrollY);
+    document.documentElement.style.scrollBehavior = initialScrollBehavior;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    return result;
+  });
+
+  assert.ok(geometry.navHeight >= 68 && geometry.navHeight <= 80, `navigation height is ${geometry.navHeight}px`);
+  assert.ok(geometry.safeBottom >= expectedSafeBottom, `resolved safe bottom is ${geometry.safeBottom}px`);
+  assert.ok(
+    geometry.navBottomGap >= geometry.safeBottom + 12,
+    `navigation bottom ${geometry.navBottomGap}px does not honor safe bottom ${geometry.safeBottom}px`,
+  );
+  assert.ok(
+    geometry.shellBottomPadding >= geometry.navHeight + geometry.navBottomGap + 16,
+    `shell reserve ${geometry.shellBottomPadding}px does not clear navigation ${geometry.navHeight}px + ${geometry.navBottomGap}px`,
+  );
+  assert.ok(
+    geometry.lastContentBottom <= geometry.navTop - 16,
+    `last content remains behind navigation: ${JSON.stringify(geometry)}`,
+  );
+}
+
 async function assertPortalVisualContract(page, viewportWidth) {
   const contract = await page.evaluate(() => {
     const shell = document.querySelector(".portal-shell");
@@ -1254,6 +1398,7 @@ async function verifyTelegramSafeAreaGeometry(browser, origin) {
     assert.ok(geometry.brandLeft >= 40);
     assert.ok(geometry.accountRight <= 344);
     assert.ok(geometry.shellBottom >= 96);
+    await assertNavSafeAreaAndReserve(page, 68);
 
     await page.evaluate(() => {
       document.documentElement.style.setProperty("--tg-content-safe-area-inset-top", "55px");
@@ -1317,6 +1462,101 @@ async function verifyTelegramSafeAreaGeometry(browser, origin) {
   }
 }
 
+async function verifyLongStatusLensStates(browser, origin) {
+  const trialBase = {
+    duration_days: 7,
+    profile_limit: 1,
+    subscription_id: null,
+    access_key_id: null,
+    expires_at: null,
+  };
+  const fixtures = [
+    {
+      name: "capacity-paused",
+      title: "Выдача доступа временно приостановлена",
+      trial: { ...trialBase, state: "capacity_paused" },
+      subscriptions: [],
+    },
+    {
+      name: "trial-used",
+      title: "Пробный доступ уже использован",
+      trial: { ...trialBase, state: "used" },
+      subscriptions: [],
+    },
+    {
+      name: "preparing",
+      title: "Профиль готовится",
+      trial: { ...trialBase, state: "preparing" },
+      subscriptions: [],
+    },
+    {
+      name: "expired",
+      title: "Срок доступа закончился",
+      trial: disabledTrial,
+      subscriptions: subscriptions.slice(1),
+    },
+    {
+      name: "empty",
+      title: "Пробный доступ недоступен",
+      trial: disabledTrial,
+      subscriptions: [],
+    },
+  ];
+
+  for (const width of [320, 390]) {
+    for (const fixture of fixtures) {
+      const { context, page } = await newPortalPage(browser, {
+        viewport: { width, height: 844 },
+        colorScheme: "light",
+      });
+      await installApi(page, async (route, pathname) => {
+        if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+        if (pathname.endsWith("/me")) return responseJson(route, me);
+        if (pathname.endsWith("/subscriptions")) return responseJson(route, fixture.subscriptions);
+        if (pathname.endsWith("/profiles")) return responseJson(route, []);
+        if (pathname.endsWith("/plans")) return responseJson(route, []);
+        return responseJson(route, {}, 404);
+      }, { trial: fixture.trial });
+      await page.goto(`${origin}/cabinet/#home`);
+      await page.getByRole("heading", { name: fixture.title }).waitFor();
+      await assertNoHorizontalOverflow(page);
+      const geometry = await page.locator(".portal-status-lens").evaluate((lens) => {
+        const title = lens.querySelector("h1");
+        const detail = lens.querySelector("p");
+        if (!title || !detail) throw new Error("status lens copy is incomplete");
+        const lensBox = lens.getBoundingClientRect();
+        const titleBox = title.getBoundingClientRect();
+        const detailBox = detail.getBoundingClientRect();
+        return {
+          lensTop: lensBox.top,
+          lensBottom: lensBox.bottom,
+          titleTop: titleBox.top,
+          titleBottom: titleBox.bottom,
+          detailTop: detailBox.top,
+          detailBottom: detailBox.bottom,
+          titlePosition: getComputedStyle(title).position,
+          detailPosition: getComputedStyle(detail).position,
+        };
+      });
+      assert.notEqual(geometry.titlePosition, "absolute", `${fixture.name} title uses brittle absolute positioning`);
+      assert.notEqual(geometry.detailPosition, "absolute", `${fixture.name} detail uses brittle absolute positioning`);
+      assert.ok(
+        geometry.titleBottom + 8 <= geometry.detailTop,
+        `${fixture.name} title overlaps detail at ${width}px: ${JSON.stringify(geometry)}`,
+      );
+      assert.ok(
+        geometry.titleTop >= geometry.lensTop && geometry.detailBottom <= geometry.lensBottom,
+        `${fixture.name} copy is clipped at ${width}px: ${JSON.stringify(geometry)}`,
+      );
+      await page.screenshot({
+        path: path.join(outputRoot, `portal-${fixture.name}-${width}-light.png`),
+        fullPage: true,
+      });
+      await context.close();
+    }
+  }
+}
+
 async function captureResponsiveMatrix(browser, origin) {
   const portalCss = await readFile(path.join(frontendRoot, "src/vpn-portal/portal.css"), "utf8");
   const portalSource = await readFile(path.join(frontendRoot, "src/vpn-portal/Portal.tsx"), "utf8");
@@ -1352,6 +1592,7 @@ async function captureResponsiveMatrix(browser, origin) {
     { name: "portal-390-light", viewport: { width: 390, height: 844 }, colorScheme: "light" },
     { name: "portal-390-dark", viewport: { width: 390, height: 844 }, colorScheme: "dark" },
     { name: "portal-320-light", viewport: { width: 320, height: 700 }, colorScheme: "light" },
+    { name: "portal-853-light", viewport: { width: 853, height: 1844 }, colorScheme: "light" },
     { name: "portal-1024-light", viewport: { width: 1024, height: 900 }, colorScheme: "light" },
   ];
 
@@ -1363,6 +1604,9 @@ async function captureResponsiveMatrix(browser, origin) {
     assert.equal(/подключено|защищено/i.test(await page.locator(".portal-status-lens").innerText()), false);
     await assertNoHorizontalOverflow(page);
     await assertPortalVisualContract(page, scenario.viewport.width);
+    await assertAccessibleSubscriptionLayout(page);
+    await assertPrimaryActionContrast(page);
+    await assertNavSafeAreaAndReserve(page);
     await page.screenshot({
       path: path.join(outputRoot, `${scenario.name}.png`),
       fullPage: true,
@@ -1437,7 +1681,8 @@ async function captureResponsiveMatrix(browser, origin) {
   await hero.page.getByRole("link", { name: "Veltrix VPN" }).waitFor();
   await hero.page.getByRole("link", { name: "Помощь" }).waitFor();
   await hero.page.evaluate(async () => {
-    window.scrollTo(0, 0);
+    document.documentElement.style.scrollBehavior = "auto";
+    window.scrollTo({ top: 0, behavior: "instant" });
     await document.fonts.ready;
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   });
@@ -1516,6 +1761,7 @@ try {
   await verifyPlatformAwareUnauthenticatedStates(browser, server.origin);
   await verifyMountedFragmentPreservation(browser, server.origin);
   await verifyTelegramSafeAreaGeometry(browser, server.origin);
+  await verifyLongStatusLensStates(browser, server.origin);
   await captureResponsiveMatrix(browser, server.origin);
   const sdkResult = await verifyRealSdkCacheCleanup(browser, server.origin);
   console.log(`Portal browser QA passed. Screenshots: ${outputRoot}`);

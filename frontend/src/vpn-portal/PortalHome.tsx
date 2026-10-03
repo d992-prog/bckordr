@@ -78,7 +78,7 @@ function AccessSummary({
         {subscriptions.map((subscription) => (
           <article className="card subscription-card" key={subscription.id}>
             <div className="card-row">
-              <h3>Veltrix VPN</h3>
+              <h3>Доступ Veltrix</h3>
               <span className={`status status--${subscription.state === "active" ? "good" : "quiet"}`}>
                 {stateLabel(subscription.state)}
               </span>

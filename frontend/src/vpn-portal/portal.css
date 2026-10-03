@@ -25,6 +25,9 @@ body {
   --portal-danger: #a52c41;
   --portal-success: #0d6a56;
   --portal-warning: #805500;
+  --portal-action-blue: #246cf8;
+  --portal-action-ink: #fff;
+  --portal-label-blue: #1557c8;
   --portal-system-top: max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px));
   --portal-system-right: max(env(safe-area-inset-right, 0px), var(--tg-safe-area-inset-right, 0px));
   --portal-system-bottom: max(env(safe-area-inset-bottom, 0px), var(--tg-safe-area-inset-bottom, 0px));
@@ -33,6 +36,9 @@ body {
   --portal-safe-right: calc(var(--portal-system-right) + var(--tg-content-safe-area-inset-right, 0px));
   --portal-safe-bottom: calc(var(--portal-system-bottom) + var(--tg-content-safe-area-inset-bottom, 0px));
   --portal-safe-left: calc(var(--portal-system-left) + var(--tg-content-safe-area-inset-left, 0px));
+  --portal-nav-height: 68px;
+  --portal-nav-bottom-offset: calc(var(--portal-safe-bottom) + 14px);
+  --portal-nav-breathing-room: 24px;
   min-height: 100vh;
   min-height: 100dvh;
   overflow-wrap: anywhere;
@@ -53,7 +59,7 @@ body {
 .veltrix-portal .portal-shell {
   min-height: 100vh;
   min-height: 100dvh;
-  padding: max(18px, var(--portal-safe-top)) max(18px, var(--portal-safe-right)) calc(112px + var(--portal-safe-bottom)) max(18px, var(--portal-safe-left));
+  padding: max(18px, var(--portal-safe-top)) max(18px, var(--portal-safe-right)) calc(var(--portal-nav-height) + var(--portal-nav-bottom-offset) + var(--portal-nav-breathing-room)) max(18px, var(--portal-safe-left));
   overflow: hidden;
   background:
     radial-gradient(circle at 86% 7%, rgba(105, 160, 248, 0.26), transparent 27rem),
@@ -145,10 +151,9 @@ body {
   aspect-ratio: 1.058 / 1;
   background: url("/brand/signal-orb.webp") center / contain no-repeat;
 }
-.veltrix-portal .portal-status-lens__badge,
-.veltrix-portal .portal-status-lens h1,
-.veltrix-portal .portal-status-lens p,
-.veltrix-portal .portal-status-lens > .button {
+.veltrix-portal .portal-status-lens--ready .portal-status-lens__badge,
+.veltrix-portal .portal-status-lens--ready h1,
+.veltrix-portal .portal-status-lens--ready p {
   position: absolute;
   z-index: 1;
   left: 43%;
@@ -222,45 +227,41 @@ body {
   border-radius: 2px;
   transform: rotate(45deg);
 }
-.veltrix-portal .portal-status-lens--neutral,
-.veltrix-portal .portal-status-lens--error {
+.veltrix-portal .portal-status-lens:not(.portal-status-lens--ready) {
   display: grid;
   align-content: center;
   padding: clamp(30px, 8vw, 76px);
 }
-.veltrix-portal .portal-status-lens--neutral::after,
-.veltrix-portal .portal-status-lens--error::after { opacity: 0.18; }
-.veltrix-portal .portal-status-lens--neutral .portal-status-lens__badge,
-.veltrix-portal .portal-status-lens--neutral h1,
-.veltrix-portal .portal-status-lens--neutral p,
-.veltrix-portal .portal-status-lens--error .portal-status-lens__badge,
-.veltrix-portal .portal-status-lens--error h1,
-.veltrix-portal .portal-status-lens--error p,
-.veltrix-portal .portal-status-lens--error > .button {
+.veltrix-portal .portal-status-lens:not(.portal-status-lens--ready)::after { opacity: 0.18; }
+.veltrix-portal .portal-status-lens:not(.portal-status-lens--ready) .portal-status-lens__badge,
+.veltrix-portal .portal-status-lens:not(.portal-status-lens--ready) h1,
+.veltrix-portal .portal-status-lens:not(.portal-status-lens--ready) p,
+.veltrix-portal .portal-status-lens:not(.portal-status-lens--ready) > .button {
   position: static;
+  z-index: 1;
   max-width: 28rem;
   margin: 0;
 }
-.veltrix-portal .portal-status-lens--neutral h1,
-.veltrix-portal .portal-status-lens--error h1 { margin-top: 18px; }
-.veltrix-portal .portal-status-lens--neutral p,
-.veltrix-portal .portal-status-lens--error p { margin-top: 10px; }
-.veltrix-portal .portal-status-lens--error > .button { margin-top: 20px; }
+.veltrix-portal .portal-status-lens:not(.portal-status-lens--ready) h1 { margin-top: 18px; }
+.veltrix-portal .portal-status-lens:not(.portal-status-lens--ready) p { margin-top: 10px; }
+.veltrix-portal .portal-status-lens:not(.portal-status-lens--ready) > .button { margin-top: 20px; }
 
-.veltrix-portal .portal-primary {
+.veltrix-portal .button.portal-primary {
   position: relative;
   z-index: 2;
   display: flex;
+  width: min(calc(100% - 36px), 76.32vw, 651px);
+  max-width: none;
   min-height: 64px;
   align-items: center;
   justify-content: center;
   gap: 14px;
-  margin: -30px clamp(18px, 11.84%, 86px) 0;
+  margin: -30px auto 0;
   border-color: rgba(255, 255, 255, 0.72);
   border-radius: 999px;
-  background: linear-gradient(115deg, rgba(37, 109, 255, 0.94), rgba(86, 142, 255, 0.82));
+  background: var(--portal-action-blue);
   box-shadow: 0 18px 36px rgba(37, 109, 255, 0.24);
-  color: #fff;
+  color: var(--portal-action-ink);
   font-family: var(--vx-font-display);
   font-size: clamp(17px, 4vw, 24px);
   letter-spacing: -0.02em;
@@ -296,7 +297,7 @@ body {
   padding: 12px 48px 12px 58px;
   border: 0;
   border-radius: 20px;
-  background: rgba(255, 255, 255, 0.76);
+  background: #fff;
   box-shadow: 0 10px 28px rgba(37, 109, 255, 0.08);
   color: var(--vx-ink);
   font-size: clamp(15px, 3.6vw, 19px);
@@ -474,7 +475,7 @@ body {
 }
 .veltrix-portal .eyebrow {
   margin: 0;
-  color: var(--vx-blue);
+  color: var(--portal-label-blue);
   font-size: 12px;
   font-weight: 850;
   letter-spacing: 0.11em;
@@ -524,8 +525,8 @@ body {
 }
 .veltrix-portal .button { max-width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .veltrix-portal .button--primary {
-  background: var(--vx-blue);
-  color: #fff;
+  background: var(--portal-action-blue);
+  color: var(--portal-action-ink);
 }
 .veltrix-portal .button--ghost {
   border-color: var(--vx-border);
@@ -536,18 +537,6 @@ body {
   border-color: color-mix(in srgb, var(--portal-danger) 22%, transparent);
   background: transparent;
   color: var(--portal-danger);
-}
-.veltrix-portal .button.portal-primary {
-  display: flex;
-  width: min(calc(100% - 36px), 76.32vw, 651px);
-  max-width: none;
-  min-height: 64px;
-  margin-right: auto;
-  margin-left: auto;
-  border-color: rgba(255, 255, 255, 0.72);
-  border-radius: 999px;
-  background: linear-gradient(115deg, rgba(37, 109, 255, 0.94), rgba(86, 142, 255, 0.82));
-  color: #fff;
 }
 .veltrix-portal .button:disabled {
   cursor: not-allowed;
@@ -672,11 +661,11 @@ body {
 .veltrix-portal .portal-nav {
   position: fixed;
   z-index: 20;
-  inset-inline: max(16px, env(safe-area-inset-left)) max(16px, env(safe-area-inset-right));
-  bottom: max(14px, env(safe-area-inset-bottom));
+  inset-inline: max(16px, var(--portal-safe-left)) max(16px, var(--portal-safe-right));
+  bottom: var(--portal-nav-bottom-offset);
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  min-height: 68px;
+  height: var(--portal-nav-height);
   margin: 0;
   padding: 7px;
   overflow: visible;
@@ -756,7 +745,7 @@ body {
   .veltrix-portal .platform:hover,
   .veltrix-portal .portal-nav a:hover { transform: translateY(-1px); }
   .veltrix-portal .button--primary:not(.portal-primary):not(:disabled):hover {
-    background: color-mix(in srgb, var(--vx-blue) 86%, #071f58);
+    background: color-mix(in srgb, var(--portal-action-blue) 88%, #fff);
   }
 }
 
@@ -848,39 +837,31 @@ body {
 @media (min-width: 760px) {
   .veltrix-portal .portal-header {
     width: min(100%, 810px);
-    min-height: 132px;
-    padding: 40px 0 0;
+    min-height: 76px;
+    padding: 18px 0 0;
   }
   .veltrix-portal .portal-content { width: min(100%, 810px); }
   .veltrix-portal .portal-brand-link .vx-brand {
     position: relative;
-    gap: 12px;
-    padding-left: 140px;
-    font-size: 44px;
-    transform: translateY(17px);
+    gap: 10px;
+    padding-left: 72px;
+    font-size: 28px;
   }
   .veltrix-portal .portal-brand-link .vx-brand::before {
     position: absolute;
     top: 50%;
-    left: -8px;
-    width: 150px;
-    height: 150px;
+    left: -4px;
+    width: 80px;
+    height: 80px;
     transform: translateY(-50%);
   }
   .veltrix-portal .portal-header .button--ghost {
     min-height: 48px;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
-    color: #2152f8;
-    transform: translate(-5px, 14px);
-    font-size: 34px;
-    letter-spacing: 0.025em;
+    padding-inline: 18px;
+    font-size: 18px;
   }
-  .veltrix-portal .portal-home { padding-top: 25px; }
-  .veltrix-portal .portal-status-lens { min-height: 479px; }
+  .veltrix-portal .portal-home { padding-top: 18px; }
+  .veltrix-portal .portal-status-lens { min-height: 400px; }
   .veltrix-portal .portal-status-lens::before { background-size: contain; }
   .veltrix-portal .portal-status-lens::after {
     top: 36.5%;
@@ -889,11 +870,11 @@ body {
     width: 33.7%;
   }
   .veltrix-portal .portal-status-lens__badge {
-    top: calc(34.4% - 8px);
+    top: 34.4%;
     left: calc(50.06% - 13px);
-    min-height: 48px;
-    padding: 9px 16px;
-    font-size: 28px;
+    min-height: 38px;
+    padding: 7px 14px;
+    font-size: 16px;
     letter-spacing: 0.025em;
     text-transform: uppercase;
   }
@@ -901,7 +882,7 @@ body {
     top: 50.5%;
     left: 46.31%;
     right: 0;
-    font-size: clamp(40px, 5.15vw, 44px);
+    font-size: clamp(34px, 4.2vw, 40px);
   }
   .veltrix-portal .portal-status-lens--ready h1 { white-space: nowrap; }
   .veltrix-portal .portal-status-lens p {
@@ -909,20 +890,121 @@ body {
     left: 47%;
     right: 9%;
     color: #6376a0;
+    font-size: clamp(22px, 2.8vw, 28px);
+    font-weight: 500;
+    line-height: 1.15;
+  }
+  .veltrix-portal .button.portal-primary {
+    min-height: 76px;
+    margin-top: 0;
+    font-size: 24px;
+  }
+  .veltrix-portal .portal-actions {
+    gap: 12px;
+    margin: 38px 0 0;
+    padding: 28px;
+  }
+  .veltrix-portal .portal-actions h2 {
+    margin-bottom: 8px;
+    font-size: 36px;
+  }
+  .veltrix-portal .portal-actions .button {
+    min-height: 76px;
+    padding: 16px 56px 16px 72px;
+    border-radius: 24px;
+    font-size: 20px;
+  }
+  .veltrix-portal .portal-actions .button::before {
+    left: 24px;
+    width: 30px;
+    height: 30px;
+  }
+  .veltrix-portal .portal-actions .button::after {
+    right: 24px;
+    width: 12px;
+    height: 12px;
+    border-width: 3px 3px 0 0;
+  }
+  .veltrix-portal .portal-access { margin-top: 28px; }
+  .veltrix-portal .portal-access .card-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-inline: 0;
+    overflow: visible;
+  }
+  .veltrix-portal .portal-access .subscription-card > .card-row { padding-left: 64px; }
+  .veltrix-portal .portal-access .subscription-card > .card-row,
+  .veltrix-portal .portal-access .subscription-card > .facts,
+  .veltrix-portal .portal-access .subscription-card > .hint { margin-left: 0; }
+  .veltrix-portal .portal-nav {
+    width: 540px;
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+  }
+}
+
+@media (min-width: 760px) and (min-height: 1200px) {
+  .veltrix-portal {
+    --portal-nav-height: 80px;
+    --portal-nav-bottom-offset: calc(var(--portal-safe-bottom) + 143px);
+  }
+  .veltrix-portal .portal-header {
+    min-height: 132px;
+    padding-top: 40px;
+  }
+  .veltrix-portal .portal-brand-link .vx-brand {
+    gap: 12px;
+    padding-left: 140px;
+    font-size: 44px;
+    transform: translateY(17px);
+  }
+  .veltrix-portal .portal-brand-link .vx-brand::before {
+    left: -8px;
+    width: 150px;
+    height: 150px;
+  }
+  .veltrix-portal .portal-header .button--ghost {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--vx-blue);
+    transform: translate(-22px, 14px);
+    font-size: 32px;
+    letter-spacing: 0.025em;
+  }
+  .veltrix-portal .portal-home { padding-top: 25px; }
+  .veltrix-portal .portal-status-lens { min-height: 479px; }
+  .veltrix-portal .portal-status-lens__badge {
+    top: calc(34.4% - 8px);
+    min-height: 48px;
+    padding: 9px 16px;
+    font-size: 31px;
+    letter-spacing: 0.08em;
+  }
+  .veltrix-portal .portal-status-lens__badge::before {
+    width: 19px;
+    height: 19px;
+    flex-basis: 19px;
+  }
+  .veltrix-portal .portal-status-lens h1 {
+    left: 47%;
+    font-size: 44px;
+  }
+  .veltrix-portal .portal-status-lens p {
     font-size: 37px;
     font-weight: 400;
     line-height: 1.05;
   }
   .veltrix-portal .button.portal-primary {
     min-height: 129px;
-    margin-top: 0;
+    border-width: 3px;
     font-size: 42px;
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.28), transparent 27%),
-      linear-gradient(115deg, rgba(57, 118, 255, 0.86), rgba(109, 171, 255, 0.78));
     box-shadow:
-      inset 0 2px 2px rgba(255, 255, 255, 0.85),
-      inset 0 -2px 7px rgba(255, 255, 255, 0.45),
+      inset 0 2px 2px rgba(255, 255, 255, 0.68),
+      inset 0 -2px 7px rgba(255, 255, 255, 0.32),
       0 18px 36px rgba(37, 109, 255, 0.2);
   }
   .veltrix-portal .portal-actions {
@@ -930,10 +1012,7 @@ body {
     margin: 65px 11px 0;
     padding: 34px;
   }
-  .veltrix-portal .portal-actions h2 {
-    margin-bottom: 10px;
-    font-size: 52px;
-  }
+  .veltrix-portal .portal-actions h2 { font-size: 52px; }
   .veltrix-portal .portal-actions .button {
     min-height: 146px;
     padding: 27px 74px 21px 156px;
@@ -953,24 +1032,18 @@ body {
   }
   .veltrix-portal .portal-access { margin-top: 38px; }
   .veltrix-portal .portal-access .card-grid {
-    display: flex;
+    grid-template-columns: minmax(0, 1fr);
     margin-inline: 11px;
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
-    scrollbar-width: none;
-  }
-  .veltrix-portal .portal-access .card-grid::-webkit-scrollbar { display: none; }
-  .veltrix-portal .portal-access .subscription-card {
-    flex: 0 0 100%;
-    scroll-snap-align: start;
   }
   .veltrix-portal .portal-access .subscription-card > .card-row,
   .veltrix-portal .portal-access .subscription-card > .facts,
   .veltrix-portal .portal-access .subscription-card > .hint { margin-left: 147px; }
+  .veltrix-portal .portal-access .subscription-card > .card-row { padding-left: 0; }
   .veltrix-portal .portal-access .subscription-card h3 {
     color: #6b799b;
     font-size: 29px;
-    font-weight: 500;
+    font-weight: 400;
+    letter-spacing: -0.07em;
   }
   .veltrix-portal .portal-access .subscription-card .facts { margin-top: 8px; }
   .veltrix-portal .portal-access .subscription-card .facts div:nth-child(2) {
@@ -996,74 +1069,40 @@ body {
   .veltrix-portal .portal-access .subscription-card .status {
     min-height: 48px;
     padding-inline: 20px;
-    transform: translateY(42px);
+    transform: translate(-26px, 42px);
     font-size: 24px;
   }
   .veltrix-portal .portal-nav {
-    width: 540px;
-    left: 50%;
-    right: auto;
-    transform: translateX(-50%);
-  }
-}
-
-@media (min-width: 760px) and (min-height: 1200px) {
-  .veltrix-portal .portal-nav {
     right: 36px;
-    bottom: 73px;
     left: 36px;
     width: auto;
-    min-height: 176px;
-    padding: 16px 28px;
-    border-radius: 88px;
-    background: rgba(212, 226, 248, 0.88);
     transform: none;
   }
   .veltrix-portal .portal-nav a {
-    min-height: 136px;
-    gap: 23px;
-    border-radius: 68px;
-    font-size: 22.5px;
-    color: #69799a;
+    min-height: 66px;
+    gap: 1px;
+    font-size: 17px;
   }
   .veltrix-portal .portal-nav svg {
-    width: 54px;
-    height: 54px;
-    stroke-width: 1.9;
+    width: 34px;
+    height: 34px;
   }
   .veltrix-portal .portal-nav a[aria-current="page"] {
-    position: relative;
     width: 145px;
     justify-self: center;
-    background: rgba(255, 255, 255, 0.28);
-    color: #467efc;
   }
   .veltrix-portal .portal-nav a[aria-current="page"] svg {
     fill: currentColor;
     stroke: none;
   }
-  .veltrix-portal .portal-nav a[aria-current="page"]::before {
-    position: absolute;
-    top: 86px;
-    width: 13px;
-    height: 13px;
+  .veltrix-portal .portal-nav a[aria-current="page"] span::before {
+    display: block;
+    width: 6px;
+    height: 6px;
+    margin: -2px auto 0;
     border-radius: 50%;
     background: currentColor;
     content: "";
-  }
-  .veltrix-portal .portal-nav a:nth-child(1) {
-    gap: 37px;
-    transform: translateY(5px);
-    font-size: 23.5px;
-  }
-  .veltrix-portal .portal-nav a:nth-child(2) {
-    transform: translateY(2px);
-    font-size: 22.3px;
-  }
-  .veltrix-portal .portal-nav a:nth-child(3) { transform: translate(17px, 9px); }
-  .veltrix-portal .portal-nav a:nth-child(3) svg {
-    width: 72px;
-    height: 84px;
   }
 }
 
@@ -1079,6 +1118,7 @@ body {
     --portal-danger: #ff9aa9;
     --portal-success: #8ef0d3;
     --portal-warning: #ffd385;
+    --portal-label-blue: #a7c7ff;
   }
   .veltrix-portal .portal-shell {
     background:
@@ -1100,7 +1140,7 @@ body {
   .veltrix-portal .portal-status-lens--expired .portal-status-lens__badge,
   .veltrix-portal .portal-status-lens--empty .portal-status-lens__badge,
   .veltrix-portal .portal-status-lens--error .portal-status-lens__badge { background: rgba(88, 58, 9, 0.7); }
-  .veltrix-portal .portal-actions .button,
+  .veltrix-portal .portal-actions .button { background: #162c44; }
   .veltrix-portal .portal-nav a[aria-current="page"] { background: rgba(22, 44, 68, 0.9); }
   .veltrix-portal .portal-nav { background: rgba(9, 22, 37, 0.78); }
 }
@@ -1111,7 +1151,7 @@ body {
     border-color: var(--vx-border);
     background: var(--vx-surface);
   }
-  .veltrix-portal .portal-primary { background: var(--vx-blue); }
+  .veltrix-portal .portal-primary { background: var(--portal-action-blue); }
 }
 
 @media (prefers-reduced-motion: reduce) {
