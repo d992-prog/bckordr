@@ -26,6 +26,7 @@ body {
   --portal-success: #0d6a56;
   --portal-warning: #805500;
   --portal-action-blue: #246cf8;
+  --portal-action-blue-interactive: #1f5bc9;
   --portal-action-ink: #fff;
   --portal-label-blue: #1557c8;
   --portal-system-top: max(env(safe-area-inset-top, 0px), var(--tg-safe-area-inset-top, 0px));
@@ -550,6 +551,10 @@ body {
   outline: 3px solid var(--vx-focus);
   outline-offset: 3px;
 }
+.veltrix-portal .button--primary:not(:disabled):not(.portal-actions .button):focus-visible {
+  background: var(--portal-action-blue-interactive);
+  box-shadow: 0 12px 26px rgba(31, 91, 201, 0.24);
+}
 
 .veltrix-portal .profile-card {
   display: grid;
@@ -744,8 +749,9 @@ body {
   .veltrix-portal .button:not(:disabled):hover,
   .veltrix-portal .platform:hover,
   .veltrix-portal .portal-nav a:hover { transform: translateY(-1px); }
-  .veltrix-portal .button--primary:not(.portal-primary):not(:disabled):hover {
-    background: color-mix(in srgb, var(--portal-action-blue) 88%, #fff);
+  .veltrix-portal .button--primary:not(:disabled):not(.portal-actions .button):hover {
+    background: var(--portal-action-blue-interactive);
+    box-shadow: 0 12px 26px rgba(31, 91, 201, 0.24);
   }
 }
 

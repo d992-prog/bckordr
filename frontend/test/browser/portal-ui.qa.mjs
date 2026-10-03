@@ -225,14 +225,32 @@ async function assertAccessibleSubscriptionLayout(page) {
   );
 }
 
-async function assertPrimaryActionContrast(page) {
-  const actions = await page.locator(".button--primary:not(:disabled)").evaluateAll((elements) => {
+async function primaryActionContrastSnapshot(locator) {
+  return locator.evaluateAll((elements) => {
     const parseColor = (value) => {
       const match = value.match(/^rgba?\(([^)]+)\)$/);
-      if (!match) return null;
-      const values = match[1].split(/[\s,\/]+/).filter(Boolean).map(Number);
-      if (values.length < 3 || values.slice(0, 3).some(Number.isNaN)) return null;
-      return { rgb: values.slice(0, 3), alpha: values[3] ?? 1 };
+      if (match) {
+        const values = match[1].split(/[\s,\/]+/).filter(Boolean).map(Number);
+        if (values.length < 3 || values.slice(0, 3).some(Number.isNaN)) return null;
+        return { rgb: values.slice(0, 3), alpha: values[3] ?? 1 };
+      }
+      const srgb = value.match(/^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\)$/);
+      if (srgb) {
+        return {
+          rgb: srgb.slice(1, 4).map((channel) => Number(channel) * 255),
+          alpha: srgb[4] === undefined ? 1 : Number(srgb[4]),
+        };
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return null;
+      context.clearRect(0, 0, 1, 1);
+      context.fillStyle = value;
+      context.fillRect(0, 0, 1, 1);
+      const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
+      return { rgb: [red, green, blue], alpha: alpha / 255 };
     };
     const channel = (value) => {
       const normalized = value / 255;
@@ -254,12 +272,18 @@ async function assertPrimaryActionContrast(page) {
       return {
         label: element.textContent?.trim(),
         foreground: style.color,
+        foregroundRgb: foreground?.rgb ?? null,
         background: style.backgroundColor,
+        backgroundRgb: background?.rgb ?? null,
         backgroundImage: style.backgroundImage,
         ratio,
       };
     });
   });
+}
+
+async function assertPrimaryActionContrast(page) {
+  const actions = await primaryActionContrastSnapshot(page.locator(".button--primary:not(:disabled)"));
 
   assert.ok(actions.length > 0, "no enabled primary actions were rendered");
   assert.equal(
@@ -271,6 +295,24 @@ async function assertPrimaryActionContrast(page) {
     actions.every(({ ratio }) => ratio >= 4.5),
     true,
     `primary action contrast is below 4.5:1: ${JSON.stringify(actions)}`,
+  );
+}
+
+async function assertHoveredPrimaryActionContrast(page) {
+  const action = page.locator(".profile-card .button--primary:not(:disabled)").first();
+  await action.waitFor();
+  await action.hover();
+  await page.waitForTimeout(220);
+  const [hovered] = await primaryActionContrastSnapshot(action);
+  assert.ok(hovered, "hovered primary action was not rendered");
+  assert.equal(
+    hovered.backgroundImage,
+    "none",
+    `hovered primary action contrast cannot be measured through a gradient: ${JSON.stringify(hovered)}`,
+  );
+  assert.ok(
+    hovered.ratio >= 4.5,
+    `hovered primary action contrast is below 4.5:1: ${JSON.stringify(hovered)}`,
   );
 }
 
@@ -1638,6 +1680,7 @@ async function captureResponsiveMatrix(browser, origin) {
   await states.page.goto(`${origin}/cabinet/#profiles`);
   await states.page.getByRole("heading", { name: "Профили", exact: true }).waitFor();
   await states.page.screenshot({ path: path.join(outputRoot, "portal-profiles-390-light.png"), fullPage: true });
+  await assertHoveredPrimaryActionContrast(states.page);
   await states.page.locator('.portal-nav a[href="#account"]').click();
   await states.page.getByRole("heading", { name: "Аккаунт" }).waitFor();
   await states.page.screenshot({ path: path.join(outputRoot, "portal-account-390-light.png"), fullPage: true });
