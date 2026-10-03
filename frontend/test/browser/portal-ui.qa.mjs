@@ -105,6 +105,7 @@ async function newPortalPage(browser, options = {}) {
   const context = await browser.newContext({
     viewport: options.viewport || { width: 390, height: 844 },
     colorScheme: options.colorScheme || "light",
+    reducedMotion: options.reducedMotion || "no-preference",
   });
   const page = await context.newPage();
   const diagnostics = [];
@@ -176,6 +177,122 @@ function assertNoHorizontalOverflow(page) {
       throw new Error(`horizontal overflow: ${root.scrollWidth} > ${root.clientWidth}`);
     }
   });
+}
+
+async function assertPortalVisualContract(page, viewportWidth) {
+  const contract = await page.evaluate(() => {
+    const shell = document.querySelector(".portal-shell");
+    const content = document.querySelector(".portal-content");
+    const lens = document.querySelector(".portal-status-lens");
+    const primary = document.querySelector(".portal-primary");
+    const actions = document.querySelector(".portal-actions");
+    const nav = document.querySelector(".portal-nav");
+    const title = lens?.querySelector("h1");
+    if (!shell || !content || !lens || !primary || !actions || !nav || !title) {
+      throw new Error("portal visual contract is missing a required element");
+    }
+
+    const shellStyle = getComputedStyle(shell);
+    const contentBox = content.getBoundingClientRect();
+    const lensStyle = getComputedStyle(lens);
+    const primaryStyle = getComputedStyle(primary);
+    const actionsStyle = getComputedStyle(actions);
+    const navStyle = getComputedStyle(nav);
+    const navBox = nav.getBoundingClientRect();
+    const controls = [...document.querySelectorAll(
+      ".portal-primary, .portal-actions :is(a, button), .portal-nav a",
+    )].map((element) => {
+      const box = element.getBoundingClientRect();
+      return { label: element.textContent?.trim(), width: box.width, height: box.height };
+    });
+    const tracked = [...document.querySelectorAll(
+      ".portal-header, .portal-content, .portal-status-lens, .portal-actions, .portal-access, .portal-nav",
+    )].map((element) => {
+      const box = element.getBoundingClientRect();
+      return { className: element.className, left: box.left, right: box.right };
+    });
+
+    const channel = (value) => {
+      const normalized = value / 255;
+      return normalized <= 0.04045
+        ? normalized / 12.92
+        : ((normalized + 0.055) / 1.055) ** 2.4;
+    };
+    const luminance = (color) => {
+      const values = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+      if (!values || values.length !== 3) return null;
+      return 0.2126 * channel(values[0]) + 0.7152 * channel(values[1]) + 0.0722 * channel(values[2]);
+    };
+    const foreground = luminance(shellStyle.color);
+    const background = luminance(shellStyle.backgroundColor);
+    const contrast = foreground === null || background === null
+      ? 0
+      : (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+
+    return {
+      contentWidth: contentBox.width,
+      lensMinHeight: parseFloat(lensStyle.minHeight),
+      primaryMinHeight: parseFloat(primaryStyle.minHeight),
+      actionsBackground: actionsStyle.backgroundColor,
+      navPosition: navStyle.position,
+      navHeight: navBox.height,
+      navBottomGap: innerHeight - navBox.bottom,
+      shellBottomPadding: parseFloat(shellStyle.paddingBottom),
+      backdropFilter: navStyle.backdropFilter || navStyle.webkitBackdropFilter || "none",
+      titleVisible: title.getBoundingClientRect().height > 0 && getComputedStyle(title).visibility !== "hidden",
+      titleClipped: title.scrollWidth > title.clientWidth + 1,
+      controls,
+      tracked,
+      contrast,
+    };
+  });
+
+  const expectedContentWidth = viewportWidth >= 760 ? 810.5 : 720.5;
+  assert.ok(
+    contract.contentWidth <= expectedContentWidth,
+    `portal content is too wide: ${contract.contentWidth}`,
+  );
+  assert.ok(contract.lensMinHeight >= 280, `status lens min-height is ${contract.lensMinHeight}`);
+  assert.ok(contract.primaryMinHeight >= 64, `primary action min-height is ${contract.primaryMinHeight}`);
+  assert.notEqual(contract.actionsBackground, "rgba(0, 0, 0, 0)");
+  assert.equal(contract.navPosition, "fixed");
+  assert.ok(
+    contract.shellBottomPadding >= contract.navHeight + contract.navBottomGap + 8,
+    `bottom content padding ${contract.shellBottomPadding} does not clear the ${contract.navHeight}px navigation`,
+  );
+  if (await page.evaluate(() => CSS.supports("backdrop-filter", "blur(1px)"))) {
+    assert.notEqual(contract.backdropFilter, "none");
+  }
+  assert.ok(contract.contrast >= 7, `shell text contrast is only ${contract.contrast.toFixed(2)}:1`);
+  assert.equal(contract.titleVisible, true);
+  assert.equal(contract.titleClipped, false);
+  assert.equal(
+    contract.controls.every(({ width, height }) => width >= 44 && height >= 44),
+    true,
+    `undersized controls: ${JSON.stringify(contract.controls)}`,
+  );
+  if (viewportWidth === 320) {
+    assert.equal(
+      contract.tracked.every(({ left, right }) => left >= -0.5 && right <= viewportWidth + 0.5),
+      true,
+      `clipped 320px layout: ${JSON.stringify(contract.tracked)}`,
+    );
+  }
+
+  await page.keyboard.press("Tab");
+  const focus = await page.evaluate(() => {
+    const element = document.activeElement;
+    const style = element ? getComputedStyle(element) : null;
+    return {
+      tagName: element?.tagName,
+      visible: element?.matches(":focus-visible") ?? false,
+      outlineStyle: style?.outlineStyle,
+      outlineWidth: parseFloat(style?.outlineWidth || "0"),
+    };
+  });
+  assert.equal(focus.visible, true, `keyboard focus is not visible on ${focus.tagName}`);
+  assert.notEqual(focus.outlineStyle, "none");
+  assert.ok(focus.outlineWidth >= 2);
 }
 
 async function assertSecretAbsent(page, diagnostics, secret) {
@@ -1201,36 +1318,117 @@ async function verifyTelegramSafeAreaGeometry(browser, origin) {
 }
 
 async function captureResponsiveMatrix(browser, origin) {
-  for (const width of [320, 390, 768, 1280]) {
-    for (const colorScheme of ["light", "dark"]) {
-      const { context, page } = await newPortalPage(browser, {
-        viewport: { width, height: width <= 390 ? 720 : 900 },
-        colorScheme,
-      });
-      await installApi(page, async (route, pathname) => {
-        if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
-        if (pathname.endsWith("/me")) return responseJson(route, me);
-        if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions);
-        if (pathname.endsWith("/profiles")) return responseJson(route, profiles);
-        return responseJson(route, {}, 404);
-      });
-      await page.goto(`${origin}/cabinet/`);
-      await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
-      await assertNoHorizontalOverflow(page);
-      if (width <= 390) {
-        const navFits = await page.locator(".portal-nav a").evaluateAll((links) => links.every((link) => {
-          const rect = link.getBoundingClientRect();
-          return rect.left >= 0 && rect.right <= document.documentElement.clientWidth;
-        }));
-        assert.equal(navFits, true);
-      }
-      await page.screenshot({
-        path: path.join(outputRoot, `portal-${width}-${colorScheme}.png`),
-        fullPage: true,
-      });
-      await context.close();
-    }
+  const portalCss = await readFile(path.join(frontendRoot, "src/vpn-portal/portal.css"), "utf8");
+  const brandCss = await readFile(path.join(frontendRoot, "src/brand/veltrix-brand.css"), "utf8");
+  assert.equal((portalCss.match(/@import\s+["']\.\.\/brand\/veltrix-brand\.css["']/g) || []).length, 1);
+  assert.match(brandCss, /@supports not \(backdrop-filter:\s*blur\(1px\)\)[\s\S]*\.vx-glass/);
+
+  const installFixture = (page) => installApi(page, async (route, pathname, request) => {
+    if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+    if (pathname.endsWith("/me")) return responseJson(route, me);
+    if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions);
+    if (pathname.endsWith("/profiles") && request.method() === "GET") return responseJson(route, profiles);
+    if (pathname.endsWith("/plans")) return responseJson(route, []);
+    return responseJson(route, {}, 404);
+  });
+
+  const scenarios = [
+    { name: "portal-390-light", viewport: { width: 390, height: 844 }, colorScheme: "light" },
+    { name: "portal-390-dark", viewport: { width: 390, height: 844 }, colorScheme: "dark" },
+    { name: "portal-320-light", viewport: { width: 320, height: 700 }, colorScheme: "light" },
+    { name: "portal-1024-light", viewport: { width: 1024, height: 900 }, colorScheme: "light" },
+  ];
+
+  for (const scenario of scenarios) {
+    const { context, page } = await newPortalPage(browser, scenario);
+    await installFixture(page);
+    await page.goto(`${origin}/cabinet/#home`);
+    await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
+    assert.equal(/подключено|защищено/i.test(await page.locator(".portal-status-lens").innerText()), false);
+    await assertNoHorizontalOverflow(page);
+    await assertPortalVisualContract(page, scenario.viewport.width);
+    await page.screenshot({
+      path: path.join(outputRoot, `${scenario.name}.png`),
+      fullPage: true,
+    });
+    await context.close();
   }
+
+  const { context, page } = await newPortalPage(browser, {
+    viewport: { width: 390, height: 844 },
+    colorScheme: "light",
+    reducedMotion: "reduce",
+  });
+  await installFixture(page);
+  await page.goto(`${origin}/cabinet/#home`);
+  await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
+  const reducedMotion = await page.locator(".portal-status-lens").evaluate((element) => ({
+    animationDuration: getComputedStyle(element).animationDuration,
+    titleVisible: element.querySelector("h1")?.getBoundingClientRect().height > 0,
+  }));
+  assert.ok(["0.01ms", "0s"].includes(reducedMotion.animationDuration));
+  assert.equal(reducedMotion.titleVisible, true);
+  await context.close();
+
+  const states = await newPortalPage(browser, {
+    viewport: { width: 390, height: 844 },
+    colorScheme: "light",
+  });
+  await installFixture(states.page);
+  await states.page.goto(`${origin}/cabinet/#profiles`);
+  await states.page.getByRole("heading", { name: "Профили", exact: true }).waitFor();
+  await states.page.screenshot({ path: path.join(outputRoot, "portal-profiles-390-light.png"), fullPage: true });
+  await states.page.locator('.portal-nav a[href="#account"]').click();
+  await states.page.getByRole("heading", { name: "Аккаунт" }).waitFor();
+  await states.page.screenshot({ path: path.join(outputRoot, "portal-account-390-light.png"), fullPage: true });
+  await states.context.close();
+
+  const signedOut = await newPortalPage(browser, {
+    viewport: { width: 390, height: 844 },
+    colorScheme: "light",
+    platform: "unknown",
+  });
+  await installApi(signedOut.page, async (route, pathname) => {
+    if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+    if (pathname.endsWith("/me")) return responseJson(route, {}, 401);
+    return responseJson(route, {}, 404);
+  });
+  await signedOut.page.goto(`${origin}/cabinet/`);
+  await signedOut.page.getByRole("heading", { name: "Войдите в личный кабинет" }).waitFor();
+  await signedOut.page.screenshot({ path: path.join(outputRoot, "portal-login-390-light.png"), fullPage: true });
+  await signedOut.context.close();
+
+  const failed = await newPortalPage(browser, {
+    viewport: { width: 390, height: 844 },
+    colorScheme: "dark",
+  });
+  await installApi(failed.page, (route, pathname) => pathname.endsWith("/config")
+    ? responseJson(route, {}, 503)
+    : responseJson(route, {}, 500));
+  await failed.page.goto(`${origin}/cabinet/`);
+  await failed.page.getByRole("heading", { name: "Не удалось открыть кабинет" }).waitFor();
+  await failed.page.screenshot({ path: path.join(outputRoot, "portal-error-390-dark.png"), fullPage: true });
+  await failed.context.close();
+
+  const hero = await newPortalPage(browser, {
+    viewport: { width: 853, height: 1844 },
+    colorScheme: "light",
+    reducedMotion: "reduce",
+  });
+  await installFixture(hero.page);
+  await hero.page.goto(`${origin}/cabinet/#home`);
+  await hero.page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
+  await hero.page.getByRole("link", { name: "Veltrix VPN" }).waitFor();
+  await hero.page.getByRole("link", { name: "Помощь" }).waitFor();
+  await hero.page.evaluate(async () => {
+    window.scrollTo(0, 0);
+    await document.fonts.ready;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+  await hero.page.screenshot({
+    path: path.join(outputRoot, "hero-repro.png"),
+  });
+  await hero.context.close();
 }
 
 async function verifyRealSdkCacheCleanup(browser, origin) {

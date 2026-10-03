@@ -31,7 +31,7 @@ interface PortalHomeProps {
 }
 
 const STATUS_BADGES = {
-  ready: "Готов к подключению",
+  ready: "Активен",
   preparing: "Подготавливается",
   paused: "Приостановлен",
   expired: "Срок закончился",
