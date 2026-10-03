@@ -63,7 +63,10 @@ test("public site contains honest product, trial, support, privacy, and terms co
 
   for (const required of [
     "Veltrix VPN",
-    "Как это работает",
+    "VPN без сложных настроек",
+    "Открыть в Telegram",
+    "Как подключиться",
+    "Поддерживаемые устройства",
     "Happ для iPhone (iOS) и Android",
     "7 дней",
     "Оплата пока не подключена",
@@ -75,14 +78,35 @@ test("public site contains honest product, trial, support, privacy, and terms co
     assert.ok(source.includes(required), required);
   }
   assert.match(source, /config\?\.support_text/);
-  assert.doesNotMatch(source, /24\s*\/\s*7|полная анонимность|абсолютная анонимность|безлимитн(?:ая|ые) мощност/i);
-  assert.doesNotMatch(source, /Windows|macOS/);
+  assert.doesNotMatch(source, /гарантирован|самый быстрый|без ограничений|полная анонимность/i);
+  assert.doesNotMatch(source, /<span>V<\/span>/);
   assert.doesNotMatch(source, /bot_token|release_id|admin_route|\/api\/control/i);
-  assert.match(css, /--green-900:\s*#173f2d/);
-  assert.match(css, /@media \(max-width:\s*700px\)/);
+  assert.match(source, /import\s+\{\s*VeltrixMark\s*\}\s+from\s+"\.\.\/brand\/VeltrixMark"/);
+  assert.match(css, /@import\s+"\.\.\/brand\/veltrix-brand\.css"/);
+  assert.match(css, /--vx-blue/);
+  assert.match(css, /\.site-connection-route/);
+  assert.match(css, /@media \(max-width:\s*900px\)/);
   assert.match(account, /href="\/vpn\/#privacy"/);
   assert.match(account, /href="\/vpn\/#terms"/);
   assert.match(portal, /bootstrapResult\.config\?\.support_text/);
+});
+
+test("public site keeps the release sections in the intended reading order", async () => {
+  const source = await readFile(siteUrl, "utf8");
+  const main = source.slice(source.indexOf('<main id="top">'), source.indexOf("</main>"));
+  const sections = [
+    "<Hero",
+    "<ConnectionRoute",
+    "<SupportedApps",
+    "<PlansSection",
+    "<TrialSection",
+    "<SupportSection",
+    "<Policies",
+  ];
+  const positions = sections.map((section) => main.indexOf(section));
+
+  assert.ok(positions.every((position) => position >= 0), positions);
+  assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
 });
 
 test("public trial copy stays honest without duplicating readiness", async () => {
@@ -106,5 +130,9 @@ test("public mobile hero lets long Russian copy shrink within the viewport", asy
   assert.match(
     css,
     /@media \(max-width:\s*900px\)\s*\{[\s\S]*?\.hero\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/,
+  );
+  assert.match(
+    css,
+    /@media \(max-width:\s*900px\)\s*\{[\s\S]*?\.hero-actions[\s\S]*?\.button[^}]*width:\s*100%/,
   );
 });

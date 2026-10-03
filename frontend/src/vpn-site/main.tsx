@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 
+import { VeltrixMark } from "../brand/VeltrixMark";
 import { portalApi } from "../vpn-portal/api";
 import {
   formatPlanDevices,
@@ -13,6 +14,15 @@ import "./site.css";
 
 const SUPPORT_FALLBACK = "Контакт поддержки временно недоступен. Попробуйте позже.";
 
+function BrandLink({ footer = false }: { footer?: boolean }) {
+  return (
+    <a className="site-brand" href="#top" aria-label="Veltrix VPN, в начало">
+      <VeltrixMark decorative withName />
+      {footer && <span className="site-brand__caption">Простой старт через Telegram</span>}
+    </a>
+  );
+}
+
 function BotAction({ config, label }: { config: PortalConfig | null; label: string }) {
   if (config?.bot_url) {
     return (
@@ -22,6 +32,189 @@ function BotAction({ config, label }: { config: PortalConfig | null; label: stri
     );
   }
   return <span className="button button--disabled" aria-disabled="true">Бот временно недоступен</span>;
+}
+
+interface HeroProps {
+  config: PortalConfig | null;
+  busy: boolean;
+  error: string;
+  loadConfig: () => Promise<void>;
+}
+
+function Hero({ config, busy, error, loadConfig }: HeroProps) {
+  return (
+    <section className="hero vx-motion" aria-labelledby="hero-title">
+      <div className="hero-copy">
+        <p className="hero-note">Простой старт через Telegram</p>
+        <h1 id="hero-title">VPN без сложных настроек</h1>
+        <p className="hero-lead">
+          Получите готовый профиль в официальном боте и добавьте его в поддерживаемое приложение
+        </p>
+        <div className="hero-actions">
+          {busy ? (
+            <span className="button button--disabled" aria-disabled="true">Загружаем ссылку…</span>
+          ) : <BotAction config={config} label="Открыть в Telegram" />}
+          <a className="button button--ghost" href="#how">Как подключиться</a>
+        </div>
+        {error && (
+          <div className="inline-error" role="alert">
+            <span>{error}</span>
+            <button type="button" onClick={() => void loadConfig()}>Повторить</button>
+          </div>
+        )}
+      </div>
+
+      <div className="hero-visual vx-glass" aria-label="Путь от Telegram к приложению">
+        <div className="hero-visual__mark" aria-hidden="true">
+          <VeltrixMark decorative withName={false} />
+        </div>
+        <p className="hero-visual__title">Один профиль для подключения</p>
+        <div className="hero-visual__route" aria-hidden="true">
+          <span>Telegram</span>
+          <i className="hero-visual__trace" />
+          <span>Профиль</span>
+          <i className="hero-visual__trace" />
+          <span>Приложение</span>
+        </div>
+        <p className="hero-visual__caption">Ссылка и пошаговая инструкция появятся в личном кабинете</p>
+      </div>
+    </section>
+  );
+}
+
+function ConnectionRoute() {
+  return (
+    <section id="how" className="site-section site-connection-route" aria-labelledby="how-title">
+      <div className="section-heading">
+        <h2 id="how-title">Как подключиться</h2>
+        <p>Три понятных шага — без ручной настройки сервера и протокола</p>
+      </div>
+      <ol className="connection-steps">
+        <li>
+          <span className="step-number" aria-hidden="true">1</span>
+          <div><h3>Откройте бота</h3><p>Перейдите в официальный Telegram-бот Veltrix VPN</p></div>
+        </li>
+        <li>
+          <span className="step-number" aria-hidden="true">2</span>
+          <div><h3>Получите профиль</h3><p>Бот откроет кабинет с готовой ссылкой подключения</p></div>
+        </li>
+        <li>
+          <span className="step-number" aria-hidden="true">3</span>
+          <div><h3>Добавьте в приложение</h3><p>Импортируйте ссылку и включите созданный профиль</p></div>
+        </li>
+      </ol>
+    </section>
+  );
+}
+
+function SupportedApps() {
+  return (
+    <section className="site-section supported-apps" aria-labelledby="apps-title">
+      <div className="section-heading">
+        <h2 id="apps-title">Поддерживаемые устройства</h2>
+        <p>Профиль проверен в Happ для iPhone (iOS) и Android, а также в версии для Windows</p>
+      </div>
+      <ul className="device-list" aria-label="Поддерживаемые платформы">
+        <li><strong>iPhone</strong><span>Happ · iOS</span></li>
+        <li><strong>Android</strong><span>Happ</span></li>
+        <li><strong>Windows</strong><span>Happ</span></li>
+      </ul>
+      <p className="supported-apps__note">Инструкция для каждой платформы доступна в личном кабинете</p>
+    </section>
+  );
+}
+
+interface PlansSectionProps {
+  config: PortalConfig | null;
+  plans: PortalPlan[];
+  busy: boolean;
+  error: string;
+  loadPlans: () => Promise<void>;
+}
+
+function PlansSection({ config, plans, busy, error, loadPlans }: PlansSectionProps) {
+  return (
+    <section id="plans" className="site-section plans-section" aria-labelledby="plans-title">
+      <div className="section-heading section-heading--split">
+        <div><h2 id="plans-title">Тарифы</h2><p>Публичные условия сервиса без скрытых технических параметров</p></div>
+        <p className="payment-notice">Оплата пока не подключена</p>
+      </div>
+      {busy && <p className="state-card" role="status">Загружаем тарифы…</p>}
+      {error && (
+        <div className="state-card state-card--error" role="alert">
+          <p>{error}</p>
+          <button className="button button--ghost" type="button" onClick={() => void loadPlans()}>Повторить</button>
+        </div>
+      )}
+      {!busy && !error && plans.length === 0 && <p className="state-card">Тарифы ещё не опубликованы</p>}
+      {!busy && !error && plans.length > 0 && (
+        <div className="plans-list">
+          {plans.map((plan) => (
+            <article className="plan-card" key={plan.id}>
+              <div className="plan-card__intro">
+                <h3>{plan.name}</h3>
+                {plan.description && <p>{plan.description}</p>}
+              </div>
+              <dl className="plan-facts">
+                <div><dt>Срок</dt><dd>{formatPlanDuration(plan.duration_days)}</dd></div>
+                <div><dt>Устройства</dt><dd>{formatPlanDevices(plan.max_devices)}</dd></div>
+                <div><dt>Трафик</dt><dd>{formatPlanTraffic(plan.traffic_limit_gb)}</dd></div>
+              </dl>
+              <div className="plan-card__action">
+                <strong>{formatPlanPrice(plan.price_amount, plan.currency)}</strong>
+                {plan.is_trial && config?.bot_url ? (
+                  <BotAction config={config} label="Узнать о пробном доступе" />
+                ) : (
+                  <button className="button button--disabled" type="button" disabled>
+                    Покупка скоро будет доступна
+                  </button>
+                )}
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function TrialSection({ config }: { config: PortalConfig | null }) {
+  return (
+    <section id="trial" className="site-section feature-section" aria-labelledby="trial-title">
+      <div><h2 id="trial-title">Пробный доступ</h2></div>
+      <div>
+        <p><strong>Пробный доступ на 7 дней предоставляется поэтапно.</strong> Актуальную доступность проверьте в боте; выдача зависит от свободной мощности.</p>
+        {config?.bot_url && <BotAction config={config} label="Проверить доступность в боте" />}
+      </div>
+    </section>
+  );
+}
+
+function SupportSection({ config, busy }: { config: PortalConfig | null; busy: boolean }) {
+  return (
+    <section id="support" className="site-section feature-section" aria-labelledby="support-title">
+      <div><h2 id="support-title">Поддержка</h2></div>
+      <div>
+        <p>{config?.support_text || SUPPORT_FALLBACK}</p>
+        {!busy && <BotAction config={config} label="Написать в Telegram" />}
+      </div>
+    </section>
+  );
+}
+
+function Policies() {
+  return (
+    <section className="site-section policies" aria-label="Документы Veltrix VPN">
+      <article id="privacy" aria-labelledby="privacy-title">
+        <h2 id="privacy-title">Конфиденциальность</h2>
+        <p>Для работы используются данные Telegram-профиля, состояние подписки и устройств, а также агрегированные счётчики трафика. Ссылка подключения доступна только после входа в кабинет и не размещается на этой странице.</p>
+      </article>
+      <article id="terms" aria-labelledby="terms-title">
+        <h2 id="terms-title">Условия использования</h2>
+        <p>Используйте сервис законно, не передавайте личную ссылку доступа другим людям и не применяйте подключение для спама, атак или действий, нарушающих права третьих лиц. Доступность зависит от текущей ёмкости и технического состояния сервиса.</p>
+      </article>
+    </section>
+  );
 }
 
 function PublicVpnSite() {
@@ -42,7 +235,7 @@ function PublicVpnSite() {
       const nextConfig = await portalApi.config();
       if (configEpoch.current === epoch) setConfig(nextConfig);
     } catch {
-      if (configEpoch.current === epoch) setConfigError("Не удалось загрузить ссылку на бота и контакт поддержки.");
+      if (configEpoch.current === epoch) setConfigError("Не удалось загрузить ссылку на бота и контакт поддержки");
     } finally {
       if (configEpoch.current === epoch) setConfigBusy(false);
     }
@@ -56,7 +249,7 @@ function PublicVpnSite() {
       const nextPlans = await portalApi.plans();
       if (plansEpoch.current === epoch) setPlans(nextPlans);
     } catch {
-      if (plansEpoch.current === epoch) setPlansError("Не удалось загрузить тарифы.");
+      if (plansEpoch.current === epoch) setPlansError("Не удалось загрузить тарифы");
     } finally {
       if (plansEpoch.current === epoch) setPlansBusy(false);
     }
@@ -74,122 +267,32 @@ function PublicVpnSite() {
   }, []);
 
   return (
-    <div className="site-shell">
+    <div className="site-shell vx-atmosphere">
       <header className="site-header">
-        <a className="brand" href="#top" aria-label="Veltrix VPN, в начало"><span>V</span> Veltrix VPN</a>
-        <nav aria-label="Основная навигация">
-          <a href="#how">Как работает</a>
-          <a href="#plans">Тарифы</a>
-          <a href="#support">Поддержка</a>
-          <a href="/cabinet/">Кабинет</a>
-        </nav>
+        <div className="site-nav vx-glass">
+          <BrandLink />
+          <nav aria-label="Основная навигация">
+            <a href="#how">Как подключиться</a>
+            <a href="#apps-title">Устройства</a>
+            <a href="#plans">Тарифы</a>
+            <a href="#support">Поддержка</a>
+            <a className="site-nav__cabinet" href="/cabinet/">Личный кабинет</a>
+          </nav>
+        </div>
       </header>
 
       <main id="top">
-        <section className="hero" aria-labelledby="hero-title">
-          <div>
-            <p className="eyebrow">Простой старт через Telegram</p>
-            <h1 id="hero-title">Veltrix VPN для повседневного подключения</h1>
-            <p className="lead">Получите профиль в официальном боте, добавьте его в Happ и управляйте доступом в личном кабинете.</p>
-            <div className="hero-actions">
-              {configBusy ? (
-                <span className="button button--disabled" aria-disabled="true">Загружаем ссылку…</span>
-              ) : <BotAction config={config} label="Открыть Telegram-бот" />}
-              <a className="button button--ghost" href="/cabinet/">Личный кабинет</a>
-            </div>
-            {configError && (
-              <div className="inline-error" role="alert">
-                <span>{configError}</span>
-                <button onClick={() => void loadConfig()}>Повторить</button>
-              </div>
-            )}
-          </div>
-          <aside className="hero-card" aria-label="Проверенная платформа">
-            <span className="signal" aria-hidden="true">✓</span>
-            <strong>Проверено с Happ</strong>
-            <p>Happ для iPhone (iOS) и Android</p>
-            <small>Инструкции для других платформ появятся после проверки.</small>
-          </aside>
-        </section>
-
-        <section id="how" className="section" aria-labelledby="how-title">
-          <p className="eyebrow">Три шага</p>
-          <h2 id="how-title">Как это работает</h2>
-          <div className="steps">
-            <article><span>1</span><h3>Откройте бота</h3><p>Начните диалог с официальным Telegram-ботом Veltrix VPN.</p></article>
-            <article><span>2</span><h3>Получите профиль</h3><p>После подтверждения доступ появится в кабинете. Скопируйте ссылку или покажите QR-код.</p></article>
-            <article><span>3</span><h3>Подключите Happ</h3><p>Импортируйте профиль в Happ на iPhone или Android и включите соединение.</p></article>
-          </div>
-        </section>
-
-        <section id="plans" className="section" aria-labelledby="plans-title">
-          <p className="eyebrow">Публичный каталог</p>
-          <h2 id="plans-title">Тарифы</h2>
-          <p className="section-copy"><strong>Оплата пока не подключена.</strong> Платные тарифы нельзя приобрести на сайте или в кабинете.</p>
-          {plansBusy && <p className="state-card" role="status">Загружаем тарифы…</p>}
-          {plansError && (
-            <div className="state-card state-card--error" role="alert">
-              <p>{plansError}</p>
-              <button className="button button--ghost" onClick={() => void loadPlans()}>Повторить</button>
-            </div>
-          )}
-          {!plansBusy && !plansError && plans.length === 0 && <p className="state-card">Тарифы ещё не опубликованы.</p>}
-          {!plansBusy && !plansError && plans.length > 0 && (
-            <div className="plans-grid">
-              {plans.map((plan) => (
-                <article className="plan-card" key={plan.id}>
-                  <div className="plan-heading"><h3>{plan.name}</h3><strong>{formatPlanPrice(plan.price_amount, plan.currency)}</strong></div>
-                  {plan.description && <p>{plan.description}</p>}
-                  <dl>
-                    <div><dt>Срок</dt><dd>{formatPlanDuration(plan.duration_days)}</dd></div>
-                    <div><dt>Устройства</dt><dd>{formatPlanDevices(plan.max_devices)}</dd></div>
-                    <div><dt>Трафик</dt><dd>{formatPlanTraffic(plan.traffic_limit_gb)}</dd></div>
-                  </dl>
-                  {plan.is_trial ? (
-                    <BotAction config={config} label="Узнать о пробном доступе" />
-                  ) : (
-                    <button className="button button--disabled" disabled>Покупка скоро будет доступна</button>
-                  )}
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section id="trial" className="section split" aria-labelledby="trial-title">
-          <div>
-            <p className="eyebrow">Знакомство с сервисом</p>
-            <h2 id="trial-title">Пробный доступ</h2>
-          </div>
-          <div>
-            <p><strong>Пробный доступ на 7 дней предоставляется поэтапно.</strong> Актуальную доступность проверьте в боте; выдача зависит от свободной мощности.</p>
-            {config?.bot_url && <BotAction config={config} label="Проверить доступность в боте" />}
-          </div>
-        </section>
-
-        <section id="support" className="section split" aria-labelledby="support-title">
-          <div><p className="eyebrow">Связь</p><h2 id="support-title">Поддержка</h2></div>
-          <div>
-            <p>{config?.support_text || SUPPORT_FALLBACK}</p>
-            {!configBusy && <BotAction config={config} label="Написать в Telegram" />}
-          </div>
-        </section>
-
-        <section id="privacy" className="section policy" aria-labelledby="privacy-title">
-          <p className="eyebrow">Приватность</p>
-          <h2 id="privacy-title">Какие данные нужны сервису</h2>
-          <p>Для работы используются данные Telegram-профиля, состояние подписки и устройств, а также агрегированные счётчики трафика. Ссылка подключения доступна только после входа в кабинет и не размещается на этой странице.</p>
-        </section>
-
-        <section id="terms" className="section policy" aria-labelledby="terms-title">
-          <p className="eyebrow">Допустимое использование</p>
-          <h2 id="terms-title">Условия использования</h2>
-          <p>Используйте сервис законно, не передавайте личную ссылку доступа другим людям и не применяйте подключение для спама, атак или действий, нарушающих права третьих лиц. Доступность зависит от текущей ёмкости и технического состояния сервиса.</p>
-        </section>
+        <Hero config={config} busy={configBusy} error={configError} loadConfig={loadConfig} />
+        <ConnectionRoute />
+        <SupportedApps />
+        <PlansSection config={config} plans={plans} busy={plansBusy} error={plansError} loadPlans={loadPlans} />
+        <TrialSection config={config} />
+        <SupportSection config={config} busy={configBusy} />
+        <Policies />
       </main>
 
-      <footer>
-        <a className="brand" href="#top"><span>V</span> Veltrix VPN</a>
+      <footer className="site-footer">
+        <BrandLink footer />
         <nav aria-label="Ссылки в подвале">
           <a href="/cabinet/">Личный кабинет</a>
           <a href="#privacy">Конфиденциальность</a>
