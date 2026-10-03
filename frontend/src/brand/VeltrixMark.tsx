@@ -9,18 +9,17 @@ export function VeltrixMark({
   decorative = false,
   withName = true,
 }: VeltrixMarkProps) {
+  const markIsDecorative = decorative || withName;
+
   return (
-    <span
-      className={`vx-brand ${className}`.trim()}
-      aria-label={decorative ? undefined : "Veltrix VPN"}
-    >
+    <span className={`vx-brand ${className}`.trim()} aria-hidden={decorative}>
       <svg
         className="vx-mark"
         viewBox="0 0 64 64"
-        aria-hidden={decorative}
-        role={decorative ? undefined : "img"}
+        aria-hidden={markIsDecorative}
+        role={markIsDecorative ? undefined : "img"}
       >
-        {!decorative && <title>Veltrix VPN</title>}
+        {!markIsDecorative && <title>Veltrix VPN</title>}
         <ellipse
           className="vx-mark__lens vx-mark__lens--blue"
           cx="32"

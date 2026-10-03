@@ -6,6 +6,9 @@
   "derivedFrom": ".impeccable/assets/atmosphere.png",
   "background": "opaque",
   "dimensions": { "width": 512, "height": 1108 },
+  "seamless": false,
+  "usage": "Optional non-repeating optical overlay capped at 512 CSS pixels; responsive CSS gradients provide desktop coverage without upscaling.",
+  "limitations": "The generation prompt requested a seamless texture, but visual inspection found non-matching edges. Do not tile this asset.",
   "approved": true,
   "prompt": "Use the provided crop as the approved visual reference and recreate it as a clean production asset at the target aspect ratio. This is a seamless surface texture. Output a tileable texture plate with no objects, no text, no vignette. Preserve silhouette, composition, perspective, palette (#e6f2f8, #badaf8, #69a0f8), lighting, material, and texture exactly. Remove every piece of UI text, label, caption, button, and interface chrome that is not part of the artwork itself. Remove letterboxing, borders, card corners, drop shadows, and any layout background that the page will draw in code. Do not add objects. Do not change the concept. Do not restyle. The artwork fills the whole frame edge to edge at the same scale as the reference; no margins, no border, no background band. Region: Clean sample of the pearl-blue atmospheric field with its iridescent light streak and no foreground ink.\n",
   "createdAt": "2026-10-03T16:22:06.565Z"

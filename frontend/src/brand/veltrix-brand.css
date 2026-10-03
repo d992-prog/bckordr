@@ -10,7 +10,8 @@
   --vx-radius-control: 18px;
   --vx-radius-card: 28px;
   --vx-radius-lens: 44px;
-  --vx-font-display: "Moderustic", "Avenir Next", "Segoe UI", sans-serif;
+  /* Measured reference: Moderustic 700 at 56px. Use verified local fonts until its licensed file ships. */
+  --vx-font-display: "Avenir Next", "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --vx-hero-size: 3.5rem;
   --vx-hero-weight: 700;
   color-scheme: light dark;
@@ -23,6 +24,7 @@
   color: var(--vx-ink);
   font-family: var(--vx-font-display);
   font-weight: 700;
+  isolation: isolate;
 }
 
 .vx-mark {
@@ -52,6 +54,15 @@
   letter-spacing: -0.025em;
 }
 
+.vx-atmosphere {
+  background:
+    radial-gradient(circle at 16% 8%, rgba(114, 226, 192, 0.22), transparent 32%) center / cover no-repeat,
+    linear-gradient(145deg, rgba(198, 183, 255, 0.2), transparent 42%, rgba(37, 109, 255, 0.14)) center / cover no-repeat,
+    url("/brand/atmosphere.webp") center top / min(512px, 100vw) auto no-repeat,
+    var(--vx-pearl);
+  background-size: cover, cover, min(512px, 100vw) auto;
+}
+
 .vx-glass {
   border: 1px solid rgba(255, 255, 255, 0.58);
   background: rgba(255, 255, 255, 0.54);
@@ -72,10 +83,42 @@
   }
 }
 
+@media (prefers-color-scheme: dark) {
+  :root {
+    --vx-pearl: #07111e;
+    --vx-ink: #f4f8ff;
+    --vx-blue: #7aa7ff;
+    --vx-mint: #8ef0d3;
+    --vx-lilac: #d4c8ff;
+    --vx-surface: rgba(13, 29, 47, 0.94);
+    --vx-border: rgba(205, 225, 255, 0.18);
+    --vx-focus: #91c2ff;
+  }
+
+  .vx-mark__lens {
+    mix-blend-mode: screen;
+  }
+
+  .vx-atmosphere {
+    background:
+      radial-gradient(circle at 82% 12%, rgba(122, 167, 255, 0.22), transparent 38%) center / cover no-repeat,
+      linear-gradient(155deg, rgba(142, 240, 211, 0.08), transparent 44%, rgba(212, 200, 255, 0.12)) center / cover no-repeat,
+      var(--vx-pearl);
+    background-size: cover, cover;
+  }
+
+  .vx-glass {
+    border-color: rgba(205, 225, 255, 0.22);
+    background: rgba(13, 29, 47, 0.7);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  .vx-motion,
+  .vx-motion::before,
+  .vx-motion::after,
+  .vx-motion > .vx-mark__lens {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
