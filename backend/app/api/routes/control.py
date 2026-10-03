@@ -178,7 +178,11 @@ from app.services.discovery import (
 from app.services.gandi_dry_run import GandiDryRunResult, run_gandi_domain_dry_run
 from app.services.gandi_prefill import build_gandi_contact_prefill
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
-from app.services.vpn_control_intents import active_vpn_control_worker_ids
+from app.services.vpn_control_intents import (
+    VpnControlIntentError,
+    active_vpn_control_worker_ids,
+    stage_vpn_control_operation,
+)
 from app.services.vpn_friend_invitations import (
     FriendInvitationConflict,
     FriendInvitationUnavailable,
@@ -219,10 +223,15 @@ from app.services.vpn_policy import (
     evaluate_vpn_node,
     lock_vpn_subscription,
     lock_vpn_worker,
+    select_public_vpn_endpoint,
     select_vpn_node,
     validate_subscription_access,
 )
-from app.services.vpn_provisioning import provision_vpn_access_key, revoke_vpn_access_key
+from app.services.vpn_provisioning import (
+    build_vpn_client_email,
+    provision_vpn_access_key,
+    revoke_vpn_access_key,
+)
 from app.services.app_settings import (
     DiscoveryRuntimeSettings,
     get_discovery_runtime_settings,
@@ -3830,14 +3839,38 @@ async def create_vpn_access_key(
             detail="VPN subscription customer changed",
         )
     await _validate_vpn_key_issue(db, subscription)
-    worker = await _resolve_vpn_key_worker(db, payload.worker_id)
     now = utcnow()
+    endpoint_capacity = None
+    if payload.protocol == "vless":
+        settings = get_settings()
+        endpoint_capacity = await select_public_vpn_endpoint(
+            db,
+            now=now,
+            health_max_age_seconds=settings.vpn_endpoint_health_max_age_seconds,
+            worker_id=payload.worker_id,
+            lock=True,
+        )
+    endpoint = endpoint_capacity.endpoint if endpoint_capacity is not None else None
+    worker = (
+        await db.get(WorkerNode, endpoint.worker_id)
+        if endpoint is not None
+        else await _resolve_vpn_key_worker(db, payload.worker_id)
+    )
+    if worker is not None and endpoint is None and await db.scalar(
+        select(VpnEndpoint.id).where(VpnEndpoint.worker_id == worker.id).limit(1)
+    ) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No ready VPN endpoint is currently available",
+        )
     access_key = VpnAccessKey(
         subscription_id=payload.subscription_id,
         worker_id=worker.id if worker is not None else None,
+        endpoint_id=endpoint.id if endpoint is not None else None,
         protocol=payload.protocol,
         public_name=payload.public_name,
         external_uuid=str(uuid4()),
+        panel_sub_id=uuid4().hex if endpoint is not None else None,
         status="pending_sync",
         issued_at=now,
         expires_at=subscription.expires_at,
@@ -3851,14 +3884,30 @@ async def create_vpn_access_key(
     )
     db.add(access_key)
     await db.flush()
-    if worker is not None:
+    if endpoint is not None:
+        access_key.verified_client_email = build_vpn_client_email(
+            access_key.id, access_key.public_name
+        )
+        await db.flush()
+        try:
+            await stage_vpn_control_operation(db, access_key.id, "provision", now=now)
+        except VpnControlIntentError:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="VPN endpoint is temporarily busy",
+            ) from None
+    elif worker is not None:
         await provision_vpn_access_key(db, access_key, subscription=subscription, worker=worker)
     await add_audit_log(
         db,
         actor_user_id=admin.id,
         target_user_id=None,
         action="vpn_access_key_create",
-        details=f"subscription_id={payload.subscription_id} worker_id={payload.worker_id or '-'}",
+        details=(
+            f"subscription_id={payload.subscription_id} "
+            f"worker_id={access_key.worker_id or '-'} "
+            f"endpoint_id={access_key.endpoint_id or '-'}"
+        ),
     )
     await db.commit()
     await db.refresh(access_key)
