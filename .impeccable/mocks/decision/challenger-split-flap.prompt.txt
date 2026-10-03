@@ -1,0 +1,10 @@
+Use case: ui-mockup
+Asset type: full-fidelity mobile product UI direction comp, portrait 390x844
+Primary request: Design the first authenticated customer-dashboard viewport for "Veltrix VPN" in the visual world of an electromechanical split-flap connection board, made contemporary and usable for a nontechnical Russian-speaking user.
+Scene/backdrop: graphite-black working surface with a brushed steel frame impression, no phone frame.
+Style/medium: shippable premium dark product UI, crisp fixed-cell typography and restrained mechanical motion cues, not concept art.
+Composition/framing: exact portrait screen. Top: original Veltrix logo mark with a strong silhouette, not a letter V and not a shield, plus "Veltrix VPN". Main board: one oversized row reads "ПОДКЛЮЧЕНО" in warm white split-flap cells, supported by three compact fixed columns: "ПРОФИЛЬ  ОСНОВНОЙ", "ДО  10 ОКТ", "УСТРОЙСТВО  IPHONE". An amber micro-lamp marks a recent update, green marks ready. One primary light button "Открыть профиль". A lower small board shows the three setup states Telegram, Профиль, Защищено. Bottom navigation is minimal and dark.
+Color palette: matte black #121416, warm white #F4F2E9, amber #F2B84B, alert red #E85D4A, steel #8FA0A8, restrained ready green.
+Materials/textures: matte flap faces, painted characters, brushed steel edges, hairline ruled rows.
+Text (verbatim, Russian): "Veltrix VPN", "ПОДКЛЮЧЕНО", "ПРОФИЛЬ", "ОСНОВНОЙ", "ДО", "10 ОКТ", "УСТРОЙСТВО", "IPHONE", "Открыть профиль", "Telegram", "Профиль", "Защищено".
+Constraints: practical accessible hierarchy, not a dense admin dashboard; large readable Russian typography; one primary action; no VPN URI, UUID, speed claim, fake metrics, price, testimonials, generic shield, padlock, globe, watermark, browser chrome or phone hardware. Keep all text inside the screen and do not add extra copy.

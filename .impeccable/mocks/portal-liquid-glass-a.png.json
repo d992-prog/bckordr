@@ -1,0 +1,10 @@
+{
+  "surface": "authenticated-customer-portal",
+  "variant": "a-focus-orb",
+  "direction": "Liquid Glass",
+  "seed": "1a448fec",
+  "approved": false,
+  "image": "portal-liquid-glass-a.png",
+  "reference": ".impeccable/mocks/decision/model-pick.png",
+  "prompt": "Design the first authenticated customer-dashboard viewport for Veltrix VPN in a sophisticated web adaptation of Apple Liquid Glass. The product is for nontechnical Russian-speaking users. Use Liquid Glass only as a functional floating layer for controls and navigation; keep content surfaces matte, legible and calm. Use an edge-to-edge pale blue and pearl atmospheric field with subtle spectral caustics. Top: original abstract Veltrix logo mark with a strong silhouette, not a letter V and not a shield, plus Veltrix VPN. Center: one large luminous connection sphere with a subtle protected signal inside, headline Подключение готово, secondary line Профиль активен. One clear glass primary control Открыть профиль. Below: matte content tile 7 дней бесплатно with status Активна. Bottom: compact floating glass tab bar with three recognizable destinations. Palette: pearl #EEF4FA, deep ink #101C2C, focused blue #256DFF, mint #72E2C0, restrained lilac #C6B7FF. Practical accessible layout, high contrast through glass, one primary action, 44px touch targets, no exposed VPN URI, UUID, speed claim, fake metrics, price, testimonials, generic shield, padlock, globe, stock icons, watermark, browser chrome or phone hardware."
+}
