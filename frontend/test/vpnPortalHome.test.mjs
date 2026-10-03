@@ -14,6 +14,17 @@ const activeSubscription = {
   traffic_limit_gb_per_profile: null,
 };
 
+function trial(state) {
+  return {
+    state,
+    duration_days: 7,
+    profile_limit: 1,
+    subscription_id: null,
+    access_key_id: null,
+    expires_at: null,
+  };
+}
+
 test("reports a ready profile without claiming an active tunnel", () => {
   const view = buildPortalHomeView(
     [activeSubscription],
@@ -29,18 +40,55 @@ test("reports a ready profile without claiming an active tunnel", () => {
 });
 
 test("keeps preparing, expired, and empty states explicit", () => {
-  assert.equal(buildPortalHomeView([], [], {
-    state: "preparing",
-    duration_days: 7,
-    profile_limit: 1,
-    subscription_id: null,
-    access_key_id: null,
-    expires_at: null,
-  }).kind, "preparing");
+  assert.equal(buildPortalHomeView([], [], trial("preparing")).kind, "preparing");
   assert.equal(buildPortalHomeView([activeSubscription], [], null).kind, "preparing");
   assert.equal(buildPortalHomeView([{ ...activeSubscription, state: "trial" }], [], null).kind, "preparing");
   assert.equal(buildPortalHomeView([{ ...activeSubscription, state: "expired" }], [], null).kind, "expired");
-  assert.equal(buildPortalHomeView([], [], null).kind, "empty");
+  assert.deepEqual(buildPortalHomeView([], [], null), {
+    kind: "empty",
+    title: "VPN‑профиля пока нет",
+    detail: "Напишите в поддержку, чтобы получить доступ",
+    profileId: null,
+  });
+});
+
+test("uses honest copy for every trial state when no profile is ready", () => {
+  assert.deepEqual(buildPortalHomeView([], [], trial("available")), {
+    kind: "empty",
+    title: "VPN‑профиля пока нет",
+    detail: "Получите пробный доступ или напишите в поддержку",
+    profileId: null,
+  });
+  assert.deepEqual(buildPortalHomeView([], [], trial("capacity_paused")), {
+    kind: "paused",
+    title: "Выдача доступа временно приостановлена",
+    detail: "Попробуйте позже или напишите в поддержку",
+    profileId: null,
+  });
+  assert.deepEqual(buildPortalHomeView([], [], trial("preparing")), {
+    kind: "preparing",
+    title: "Профиль готовится",
+    detail: "Это может занять несколько минут",
+    profileId: null,
+  });
+  assert.deepEqual(buildPortalHomeView([], [], trial("active")), {
+    kind: "preparing",
+    title: "Обновляем данные профиля",
+    detail: "Попробуйте открыть кабинет через несколько секунд",
+    profileId: null,
+  });
+  assert.deepEqual(buildPortalHomeView([], [], trial("used")), {
+    kind: "empty",
+    title: "Пробный доступ уже использован",
+    detail: "Выберите доступный тариф или напишите в поддержку",
+    profileId: null,
+  });
+  assert.deepEqual(buildPortalHomeView([], [], trial("disabled")), {
+    kind: "empty",
+    title: "Пробный доступ недоступен",
+    detail: "Напишите в поддержку, чтобы уточнить доступные варианты",
+    profileId: null,
+  });
 });
 
 test("reports disabled and suspended subscriptions as paused", () => {
@@ -50,7 +98,7 @@ test("reports disabled and suspended subscriptions as paused", () => {
     assert.deepEqual(view, {
       kind: "paused",
       title: "Доступ приостановлен",
-      detail: "Напишите в поддержку, чтобы уточнить причину",
+      detail: "Напишите в поддержку, чтобы уточнить причину",
       profileId: null,
     });
   }
@@ -72,15 +120,76 @@ test("uses only a connectable active profile from an active entitlement", () => 
 
   assert.equal(view.kind, "ready");
   assert.equal(view.profileId, 22);
-  assert.equal(view.detail, "Доступ действует до Без срока окончания");
+  assert.equal(view.detail, "Доступ без ограничения по сроку");
 });
 
-test("prefers a current preparing or paused state over historical expiry", () => {
-  const expired = { ...activeSubscription, id: 30, state: "expired" };
-  const paused = { ...activeSubscription, id: 31, state: "disabled" };
+test("refreshes an orphaned active profile instead of claiming that no profile exists", () => {
+  const view = buildPortalHomeView([], [
+    { id: 50, subscription_id: 404, display_name: "Laptop", state: "active", can_connect: true },
+  ], null);
 
-  assert.equal(buildPortalHomeView([expired, activeSubscription], [], null).kind, "preparing");
-  assert.equal(buildPortalHomeView([expired, paused], [], null).kind, "paused");
+  assert.deepEqual(view, {
+    kind: "preparing",
+    title: "Обновляем данные профиля",
+    detail: "Попробуйте открыть кабинет через несколько секунд",
+    profileId: null,
+  });
+});
+
+test("uses recency to distinguish a current terminal subscription from history", () => {
+  const historicalExpired = {
+    ...activeSubscription,
+    id: 30,
+    state: "expired",
+    expires_at: "2025-01-01T00:00:00Z",
+  };
+  const currentPaused = {
+    ...activeSubscription,
+    id: 31,
+    state: "disabled",
+    expires_at: "2026-01-01T00:00:00Z",
+  };
+  const historicalPaused = { ...currentPaused, id: 32, expires_at: "2025-01-01T00:00:00Z" };
+  const currentExpired = { ...historicalExpired, id: 33, expires_at: "2026-01-01T00:00:00Z" };
+
+  assert.equal(buildPortalHomeView([historicalExpired, currentPaused], [], null).kind, "paused");
+  assert.equal(buildPortalHomeView([historicalPaused, currentExpired], [], null).kind, "expired");
+});
+
+test("uses the higher id as a deterministic tie-break for equally dated terminal records", () => {
+  const expiry = "2026-01-01T00:00:00Z";
+  const paused = { ...activeSubscription, id: 40, state: "disabled", expires_at: expiry };
+  const expired = { ...activeSubscription, id: 41, state: "expired", expires_at: expiry };
+
+  assert.equal(buildPortalHomeView([expired, paused], [], null).kind, "expired");
+  assert.equal(buildPortalHomeView([paused, expired], [], null).kind, "expired");
+});
+
+test("prefers a subscription associated with an existing inactive profile", () => {
+  const associatedExpired = {
+    ...activeSubscription,
+    id: 60,
+    state: "expired",
+    expires_at: "2025-01-01T00:00:00Z",
+  };
+  const unassociatedPaused = {
+    ...activeSubscription,
+    id: 61,
+    state: "disabled",
+    expires_at: "2026-01-01T00:00:00Z",
+  };
+  const inactiveProfile = {
+    id: 62,
+    subscription_id: 60,
+    display_name: "Old phone",
+    state: "revoked",
+    can_connect: false,
+  };
+
+  assert.equal(
+    buildPortalHomeView([unassociatedPaused, associatedExpired], [inactiveProfile], null).kind,
+    "expired",
+  );
 });
 
 test("reuses safe date formatting for an invalid expiry", () => {
@@ -90,5 +199,5 @@ test("reuses safe date formatting for an invalid expiry", () => {
     null,
   );
 
-  assert.equal(view.detail, "Доступ действует до Дата недоступна");
+  assert.equal(view.detail, "Срок доступа уточняется");
 });
