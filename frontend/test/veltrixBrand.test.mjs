@@ -134,12 +134,11 @@ test("generated plate metadata matches PNG dimensions and alpha intent", async (
   }
 });
 
-test("runtime typography states the measured reference without promising an unavailable font", async () => {
+test("runtime typography retains the measured display face with an honest system fallback", async () => {
   const css = await readFile(cssUrl, "utf8");
 
   assert.match(css, /Measured reference: Moderustic 700 at 56px/);
-  assert.doesNotMatch(css, /--vx-font-display:\s*"Moderustic"/);
-  assert.match(css, /--vx-font-display:[^;]*"Segoe UI Variable Display"/);
-  assert.match(css, /--vx-hero-size:\s*3\.5rem/);
+  assert.match(css, /--vx-font-display:\s*"Moderustic",[^;]*"Segoe UI Variable Display"/);
+  assert.match(css, /--vx-hero-title-size:\s*56px/);
   assert.match(css, /--vx-hero-weight:\s*700/);
 });
