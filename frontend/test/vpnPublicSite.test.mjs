@@ -118,6 +118,8 @@ test("public hero and plan sections keep the approved component contract", async
   assert.match(source, /<Hero config=\{config\} configBusy=\{configBusy\} configError=\{configError\} onConfigRetry=\{loadConfig\} \/>/);
   assert.match(source, /function PlansSection\(\{ config, plans, busy, error, onRetry \}: PlansSectionProps\)/);
   assert.match(source, /<PlansSection config=\{config\} plans=\{plans\} busy=\{plansBusy\} error=\{plansError\} onRetry=\{loadPlans\} \/>/);
+  assert.match(source, /function SupportSection\(\{ config, configBusy \}: \{ config: PortalConfig \| null; configBusy: boolean \}\)/);
+  assert.match(source, /<SupportSection config=\{config\} configBusy=\{configBusy\} \/>/);
 });
 
 test("public trial copy stays honest without duplicating readiness", async () => {

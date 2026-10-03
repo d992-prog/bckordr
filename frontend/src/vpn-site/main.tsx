@@ -190,13 +190,13 @@ function TrialSection({ config }: { config: PortalConfig | null }) {
   );
 }
 
-function SupportSection({ config, busy }: { config: PortalConfig | null; busy: boolean }) {
+function SupportSection({ config, configBusy }: { config: PortalConfig | null; configBusy: boolean }) {
   return (
     <section id="support" className="site-section feature-section" aria-labelledby="support-title">
       <div><h2 id="support-title">Поддержка</h2></div>
       <div>
         <p>{config?.support_text || SUPPORT_FALLBACK}</p>
-        {!busy && <BotAction config={config} label="Написать в Telegram" />}
+        {!configBusy && <BotAction config={config} label="Написать в Telegram" />}
       </div>
     </section>
   );
@@ -287,7 +287,7 @@ function PublicVpnSite() {
         <SupportedApps />
         <PlansSection config={config} plans={plans} busy={plansBusy} error={plansError} onRetry={loadPlans} />
         <TrialSection config={config} />
-        <SupportSection config={config} busy={configBusy} />
+        <SupportSection config={config} configBusy={configBusy} />
         <Policies />
       </main>
 
