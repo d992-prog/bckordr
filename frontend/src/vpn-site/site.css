@@ -135,7 +135,7 @@ a, button { -webkit-tap-highlight-color: transparent; }
 
 .hero-copy { position: relative; z-index: 1; }
 
-.hero-note {
+.eyebrow {
   margin: 0 0 24px;
   color: var(--site-action);
   font-size: 0.93rem;
@@ -182,7 +182,7 @@ h3 {
 
 p { line-height: 1.65; }
 
-.hero-lead {
+.lead {
   max-width: 55ch;
   margin: 0 0 34px;
   color: var(--site-muted);

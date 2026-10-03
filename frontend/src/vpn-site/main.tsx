@@ -36,30 +36,30 @@ function BotAction({ config, label }: { config: PortalConfig | null; label: stri
 
 interface HeroProps {
   config: PortalConfig | null;
-  busy: boolean;
-  error: string;
-  loadConfig: () => Promise<void>;
+  configBusy: boolean;
+  configError: string;
+  onConfigRetry: () => Promise<void>;
 }
 
-function Hero({ config, busy, error, loadConfig }: HeroProps) {
+function Hero({ config, configBusy, configError, onConfigRetry }: HeroProps) {
   return (
     <section className="hero vx-motion" aria-labelledby="hero-title">
       <div className="hero-copy">
-        <p className="hero-note">Простой старт через Telegram</p>
+        <p className="eyebrow">Простой старт через Telegram</p>
         <h1 id="hero-title">VPN без сложных настроек</h1>
-        <p className="hero-lead">
+        <p className="lead">
           Получите готовый профиль в официальном боте и добавьте его в поддерживаемое приложение
         </p>
         <div className="hero-actions">
-          {busy ? (
+          {configBusy ? (
             <span className="button button--disabled" aria-disabled="true">Загружаем ссылку…</span>
           ) : <BotAction config={config} label="Открыть в Telegram" />}
           <a className="button button--ghost" href="#how">Как подключиться</a>
         </div>
-        {error && (
+        {configError && (
           <div className="inline-error" role="alert">
-            <span>{error}</span>
-            <button type="button" onClick={() => void loadConfig()}>Повторить</button>
+            <span>{configError}</span>
+            <button type="button" onClick={() => void onConfigRetry()}>Повторить</button>
           </div>
         )}
       </div>
@@ -129,10 +129,10 @@ interface PlansSectionProps {
   plans: PortalPlan[];
   busy: boolean;
   error: string;
-  loadPlans: () => Promise<void>;
+  onRetry: () => Promise<void>;
 }
 
-function PlansSection({ config, plans, busy, error, loadPlans }: PlansSectionProps) {
+function PlansSection({ config, plans, busy, error, onRetry }: PlansSectionProps) {
   return (
     <section id="plans" className="site-section plans-section" aria-labelledby="plans-title">
       <div className="section-heading section-heading--split">
@@ -143,7 +143,7 @@ function PlansSection({ config, plans, busy, error, loadPlans }: PlansSectionPro
       {error && (
         <div className="state-card state-card--error" role="alert">
           <p>{error}</p>
-          <button className="button button--ghost" type="button" onClick={() => void loadPlans()}>Повторить</button>
+          <button className="button button--ghost" type="button" onClick={() => void onRetry()}>Повторить</button>
         </div>
       )}
       {!busy && !error && plans.length === 0 && <p className="state-card">Тарифы ещё не опубликованы</p>}
@@ -282,10 +282,10 @@ function PublicVpnSite() {
       </header>
 
       <main id="top">
-        <Hero config={config} busy={configBusy} error={configError} loadConfig={loadConfig} />
+        <Hero config={config} configBusy={configBusy} configError={configError} onConfigRetry={loadConfig} />
         <ConnectionRoute />
         <SupportedApps />
-        <PlansSection config={config} plans={plans} busy={plansBusy} error={plansError} loadPlans={loadPlans} />
+        <PlansSection config={config} plans={plans} busy={plansBusy} error={plansError} onRetry={loadPlans} />
         <TrialSection config={config} />
         <SupportSection config={config} busy={configBusy} />
         <Policies />

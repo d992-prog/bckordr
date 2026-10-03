@@ -33,8 +33,8 @@ test("public site loads only safe public APIs with independent retry states", as
   assert.match(source, /portalApi\.config\(\)/);
   assert.match(source, /portalApi\.plans\(\)/);
   assert.match(source, /void loadConfig\(\);\s*void loadPlans\(\);/);
-  assert.match(source, /onClick=\{\(\) => void loadConfig\(\)\}/);
-  assert.match(source, /onClick=\{\(\) => void loadPlans\(\)\}/);
+  assert.match(source, /onClick=\{\(\) => void onConfigRetry\(\)\}/);
+  assert.match(source, /onClick=\{\(\) => void onRetry\(\)\}/);
   assert.match(source, /href=\{config\.bot_url\}/);
   assert.match(source, /aria-disabled="true"/);
 
@@ -107,6 +107,17 @@ test("public site keeps the release sections in the intended reading order", asy
 
   assert.ok(positions.every((position) => position >= 0), positions);
   assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
+});
+
+test("public hero and plan sections keep the approved component contract", async () => {
+  const source = await readFile(siteUrl, "utf8");
+
+  assert.match(source, /className="eyebrow">\u041f\u0440\u043e\u0441\u0442\u043e\u0439 \u0441\u0442\u0430\u0440\u0442 \u0447\u0435\u0440\u0435\u0437 Telegram<\/p>/);
+  assert.match(source, /className="lead">\s*\u041f\u043e\u043b\u0443\u0447\u0438\u0442\u0435 \u0433\u043e\u0442\u043e\u0432\u044b\u0439 \u043f\u0440\u043e\u0444\u0438\u043b\u044c/);
+  assert.match(source, /function Hero\(\{ config, configBusy, configError, onConfigRetry \}: HeroProps\)/);
+  assert.match(source, /<Hero config=\{config\} configBusy=\{configBusy\} configError=\{configError\} onConfigRetry=\{loadConfig\} \/>/);
+  assert.match(source, /function PlansSection\(\{ config, plans, busy, error, onRetry \}: PlansSectionProps\)/);
+  assert.match(source, /<PlansSection config=\{config\} plans=\{plans\} busy=\{plansBusy\} error=\{plansError\} onRetry=\{loadPlans\} \/>/);
 });
 
 test("public trial copy stays honest without duplicating readiness", async () => {
