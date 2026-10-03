@@ -52,6 +52,8 @@ XUI_INSTALL_COMMIT = "15d82a5e47c68700a1b7a3e3492f245f139e033a"
 XUI_INSTALL_SHA256 = "4e3fe7fe00ef8e904ce6a0e9c36fd8a0c7179fe5e786f23e31801aee84c6347d"
 XUI_UPDATE_SHA256 = "8e06b4fd9b9c368ac3314f2b05ef5bef890ad7faae0c07c073a352bbdc8395ae"
 XUI_VERSION = "v3.8.5"
+XRAY_COMPAT_VERSION = "26.7.28"
+XRAY_COMPAT_ARCHIVE_SHA256 = "8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40"
 
 
 def _shell_quote(value: str | int | float | bool) -> str:
@@ -353,6 +355,53 @@ def _build_xray_owner_normalization_command() -> str:
         ]
     )
     return _bash("\n".join(lines))
+
+
+def _build_xray_compatibility_command() -> str:
+    binary = "/usr/local/x-ui/bin/xray-linux-amd64"
+    backup = f"/var/lib/veltrix-vpn/xray-linux-amd64.before-veltrix-{XRAY_COMPAT_VERSION}"
+    archive_url = (
+        "https://github.com/XTLS/Xray-core/releases/download/"
+        f"v{XRAY_COMPAT_VERSION}/Xray-linux-64.zip"
+    )
+    return _bash(
+        "\n".join(
+            [
+                "set -euo pipefail",
+                f"binary={_shell_quote(binary)}",
+                f"backup={_shell_quote(backup)}",
+                "test -x \"$binary\"",
+                f"if \"$binary\" version | grep -Eq '^Xray {XRAY_COMPAT_VERSION}([[:space:]]|$)'; then exit 0; fi",
+                "install -d -o root -g root -m 0700 /var/lib/veltrix-vpn",
+                "archive=$(mktemp /var/lib/veltrix-vpn/xray-compat.XXXXXX.zip)",
+                "staged=$(mktemp /usr/local/x-ui/bin/.xray-linux-amd64.XXXXXX)",
+                "trap 'status=$?; rm -f -- \"$archive\" \"$staged\"; exit \"$status\"' EXIT",
+                f"curl -fsSL {_shell_quote(archive_url)} -o \"$archive\"",
+                f"printf '%s  %s\\n' {XRAY_COMPAT_ARCHIVE_SHA256} \"$archive\" | sha256sum -c - >/dev/null",
+                "python3 - \"$archive\" \"$staged\" <<'PY'",
+                "import shutil",
+                "import sys",
+                "import zipfile",
+                "",
+                "with zipfile.ZipFile(sys.argv[1]) as source:",
+                "    matches = [item for item in source.infolist() if item.filename == 'xray' and not item.is_dir()]",
+                "    if len(matches) != 1 or not 1_000_000 <= matches[0].file_size <= 100_000_000:",
+                "        raise SystemExit(1)",
+                "    with source.open(matches[0]) as reader, open(sys.argv[2], 'wb') as writer:",
+                "        shutil.copyfileobj(reader, writer)",
+                "PY",
+                "chown root:root \"$staged\"",
+                "chmod 0755 \"$staged\"",
+                f"\"$staged\" version | grep -Eq '^Xray {XRAY_COMPAT_VERSION}([[:space:]]|$)'",
+                "if test ! -e \"$backup\"; then install -o root -g root -m 0755 \"$binary\" \"$backup\"; fi",
+                "test -x \"$backup\"",
+                "mv -f -- \"$staged\" \"$binary\"",
+                "chown root:root \"$binary\"",
+                "chmod 0755 \"$binary\"",
+                f"\"$binary\" version | grep -Eq '^Xray {XRAY_COMPAT_VERSION}([[:space:]]|$)'",
+            ]
+        )
+    )
 
 
 def _build_vpn_autoconfig_command(worker: WorkerNode | None) -> str:
@@ -1138,6 +1187,7 @@ def build_worker_maintenance_commands(
             _build_vpn_install_command(),
             _build_xui_stop_command(),
             _build_xray_owner_normalization_command(),
+            _build_xray_compatibility_command(),
             "systemctl enable --now x-ui.service || systemctl enable --now x-ui || systemctl enable --now 3x-ui.service",
             _build_vpn_ready_command(),
         ]
@@ -1149,6 +1199,7 @@ def build_worker_maintenance_commands(
             _build_vpn_update_command(),
             _build_xui_stop_command(),
             _build_xray_owner_normalization_command(),
+            _build_xray_compatibility_command(),
             "systemctl enable --now x-ui.service || systemctl enable --now x-ui || systemctl enable --now 3x-ui.service",
             _build_vpn_ready_command(),
         ]

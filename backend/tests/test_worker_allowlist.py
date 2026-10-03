@@ -392,12 +392,23 @@ def test_worker_vpn_install_is_pinned_private_and_normalizes_xray_ownership():
     assert "veltrix starts x-ui after ownership validation" in update_joined
     assert "${xui_folder}/x-ui migrate || exit 1 # veltrix keeps the required noninteractive migration" in update_joined
     assert "then x-ui update" not in update_joined
+    for command_set in (commands, update_commands):
+        compatibility = "\n".join(command_set)
+        assert "Xray-linux-64.zip" in compatibility
+        assert "v26.7.28" in compatibility
+        assert "8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40" in compatibility
+        assert "xray-linux-amd64.before-veltrix-26.7.28" in compatibility
+        assert "Xray 26.7.28" in compatibility
 
     install_index = next(index for index, command in enumerate(commands) if "3x-ui-install.sh" in command)
     normalize_index = next(index for index, command in enumerate(commands) if "xray-path-ownership.before" in command)
     start_index = next(index for index, command in enumerate(commands) if command.startswith("systemctl enable --now"))
     assert install_index < normalize_index < start_index
     assert any("stop_xui" in command for command in commands[install_index + 1 : normalize_index])
+    compatibility_index = next(
+        index for index, command in enumerate(commands) if "Xray-linux-64.zip" in command
+    )
+    assert normalize_index < compatibility_index < start_index
 
     update_index = next(index for index, command in enumerate(update_commands) if "3x-ui-update.sh" in command)
     update_normalize_indexes = [
@@ -408,6 +419,10 @@ def test_worker_vpn_install_is_pinned_private_and_normalizes_xray_ownership():
     )
     assert len(update_normalize_indexes) == 2
     assert update_normalize_indexes[0] < update_index < update_normalize_indexes[1] < update_start_index
+    update_compatibility_index = next(
+        index for index, command in enumerate(update_commands) if "Xray-linux-64.zip" in command
+    )
+    assert update_normalize_indexes[1] < update_compatibility_index < update_start_index
     assert any("stop_xui" in command for command in update_commands[: update_normalize_indexes[0]])
     assert any("stop_xui" in command for command in update_commands[update_index + 1 : update_normalize_indexes[1]])
 
