@@ -47,7 +47,13 @@ test("keeps preparing, expired, and empty states explicit", () => {
   assert.deepEqual(buildPortalHomeView([], [], null), {
     kind: "empty",
     title: "VPN‑профиля пока нет",
-    detail: "Напишите в поддержку, чтобы получить доступ",
+    detail: "Получите пробный доступ или напишите в поддержку",
+    profileId: null,
+  });
+  assert.deepEqual(buildPortalHomeView([{ ...activeSubscription, state: "expired" }], [], null), {
+    kind: "expired",
+    title: "Срок доступа закончился",
+    detail: "Выберите доступный тариф или напишите в поддержку",
     profileId: null,
   });
 });
@@ -98,7 +104,7 @@ test("reports disabled and suspended subscriptions as paused", () => {
     assert.deepEqual(view, {
       kind: "paused",
       title: "Доступ приостановлен",
-      detail: "Напишите в поддержку, чтобы уточнить причину",
+      detail: "Напишите в поддержку, чтобы уточнить причину",
       profileId: null,
     });
   }
@@ -189,6 +195,33 @@ test("prefers a subscription associated with an existing inactive profile", () =
   assert.equal(
     buildPortalHomeView([unassociatedPaused, associatedExpired], [inactiveProfile], null).kind,
     "expired",
+  );
+});
+
+test("an active subscription outranks a historical terminal subscription with an inactive profile", () => {
+  const historicalSubscription = {
+    ...activeSubscription,
+    id: 70,
+    state: "expired",
+    expires_at: "2025-01-01T00:00:00Z",
+  };
+  const currentSubscription = { ...activeSubscription, id: 71 };
+  const historicalProfile = {
+    id: 72,
+    subscription_id: 70,
+    display_name: "Old phone",
+    state: "revoked",
+    can_connect: false,
+  };
+
+  assert.deepEqual(
+    buildPortalHomeView([historicalSubscription, currentSubscription], [historicalProfile], null),
+    {
+      kind: "preparing",
+      title: "Профиль готовится",
+      detail: "Это может занять несколько минут",
+      profileId: null,
+    },
   );
 });
 

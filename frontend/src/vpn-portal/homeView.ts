@@ -90,6 +90,15 @@ export function buildPortalHomeView(
     };
   }
 
+  if (subscriptions.some(({ state }) => USABLE_SUBSCRIPTION_STATES.has(state))) {
+    return {
+      kind: "preparing",
+      title: "Профиль готовится",
+      detail: "Это может занять несколько минут",
+      profileId: null,
+    };
+  }
+
   if (trial?.state === "active") {
     return {
       kind: "preparing",
@@ -109,20 +118,11 @@ export function buildPortalHomeView(
   }
 
   const subscription = selectRelevantSubscription(subscriptions, profiles);
-  if (subscription && USABLE_SUBSCRIPTION_STATES.has(subscription.state)) {
-    return {
-      kind: "preparing",
-      title: "Профиль готовится",
-      detail: "Это может занять несколько минут",
-      profileId: null,
-    };
-  }
-
   if (subscription?.state === "disabled" || subscription?.state === "suspended") {
     return {
       kind: "paused",
       title: "Доступ приостановлен",
-      detail: "Напишите в поддержку, чтобы уточнить причину",
+      detail: "Напишите в поддержку, чтобы уточнить причину",
       profileId: null,
     };
   }
@@ -131,7 +131,7 @@ export function buildPortalHomeView(
     return {
       kind: "expired",
       title: "Срок доступа закончился",
-      detail: "Выберите доступный тариф или напишите в поддержку",
+      detail: "Выберите доступный тариф или напишите в поддержку",
       profileId: null,
     };
   }
@@ -175,7 +175,7 @@ export function buildPortalHomeView(
   return {
     kind: "empty",
     title: "VPN‑профиля пока нет",
-    detail: "Напишите в поддержку, чтобы получить доступ",
+    detail: "Получите пробный доступ или напишите в поддержку",
     profileId: null,
   };
 }
