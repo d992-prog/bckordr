@@ -22,6 +22,13 @@ function readyDetail(expiresAt: string | null): string {
   return `Доступ действует до ${portalDate(expiresAt)}`;
 }
 
+function scheduledDetail(startsAt: string | null): string {
+  if (startsAt === null || Number.isNaN(new Date(startsAt).getTime())) {
+    return "Дата начала уточняется";
+  }
+  return `Начало — ${portalDate(startsAt)}`;
+}
+
 function subscriptionStatePriority(state: string): number {
   if (USABLE_SUBSCRIPTION_STATES.has(state)) {
     return 0;
@@ -95,6 +102,19 @@ export function buildPortalHomeView(
       kind: "preparing",
       title: "Профиль готовится",
       detail: "Это может занять несколько минут",
+      profileId: null,
+    };
+  }
+
+  const scheduledSubscription = selectRelevantSubscription(
+    subscriptions.filter(({ state }) => state === "scheduled"),
+    profiles,
+  );
+  if (scheduledSubscription) {
+    return {
+      kind: "preparing",
+      title: "Доступ начнётся позже",
+      detail: scheduledDetail(scheduledSubscription.starts_at),
       profileId: null,
     };
   }

@@ -225,6 +225,54 @@ test("an active subscription outranks a historical terminal subscription with an
   );
 });
 
+test("reports scheduled access with a safe start date", () => {
+  for (const [startsAt, detail] of [
+    ["2026-12-10T00:00:00Z", "Начало — 10 декабря 2026 г."],
+    [null, "Дата начала уточняется"],
+    ["not-a-date", "Дата начала уточняется"],
+  ]) {
+    const view = buildPortalHomeView([
+      { ...activeSubscription, state: "scheduled", starts_at: startsAt },
+    ], [], null);
+
+    assert.deepEqual(view, {
+      kind: "preparing",
+      title: "Доступ начнётся позже",
+      detail,
+      profileId: null,
+    });
+    assert.doesNotMatch(`${view.title} ${view.detail}`, /Получите пробный доступ|подключено|защищено/i);
+  }
+});
+
+test("scheduled access outranks a terminal subscription with an inactive profile", () => {
+  const scheduled = {
+    ...activeSubscription,
+    id: 80,
+    state: "scheduled",
+    starts_at: "2026-12-10T00:00:00Z",
+  };
+  const historicalPaused = {
+    ...activeSubscription,
+    id: 81,
+    state: "disabled",
+    expires_at: "2025-01-01T00:00:00Z",
+  };
+  const historicalProfile = {
+    id: 82,
+    subscription_id: 81,
+    display_name: "Old phone",
+    state: "revoked",
+    can_connect: false,
+  };
+
+  const view = buildPortalHomeView([historicalPaused, scheduled], [historicalProfile], null);
+
+  assert.equal(view.kind, "preparing");
+  assert.equal(view.title, "Доступ начнётся позже");
+  assert.doesNotMatch(`${view.title} ${view.detail}`, /Получите пробный доступ|подключено|защищено/i);
+});
+
 test("reuses safe date formatting for an invalid expiry", () => {
   const view = buildPortalHomeView(
     [{ ...activeSubscription, expires_at: "not-a-date" }],
