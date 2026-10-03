@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const frontendRoot = fileURLToPath(new URL("../", import.meta.url));
 const cssUrl = new URL("../src/vpn-portal/portal.css", import.meta.url);
+const portalUrl = new URL("../src/vpn-portal/Portal.tsx", import.meta.url);
 
 test("cabinet HTML is an independent safe Russian Mini App entry", async () => {
   const html = await readFile(new URL("../cabinet/index.html", import.meta.url), "utf8");
@@ -48,4 +49,17 @@ test("mobile cabinet header and buttons can shrink without horizontal overflow",
     css,
     /@media \(max-width:\s*639px\)\s*\{[\s\S]*?\.veltrix-portal \.account\s*\{[^}]*max-width:\s*100%;/,
   );
+});
+
+test("portal brand styles have one CSS ownership path", async () => {
+  const [css, portal] = await Promise.all([
+    readFile(cssUrl, "utf8"),
+    readFile(portalUrl, "utf8"),
+  ]);
+
+  assert.equal(
+    (css.match(/@import\s+["']\.\.\/brand\/veltrix-brand\.css["']/g) || []).length,
+    1,
+  );
+  assert.doesNotMatch(portal, /import\s+["']\.\.\/brand\/veltrix-brand\.css["']/);
 });

@@ -1319,9 +1319,25 @@ async function verifyTelegramSafeAreaGeometry(browser, origin) {
 
 async function captureResponsiveMatrix(browser, origin) {
   const portalCss = await readFile(path.join(frontendRoot, "src/vpn-portal/portal.css"), "utf8");
+  const portalSource = await readFile(path.join(frontendRoot, "src/vpn-portal/Portal.tsx"), "utf8");
   const brandCss = await readFile(path.join(frontendRoot, "src/brand/veltrix-brand.css"), "utf8");
   assert.equal((portalCss.match(/@import\s+["']\.\.\/brand\/veltrix-brand\.css["']/g) || []).length, 1);
+  assert.doesNotMatch(portalSource, /import\s+["']\.\.\/brand\/veltrix-brand\.css["']/);
   assert.match(brandCss, /@supports not \(backdrop-filter:\s*blur\(1px\)\)[\s\S]*\.vx-glass/);
+
+  const cabinetHtml = await readFile(path.join(distRoot, "cabinet/index.html"), "utf8");
+  const cabinetCssHref = cabinetHtml.match(/<link[^>]+href="([^"]+\.css)"/)?.[1];
+  assert.ok(cabinetCssHref, "built cabinet page has no stylesheet");
+  const cabinetCssPath = path.join(
+    distRoot,
+    new URL(cabinetCssHref, "http://cabinet.test").pathname.replace(/^\/+/, ""),
+  );
+  const cabinetCss = await readFile(cabinetCssPath, "utf8");
+  assert.equal(
+    (cabinetCss.match(/\.vx-atmosphere\s*\{\s*background:\s*radial-gradient\(circle at 16% 8%/g) || []).length,
+    1,
+    "Veltrix brand CSS was emitted more than once",
+  );
 
   const installFixture = (page) => installApi(page, async (route, pathname, request) => {
     if (pathname.endsWith("/config")) return responseJson(route, portalConfig);

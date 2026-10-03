@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { VeltrixMark } from "../brand/VeltrixMark";
-import "../brand/veltrix-brand.css";
 import { PortalError, portalApi } from "./api";
 import {
   SessionGeneration,
