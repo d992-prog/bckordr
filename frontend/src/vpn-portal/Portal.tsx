@@ -9,6 +9,7 @@ import {
   type PortalBootstrapResult,
   type TelegramLaunch,
 } from "./bootstrap";
+import { DataError } from "./DataError";
 import PlanCatalog from "./PlanCatalog";
 import { PortalHome } from "./PortalHome";
 import { PortalNavigation } from "./PortalNavigation";
@@ -85,15 +86,6 @@ interface DataSectionProps {
   onRetry: () => void;
 }
 
-function DataError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <div className="card message message--error" role="alert">
-      <p>{message}</p>
-      <button className="button button--primary" onClick={onRetry}>Повторить</button>
-    </div>
-  );
-}
-
 interface ProfilesSectionProps extends DataSectionProps {
   profiles: PortalProfile[];
   subscriptions: PortalSubscription[];
@@ -114,7 +106,7 @@ interface ProfileOperation {
 function ProfilesSection(props: ProfilesSectionProps) {
   return (
     <section id="profiles" className="portal-section">
-      <div className="section-heading"><p className="eyebrow">Доступ</p><h2>Профили</h2></div>
+      <div className="section-heading"><p className="eyebrow">Доступ</p><h1>Профили</h1></div>
       {props.busy && <p className="card">Загружаем профили…</p>}
       {props.error && <DataError message={props.error} onRetry={props.onRetry} />}
       {!props.busy && !props.error && props.profiles.length === 0 && <p className="card">Профилей пока нет.</p>}
@@ -196,6 +188,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const [dataError, setDataError] = useState("");
   const [platform, setPlatform] = useState("iPhone");
   const [activeSection, setActiveSection] = useState<PortalSection>(() => portalSectionFromHash(window.location.hash));
+  const [activeAnchor, setActiveAnchor] = useState(() => window.location.hash.replace(/^#\/?/, "").split("?", 1)[0]);
   const [profileOperations, setProfileOperations] = useState<Record<number, ProfileOperation>>({});
   const sessionGeneration = useMemo(() => new SessionGeneration(), []);
   const logoutCsrf = useRef<string | null>(null);
@@ -442,6 +435,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
 
   useEffect(() => {
     const updateSection = () => {
+      setActiveAnchor(window.location.hash.replace(/^#\/?/, "").split("?", 1)[0]);
       const section = portalSectionFromHash(window.location.hash);
       setActiveSection(section);
     };
@@ -451,15 +445,14 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   }, []);
 
   useEffect(() => {
-    const anchorId = window.location.hash.replace(/^#\/?/, "").split("?", 1)[0];
-    if (!anchorId) {
+    if (!activeAnchor) {
       return;
     }
     const frame = window.requestAnimationFrame(() => {
-      document.getElementById(anchorId)?.scrollIntoView({ block: "start" });
+      document.getElementById(activeAnchor)?.scrollIntoView({ block: "start" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeSection]);
+  }, [activeAnchor, activeSection, dataBusy, me, plansBusy]);
 
   async function performLogout(csrf: string | null): Promise<void> {
     clearPrivateData("logging-out");
@@ -604,7 +597,12 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
             error={dataError}
             subscriptions={subscriptions}
             profiles={profiles}
+            plans={plans}
+            plansBusy={plansBusy}
+            plansError={plansError}
+            showPlans={activeAnchor === "plans"}
             onRetry={() => void loadPrivateData()}
+            onRetryPlans={() => void loadPlans()}
             trial={trial}
             trialBusy={trialBusy || dataBusy}
             trialError={trialError}

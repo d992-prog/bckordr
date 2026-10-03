@@ -107,6 +107,9 @@ async function newPortalPage(browser, options = {}) {
     colorScheme: options.colorScheme || "light",
   });
   const page = await context.newPage();
+  const diagnostics = [];
+  page.on("console", (message) => diagnostics.push(message.text()));
+  page.on("pageerror", (error) => diagnostics.push(error.message));
   const initData = options.initData || "";
   const platform = options.platform ?? (initData ? "android" : "unknown");
   const safeInsets = options.safeInsets || null;
@@ -118,7 +121,7 @@ async function newPortalPage(browser, options = {}) {
     contentType: "text/javascript",
     body: `window.Telegram={WebApp:{initData:${sdkInitData},platform:${JSON.stringify(platform)},ready(){},expand(){}}};${safeInsets ? `for(const [name,value] of Object.entries(${JSON.stringify(safeInsets)})){document.documentElement.style.setProperty(name,value+"px");}` : ""}`,
   }));
-  await page.addInitScript(({ seedCache, cacheData, removeClipboard, captureClipboard }) => {
+  await page.addInitScript(({ seedCache, cacheData, removeClipboard, captureClipboard, delayClipboard }) => {
     if (seedCache && sessionStorage.getItem("portal-qa-seeded") !== "yes") {
       sessionStorage.setItem("__telegram__initParams", JSON.stringify({
         tgWebAppData: cacheData,
@@ -135,7 +138,14 @@ async function newPortalPage(browser, options = {}) {
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
         value: {
-          writeText: async (value) => { window.__portalClipboardWrites.push(value); },
+          writeText: delayClipboard
+            ? (value) => new Promise((resolve) => {
+              window.__completePortalClipboard = () => {
+                window.__portalClipboardWrites.push(value);
+                resolve();
+              };
+            })
+            : async (value) => { window.__portalClipboardWrites.push(value); },
         },
       });
     }
@@ -144,8 +154,9 @@ async function newPortalPage(browser, options = {}) {
     cacheData: initData || "cached-secret",
     removeClipboard: options.removeClipboard ?? false,
     captureClipboard: options.captureClipboard ?? false,
+    delayClipboard: options.delayClipboard ?? false,
   });
-  return { context, page };
+  return { context, page, diagnostics };
 }
 
 async function installApi(page, handler, { trial = disabledTrial } = {}) {
@@ -167,8 +178,25 @@ function assertNoHorizontalOverflow(page) {
   });
 }
 
+async function assertSecretAbsent(page, diagnostics, secret) {
+  const exposure = await page.evaluate((needle) => {
+    const controls = [...document.querySelectorAll("input, textarea, select")];
+    const attributed = [...document.querySelectorAll("*")];
+    return {
+      html: document.documentElement.outerHTML.includes(needle),
+      control: controls.some((element) => element.value.includes(needle)),
+      attribute: attributed.some((element) => [...element.attributes].some((attribute) => (
+        (attribute.name === "href" || attribute.name === "src" || attribute.name.startsWith("data-"))
+        && attribute.value.includes(needle)
+      ))),
+    };
+  }, secret);
+  assert.deepEqual(exposure, { html: false, control: false, attribute: false });
+  assert.equal(diagnostics.some((message) => message.includes(secret)), false);
+}
+
 async function verifyFullPortal(browser, origin) {
-  const { context, page } = await newPortalPage(browser, { removeClipboard: true });
+  const { context, page, diagnostics } = await newPortalPage(browser, { removeClipboard: true });
   const calls = [];
   let renameCalls = 0;
   let connectionCalls = 0;
@@ -223,7 +251,11 @@ async function verifyFullPortal(browser, origin) {
 
   await page.getByRole("button", { name: "Скопировать ссылку" }).click();
   await page.getByText("Не удалось скопировать автоматически.").waitFor();
-  assert.equal((await page.locator("body").innerText()).includes("full-secret-1"), false);
+  await assertSecretAbsent(
+    page,
+    diagnostics,
+    "vless://full-secret-1@example.test:443?security=tls&very=long#iPhone",
+  );
 
   await page.getByRole("link", { name: "Инструкция" }).click();
   await page.getByRole("heading", { name: "Как подключиться" }).waitFor();
@@ -236,6 +268,7 @@ async function verifyFullPortal(browser, origin) {
   assert.equal(await page.getByText("<b>Это текст, не HTML.</b>").count(), 1);
   assert.equal(await page.locator("#help b").count(), 0);
   await page.locator('.portal-nav a[href="#profiles"]').click();
+  await page.getByRole("heading", { name: "Профили", exact: true }).waitFor();
   await page.getByText("Подключение для этого профиля пока недоступно.").waitFor();
   await page.getByText(/Veltrix VPN ·/).first().waitFor();
 
@@ -266,6 +299,95 @@ async function verifyFullPortal(browser, origin) {
   await firstProfile.getByText("Не удалось выполнить запрос.").waitFor();
 
   await page.screenshot({ path: path.join(outputRoot, "portal-390-light.png"), fullPage: true });
+  await context.close();
+}
+
+async function verifyInitialPortalStates(browser, origin) {
+  {
+    const { context, page } = await newPortalPage(browser);
+    let pendingSubscriptions;
+    let pendingProfiles;
+    await installApi(page, async (route, pathname) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/plans")) return responseJson(route, []);
+      if (pathname.endsWith("/subscriptions")) { pendingSubscriptions = route; return; }
+      if (pathname.endsWith("/profiles")) { pendingProfiles = route; return; }
+      return responseJson(route, {}, 404);
+    });
+
+    await page.goto(`${origin}/cabinet/`);
+    await page.getByRole("heading", { name: "Загружаем данные" }).waitFor();
+    assert.equal(await page.getByText("Нет доступа", { exact: true }).count(), 0);
+    assert.equal(await page.getByRole("heading", { name: "VPN‑профиля пока нет" }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Получить 7 дней" }).count(), 0);
+    assert.ok(pendingSubscriptions);
+    assert.ok(pendingProfiles);
+    await responseJson(pendingSubscriptions, subscriptions.slice(0, 1));
+    await responseJson(pendingProfiles, profiles.slice(0, 1));
+    await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
+    await context.close();
+  }
+
+  {
+    const { context, page } = await newPortalPage(browser);
+    let failData = true;
+    await installApi(page, async (route, pathname) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/plans")) return responseJson(route, []);
+      if (pathname.endsWith("/subscriptions") || pathname.endsWith("/profiles")) {
+        return failData ? responseJson(route, {}, 500) : responseJson(route, []);
+      }
+      return responseJson(route, {}, 404);
+    });
+
+    await page.goto(`${origin}/cabinet/`);
+    await page.getByRole("heading", { name: "Не удалось загрузить данные" }).waitFor();
+    assert.equal(await page.getByRole("heading", { name: "VPN‑профиля пока нет" }).count(), 0);
+    assert.equal(await page.getByText("Нет доступа", { exact: true }).count(), 0);
+    failData = false;
+    await page.getByRole("button", { name: "Повторить" }).click();
+    await page.getByRole("heading", { name: "Пробный доступ недоступен" }).waitFor();
+    await context.close();
+  }
+}
+
+async function verifyLegacyPlansRoute(browser, origin) {
+  const { context, page } = await newPortalPage(browser);
+  await installApi(page, async (route, pathname) => {
+    if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+    if (pathname.endsWith("/me")) return responseJson(route, me);
+    if (pathname.endsWith("/plans")) {
+      return responseJson(route, [{
+        id: 71,
+        name: "Базовый",
+        description: "Для одного устройства",
+        duration_days: 30,
+        max_devices: 1,
+        traffic_limit_gb: null,
+        price_amount: "299.00",
+        currency: "RUB",
+        is_trial: false,
+      }]);
+    }
+    if (pathname.endsWith("/subscriptions") || pathname.endsWith("/profiles")) {
+      return responseJson(route, []);
+    }
+    return responseJson(route, {}, 404);
+  }, { trial: { ...disabledTrial, state: "used" } });
+
+  await page.goto(`${origin}/cabinet/#home`);
+  await page.getByRole("link", { name: "Посмотреть тарифы" }).click();
+  await page.getByRole("heading", { name: "Тарифы", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).hash, "#plans");
+  assert.equal(await page.locator("#plans").count(), 1);
+  assert.equal(await page.locator('.portal-nav a[href="#home"][aria-current="page"]').count(), 1);
+  await page.getByRole("heading", { name: "Базовый" }).waitFor();
+  await page.waitForFunction(() => {
+    const plansSection = document.getElementById("plans");
+    return plansSection !== null && plansSection.getBoundingClientRect().top < window.innerHeight;
+  });
   await context.close();
 }
 
@@ -477,7 +599,7 @@ async function verifyMiniAppStates(browser, origin) {
 
 async function verifySessionInvalidation(browser, origin) {
   {
-    const { context, page } = await newPortalPage(browser, { captureClipboard: true });
+    const { context, page, diagnostics } = await newPortalPage(browser, { captureClipboard: true });
     await installApi(page, async (route, pathname) => {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
@@ -494,12 +616,12 @@ async function verifySessionInvalidation(browser, origin) {
       await page.evaluate(() => window.__portalClipboardWrites),
       ["vless://quick-copy-secret"],
     );
-    assert.equal((await page.locator("body").innerText()).includes("quick-copy-secret"), false);
+    await assertSecretAbsent(page, diagnostics, "vless://quick-copy-secret");
     await context.close();
   }
 
   {
-    const { context, page } = await newPortalPage(browser, { captureClipboard: true });
+    const { context, page, diagnostics } = await newPortalPage(browser, { captureClipboard: true });
     let pendingConnection;
     await installApi(page, async (route, pathname) => {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
@@ -523,7 +645,79 @@ async function verifySessionInvalidation(browser, origin) {
     await responseJson(pendingConnection, { uri: "vless://must-never-copy" });
     await page.waitForTimeout(100);
     assert.deepEqual(await page.evaluate(() => window.__portalClipboardWrites), []);
-    assert.equal((await page.locator("body").innerText()).includes("must-never-copy"), false);
+    await assertSecretAbsent(page, diagnostics, "vless://must-never-copy");
+    await context.close();
+  }
+
+  {
+    const { context, page, diagnostics } = await newPortalPage(browser, { captureClipboard: true });
+    await installApi(page, async (route, pathname) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
+      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/connection")) return responseJson(route, {}, 401);
+      return responseJson(route, {}, 404);
+    });
+    await page.goto(`${origin}/cabinet/`);
+    await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
+    await page.getByRole("button", { name: "Скопировать ссылку" }).click();
+    await page.getByRole("heading", { name: "Сессия завершена" }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.__portalClipboardWrites), []);
+    await assertSecretAbsent(page, diagnostics, "vless://");
+    await context.close();
+  }
+
+  {
+    const { context, page, diagnostics } = await newPortalPage(browser, { captureClipboard: true });
+    let pendingConnection;
+    await installApi(page, async (route, pathname) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
+      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/connection")) { pendingConnection = route; return; }
+      return responseJson(route, {}, 404);
+    });
+    await page.goto(`${origin}/cabinet/`);
+    await page.getByRole("button", { name: "Скопировать ссылку" }).click();
+    await page.getByRole("button", { name: "Копируем…" }).waitFor();
+    await page.locator('.portal-nav a[href="#account"]').click();
+    await page.getByRole("heading", { name: "Аккаунт" }).waitFor();
+    assert.ok(pendingConnection);
+    await responseJson(pendingConnection, { uri: "vless://must-not-survive-home-unmount" });
+    await page.waitForTimeout(100);
+    assert.deepEqual(await page.evaluate(() => window.__portalClipboardWrites), []);
+    await assertSecretAbsent(page, diagnostics, "vless://must-not-survive-home-unmount");
+    await context.close();
+  }
+
+  {
+    const { context, page, diagnostics } = await newPortalPage(browser, {
+      captureClipboard: true,
+      delayClipboard: true,
+    });
+    await installApi(page, async (route, pathname) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
+      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/connection")) return responseJson(route, { uri: "vless://delayed-clipboard-secret" });
+      if (pathname.endsWith("/logout")) return responseJson(route, { logged_out: true });
+      return responseJson(route, {}, 404);
+    });
+    await page.goto(`${origin}/cabinet/`);
+    await page.getByRole("button", { name: "Скопировать ссылку" }).click();
+    await page.waitForFunction(() => typeof window.__completePortalClipboard === "function");
+    await page.getByRole("button", { name: "Выйти", exact: true }).click();
+    await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
+    await page.evaluate(() => window.__completePortalClipboard());
+    await page.waitForTimeout(100);
+    assert.deepEqual(await page.evaluate(() => window.__portalClipboardWrites), [
+      "vless://delayed-clipboard-secret",
+    ]);
+    assert.equal(await page.getByText("Ссылка скопирована", { exact: true }).count(), 0);
+    await assertSecretAbsent(page, diagnostics, "vless://delayed-clipboard-secret");
     await context.close();
   }
 
@@ -547,7 +741,7 @@ async function verifySessionInvalidation(browser, origin) {
   }
 
   {
-    const { context, page } = await newPortalPage(browser);
+    const { context, page, diagnostics } = await newPortalPage(browser);
     let pendingConnection;
     await installApi(page, async (route, pathname) => {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
@@ -571,7 +765,7 @@ async function verifySessionInvalidation(browser, origin) {
     assert.ok(pendingConnection);
     await responseJson(pendingConnection, { uri: "vless://must-never-render" });
     await page.waitForTimeout(100);
-    assert.equal((await page.locator("body").innerText()).includes("must-never-render"), false);
+    await assertSecretAbsent(page, diagnostics, "vless://must-never-render");
     await context.close();
   }
 
@@ -601,7 +795,7 @@ async function verifySessionInvalidation(browser, origin) {
 
 async function verifyProfileRequestRaces(browser, origin) {
   {
-    const { context, page } = await newPortalPage(browser);
+    const { context, page, diagnostics } = await newPortalPage(browser);
     let pendingConnection;
     await installApi(page, async (route, pathname, request) => {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
@@ -626,6 +820,7 @@ async function verifyProfileRequestRaces(browser, origin) {
     await responseJson(pendingConnection, { uri: "vless://obsolete-after-rename" });
     await page.waitForTimeout(100);
     assert.equal(await card.locator("textarea").count(), 0);
+    await assertSecretAbsent(page, diagnostics, "vless://obsolete-after-rename");
     await context.close();
   }
 
@@ -759,7 +954,7 @@ async function verifyRenameAcrossHashRemount(browser, origin) {
   }
 
   {
-    const { context, page } = await newPortalPage(browser);
+    const { context, page, diagnostics } = await newPortalPage(browser);
     let pendingConnection;
     let pendingRename;
     await installApi(page, async (route, pathname, request) => {
@@ -788,6 +983,7 @@ async function verifyRenameAcrossHashRemount(browser, origin) {
     await card.getByRole("heading", { name: "Ещё имя" }).waitFor();
     await page.waitForTimeout(100);
     assert.equal(await card.locator("textarea").count(), 0);
+    await assertSecretAbsent(page, diagnostics, "vless://obsolete-pending-reveal");
     await context.close();
   }
 }
@@ -1071,6 +1267,8 @@ const browser = await chromium.launch({
 
 try {
   await verifyFullPortal(browser, server.origin);
+  await verifyInitialPortalStates(browser, server.origin);
+  await verifyLegacyPlansRoute(browser, server.origin);
   await verifyPublicTrialFlow(browser, server.origin);
   await verifyMiniAppStates(browser, server.origin);
   await verifySessionInvalidation(browser, server.origin);

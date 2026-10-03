@@ -3,9 +3,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { PortalError } from "./api";
 import type { SessionGeneration } from "./bootstrap";
 import { copyConnectionUri, loadConnectionUri } from "./connection";
+import { DataError } from "./DataError";
 import { buildPortalHomeView } from "./homeView";
+import PlanCatalog from "./PlanCatalog";
 import TrialCard from "./TrialCard";
-import type { PortalProfile, PortalSubscription, PortalTrial } from "./types";
+import type { PortalPlan, PortalProfile, PortalSubscription, PortalTrial } from "./types";
 import { portalDate, stateLabel } from "./view";
 
 interface PortalHomeProps {
@@ -13,11 +15,16 @@ interface PortalHomeProps {
   error: string;
   subscriptions: PortalSubscription[];
   profiles: PortalProfile[];
+  plans: PortalPlan[];
+  plansBusy: boolean;
+  plansError: string;
+  showPlans: boolean;
   trial: PortalTrial | null;
   trialBusy: boolean;
   trialError: string;
   sessionGeneration: SessionGeneration;
   onRetry: () => void;
+  onRetryPlans: () => void;
   onActivateTrial: () => void;
   onRefreshTrial: () => void;
   onUnauthorized: () => void;
@@ -30,15 +37,6 @@ const STATUS_BADGES = {
   expired: "Срок закончился",
   empty: "Нет доступа",
 } as const;
-
-function DataError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <div className="card message message--error" role="alert">
-      <p>{message}</p>
-      <button className="button button--primary" onClick={onRetry}>Повторить</button>
-    </div>
-  );
-}
 
 function AccessSummary({
   busy,
@@ -112,6 +110,15 @@ export function PortalHome(props: PortalHomeProps) {
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyMessage, setCopyMessage] = useState("");
   const copyEpoch = useRef(0);
+  const awaitingFirstLoad = props.busy
+    && props.subscriptions.length === 0
+    && props.profiles.length === 0
+    && props.trial === null;
+  const failedFirstLoad = !props.busy
+    && Boolean(props.error)
+    && props.subscriptions.length === 0
+    && props.profiles.length === 0
+    && props.trial === null;
 
   useEffect(() => {
     copyEpoch.current += 1;
@@ -161,42 +168,67 @@ export function PortalHome(props: PortalHomeProps) {
 
   return (
     <section id="home" className="portal-home">
-      <div
-        className={`portal-status-lens portal-status-lens--${view.kind}`}
-        aria-live="polite"
-      >
-        <span className="portal-status-lens__badge">{STATUS_BADGES[view.kind]}</span>
-        <h1>{view.title}</h1>
-        <p>{view.detail}</p>
-      </div>
-      {view.profileId !== null && (
-        <a className="portal-primary button button--primary vx-glass" href="#profiles">
-          Открыть профиль <span aria-hidden="true">→</span>
-        </a>
+      {awaitingFirstLoad ? (
+        <div className="portal-status-lens portal-status-lens--neutral" role="status">
+          <span className="portal-status-lens__badge">Загрузка</span>
+          <h1>Загружаем данные</h1>
+          <p>Получаем подписку и VPN‑профили</p>
+        </div>
+      ) : failedFirstLoad ? (
+        <div className="portal-status-lens portal-status-lens--error" role="alert">
+          <span className="portal-status-lens__badge">Ошибка загрузки</span>
+          <h1>Не удалось загрузить данные</h1>
+          <p>Попробуйте ещё раз</p>
+          <button className="button button--primary" onClick={props.onRetry}>Повторить</button>
+        </div>
+      ) : (
+        <>
+          <div
+            className={`portal-status-lens portal-status-lens--${view.kind}`}
+            aria-live="polite"
+          >
+            <span className="portal-status-lens__badge">{STATUS_BADGES[view.kind]}</span>
+            <h1>{view.title}</h1>
+            <p>{view.detail}</p>
+          </div>
+          {view.profileId !== null && (
+            <a className="portal-primary button button--primary vx-glass" href="#profiles">
+              Открыть профиль <span aria-hidden="true">→</span>
+            </a>
+          )}
+          <section className="portal-actions" aria-labelledby="quick-actions-title">
+            <h2 id="quick-actions-title">Быстрые действия</h2>
+            <button
+              className="button button--primary"
+              disabled={view.profileId === null || copyBusy}
+              onClick={() => void copyProfile(view.profileId)}
+            >
+              {copyBusy ? "Копируем…" : "Скопировать ссылку"}
+            </button>
+            <a className="button button--ghost" href="#connect">Инструкция</a>
+            {copyMessage && <p className="message" role="status">{copyMessage}</p>}
+          </section>
+          <AccessSummary
+            busy={props.busy}
+            error={props.error}
+            subscriptions={props.subscriptions}
+            trial={props.trial}
+            trialBusy={props.trialBusy}
+            trialError={props.trialError}
+            onRetry={props.onRetry}
+            onActivateTrial={props.onActivateTrial}
+            onRefreshTrial={props.onRefreshTrial}
+          />
+        </>
       )}
-      <section className="portal-actions" aria-labelledby="quick-actions-title">
-        <h2 id="quick-actions-title">Быстрые действия</h2>
-        <button
-          className="button button--primary"
-          disabled={view.profileId === null || copyBusy}
-          onClick={() => void copyProfile(view.profileId)}
-        >
-          {copyBusy ? "Копируем…" : "Скопировать ссылку"}
-        </button>
-        <a className="button button--ghost" href="#connect">Инструкция</a>
-        {copyMessage && <p className="message" role="status">{copyMessage}</p>}
-      </section>
-      <AccessSummary
-        busy={props.busy}
-        error={props.error}
-        subscriptions={props.subscriptions}
-        trial={props.trial}
-        trialBusy={props.trialBusy}
-        trialError={props.trialError}
-        onRetry={props.onRetry}
-        onActivateTrial={props.onActivateTrial}
-        onRefreshTrial={props.onRefreshTrial}
-      />
+      {props.showPlans && (
+        <PlanCatalog
+          plans={props.plans}
+          busy={props.plansBusy}
+          error={props.plansError}
+          onRetry={props.onRetryPlans}
+        />
+      )}
     </section>
   );
 }
