@@ -522,15 +522,23 @@ async function verifyMiniAppStates(browser, origin) {
     });
     await page.goto(`${origin}/cabinet/#profiles`);
     await page.getByRole("heading", { name: "Профили", exact: true }).waitFor();
+    await page.locator('.portal-nav a[href="#account"]').click();
+    await page.getByRole("heading", { name: "Аккаунт" }).waitFor();
+    await page.getByText("Bob", { exact: true }).waitFor();
     assert.deepEqual(calls.slice(0, 3), [
       "/api/vpn-portal/config",
       "/api/vpn-portal/auth/mini-app",
       "/api/vpn-portal/me",
     ]);
     assert.equal(page.url().includes("tgWebApp"), false);
+    await page.locator('.portal-nav a[href="#profiles"]').click();
+    await page.getByRole("heading", { name: "Профили", exact: true }).waitFor();
     calls.length = 0;
     await page.reload();
     await page.getByRole("heading", { name: "Профили", exact: true }).waitFor();
+    await page.locator('.portal-nav a[href="#account"]').click();
+    await page.getByRole("heading", { name: "Аккаунт" }).waitFor();
+    await page.getByText("Bob", { exact: true }).waitFor();
     assert.deepEqual(calls.slice(0, 2), [
       "/api/vpn-portal/config",
       "/api/vpn-portal/me",
@@ -741,6 +749,9 @@ async function verifySessionInvalidation(browser, origin) {
     });
     await page.goto(`${origin}/cabinet/`);
     await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
+    await page.locator('.portal-nav a[href="#account"]').click();
+    await page.getByRole("heading", { name: "Аккаунт" }).waitFor();
+    await page.getByText("Анна Ветрова", { exact: true }).waitFor();
     await page.locator('.portal-nav a[href="#profiles"]').click();
     await page.getByRole("button", { name: "Показать ссылку" }).click();
     await page.getByRole("heading", { name: "Сессия завершена" }).waitFor();
