@@ -399,6 +399,9 @@ def test_worker_vpn_install_is_pinned_private_and_normalizes_xray_ownership():
         assert "8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40" in compatibility
         assert "xray-linux-amd64.before-veltrix-26.7.28" in compatibility
         assert "Xray 26.7.28" in compatibility
+        assert "version | grep -Eq" not in compatibility
+        assert 'version=$("$binary" version)' in compatibility
+        assert 'version=$("$staged" version)' in compatibility
 
     install_index = next(index for index, command in enumerate(commands) if "3x-ui-install.sh" in command)
     normalize_index = next(index for index, command in enumerate(commands) if "xray-path-ownership.before" in command)
