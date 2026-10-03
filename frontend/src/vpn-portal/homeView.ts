@@ -106,19 +106,6 @@ export function buildPortalHomeView(
     };
   }
 
-  const scheduledSubscription = selectRelevantSubscription(
-    subscriptions.filter(({ state }) => state === "scheduled"),
-    profiles,
-  );
-  if (scheduledSubscription) {
-    return {
-      kind: "preparing",
-      title: "Доступ начнётся позже",
-      detail: scheduledDetail(scheduledSubscription.starts_at),
-      profileId: null,
-    };
-  }
-
   if (trial?.state === "active") {
     return {
       kind: "preparing",
@@ -133,6 +120,19 @@ export function buildPortalHomeView(
       kind: "preparing",
       title: "Профиль готовится",
       detail: "Это может занять несколько минут",
+      profileId: null,
+    };
+  }
+
+  const scheduledSubscription = selectRelevantSubscription(
+    subscriptions.filter(({ state }) => state === "scheduled"),
+    profiles,
+  );
+  if (scheduledSubscription) {
+    return {
+      kind: "preparing",
+      title: "Доступ начнётся позже",
+      detail: scheduledDetail(scheduledSubscription.starts_at),
       profileId: null,
     };
   }

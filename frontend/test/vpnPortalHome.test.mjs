@@ -245,6 +245,23 @@ test("reports scheduled access with a safe start date", () => {
   }
 });
 
+test("keeps a preparing trial ahead of scheduled access", () => {
+  const view = buildPortalHomeView([
+    {
+      ...activeSubscription,
+      state: "scheduled",
+      starts_at: "2026-12-10T00:00:00Z",
+    },
+  ], [], trial("preparing"));
+
+  assert.deepEqual(view, {
+    kind: "preparing",
+    title: "Профиль готовится",
+    detail: "Это может занять несколько минут",
+    profileId: null,
+  });
+});
+
 test("scheduled access outranks a terminal subscription with an inactive profile", () => {
   const scheduled = {
     ...activeSubscription,
