@@ -27,7 +27,7 @@ def _request(**overrides: object) -> dict[str, object]:
         "action": "ensure",
         "worker_id": 15,
         "public_host": "vpn.example.test",
-        "server_name": "front.example.test",
+        "server_name": "gateway.icloud.com",
         "short_id": "0123456789abcdef",
     }
     value.update(overrides)
@@ -43,7 +43,7 @@ def test_request_contract_is_frozen_and_policy_is_not_caller_controlled() -> Non
         "action": "ensure",
         "worker_id": 15,
         "public_host": "vpn.example.test",
-        "server_name": "front.example.test",
+        "server_name": "gateway.icloud.com",
         "short_id": "0123456789abcdef",
         "inbound_id": None,
         "receipt_digest": None,
@@ -69,7 +69,7 @@ def test_request_contract_is_frozen_and_policy_is_not_caller_controlled() -> Non
         _request(public_host="https://vpn.example.test"),
         _request(public_host="vpn.example.test/path"),
         _request(public_host="vpn.example.test."),
-        _request(server_name=" front.example.test"),
+        _request(server_name=" gateway.icloud.com"),
         _request(short_id="ABCDEF"),
         _request(short_id="abc"),
         _request(action="remove"),
@@ -81,6 +81,16 @@ def test_request_parser_rejects_noncanonical_or_action_inconsistent_values(value
 
     with pytest.raises(module.EndpointInstallError, match="^vpn_endpoint_install_request_invalid$"):
         module.parse_install_request(value)
+
+
+def test_request_parser_rejects_known_unstable_reality_target() -> None:
+    module = _module()
+
+    with pytest.raises(
+        module.EndpointInstallError,
+        match="^vpn_endpoint_install_request_invalid$",
+    ):
+        module.parse_install_request(_request(server_name="www.microsoft.com"))
 
 
 def test_remove_requires_exact_inbound_and_receipt_digest() -> None:
@@ -106,7 +116,7 @@ def test_request_encoding_is_canonical_and_round_trips_exactly() -> None:
 
     assert encoded == (
         b'{"version":1,"action":"inspect","worker_id":15,'
-        b'"public_host":"vpn.example.test","server_name":"front.example.test",'
+        b'"public_host":"vpn.example.test","server_name":"gateway.icloud.com",'
         b'"short_id":"0123456789abcdef"}\n'
     )
     assert module.parse_install_request(module._json_object(encoded)) == request
@@ -117,7 +127,7 @@ def _typed_request(module, worker_id):
         action="inspect",
         worker_id=worker_id,
         public_host="vpn.example.test",
-        server_name="front.example.test",
+        server_name="gateway.icloud.com",
         short_id="0123456789abcdef",
     )
 
@@ -230,7 +240,7 @@ def test_public_receipt_is_canonical_bounded_and_self_authenticating() -> None:
         worker_id=15,
         inbound_id=27,
         public_host="vpn.example.test",
-        server_name="front.example.test",
+        server_name="gateway.icloud.com",
         public_key=PUBLIC_KEY,
         short_id="0123456789abcdef",
     )
@@ -312,7 +322,7 @@ class FakePanel:
 
 def _exact_row(module, *, clients: list[dict] | None = None) -> dict:
     return module._inbound_payload(
-        server_name="front.example.test",
+        server_name="gateway.icloud.com",
         short_id="0123456789abcdef",
         private_key=PRIVATE_KEY,
         public_key=PUBLIC_KEY,
@@ -342,7 +352,7 @@ def test_ensure_creates_exact_empty_reality_inbound_and_never_exports_private_ke
     mutation = next(event for event in panel.events if event[1] == "panel/api/inbounds/add")
     assert mutation[0::3] == ("POST", True)
     assert mutation[2] == module._inbound_payload(
-        server_name="front.example.test",
+        server_name="gateway.icloud.com",
         short_id="0123456789abcdef",
         private_key=PRIVATE_KEY,
         public_key=PUBLIC_KEY,
@@ -351,7 +361,23 @@ def test_ensure_creates_exact_empty_reality_inbound_and_never_exports_private_ke
     assert mutation[2]["settings"]["clients"] == []
     assert mutation[2]["streamSettings"]["network"] == "tcp"
     assert mutation[2]["streamSettings"]["security"] == "reality"
-    assert mutation[2]["streamSettings"]["realitySettings"]["target"] == "front.example.test:443"
+    assert mutation[2]["streamSettings"]["realitySettings"]["target"] == "gateway.icloud.com:443"
+
+
+def test_inbound_payload_sets_hiddify_compatible_reality_policy() -> None:
+    module = _module()
+
+    payload = module._inbound_payload(
+        server_name="gateway.icloud.com",
+        short_id="0123456789abcdef",
+        private_key=PRIVATE_KEY,
+        public_key=PUBLIC_KEY,
+    )
+    reality = payload["streamSettings"]["realitySettings"]
+
+    assert reality["target"] == "gateway.icloud.com:443"
+    assert reality["serverNames"] == ["gateway.icloud.com"]
+    assert reality["minClientVer"] == "1.0.0"
 
 
 def test_ensure_is_idempotent_only_for_exact_empty_endpoint(monkeypatch) -> None:
@@ -427,7 +453,7 @@ def test_guarded_inverse_refuses_any_client_and_preserves_inbound(monkeypatch) -
     _mock_complete_inventory(module, monkeypatch, panel)
     observed = module.make_endpoint_receipt(
         state="observed", worker_id=15, inbound_id=27, public_host="vpn.example.test",
-        server_name="front.example.test", public_key=PUBLIC_KEY, short_id="0123456789abcdef",
+        server_name="gateway.icloud.com", public_key=PUBLIC_KEY, short_id="0123456789abcdef",
     )
     request = module.parse_install_request(_request(action="remove", inbound_id=27, receipt_digest=observed.receipt_digest))
 
@@ -445,7 +471,7 @@ def test_guarded_inverse_deletes_only_exact_empty_443_and_preserves_owner_8443(m
     _mock_complete_inventory(module, monkeypatch, panel)
     observed = module.make_endpoint_receipt(
         state="observed", worker_id=15, inbound_id=27, public_host="vpn.example.test",
-        server_name="front.example.test", public_key=PUBLIC_KEY, short_id="0123456789abcdef",
+        server_name="gateway.icloud.com", public_key=PUBLIC_KEY, short_id="0123456789abcdef",
     )
 
     removed = module.execute_endpoint_action(
@@ -469,7 +495,7 @@ def test_disposable_acceptance_client_add_and_exact_cleanup_never_echo_identity(
     _mock_complete_inventory(module, monkeypatch, panel)
     endpoint = module.make_endpoint_receipt(
         state="observed", worker_id=15, inbound_id=27, public_host="vpn.example.test",
-        server_name="front.example.test", public_key=PUBLIC_KEY, short_id="0123456789abcdef",
+        server_name="gateway.icloud.com", public_key=PUBLIC_KEY, short_id="0123456789abcdef",
     )
     common = {
         "inbound_id": 27,
@@ -533,7 +559,7 @@ def test_acceptance_client_waits_for_eventually_consistent_panel_inventory(monke
     _mock_complete_inventory(module, monkeypatch, panel)
     endpoint = module.make_endpoint_receipt(
         state="observed", worker_id=15, inbound_id=27,
-        public_host="vpn.example.test", server_name="front.example.test",
+        public_host="vpn.example.test", server_name="gateway.icloud.com",
         public_key=PUBLIC_KEY, short_id="0123456789abcdef",
     )
     request = module.parse_install_request(
@@ -595,7 +621,7 @@ def test_acceptance_client_removal_waits_for_eventually_consistent_panel_invento
     _mock_complete_inventory(module, monkeypatch, panel)
     endpoint = module.make_endpoint_receipt(
         state="observed", worker_id=15, inbound_id=27,
-        public_host="vpn.example.test", server_name="front.example.test",
+        public_host="vpn.example.test", server_name="gateway.icloud.com",
         public_key=PUBLIC_KEY, short_id="0123456789abcdef",
     )
     request = module.parse_install_request(

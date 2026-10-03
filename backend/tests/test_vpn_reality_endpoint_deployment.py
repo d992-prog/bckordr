@@ -35,7 +35,7 @@ def _request(action="inspect", **overrides):
         "action": action,
         "worker_id": 15,
         "public_host": "vpn.example.test",
-        "server_name": "front.example.test",
+        "server_name": "gateway.icloud.com",
         "short_id": "0123456789abcdef",
     }
     value.update(overrides)
@@ -47,7 +47,7 @@ def _worker_2_request(action="inspect"):
         action=action,
         worker_id=2,
         public_host="vpn.example.test",
-        server_name="front.example.test",
+        server_name="gateway.icloud.com",
         short_id="0123456789abcdef",
     )
 
@@ -58,7 +58,7 @@ def _receipt(state="observed", *, worker_id=15):
         worker_id=worker_id,
         inbound_id=27,
         public_host="vpn.example.test",
-        server_name="front.example.test",
+        server_name="gateway.icloud.com",
         public_key=PUBLIC_KEY,
         short_id="0123456789abcdef",
     )
@@ -152,7 +152,7 @@ def test_endpoint_candidate_bundle_is_bound_to_worker_id(
             "action": "inspect",
             "worker_id": 2,
             "public_host": "vpn.example.test",
-            "server_name": "front.example.test",
+            "server_name": "gateway.icloud.com",
             "short_id": "0123456789abcdef",
         }
         assert installer.parse_install_request(worker_2_request).worker_id == 2
