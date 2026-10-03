@@ -10,7 +10,7 @@
   --vx-radius-control: 18px;
   --vx-radius-card: 28px;
   --vx-radius-lens: 44px;
-  /* Measured reference: Moderustic 700 at 56px; use it when locally available, otherwise use the measured system fallback. */
+  /* Moderustic is the measured match when locally available; otherwise use the system fallback. */
   --vx-font-display: "Moderustic", "Avenir Next", "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --vx-hero-title-size: 56px;
   --vx-hero-weight: 700;
