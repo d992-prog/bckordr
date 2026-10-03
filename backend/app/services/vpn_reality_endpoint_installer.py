@@ -41,6 +41,8 @@ TRANSPORT = "tcp"
 SECURITY = "reality"
 FINGERPRINT = "chrome"
 FLOW = "xtls-rprx-vision"
+REALITY_SERVER_NAME = "gateway.icloud.com"
+MIN_CLIENT_VERSION = "1.0.0"
 CONTROLLED_WORKER_ID = 15
 REMARK = "veltrix-protected-reality-v1"
 TAG = "veltrix-reality-443"
@@ -382,11 +384,14 @@ def parse_install_request(
         or worker_id != expected_worker_id
     ):
         _fail("vpn_endpoint_install_request_invalid")
+    server_name = _host(value["server_name"])
+    if server_name != REALITY_SERVER_NAME:
+        _fail("vpn_endpoint_install_request_invalid")
     return EndpointInstallRequest(
         action,
         worker_id,
         _host(value["public_host"]),
-        _host(value["server_name"]),
+        server_name,
         _short_id(value["short_id"]),
         inbound_id,
         receipt_digest,
@@ -643,7 +648,7 @@ def _inbound_payload(
                 "target": f"{server_name}:443",
                 "serverNames": [server_name],
                 "privateKey": private_key,
-                "minClientVer": "",
+                "minClientVer": MIN_CLIENT_VERSION,
                 "maxClientVer": "",
                 "maxTimediff": 0,
                 "shortIds": [short_id],
