@@ -1,0 +1,13 @@
+{
+  "regionId": "atmosphere",
+  "asset": "atmosphere.png",
+  "createdAt": "2026-10-03T16:17:08.6683110Z",
+  "sourceTool": "OpenAI built-in image_gen",
+  "sourceModel": "not exposed by tool",
+  "reference": ".impeccable/build/inspect-atmosphere.png",
+  "prompt": "Use the provided crop as the approved visual reference and recreate it as a clean production asset at the target aspect ratio. This is a seamless surface texture. Output a tileable texture plate with no objects, no text, no vignette. Preserve silhouette, composition, perspective, palette (#e6f2f8, #badaf8, #69a0f8), lighting, material, and texture exactly. Remove every piece of UI text, label, caption, button, and interface chrome that is not part of the artwork itself. Remove letterboxing, borders, card corners, drop shadows, and any layout background that the page will draw in code. Do not add objects. Do not change the concept. Do not restyle. The artwork fills the whole frame edge to edge at the same scale as the reference; no margins, no border, no background band. Region: Clean sample of the pearl-blue atmospheric field with its iridescent light streak and no foreground ink.",
+  "background": "opaque",
+  "dimensions": { "width": 710, "height": 1536 },
+  "approved": true,
+  "inspection": "Matched the measured pearl-blue ground and subtle diagonal light streak; opaque RGB plate with no UI or text."
+}

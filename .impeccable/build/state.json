@@ -6,7 +6,7 @@
   "direction": "1a448fec",
   "breakpoint": "853x1844",
   "artifact": null,
-  "phase": "plates",
+  "phase": "hero",
   "phases": {
     "comps": {
       "status": "skipped",
@@ -37,17 +37,22 @@
       "forced": null
     },
     "plates": {
-      "status": "open",
+      "status": "closed",
       "openedAt": "2026-10-03T15:54:57.907Z",
-      "closedAt": null,
-      "attempts": 0,
+      "closedAt": "2026-10-03T16:24:29.457Z",
+      "attempts": 2,
       "notes": [],
-      "gate": null,
+      "gate": {
+        "ok": true,
+        "reasons": [],
+        "summary": "4/4 plates",
+        "at": "2026-10-03T16:24:29.457Z"
+      },
       "forced": null
     },
     "hero": {
-      "status": "pending",
-      "openedAt": null,
+      "status": "open",
+      "openedAt": "2026-10-03T16:24:29.457Z",
       "closedAt": null,
       "attempts": 0,
       "notes": [],
@@ -91,5 +96,27 @@
       "forced": null
     }
   },
-  "finish": null
+  "finish": null,
+  "plates": {
+    "atmosphere": {
+      "status": "ok",
+      "score": 0.9708,
+      "size": "710x1536"
+    },
+    "brand-mark": {
+      "status": "ok",
+      "score": 0.6075,
+      "size": "1114x1199"
+    },
+    "status-lens": {
+      "status": "ok",
+      "score": 0.697,
+      "size": "1631x964"
+    },
+    "signal-orb": {
+      "status": "ok",
+      "score": 0.7226,
+      "size": "1254x1185"
+    }
+  }
 }

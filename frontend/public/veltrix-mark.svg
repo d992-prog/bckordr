@@ -1,5 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">
-  <rect width="64" height="64" rx="17" fill="#eef4fa"/>
   <g style="mix-blend-mode:multiply">
     <ellipse cx="32" cy="20" rx="12" ry="20" transform="rotate(8 32 20)" fill="#256dff"/>
     <ellipse cx="23" cy="36" rx="11" ry="19" transform="rotate(-48 23 36)" fill="#72e2c0"/>

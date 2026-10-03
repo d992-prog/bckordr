@@ -1,0 +1,13 @@
+{
+  "regionId": "brand-mark",
+  "asset": "brand-mark.png",
+  "createdAt": "2026-10-03T16:17:08.6683110Z",
+  "sourceTool": "OpenAI built-in image_gen",
+  "sourceModel": "not exposed by tool",
+  "reference": ".impeccable/build/inspect-brand-mark.png",
+  "prompt": "Use the provided crop as the approved visual reference and recreate it as a clean production asset at the target aspect ratio. This is a designed illustration plate. Output the same drawing, same style, same line weight and shading. Preserve silhouette, composition, perspective, palette (#e6f2f8, #badaf8, #69a0f8), lighting, material, and texture exactly. Remove every piece of UI text, label, caption, button, and interface chrome that is not part of the artwork itself. Remove interface borders, card corners, and layout backgrounds; retain only shadows that belong to the referenced object itself. Do not add objects, change the concept, or restyle. Preserve the reference's placement, scale, and clear margins exactly; do not enlarge the subject to fill the frame. Remove the page ground and interior gaps to genuine transparent alpha. Keep white paint and other solid foreground colors opaque, preserve fine edges, and retain partial alpha only for genuinely translucent material or soft shadows in the reference. No chroma background, baked-in checkerboard, or matte. Output a transparent PNG cutout. Region: Three-lens Veltrix brand mark; regenerate without surrounding header text.\n\nTargeted correction: the final mark must contain exactly three countable petal silhouettes and no fourth foreground shape: (1) one tall cobalt-blue petal centered upward, (2) one mint petal opening lower-left, (3) one lilac petal opening lower-right. They overlap only at the shared base. Do not add any cyan or blue petal across the front. No circles, camera lenses, letters, shield, lock, globe, text, or background.",
+  "background": "transparent",
+  "dimensions": { "width": 1114, "height": 1199 },
+  "approved": true,
+  "inspection": "Matched the compact three-petal optical silhouette; exactly three lenses, clean native alpha on light and dark grounds, no text or category symbols."
+}
