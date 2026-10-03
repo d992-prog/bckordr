@@ -19,6 +19,7 @@ from app.db.models import (
     AttackRun,
     DropDomain,
     VpnAccessKey,
+    VpnControlOperation,
     VpnCustomer,
     VpnEndpoint,
     VpnPlan,
@@ -829,6 +830,159 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
         assert retry.json()["status"] == "active"
         assert retry.json()["display_name"] == "waiting"
         assert "Veltrix%20VPN%20%C2%B7%20waiting" in retry.json()["config_uri"]
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_admin_access_key_uses_ready_reality_endpoint_and_strict_queue(monkeypatch):
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        future=True,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    session_factory = async_sessionmaker(
+        engine, expire_on_commit=False, class_=AsyncSession
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    now = datetime.now(UTC)
+    async with session_factory() as session:
+        customer = VpnCustomer(telegram_user_id="strict-admin", status="active")
+        worker = WorkerNode(
+            name="strict-node",
+            registrar_slug="gandi",
+            status="ready",
+            is_enabled=True,
+            ip_address="192.0.2.20",
+            vpn_role="vpn_node",
+            vpn_enabled=True,
+            vpn_runtime_status="ready",
+            vpn_public_host="vpn.example.com",
+            vpn_inbound_id=7,
+            vpn_inbound_port=443,
+            vpn_inbound_protocol="vless",
+            vpn_inbound_transport="tcp",
+            vpn_inbound_security="reality",
+            vpn_last_checked_at=now,
+            ssh_host="192.0.2.20",
+            ssh_port=22,
+            ssh_username="root",
+            ssh_password="test-password",
+        )
+        session.add_all((customer, worker))
+        await session.flush()
+        subscription = VpnSubscription(
+            customer_id=customer.id,
+            status="active",
+            starts_at=now - timedelta(minutes=1),
+            expires_at=now + timedelta(days=30),
+            traffic_limit_gb=100,
+            max_devices=2,
+        )
+        endpoint = VpnEndpoint(
+            worker_id=worker.id,
+            inbound_id=7,
+            public_host="vpn.example.com",
+            port=443,
+            protocol="vless",
+            transport="tcp",
+            security="reality",
+            server_name="www.cloudflare.com",
+            public_key="A" * 43,
+            short_id="aabbccdd",
+            fingerprint="chrome",
+            flow="xtls-rprx-vision",
+            status="ready",
+            verified_at=now,
+            health_checked_at=now,
+            max_active_profiles=10,
+        )
+        session.add_all((subscription, endpoint))
+        await session.commit()
+        subscription_id = subscription.id
+        worker_id = worker.id
+        endpoint_id = endpoint.id
+
+    async def fail_legacy(*_args, **_kwargs):
+        pytest.fail("ready REALITY endpoints must not use legacy provisioning")
+
+    monkeypatch.setattr(
+        "app.api.routes.control.provision_vpn_access_key", fail_legacy
+    )
+
+    app = FastAPI()
+    app.include_router(control_router)
+
+    async def override_get_db():
+        async with session_factory() as session:
+            yield session
+
+    async def fake_admin():
+        return SimpleNamespace(id=1, role="owner")
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[require_admin] = fake_admin
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.post(
+            "/control/vpn/access-keys",
+            json={
+                "subscription_id": subscription_id,
+                "worker_id": worker_id,
+                "public_name": "windows-hiddify",
+                "display_name": "Windows · Hiddify",
+            },
+        )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["worker_id"] == worker_id
+    assert payload["status"] == "pending_sync"
+    assert payload["config_uri"] is None
+
+    async with session_factory() as session:
+        key = await session.get(VpnAccessKey, payload["id"])
+        operation = await session.scalar(
+            select(VpnControlOperation).where(
+                VpnControlOperation.access_key_id == payload["id"]
+            )
+        )
+        assert key is not None
+        assert key.endpoint_id == endpoint_id
+        assert key.verified_client_email
+        assert key.panel_sub_id
+        assert operation is not None
+        assert (operation.action, operation.state, operation.generation) == (
+            "provision",
+            "queued",
+            1,
+        )
+
+        endpoint = await session.get(VpnEndpoint, endpoint_id)
+        assert endpoint is not None
+        endpoint.status = "draining"
+        await session.commit()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        unavailable = await client.post(
+            "/control/vpn/access-keys",
+            json={
+                "subscription_id": subscription_id,
+                "worker_id": worker_id,
+                "public_name": "second-device",
+            },
+        )
+    assert unavailable.status_code == 409
+    assert unavailable.json()["detail"] == (
+        "No ready VPN endpoint is currently available"
+    )
 
     await engine.dispose()
 

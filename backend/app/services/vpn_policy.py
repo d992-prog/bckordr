@@ -207,6 +207,7 @@ async def select_public_vpn_endpoint(
     *,
     now: datetime,
     health_max_age_seconds: int,
+    worker_id: int | None = None,
     lock: bool = False,
 ) -> VpnEndpointCapacity | None:
     if lock and (session.new or session.dirty or session.deleted):
@@ -259,7 +260,12 @@ async def select_public_vpn_endpoint(
             return None
         return VpnEndpointCapacity(endpoint, occupied, limit)
 
-    endpoints = (await session.execute(select(VpnEndpoint).order_by(VpnEndpoint.id))).scalars().all()
+    endpoint_query = select(VpnEndpoint)
+    if worker_id is not None:
+        endpoint_query = endpoint_query.where(VpnEndpoint.worker_id == worker_id)
+    endpoints = (
+        await session.execute(endpoint_query.order_by(VpnEndpoint.id))
+    ).scalars().all()
     candidates = [result for endpoint in endpoints if (result := await capacity(endpoint)) is not None]
     candidates.sort(key=lambda result: (result.utilization, result.endpoint.id))
     if not lock:
