@@ -14,6 +14,42 @@ import "./site.css";
 
 const SUPPORT_FALLBACK = "Контакт поддержки временно недоступен. Попробуйте позже.";
 
+function currentHashTarget(): HTMLElement | null {
+  const rawHash = window.location.hash.slice(1);
+  if (!rawHash) return null;
+  try {
+    return document.getElementById(decodeURIComponent(rawHash));
+  } catch {
+    return null;
+  }
+}
+
+function useFragmentNavigation(revision: string): void {
+  useEffect(() => {
+    let frame = 0;
+    let active = true;
+    const reconcile = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const target = currentHashTarget();
+        if (!active || !target) return;
+        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        target.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      });
+    };
+    reconcile();
+    window.addEventListener("hashchange", reconcile);
+    window.addEventListener("load", reconcile, { once: true });
+    void document.fonts?.ready.then(reconcile);
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("hashchange", reconcile);
+      window.removeEventListener("load", reconcile);
+    };
+  }, [revision]);
+}
+
 function BrandLink({ footer = false }: { footer?: boolean }) {
   return (
     <a className="site-brand" href="#top" aria-label="Veltrix VPN, в начало">
@@ -31,7 +67,7 @@ function BotAction({ config, label }: { config: PortalConfig | null; label: stri
       </a>
     );
   }
-  return <span className="button button--disabled" aria-disabled="true">Бот временно недоступен</span>;
+  return <button className="button button--disabled" type="button" disabled>Бот временно недоступен</button>;
 }
 
 interface HeroProps {
@@ -52,7 +88,7 @@ function Hero({ config, configBusy, configError, onConfigRetry }: HeroProps) {
         </p>
         <div className="hero-actions">
           {configBusy ? (
-            <span className="button button--disabled" aria-disabled="true">Загружаем ссылку…</span>
+            <span className="button button--disabled" role="status" aria-live="polite">Загружаем ссылку…</span>
           ) : <BotAction config={config} label="Открыть в Telegram" />}
           <a className="button button--ghost" href="#how">Как подключиться</a>
         </div>
@@ -112,12 +148,11 @@ function SupportedApps() {
     <section className="site-section supported-apps" aria-labelledby="apps-title">
       <div className="section-heading">
         <h2 id="apps-title">Поддерживаемые устройства</h2>
-        <p>Профиль проверен в Happ для iPhone (iOS) и Android, а также в версии для Windows</p>
+        <p>Профиль проверен в Happ на iPhone (iOS) и в Hiddify на Windows</p>
       </div>
       <ul className="device-list" aria-label="Поддерживаемые платформы">
         <li><strong>iPhone</strong><span>Happ · iOS</span></li>
-        <li><strong>Android</strong><span>Happ</span></li>
-        <li><strong>Windows</strong><span>Happ</span></li>
+        <li><strong>Windows</strong><span>Hiddify</span></li>
       </ul>
       <p className="supported-apps__note">Инструкция для каждой платформы доступна в личном кабинете</p>
     </section>
@@ -226,6 +261,14 @@ function PublicVpnSite() {
   const [plansError, setPlansError] = useState("");
   const configEpoch = useRef(0);
   const plansEpoch = useRef(0);
+  useFragmentNavigation([
+    configBusy,
+    configError,
+    config?.support_text.length ?? 0,
+    plansBusy,
+    plansError,
+    plans.length,
+  ].join(":"));
 
   async function loadConfig(): Promise<void> {
     const epoch = ++configEpoch.current;

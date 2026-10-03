@@ -17,6 +17,13 @@ test("public VPN HTML is a local Russian entry with safe metadata", async () => 
   assert.match(html, /<meta name="referrer" content="no-referrer"/);
   assert.match(html, /name="description"\s+content="[^"]+"/);
   assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg"/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/veltrix\.qzz\.io\/vpn\/"/);
+  assert.match(html, /property="og:title" content="Veltrix VPN — простой старт через Telegram"/);
+  assert.match(html, /property="og:description"\s+content="Veltrix VPN — готовый профиль и понятное подключение через официальный Telegram-бот\."/);
+  assert.match(html, /property="og:type" content="website"/);
+  assert.match(html, /property="og:url" content="https:\/\/veltrix\.qzz\.io\/vpn\/"/);
+  assert.match(html, /property="og:image" content="https:\/\/veltrix\.qzz\.io\/brand\/brand-mark\.webp"/);
+  assert.match(html, /property="og:image:alt" content="Логотип Veltrix VPN"/);
   assert.match(html, /<script type="module" src="\/src\/vpn-site\/main\.tsx"><\/script>/);
   assert.match(html, /<div id="root"><\/div>/);
   assert.doesNotMatch(html, /telegram-web-app\.js|https?:\/\/telegram\.org\/js/i);
@@ -36,7 +43,9 @@ test("public site loads only safe public APIs with independent retry states", as
   assert.match(source, /onClick=\{\(\) => void onConfigRetry\(\)\}/);
   assert.match(source, /onClick=\{\(\) => void onRetry\(\)\}/);
   assert.match(source, /href=\{config\.bot_url\}/);
-  assert.match(source, /aria-disabled="true"/);
+  assert.match(source, /role="status" aria-live="polite">Загружаем ссылку…<\/span>/);
+  assert.match(source, /<button className="button button--disabled" type="button" disabled>Бот временно недоступен<\/button>/);
+  assert.doesNotMatch(source, /aria-disabled="true"/);
 
   for (const forbidden of [
     "portalApi.me",
@@ -67,7 +76,8 @@ test("public site contains honest product, trial, support, privacy, and terms co
     "Открыть в Telegram",
     "Как подключиться",
     "Поддерживаемые устройства",
-    "Happ для iPhone (iOS) и Android",
+    "Happ на iPhone (iOS)",
+    "Hiddify на Windows",
     "7 дней",
     "Оплата пока не подключена",
     "Покупка скоро будет доступна",
@@ -78,6 +88,7 @@ test("public site contains honest product, trial, support, privacy, and terms co
     assert.ok(source.includes(required), required);
   }
   assert.match(source, /config\?\.support_text/);
+  assert.doesNotMatch(source, /<li><strong>Android<\/strong>/);
   assert.doesNotMatch(source, /гарантирован|самый быстрый|без ограничений|полная анонимность/i);
   assert.doesNotMatch(source, /<span>V<\/span>/);
   assert.doesNotMatch(source, /bot_token|release_id|admin_route|\/api\/control/i);
@@ -109,7 +120,7 @@ test("public site keeps the release sections in the intended reading order", asy
   assert.deepEqual(positions, [...positions].sort((left, right) => left - right));
 });
 
-test("public hero and plan sections keep the approved component contract", async () => {
+test("public sections keep the approved component and fragment contract", async () => {
   const source = await readFile(siteUrl, "utf8");
 
   assert.match(source, /className="eyebrow">\u041f\u0440\u043e\u0441\u0442\u043e\u0439 \u0441\u0442\u0430\u0440\u0442 \u0447\u0435\u0440\u0435\u0437 Telegram<\/p>/);
@@ -120,6 +131,11 @@ test("public hero and plan sections keep the approved component contract", async
   assert.match(source, /<PlansSection config=\{config\} plans=\{plans\} busy=\{plansBusy\} error=\{plansError\} onRetry=\{loadPlans\} \/>/);
   assert.match(source, /function SupportSection\(\{ config, configBusy \}: \{ config: PortalConfig \| null; configBusy: boolean \}\)/);
   assert.match(source, /<SupportSection config=\{config\} configBusy=\{configBusy\} \/>/);
+  assert.match(source, /function useFragmentNavigation\(/);
+  assert.match(source, /decodeURIComponent\(/);
+  assert.match(source, /window\.addEventListener\("hashchange", reconcile\)/);
+  assert.match(source, /prefers-reduced-motion: reduce/);
+  assert.match(source, /target\.scrollIntoView/);
 });
 
 test("public trial copy stays honest without duplicating readiness", async () => {
