@@ -262,6 +262,9 @@ async function verifyFullPortal(browser, origin) {
   assert.equal(await page.locator("main .portal-section").count(), 2);
   assert.equal(await page.locator('.portal-nav a[aria-current="page"][href="#profiles"]').count(), 1);
   await page.locator('.portal-nav a[href="#account"]').click();
+  await page.getByRole("heading", { name: "Аккаунт" }).waitFor();
+  await page.getByText(me.display_name).waitFor();
+  await page.getByRole("button", { name: "Выйти" }).waitFor();
   await page.getByText("Тарифы ещё не опубликованы").waitFor();
   await page.getByRole("link", { name: "Помощь" }).click();
   await page.locator("#help").waitFor();
@@ -269,12 +272,13 @@ async function verifyFullPortal(browser, origin) {
   assert.equal(await page.locator("#help b").count(), 0);
   await page.locator('.portal-nav a[href="#profiles"]').click();
   await page.getByRole("heading", { name: "Профили", exact: true }).waitFor();
-  await page.getByText("Подключение для этого профиля пока недоступно.").waitFor();
+  await page.getByText("Ссылка пока недоступна. Попробуйте через несколько минут").waitFor();
   await page.getByText(/Veltrix VPN ·/).first().waitFor();
 
   const firstProfile = page.locator(".profile-card").first();
-  await firstProfile.getByRole("button", { name: "Показать ссылку подключения" }).click();
-  const uri = firstProfile.locator("textarea");
+  assert.equal(await page.locator("textarea.connection-uri").count(), 0);
+  await firstProfile.getByRole("button", { name: "Показать ссылку" }).click();
+  const uri = firstProfile.locator("textarea.connection-uri");
   await uri.waitFor();
   assert.match(await uri.inputValue(), /^vless:\/\//);
   await firstProfile.getByRole("button", { name: "Показать QR-код" }).click();
@@ -291,7 +295,7 @@ async function verifyFullPortal(browser, origin) {
   await firstProfile.getByRole("button", { name: "Сохранить" }).click();
   await firstProfile.getByRole("heading", { name: "Личный iPhone" }).waitFor();
   assert.equal(await firstProfile.locator("textarea").count(), 0);
-  await firstProfile.getByRole("button", { name: "Показать ссылку подключения" }).click();
+  await firstProfile.getByRole("button", { name: "Показать ссылку" }).click();
   await firstProfile.getByText("Не удалось выполнить запрос.").waitFor();
   await firstProfile.getByRole("button", { name: "Переименовать" }).click();
   await firstProfile.getByLabel("Название профиля").fill("Ошибка");
@@ -451,7 +455,8 @@ async function verifyPublicTrialFlow(browser, origin) {
 
     await page.goto(`${origin}/cabinet/`);
     await page.getByRole("button", { name: "Получить 7 дней" }).click();
-    await page.getByRole("heading", { name: "Готовим VPN-профиль" }).waitFor();
+    await page.getByRole("heading", { name: "Готовим VPN‑профиль" }).waitFor();
+    await page.locator(".trial-card").getByText("Это может занять несколько минут", { exact: true }).waitFor();
     await page.getByRole("heading", { name: "Пробный доступ готов" }).waitFor({ timeout: 5_000 });
     assert.equal(activationCalls, 1);
     assert.equal(trialReads, 3);
@@ -485,8 +490,9 @@ async function verifyPublicTrialFlow(browser, origin) {
 
     await page.goto(`${origin}/cabinet/`);
     await page.getByRole("button", { name: "Получить 7 дней" }).click();
-    await page.getByRole("heading", { name: "Готовим VPN-профиль" }).waitFor();
-    await page.waitForFunction(() => document.body.innerText.includes("Готовим VPN-профиль"));
+    await page.getByRole("heading", { name: "Готовим VPN‑профиль" }).waitFor();
+    await page.waitForFunction(() => document.body.innerText.includes("Готовим VPN‑профиль"));
+    await page.locator('.portal-nav a[href="#account"]').click();
     assert.ok(pendingTrial);
     await page.getByRole("button", { name: "Выйти", exact: true }).click();
     await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
@@ -515,7 +521,7 @@ async function verifyMiniAppStates(browser, origin) {
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/#profiles`);
-    await page.getByText("Bob").waitFor();
+    await page.getByRole("heading", { name: "Профили", exact: true }).waitFor();
     assert.deepEqual(calls.slice(0, 3), [
       "/api/vpn-portal/config",
       "/api/vpn-portal/auth/mini-app",
@@ -524,7 +530,7 @@ async function verifyMiniAppStates(browser, origin) {
     assert.equal(page.url().includes("tgWebApp"), false);
     calls.length = 0;
     await page.reload();
-    await page.getByText("Bob").waitFor();
+    await page.getByRole("heading", { name: "Профили", exact: true }).waitFor();
     assert.deepEqual(calls.slice(0, 2), [
       "/api/vpn-portal/config",
       "/api/vpn-portal/me",
@@ -639,6 +645,7 @@ async function verifySessionInvalidation(browser, origin) {
     await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
     await page.getByRole("button", { name: "Скопировать ссылку" }).click();
     await page.getByRole("button", { name: "Копируем…" }).waitFor();
+    await page.locator('.portal-nav a[href="#account"]').click();
     await page.getByRole("button", { name: "Выйти", exact: true }).click();
     await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
     assert.ok(pendingConnection);
@@ -709,6 +716,7 @@ async function verifySessionInvalidation(browser, origin) {
     await page.goto(`${origin}/cabinet/`);
     await page.getByRole("button", { name: "Скопировать ссылку" }).click();
     await page.waitForFunction(() => typeof window.__completePortalClipboard === "function");
+    await page.locator('.portal-nav a[href="#account"]').click();
     await page.getByRole("button", { name: "Выйти", exact: true }).click();
     await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
     await page.evaluate(() => window.__completePortalClipboard());
@@ -732,9 +740,9 @@ async function verifySessionInvalidation(browser, origin) {
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/`);
-    await page.getByText("Анна Ветрова").waitFor();
+    await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
     await page.locator('.portal-nav a[href="#profiles"]').click();
-    await page.getByRole("button", { name: "Показать ссылку подключения" }).click();
+    await page.getByRole("button", { name: "Показать ссылку" }).click();
     await page.getByRole("heading", { name: "Сессия завершена" }).waitFor();
     assert.equal((await page.locator("body").innerText()).includes("Анна Ветрова"), false);
     await context.close();
@@ -756,10 +764,11 @@ async function verifySessionInvalidation(browser, origin) {
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/`);
-    await page.getByText("Анна Ветрова").waitFor();
+    await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
     await page.locator('.portal-nav a[href="#profiles"]').click();
-    await page.getByRole("button", { name: "Показать ссылку подключения" }).click();
+    await page.getByRole("button", { name: "Показать ссылку" }).click();
     await page.waitForFunction(() => document.body.innerText.includes("Получаем ссылку"));
+    await page.locator('.portal-nav a[href="#account"]').click();
     await page.getByRole("button", { name: "Выйти", exact: true }).click();
     await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
     assert.ok(pendingConnection);
@@ -784,6 +793,7 @@ async function verifySessionInvalidation(browser, origin) {
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/`);
+    await page.locator('.portal-nav a[href="#account"]').click();
     await page.getByText("Анна Ветрова").waitFor();
     await page.getByRole("button", { name: "Выйти", exact: true }).click();
     await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
@@ -810,7 +820,7 @@ async function verifyProfileRequestRaces(browser, origin) {
     });
     await page.goto(`${origin}/cabinet/#profiles`);
     const card = page.locator(".profile-card").first();
-    await card.getByRole("button", { name: "Показать ссылку подключения" }).click();
+    await card.getByRole("button", { name: "Показать ссылку" }).click();
     await card.getByText("Получаем ссылку…").waitFor();
     await card.getByRole("button", { name: "Переименовать" }).click();
     await card.getByLabel("Название профиля").fill("После гонки");
@@ -841,7 +851,7 @@ async function verifyProfileRequestRaces(browser, origin) {
     await card.getByRole("button", { name: "Переименовать" }).click();
     await card.getByLabel("Название профиля").fill("Новое имя");
     await card.getByRole("button", { name: "Сохранить" }).click();
-    const reveal = card.getByRole("button", { name: "Показать ссылку подключения" });
+    const reveal = card.getByRole("button", { name: "Показать ссылку" });
     assert.equal(await reveal.isDisabled(), true);
     assert.ok(pendingRename);
     await responseJson(pendingRename, { ...profiles[0], display_name: "Новое имя" });
@@ -867,6 +877,7 @@ async function verifyParallelLoadUnauthorized(browser, origin) {
     });
     await page.goto(`${origin}/cabinet/`);
     await page.getByRole("button", { name: "Повторить" }).waitFor();
+    await page.locator('.portal-nav a[href="#account"]').click();
     await page.getByText(me.display_name).waitFor();
     assert.ok(heldRoute);
     await responseJson(heldRoute, {}, 401);
@@ -906,6 +917,7 @@ async function verifyParallelLoadUnauthorized(browser, origin) {
     await responseJson(staleProfilesRoute, {}, 401);
     await page.waitForTimeout(100);
     assert.equal(await page.getByRole("heading", { name: "Сессия завершена" }).count(), 0);
+    await page.locator('.portal-nav a[href="#account"]').click();
     await page.getByText(me.display_name).waitFor();
     await context.close();
   }
@@ -933,7 +945,7 @@ async function verifyRenameAcrossHashRemount(browser, origin) {
     });
     await page.goto(`${origin}/cabinet/#profiles`);
     let card = page.locator(".profile-card").first();
-    await card.getByRole("button", { name: "Показать ссылку подключения" }).click();
+    await card.getByRole("button", { name: "Показать ссылку" }).click();
     await card.locator("textarea").waitFor();
     await card.getByRole("button", { name: "Переименовать" }).click();
     await card.getByLabel("Название профиля").fill("Имя после");
@@ -941,14 +953,14 @@ async function verifyRenameAcrossHashRemount(browser, origin) {
     await page.locator('.portal-nav a[href="#account"]').click();
     await page.locator('.portal-nav a[href="#profiles"]').click();
     card = page.locator(".profile-card").first();
-    const reveal = card.getByRole("button", { name: "Показать ссылку подключения" });
+    const reveal = card.getByRole("button", { name: "Показать ссылку" });
     assert.equal(await reveal.isDisabled(), true);
     assert.equal(await card.locator("textarea").count(), 0);
     assert.ok(pendingRename);
     await responseJson(pendingRename, { ...profiles[0], display_name: "Имя после" });
     await card.getByRole("heading", { name: "Имя после" }).waitFor();
     assert.equal(await card.locator("textarea").count(), 0);
-    await card.getByRole("button", { name: "Показать ссылку подключения" }).click();
+    await card.getByRole("button", { name: "Показать ссылку" }).click();
     assert.equal(await card.locator("textarea").inputValue(), "vless://connection-2");
     await context.close();
   }
@@ -968,7 +980,7 @@ async function verifyRenameAcrossHashRemount(browser, origin) {
     });
     await page.goto(`${origin}/cabinet/#profiles`);
     let card = page.locator(".profile-card").first();
-    await card.getByRole("button", { name: "Показать ссылку подключения" }).click();
+    await card.getByRole("button", { name: "Показать ссылку" }).click();
     await card.getByText("Получаем ссылку…").waitFor();
     await card.getByRole("button", { name: "Переименовать" }).click();
     await card.getByLabel("Название профиля").fill("Ещё имя");
@@ -1046,7 +1058,7 @@ async function verifyPlatformAwareUnauthenticatedStates(browser, origin) {
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/#profiles`);
-    await page.getByRole("button", { name: "Показать ссылку подключения" }).click();
+    await page.getByRole("button", { name: "Показать ссылку" }).click();
     await page.getByRole("heading", { name: "Сессия завершена" }).waitFor();
     if (platform === "unknown") {
       await page.getByRole("link", { name: "Войти через Telegram" }).waitFor();
@@ -1103,7 +1115,7 @@ async function verifyTelegramSafeAreaGeometry(browser, origin) {
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/`);
-    await page.getByText(me.display_name).waitFor();
+    await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
     const geometry = await page.evaluate(() => {
       const brand = document.querySelector(".portal-header .vx-brand").getBoundingClientRect();
       const account = document.querySelector(".account").getBoundingClientRect();
@@ -1192,7 +1204,7 @@ async function captureResponsiveMatrix(browser, origin) {
         return responseJson(route, {}, 404);
       });
       await page.goto(`${origin}/cabinet/`);
-      await page.getByText("Анна Ветрова").waitFor();
+      await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
       await assertNoHorizontalOverflow(page);
       if (width <= 390) {
         const navFits = await page.locator(".portal-nav a").evaluateAll((links) => links.every((link) => {

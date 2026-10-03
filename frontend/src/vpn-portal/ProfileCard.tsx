@@ -69,9 +69,9 @@ export default function ProfileCard({
 
   const canReveal = profile.state === "active" && profile.can_connect;
   const unavailableHint = profile.state === "active" && !profile.can_connect
-    ? "Подключение для этого профиля пока недоступно."
+    ? "Ссылка пока недоступна. Попробуйте через несколько минут"
     : profile.state !== "active"
-      ? "Неактивный профиль можно переименовать, но подключение недоступно."
+      ? "Профиль неактивен. Подключение недоступно"
       : "";
 
   async function revealConnection(): Promise<void> {
@@ -119,7 +119,7 @@ export default function ProfileCard({
       if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
         return;
       }
-      setConnectionMessage("Скопировано.");
+      setConnectionMessage("Ссылка скопирована");
     } catch {
       if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
         return;
@@ -248,16 +248,16 @@ export default function ProfileCard({
           />
           {renameError && <p className="message message--error" role="alert">{renameError}</p>}
           <div className="button-row">
-            <button className="button button--primary" disabled={renameBusy} onClick={saveName}>
+            <button type="button" className="button button--primary" disabled={renameBusy} onClick={saveName}>
               {renameBusy ? "Сохраняем…" : "Сохранить"}
             </button>
-            <button className="button button--ghost" disabled={renameBusy} onClick={cancelRename}>
+            <button type="button" className="button button--ghost" disabled={renameBusy} onClick={cancelRename}>
               Отмена
             </button>
           </div>
         </div>
       ) : (
-        <button className="button button--ghost" disabled={renamePending} onClick={beginRename}>
+        <button type="button" className="button button--ghost" disabled={renamePending} onClick={beginRename}>
           {renamePending ? "Переименование…" : "Переименовать"}
         </button>
       )}
@@ -265,11 +265,12 @@ export default function ProfileCard({
       <div className="connection-box">
         {connectionUri === null ? (
           <button
+            type="button"
             className="button button--primary"
             disabled={!canReveal || connectionBusy || renameBusy || renamePending}
             onClick={revealConnection}
           >
-            {connectionBusy ? "Получаем ссылку…" : "Показать ссылку подключения"}
+            {connectionBusy ? "Получаем ссылку…" : "Показать ссылку"}
           </button>
         ) : (
           <>
@@ -283,15 +284,15 @@ export default function ProfileCard({
               onFocus={(event) => event.currentTarget.select()}
             />
             <div className="button-row">
-              <button className="button button--primary" onClick={copyConnection}>
+              <button type="button" className="button button--primary" onClick={copyConnection}>
                 Скопировать
               </button>
               {qrDataUrl === null ? (
-                <button className="button button--ghost" disabled={qrBusy} onClick={showQrCode}>
+                <button type="button" className="button button--ghost" disabled={qrBusy} onClick={showQrCode}>
                   {qrBusy ? "Создаём QR-код…" : "Показать QR-код"}
                 </button>
               ) : (
-                <button className="button button--ghost" onClick={hideQrCode}>
+                <button type="button" className="button button--ghost" onClick={hideQrCode}>
                   Скрыть QR-код
                 </button>
               )}

@@ -1,3 +1,5 @@
+import { useId } from "react";
+
 import type { PortalPlan } from "./types";
 import {
   formatPlanDevices,
@@ -14,17 +16,19 @@ interface PlanCatalogProps {
 }
 
 export default function PlanCatalog({ plans, busy, error, onRetry }: PlanCatalogProps) {
+  const headingId = useId();
+
   return (
-    <section id="plans" className="portal-section" aria-labelledby="plans-heading">
+    <section id="plans" className="portal-section" aria-labelledby={headingId}>
       <div className="section-heading">
         <p className="eyebrow">Варианты</p>
-        <h2 id="plans-heading">Тарифы</h2>
+        <h2 id={headingId}>Тарифы</h2>
       </div>
       {busy && <p className="card" role="status">Загружаем тарифы…</p>}
       {error && (
         <div className="card message message--error" role="alert">
           <p>{error}</p>
-          <button className="button button--primary" onClick={onRetry}>Повторить</button>
+          <button type="button" className="button button--primary" onClick={onRetry}>Повторить</button>
         </div>
       )}
       {!busy && !error && plans.length === 0 && <p className="card">Тарифы ещё не опубликованы</p>}
@@ -49,7 +53,7 @@ export default function PlanCatalog({ plans, busy, error, onRetry }: PlanCatalog
                   Перейти к пробному доступу
                 </a>
               ) : (
-                <button className="button button--ghost plan-card__action" disabled>
+                <button type="button" className="button button--ghost plan-card__action" disabled>
                   Покупка скоро будет доступна
                 </button>
               )}

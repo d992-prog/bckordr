@@ -7,6 +7,7 @@ const siteUrl = new URL("../src/vpn-site/main.tsx", import.meta.url);
 const cssUrl = new URL("../src/vpn-site/site.css", import.meta.url);
 const typesUrl = new URL("../src/vpn-portal/types.ts", import.meta.url);
 const portalUrl = new URL("../src/vpn-portal/Portal.tsx", import.meta.url);
+const portalAccountUrl = new URL("../src/vpn-portal/PortalAccount.tsx", import.meta.url);
 
 test("public VPN HTML is a local Russian entry with safe metadata", async () => {
   const html = await readFile(htmlUrl, "utf8");
@@ -53,10 +54,11 @@ test("public site loads only safe public APIs with independent retry states", as
 });
 
 test("public site contains honest product, trial, support, privacy, and terms copy", async () => {
-  const [source, css, portal] = await Promise.all([
+  const [source, css, portal, account] = await Promise.all([
     readFile(siteUrl, "utf8"),
     readFile(cssUrl, "utf8"),
     readFile(portalUrl, "utf8"),
+    readFile(portalAccountUrl, "utf8"),
   ]);
 
   for (const required of [
@@ -78,8 +80,8 @@ test("public site contains honest product, trial, support, privacy, and terms co
   assert.doesNotMatch(source, /bot_token|release_id|admin_route|\/api\/control/i);
   assert.match(css, /--green-900:\s*#173f2d/);
   assert.match(css, /@media \(max-width:\s*700px\)/);
-  assert.match(portal, /href="\/vpn\/#privacy"/);
-  assert.match(portal, /href="\/vpn\/#terms"/);
+  assert.match(account, /href="\/vpn\/#privacy"/);
+  assert.match(account, /href="\/vpn\/#terms"/);
   assert.match(portal, /bootstrapResult\.config\?\.support_text/);
 });
 

@@ -10,7 +10,7 @@ import {
   type TelegramLaunch,
 } from "./bootstrap";
 import { DataError } from "./DataError";
-import PlanCatalog from "./PlanCatalog";
+import { PortalAccount } from "./PortalAccount";
 import { PortalHome } from "./PortalHome";
 import { PortalNavigation } from "./PortalNavigation";
 import ProfileCard from "./ProfileCard";
@@ -71,8 +71,8 @@ function StatePage({
 }) {
   return (
     <main className="state-page">
-      <VeltrixMark />
-      <section className="card state-card">
+      <VeltrixMark decorative={title === "Veltrix VPN"} />
+      <section className="card state-card vx-matte">
         <h1>{title}</h1>
         {children}
       </section>
@@ -151,6 +151,7 @@ function ConnectionSection({
         <div className="platforms" role="group" aria-label="Выберите платформу">
           {["iPhone", "Android", "Windows", "macOS"].map((item) => (
             <button
+              type="button"
               key={item}
               className={`platform ${platform === item ? "platform--active" : ""}`}
               aria-pressed={platform === item}
@@ -308,7 +309,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
       }
       const message = error instanceof PortalError
         ? error.message
-        : "Не удалось загрузить данные. Попробуйте ещё раз.";
+        : "Не удалось загрузить данные. Попробуйте снова";
       if (silent) {
         setTrialError(message);
       } else {
@@ -503,7 +504,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     return (
       <StatePage title="Не удалось выйти">
         <p>Сервер не подтвердил выход. Личные данные скрыты на этом экране.</p>
-        <button className="button button--primary" onClick={() => void performLogout(logoutCsrf.current)}>
+        <button type="button" className="button button--primary" onClick={() => void performLogout(logoutCsrf.current)}>
           Повторить выход
         </button>
       </StatePage>
@@ -551,7 +552,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     return (
       <StatePage title="Открыт другой аккаунт">
         <p>Сначала выйдите из текущей сессии, затем заново откройте Mini App из Telegram.</p>
-        <button className="button button--primary" onClick={() => void performLogout(null)}>
+        <button type="button" className="button button--primary" onClick={() => void performLogout(null)}>
           Выйти из текущего аккаунта
         </button>
       </StatePage>
@@ -582,9 +583,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
           <VeltrixMark decorative />
         </a>
         <div className="account">
-          <span>{me.display_name}</span>
           <a className="button button--ghost" href="#help">Помощь</a>
-          <button className="button button--ghost" onClick={startLogout}>Выйти</button>
         </div>
       </header>
 
@@ -636,28 +635,15 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
         )}
 
         {activeSection === "account" && (
-          <>
-            <section id="account" className="portal-section">
-              <div className="section-heading"><h1>Аккаунт</h1></div>
-              <div className="card">
-                <p>{me.display_name}</p>
-              </div>
-            </section>
-            <PlanCatalog
-              plans={plans}
-              busy={plansBusy}
-              error={plansError}
-              onRetry={() => void loadPlans()}
-            />
-            <section id="help" className="portal-section">
-              <div className="section-heading"><h2>Помощь</h2></div>
-              <p className="card support-text">{bootstrapResult.config?.support_text ?? ""}</p>
-              <div className="section-actions">
-                <a className="button button--ghost" href="/vpn/#privacy">Конфиденциальность</a>
-                <a className="button button--ghost" href="/vpn/#terms">Условия использования</a>
-              </div>
-            </section>
-          </>
+          <PortalAccount
+            displayName={me.display_name}
+            supportText={bootstrapResult.config?.support_text ?? ""}
+            plans={plans}
+            plansBusy={plansBusy}
+            plansError={plansError}
+            onPlansRetry={() => void loadPlans()}
+            onLogout={startLogout}
+          />
         )}
       </main>
     </div>

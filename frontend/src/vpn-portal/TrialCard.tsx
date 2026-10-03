@@ -31,7 +31,7 @@ export default function TrialCard({
             Пробный доступ на {trial.duration_days} дней для {trial.profile_limit} устройства.
           </p>
           <div className="trial-card__actions">
-            <button className="button button--primary" disabled={busy} onClick={onActivate}>
+            <button type="button" className="button button--primary" disabled={busy} onClick={onActivate}>
               {busy ? "Активируем…" : "Получить 7 дней"}
             </button>
           </div>
@@ -44,7 +44,7 @@ export default function TrialCard({
           <h2>Пробный доступ</h2>
           <p className="trial-card__meta">Новые подключения временно приостановлены</p>
           <div className="trial-card__actions">
-            <button className="button button--ghost" disabled={busy} onClick={onRefresh}>
+            <button type="button" className="button button--ghost" disabled={busy} onClick={onRefresh}>
               Обновить статус
             </button>
           </div>
@@ -54,12 +54,12 @@ export default function TrialCard({
     case "preparing":
       content = (
         <>
-          <h2>Готовим VPN-профиль</h2>
+          <h2>Готовим VPN‑профиль</h2>
           <p className="trial-card__meta" role="status">
-            Обычно это занимает несколько минут. Статус обновится автоматически.
+            Это может занять несколько минут
           </p>
           <div className="trial-card__actions">
-            <button className="button button--ghost" disabled={busy} onClick={onRefresh}>
+            <button type="button" className="button button--ghost" disabled={busy} onClick={onRefresh}>
               {busy ? "Обновляем…" : "Обновить статус"}
             </button>
           </div>

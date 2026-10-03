@@ -18,6 +18,8 @@ test("trial card renders every public state without internal VPN fields", async 
   }
   assert.match(source, /Получить 7 дней/);
   assert.match(source, /Новые подключения временно приостановлены/);
+  assert.match(source, /Готовим VPN‑профиль/);
+  assert.match(source, /Это может занять несколько минут/);
   assert.match(source, /Обновить статус/);
   assert.match(source, /href="#profiles"/);
   assert.match(source, /href="#plans"/);
