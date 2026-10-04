@@ -106,7 +106,7 @@ function ProfilesSection(props: ProfilesSectionProps) {
   return (
     <section id="profiles" className="portal-section">
       <div className="section-heading"><p className="eyebrow">Доступ</p><h1>Профили</h1></div>
-      {props.busy && <p className="card">Загружаем профили…</p>}
+      {props.busy && <p className="card" role="status">Загружаем профили…</p>}
       {props.error && <DataError message={props.error} onRetry={props.onRetry} />}
       {!props.busy && !props.error && props.profiles.length === 0 && <p className="card">Профилей пока нет.</p>}
       <div className="profile-grid">
@@ -521,7 +521,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   }
 
   if (bootstrapResult === null) {
-    return <StatePage title="Veltrix VPN"><p>Загружаем личный кабинет…</p></StatePage>;
+    return <StatePage title="Veltrix VPN"><p role="status">Загружаем личный кабинет…</p></StatePage>;
   }
   if (bootstrapResult.kind === "disabled") {
     return <StatePage title="Личный кабинет пока недоступен"><p>{bootstrapResult.config?.support_text}</p></StatePage>;

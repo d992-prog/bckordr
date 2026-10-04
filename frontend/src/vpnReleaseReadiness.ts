@@ -45,13 +45,13 @@ const VPN_RELEASE_CHECK_LABELS: Readonly<Record<string, string>> = {
   disk_health: "Дисковое пространство",
   backup_health: "Резервное копирование",
   known_hosts: "Доверенные SSH-узлы",
-  worker_active: "Активность воркера",
-  worker_health: "Состояние воркера",
-  endpoint_configuration: "Конфигурация точки доступа",
-  endpoint_health: "Состояние точки доступа",
+  worker_active: "Активность VPN‑ноды",
+  worker_health: "Состояние VPN‑ноды",
+  endpoint_configuration: "Конфигурация точки подключения",
+  endpoint_health: "Состояние точки подключения",
   endpoint_external_proof: "Внешняя проверка подключения",
-  endpoint_redundancy: "Резервирование нод",
-  endpoint_capacity: "Ёмкость VPN‑ноды",
+  endpoint_redundancy: "Резервирование VPN‑нод",
+  endpoint_capacity: "Ёмкость точки подключения",
   aggregate_capacity: "Общая ёмкость",
   control_operations: "Операции управления",
   maintenance: "Обслуживание",
@@ -86,7 +86,7 @@ const SECTION_DEFINITIONS = [
   },
   {
     key: "nodes",
-    title: "Ноды",
+    title: "VPN‑ноды",
     codes: [
       "worker_active",
       "worker_health",
@@ -233,9 +233,9 @@ export function formatVpnReleaseEntityLabel(
     return `Тариф #${check.entity_id}`;
   }
   if (VPN_ENDPOINT_ENTITY_CODES.has(check.code)) {
-    return `VPN‑нода #${check.entity_id}`;
+    return `Точка подключения #${check.entity_id}`;
   }
-  return NODE_ENTITY_CODES.has(check.code) ? `Нода #${check.entity_id}` : null;
+  return NODE_ENTITY_CODES.has(check.code) ? `VPN‑нода #${check.entity_id}` : null;
 }
 
 export function canConfirmVpnExternalProof(

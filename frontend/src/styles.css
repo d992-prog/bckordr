@@ -233,7 +233,7 @@ button {
   gap: 16px;
   min-width: 0;
   overflow: hidden;
-  border-inline-start: 5px solid var(--warning);
+  border-inline-start: 1px solid var(--warning);
 }
 
 .vpn-release-readiness.is-pass {
@@ -2156,7 +2156,20 @@ button:disabled {
 
   .vpn-admin-shell .vpn-admin-metrics,
   .vpn-admin-shell .stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vpn-admin-shell :where(h2, h3, p, label, span, strong),
+  .vpn-admin-shell .card-head > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .vpn-admin-shell :where(button, .button-link):not(.vpn-admin-nav *) {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 
   .vpn-admin-shell .vpn-admin-metric,
@@ -2179,6 +2192,14 @@ button:disabled {
   .vpn-admin-shell .vpn-key-card,
   .vpn-admin-shell .vpn-inline-form {
     padding: 6px;
+  }
+
+  .vpn-admin-shell .vpn-key-preview {
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    word-break: break-all;
   }
 
   .vpn-admin-shell [data-vpn-admin-section="nodes"] .simple-table {

@@ -63,3 +63,20 @@ test("portal brand styles have one CSS ownership path", async () => {
   );
   assert.doesNotMatch(portal, /import\s+["']\.\.\/brand\/veltrix-brand\.css["']/);
 });
+
+test("portal loading and connection outcomes use one correctly typed live region", async () => {
+  const [portal, home, profile, css] = await Promise.all([
+    readFile(portalUrl, "utf8"),
+    readFile(new URL("../src/vpn-portal/PortalHome.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/vpn-portal/ProfileCard.tsx", import.meta.url), "utf8"),
+    readFile(cssUrl, "utf8"),
+  ]);
+
+  assert.match(portal, /props\.busy && <p className="card" role="status">Загружаем профили…<\/p>/);
+  assert.match(portal, /bootstrapResult === null[\s\S]*role="status"[\s\S]*Загружаем личный кабинет…/);
+  assert.match(home, /type CopyMessage = \{ kind: "success" \| "error"; text: string \}/);
+  assert.match(home, /role=\{copyMessage\.kind === "error" \? "alert" : "status"\}/);
+  assert.match(profile, /type ConnectionMessage = \{ kind: "success" \| "error"; text: string \}/);
+  assert.match(profile, /role=\{connectionMessage\.kind === "error" \? "alert" : "status"\}/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?html\s*\{\s*scroll-behavior:\s*auto;/);
+});

@@ -56,6 +56,15 @@ const replacementWorker = {
   region: "NL",
   vpn_public_host: "nl.vpn.example",
 };
+const endpointCapacity = {
+  endpoint_id: 7,
+  worker_id: 41,
+  label: "Frankfurt Reality",
+  status: "ready",
+  occupied_profiles: 2,
+  max_active_profiles: 20,
+  capacity_warning_percent: 80,
+};
 const json = (route, body, status = 200) => route.fulfill({
   status, contentType: "application/json", body: JSON.stringify(body),
 });
@@ -108,7 +117,8 @@ try {
   let workerRefreshFailures = 0;
   let replacementWorkerAvailable = false;
   let releaseWorkerDelete = null;
-  await page.route("**/api/**", async (route) => {
+  let capacitySaveFailure = false;
+  const handleApiRoute = async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
     if (request.method() === "DELETE" && pathname === "/api/control/workers/41") {
@@ -146,6 +156,11 @@ try {
         async () => { await complete(); resolve(); }));
       return complete();
     }
+    if (request.method() === "PATCH" && pathname === "/api/control/vpn/endpoints/7/capacity") {
+      const payload = request.postDataJSON();
+      if (capacitySaveFailure) return json(route, { detail: "Не удалось сохранить лимиты" }, 503);
+      return json(route, { ...endpointCapacity, ...payload });
+    }
     if (request.method() !== "GET") throw new Error(`Unexpected mutation: ${request.method()} ${pathname}`);
     if (pathname === "/api/auth/me") return json(route, { has_feature_access: true, user: {
       id: 1, username: "synthetic-admin", role: "owner", status: "active", language: "ru", ...timestamps,
@@ -170,11 +185,13 @@ try {
     if (pathname === "/api/control/vpn/release-readiness") return json(route, {
       ready: true, checked_at: stamp, release_id: null, checks: [],
     });
+    if (pathname === "/api/control/vpn/endpoints/capacity") return json(route, [endpointCapacity]);
     if (["/api/control/vpn/overview", "/api/control/vpn/lifecycle/status",
       "/api/admin/diagnostic-telegram", "/api/control/discovery/runtime-settings",
       "/api/control/zone-scanner/settings"].includes(pathname)) return json(route, {});
     return json(route, []);
-  });
+  };
+  await page.route("**/api/**", handleApiRoute);
   const appUrl = `http://127.0.0.1:${server.address().port}/`;
   const output = path.resolve(root, "../.pytest_cache/admin-profile-ui-qa");
   await mkdir(output, { recursive: true });
@@ -228,8 +245,8 @@ try {
     assert.deepEqual(focus, { active: true, visible: true, withinViewport: true }, `${label} must have visible unobscured focus`);
   };
   const accessibilityAuditCounts = {};
-  const assertVisibleVpnInteractiveTraversal = async (label) => {
-    const audit = await page.locator(".vpn-admin-shell").evaluate((root, auditLabel) => {
+  const assertVisibleVpnInteractiveTraversal = async (targetPage, label) => {
+    const audit = await targetPage.locator(".vpn-admin-shell").evaluate((root, auditLabel) => {
       const isVisible = (element) => {
         const style = getComputedStyle(element);
         const box = element.getBoundingClientRect();
@@ -274,7 +291,7 @@ try {
     assert.deepEqual(audit.exposedDecorativeSvg, [], "decorative VPN admin SVGs must be hidden");
     assert.ok(audit.tabbableIds.length > 0, `${label}: expected visible tabbable controls`);
 
-    await page.evaluate(() => {
+    await targetPage.evaluate(() => {
       document.body.tabIndex = -1;
       document.body.focus();
       window.scrollTo(0, 0);
@@ -285,8 +302,8 @@ try {
     let firstAuditId = null;
     let cycled = false;
     for (let step = 0; step < audit.deterministicCap; step += 1) {
-      await page.keyboard.press("Tab");
-      const activeAuditId = await page.evaluate(() => document.activeElement?.getAttribute("data-vpn-a11y-audit-id"));
+      await targetPage.keyboard.press("Tab");
+      const activeAuditId = await targetPage.evaluate(() => document.activeElement?.getAttribute("data-vpn-a11y-audit-id"));
       if (!activeAuditId) continue;
       if (firstAuditId === null) firstAuditId = activeAuditId;
       else if (activeAuditId === firstAuditId) {
@@ -294,7 +311,7 @@ try {
         break;
       }
 
-      await page.waitForFunction((auditId) => {
+      await targetPage.waitForFunction((auditId) => {
         const element = document.querySelector(`[data-vpn-a11y-audit-id="${auditId}"]`);
         if (!(element instanceof HTMLElement) || document.activeElement !== element) return false;
         const box = element.getBoundingClientRect();
@@ -305,7 +322,7 @@ try {
         return !obscuredByNavigation && box.top >= -1 && box.left >= -1
           && box.bottom <= innerHeight + 1 && box.right <= innerWidth + 1;
       }, activeAuditId, { timeout: 750 }).catch(() => {});
-      const focus = await page.evaluate((auditId) => {
+      const focus = await targetPage.evaluate((auditId) => {
         const element = document.querySelector(`[data-vpn-a11y-audit-id="${auditId}"]`);
         if (!(element instanceof HTMLElement)) return { error: "audited element is missing" };
         const box = element.getBoundingClientRect();
@@ -351,7 +368,7 @@ try {
       visible: audit.visibleCount,
       tabbable: audit.tabbableIds.length,
     };
-    await page.evaluate(() => {
+    await targetPage.evaluate(() => {
       document.querySelectorAll("[data-vpn-a11y-audit-id]").forEach((element) => {
         element.removeAttribute("data-vpn-a11y-audit-id");
       });
@@ -360,29 +377,65 @@ try {
       if (navigation) navigation.scrollLeft = 0;
     });
   };
-  const assertAdminTwoHundredPercentTextReflow = async () => {
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.evaluate(() => {
-      document.documentElement.style.fontSize = "200%";
-      window.scrollTo(0, 0);
-    });
-    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    const result = await page.locator(".vpn-admin-shell").evaluate((root) => {
+  const assertAdminTwoHundredPercentTextReflow = async (targetPage, label) => {
+    // Deterministic browser text-only zoom: snapshot every rendered computed size, then apply 2× inline values.
+    await targetPage.evaluate(() => {
+      const root = document.querySelector(".vpn-admin-shell");
+      if (!(root instanceof HTMLElement)) throw new Error("missing VPN admin shell");
       const isVisible = (element) => {
         const style = getComputedStyle(element);
         const box = element.getBoundingClientRect();
-        return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
+        for (let current = element; current && root.contains(current); current = current.parentElement) {
+          const currentStyle = getComputedStyle(current);
+          const currentBox = current.getBoundingClientRect();
+          const visuallyHidden = currentStyle.position === "absolute"
+            && (currentBox.width <= 1 || currentBox.height <= 1)
+            && (currentStyle.clip !== "auto" || currentStyle.clipPath !== "none");
+          if (currentStyle.display === "none" || currentStyle.visibility === "hidden" || visuallyHidden) return false;
+        }
+        return box.width > 0 && box.height > 0;
       };
-      const clipped = [...root.querySelectorAll("h1, h2, h3, p, a, button, label")]
-        .filter(isVisible)
-        .filter((element) => {
+      const values = [root, ...root.querySelectorAll("*")]
+        .filter((element) => element instanceof HTMLElement && isVisible(element))
+        .map((element) => {
           const style = getComputedStyle(element);
-          const clipsOverflow = ["hidden", "clip"].includes(style.overflowX)
-            || ["hidden", "clip"].includes(style.overflowY);
-          return (clipsOverflow || element.matches("button"))
-            && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
-        })
-        .map((element) => `${element.tagName}:${element.textContent?.trim().slice(0, 80)}`);
+          return { element, fontSize: parseFloat(style.fontSize), lineHeight: parseFloat(style.lineHeight) };
+        });
+      values.forEach(({ element, fontSize, lineHeight }) => {
+        if (Number.isFinite(fontSize)) element.style.setProperty("font-size", `${fontSize * 2}px`, "important");
+        if (Number.isFinite(lineHeight)) element.style.setProperty("line-height", `${lineHeight * 2}px`, "important");
+      });
+      window.scrollTo(0, 0);
+    });
+    await targetPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const result = await targetPage.locator(".vpn-admin-shell").evaluate((root) => {
+      const isVisible = (element) => {
+        const style = getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+        for (let current = element; current && root.contains(current); current = current.parentElement) {
+          const currentStyle = getComputedStyle(current);
+          const currentBox = current.getBoundingClientRect();
+          const visuallyHidden = currentStyle.position === "absolute"
+            && (currentBox.width <= 1 || currentBox.height <= 1)
+            && (currentStyle.clip !== "auto" || currentStyle.clipPath !== "none");
+          if (currentStyle.display === "none" || currentStyle.visibility === "hidden" || visuallyHidden) return false;
+        }
+        return box.width > 0 && box.height > 0;
+      };
+      const hasDirectText = (element) => [...element.childNodes]
+        .some((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim());
+      const textAndControls = [...root.querySelectorAll("*")]
+        .filter((element) => element instanceof HTMLElement && isVisible(element))
+        .filter((element) => hasDirectText(element)
+          || element.matches("input, textarea, select, button, a, h1, h2, h3, p, span, strong, small, label, dt, dd, th, td"));
+      const clipped = textAndControls.filter((element) => {
+        const style = getComputedStyle(element);
+        const clipsOverflow = ["hidden", "clip"].includes(style.overflowX)
+          || ["hidden", "clip"].includes(style.overflowY)
+          || element.matches("input, textarea, select, button");
+        return clipsOverflow
+          && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
+      }).map((element) => `${element.tagName}:${element.textContent?.trim().slice(0, 80)}`);
       const isContainedByHorizontalScroller = (element) => {
         for (let ancestor = element.parentElement; ancestor && ancestor !== root.parentElement; ancestor = ancestor.parentElement) {
           const style = getComputedStyle(ancestor);
@@ -391,8 +444,7 @@ try {
         }
         return false;
       };
-      const overflowing = [...root.querySelectorAll("*")]
-        .filter(isVisible)
+      const overflowing = textAndControls
         .map((element) => {
           const style = getComputedStyle(element);
           const box = element.getBoundingClientRect();
@@ -409,6 +461,43 @@ try {
           };
         })
         .filter((element) => element.reason !== null);
+      const navigation = root.querySelector(".vpn-admin-nav");
+      const overlapCandidates = textAndControls.filter((element) => hasDirectText(element)
+        || element.matches("input, textarea, select, button, a"));
+      const overlaps = [];
+      for (let leftIndex = 0; leftIndex < overlapCandidates.length; leftIndex += 1) {
+        const left = overlapCandidates[leftIndex];
+        const leftBox = left.getBoundingClientRect();
+        for (let rightIndex = leftIndex + 1; rightIndex < overlapCandidates.length; rightIndex += 1) {
+          const right = overlapCandidates[rightIndex];
+          if (left.contains(right) || right.contains(left)) continue;
+          if (navigation && navigation.contains(left) !== navigation.contains(right)) continue;
+          if (left.parentElement !== right.parentElement
+            && !(left.matches("input, textarea, select, button, a")
+              && right.matches("input, textarea, select, button, a"))) continue;
+          const rightBox = right.getBoundingClientRect();
+          if (Math.min(leftBox.right, rightBox.right) - Math.max(leftBox.left, rightBox.left) > 1
+            && Math.min(leftBox.bottom, rightBox.bottom) - Math.max(leftBox.top, rightBox.top) > 1) {
+            overlaps.push(`${left.tagName}:${left.textContent?.trim().slice(0, 32)} <> ${right.tagName}:${right.textContent?.trim().slice(0, 32)}`);
+          }
+        }
+      }
+      const layoutOverflow = [root, ...root.querySelectorAll("*")]
+        .filter((element) => element instanceof HTMLElement && isVisible(element))
+        .map((element) => {
+          const box = element.getBoundingClientRect();
+          return {
+            tag: element.tagName,
+            className: typeof element.className === "string" ? element.className : "",
+            left: Math.round(box.left),
+            right: Math.round(box.right),
+            clientWidth: element.clientWidth,
+            scrollWidth: element.scrollWidth,
+          };
+        })
+        .filter((element) => element.left < -1 || element.right > document.documentElement.clientWidth + 1
+          || element.scrollWidth > element.clientWidth + 1)
+        .slice(0, 24);
       return {
         pageFits: document.documentElement.scrollWidth <= innerWidth,
         rootFits: root.scrollWidth <= root.clientWidth,
@@ -419,18 +508,48 @@ try {
           rootScrollWidth: root.scrollWidth,
         },
         overflowing,
+        layoutOverflow,
         clipped,
+        overlaps,
       };
     });
-    assert.equal(result.pageFits, true, `VPN admin page must not overflow at 200% text size: ${JSON.stringify(result)}`);
-    assert.equal(result.rootFits, true, `VPN admin workspace must not overflow at 200% text size: ${JSON.stringify(result)}`);
+    assert.equal(result.pageFits, true, `${label}: VPN admin page must not overflow at 200% text size: ${JSON.stringify(result)}`);
+    assert.equal(result.rootFits, true, `${label}: VPN admin workspace must not overflow at 200% text size: ${JSON.stringify(result)}`);
     assert.deepEqual(result.overflowing, [],
-      `VPN admin has true page/control overflow at 200% text size: ${JSON.stringify(result.overflowing)}`);
-    assert.deepEqual(result.clipped, [], `VPN admin copy is clipped at 200% text size: ${result.clipped.join(" | ")}`);
-    await assertVisibleVpnInteractiveTraversal("customers-390-text-200");
-    await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-customers-390-text-200.png") });
-    await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
-    await page.setViewportSize({ width: 1280, height: 1000 });
+      `${label}: VPN admin has true page/control overflow at 200% text size: ${JSON.stringify(result.overflowing)}`);
+    assert.deepEqual(result.clipped, [], `${label}: VPN admin copy is clipped at 200% text size: ${result.clipped.join(" | ")}`);
+    assert.deepEqual(result.overlaps, [], `${label}: VPN admin text/control boxes overlap at 200%: ${result.overlaps.join(" | ")}`);
+    await assertVisibleVpnInteractiveTraversal(targetPage, `${label}-keyboard`);
+    return result;
+  };
+  const auditScaledAdminSection = async (section, navigationLabel) => {
+    const scaledPage = await browser.newPage({
+      viewport: { width: 390, height: 844 },
+      reducedMotion: "reduce",
+    });
+    const scaledErrors = [];
+    scaledPage.setDefaultTimeout(10000);
+    scaledPage.on("pageerror", (error) => scaledErrors.push(error.message));
+    try {
+      await scaledPage.route("**/api/**", handleApiRoute);
+      await scaledPage.goto(`${appUrl}#vpn/${section}`, { waitUntil: "domcontentloaded" });
+      await scaledPage.waitForFunction((label) =>
+        [...document.querySelectorAll('nav[aria-label="Разделы управления VPN"] a')]
+          .some((link) => link.textContent?.trim() === label && link.getAttribute("aria-current") === "page"),
+      navigationLabel);
+      const result = await assertAdminTwoHundredPercentTextReflow(
+        scaledPage,
+        `${section}-390-text-200`,
+      );
+      assert.deepEqual(result.overflowing, [], `${section}: strict overflow detector must stay empty`);
+      await scaledPage.locator(".vpn-admin-shell").screenshot({
+        path: path.join(output, `admin-${section}-390-text-200.png`),
+        fullPage: true,
+      });
+      assert.deepEqual(scaledErrors, [], `${section}: no page errors are expected during 200% audit`);
+    } finally {
+      await scaledPage.close();
+    }
   };
   const assertSecretAbsent = async (secret, label) => {
     const exposure = await page.evaluate((candidate) => {
@@ -520,7 +639,52 @@ try {
   await assertContrast(commitReadiness, "dark disabled primary action");
   await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-overview-dark-1280.png") });
   await page.emulateMedia({ colorScheme: "light" });
-  await assertVisibleVpnInteractiveTraversal("overview-desktop");
+  await assertVisibleVpnInteractiveTraversal(page, "overview-desktop");
+
+  const capacityCard = page.locator(".vpn-capacity-card").filter({ hasText: "Frankfurt Reality" });
+  await capacityCard.waitFor();
+  const maximumCapacity = capacityCard.getByRole("spinbutton", { name: "Лимит профилей для Frankfurt Reality", exact: true });
+  capacitySaveFailure = true;
+  await maximumCapacity.fill("25");
+  await capacityCard.getByRole("button", { name: "Сохранить лимиты", exact: true }).click();
+  const capacityError = capacityCard.getByRole("alert").filter({ hasText: "Не удалось сохранить лимиты" });
+  await capacityError.waitFor();
+  assert.equal(await capacityCard.getByRole("alert").count(), 1,
+    "capacity validation must have exactly one assertive announcement");
+  capacitySaveFailure = false;
+  await capacityCard.getByRole("button", { name: "Сохранить лимиты", exact: true }).click();
+  const capacitySuccess = capacityCard.getByRole("status").filter({ hasText: "Лимиты сохранены." });
+  await capacitySuccess.waitFor();
+  assert.equal(await capacityCard.getByRole("status").filter({ hasText: "Лимиты сохранены." }).count(), 1,
+    "capacity success must have exactly one polite announcement");
+  assert.equal(await capacityCard.getByRole("alert").count(), 0,
+    "capacity success must clear the earlier assertive announcement");
+
+  await page.evaluate(() => {
+    window.__scrollIntoViewCalls = [];
+    window.__originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function scrollIntoView(options) {
+      window.__scrollIntoViewCalls.push(options);
+    };
+  });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.getByRole("navigation", { name: "Быстрые переходы проверки" })
+    .getByRole("button", { name: "Ёмкость", exact: true }).click();
+  await page.waitForFunction(() => window.__scrollIntoViewCalls.some((options) => options?.behavior === "smooth"));
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.evaluate(() => { window.__scrollIntoViewCalls = []; });
+  await page.getByRole("navigation", { name: "Быстрые переходы проверки" })
+    .getByRole("button", { name: "Ёмкость", exact: true }).click();
+  await page.waitForFunction(() => window.__scrollIntoViewCalls.some((options) => options?.behavior === "auto"));
+  assert.equal(await page.evaluate(() => window.__scrollIntoViewCalls.every(
+    (options) => !options || options.behavior === "auto",
+  )), true, "reduced-motion admin scrolling must never request smooth behavior");
+  await page.evaluate(() => {
+    Element.prototype.scrollIntoView = window.__originalScrollIntoView;
+    delete window.__originalScrollIntoView;
+    delete window.__scrollIntoViewCalls;
+  });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
 
   await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).click();
   await waitForHash("#vpn/customers");
@@ -569,11 +733,10 @@ try {
   await assertContrast(allCustomersFilter, "dark active filter hover");
   await page.emulateMedia({ colorScheme: "light" });
   const firstProfileAction = page.getByRole("button", { name: "Изменить название", exact: true }).first();
-  await assertVisibleVpnInteractiveTraversal("customers-desktop");
+  await assertVisibleVpnInteractiveTraversal(page, "customers-desktop");
   await assertFocusVisible(vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }), "VPN navigation");
   await assertFocusVisible(customerSearch, "customer search");
   await assertFocusVisible(firstProfileAction, "profile action");
-  await assertAdminTwoHundredPercentTextReflow();
   await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).focus();
   let searchFocusStep = -1;
   let profileFocusStep = -1;
@@ -584,6 +747,29 @@ try {
   }
   assert.ok(searchFocusStep > 0, "Tab order must reach customer search after VPN navigation");
   assert.ok(profileFocusStep > searchFocusStep, "Tab order must reach a profile action after customer search");
+
+  for (const [label, hash, auditLabel] of [
+    ["Тарифы", "#vpn/plans", "plans-desktop"],
+    ["События", "#vpn/events", "events-desktop"],
+  ]) {
+    await vpnNavigation.getByRole("link", { name: label, exact: true }).click();
+    await waitForHash(hash);
+    await waitForCurrentVpnLink(label);
+    await assertVisibleVpnInteractiveTraversal(page, auditLabel);
+  }
+  await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).click();
+  await waitForHash("#vpn/customers");
+  await waitForCurrentVpnLink("Клиенты");
+
+  for (const [section, label] of [
+    ["overview", "Обзор"],
+    ["customers", "Клиенты"],
+    ["nodes", "Ноды"],
+    ["plans", "Тарифы"],
+    ["events", "События"],
+  ]) {
+    await auditScaledAdminSection(section, label);
+  }
 
   await page.locator(".vpn-customer-row").filter({ hasText: "Борис" }).click();
   assert.notEqual(
@@ -801,7 +987,7 @@ try {
   await page.goto(`${appUrl}#vpn/nodes`);
   await waitForHash("#vpn/nodes");
   await waitForCurrentVpnLink("Ноды");
-  await assertVisibleVpnInteractiveTraversal("nodes-desktop");
+  await assertVisibleVpnInteractiveTraversal(page, "nodes-desktop");
   const deleteTrigger = page.getByRole("button", { name: "Удалить ноду", exact: true });
   await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-nodes-1280.png") });
   await page.setViewportSize({ width: 1280, height: 700 });
@@ -834,7 +1020,7 @@ try {
   for (const link of await vpnNavigation.getByRole("link").all()) {
     assert.ok((await link.boundingBox()).height >= 44, "each VPN navigation link must have a 44px touch target");
   }
-  await assertVisibleVpnInteractiveTraversal("nodes-mobile");
+  await assertVisibleVpnInteractiveTraversal(page, "nodes-mobile");
   await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-nodes-390.png") });
   await page.setViewportSize({ width: 1280, height: 1000 });
   await deleteTrigger.click();
@@ -863,6 +1049,10 @@ try {
   await deleteTrigger.click();
   await confirmDelete.click();
   await deleteDialog.getByRole("alert").getByText("Нода занята. Повторите позже", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("alert").filter({ hasText: "Нода занята. Повторите позже" }).count(), 1,
+    "a failed DELETE must be announced only by the modal alert");
+  assert.equal(await page.locator(".toast").filter({ hasText: "Нода занята. Повторите позже" }).count(), 0,
+    "a failed DELETE must not create a duplicate global alert");
   assert.equal(workerDeleteCalls, 1);
   assert.equal(await confirmDelete.isEnabled(), true);
   workerDeleteFailure = false;
@@ -901,7 +1091,11 @@ try {
   assert.equal(await deleteDialog.isVisible(), true, "Escape must not close a busy destructive dialog");
   workerRefreshFailures = 1;
   await releaseWorkerDelete();
-  await page.locator(".toast").filter({ hasText: "Нода удалена, но список не удалось обновить" }).waitFor();
+  const deletionRefreshAlert = page.locator(".toast").filter({ hasText: "Нода удалена, но список не удалось обновить" });
+  await deletionRefreshAlert.waitFor();
+  assert.equal(await deletionRefreshAlert.getAttribute("role"), "alert");
+  assert.equal(await page.getByRole("alert").filter({ hasText: "Нода удалена, но список не удалось обновить" }).count(), 1,
+    "a post-delete refresh failure must have one global alert after the dialog closes");
   assert.equal(workerDeleteCalls - deleteCallsBeforeRace, 1);
   assert.equal(await page.getByRole("dialog").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Удалить ноду", exact: true }).count(), 0,

@@ -546,8 +546,9 @@ test("VPN admin presentation stays scoped and uses the Veltrix admin primitives"
   assert.match(appSource, /VPN‑ноды/);
   assert.match(appSource, /данные SSH/);
   assert.match(appSource, /Клиент, его подписки и VPN‑профили/);
+  assert.match(appSource, /VPN‑сервис: синхронизировано профилей —/);
   assert.match(appSource, /Выдача профилей/);
-  assert.match(appSource, /Ёмкость VPN‑нод/);
+  assert.match(appSource, /Ёмкость точек подключения/);
   assert.match(appSource, /<article><span>Профили<\/span>/);
   assert.doesNotMatch(
     appSource,
@@ -608,6 +609,10 @@ test("VPN node removal uses an accessible confirmation and preserves the mutatio
   )?.[0];
   assert.ok(confirmFunction, "the confirmation flow must remain directly inspectable");
   assert.match(confirmFunction, /dialog\.close\(\)/);
+  const failureBranch = confirmFunction.match(/\} catch \(error\) \{[\s\S]*?\} finally \{/)?.[0] ?? "";
+  assert.match(failureBranch, /setVpnNodeDeletionError\(message\)/);
+  assert.doesNotMatch(failureBranch, /setToast/);
+  assert.doesNotMatch(source, /className="vpn-admin-shell vpn-node-dialog"[^>]*aria-live=/);
   assert.ok(
     confirmFunction.indexOf("dialog.close()")
       < confirmFunction.indexOf("setVpnNodeDeletion(null)"),

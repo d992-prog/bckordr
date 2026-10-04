@@ -38,6 +38,8 @@ const STATUS_BADGES = {
   empty: "Нет доступа",
 } as const;
 
+type CopyMessage = { kind: "success" | "error"; text: string };
+
 function AccessSummary({
   busy,
   error,
@@ -108,7 +110,7 @@ export function PortalHome(props: PortalHomeProps) {
     [props.profiles, props.subscriptions, props.trial],
   );
   const [copyBusy, setCopyBusy] = useState(false);
-  const [copyMessage, setCopyMessage] = useState("");
+  const [copyMessage, setCopyMessage] = useState<CopyMessage | null>(null);
   const copyEpoch = useRef(0);
   const awaitingFirstLoad = props.busy
     && props.subscriptions.length === 0
@@ -123,7 +125,7 @@ export function PortalHome(props: PortalHomeProps) {
   useEffect(() => {
     copyEpoch.current += 1;
     setCopyBusy(false);
-    setCopyMessage("");
+    setCopyMessage(null);
   }, [view.profileId]);
 
   useEffect(() => () => {
@@ -140,7 +142,7 @@ export function PortalHome(props: PortalHomeProps) {
       props.sessionGeneration.isCurrent(generation) && copyEpoch.current === epoch
     );
     setCopyBusy(true);
-    setCopyMessage("");
+    setCopyMessage(null);
     try {
       const uri = await loadConnectionUri(profileId);
       if (!isCurrent()) {
@@ -148,7 +150,7 @@ export function PortalHome(props: PortalHomeProps) {
       }
       await copyConnectionUri(uri);
       if (isCurrent()) {
-        setCopyMessage("Ссылка скопирована");
+        setCopyMessage({ kind: "success", text: "Ссылка скопирована" });
       }
     } catch (error) {
       if (!isCurrent()) {
@@ -158,7 +160,10 @@ export function PortalHome(props: PortalHomeProps) {
         props.onUnauthorized();
         return;
       }
-      setCopyMessage("Не удалось скопировать автоматически. Откройте профиль и скопируйте ссылку вручную");
+      setCopyMessage({
+        kind: "error",
+        text: "Не удалось скопировать автоматически. Откройте профиль и скопируйте ссылку вручную",
+      });
     } finally {
       if (isCurrent()) {
         setCopyBusy(false);
@@ -206,7 +211,14 @@ export function PortalHome(props: PortalHomeProps) {
               {copyBusy ? "Копируем…" : "Скопировать ссылку"}
             </button>
             <a className="button button--ghost" href="#connect">Инструкция</a>
-            {copyMessage && <p className="message" role="status">{copyMessage}</p>}
+            {copyMessage && (
+              <p
+                className={`message ${copyMessage.kind === "error" ? "message--error" : ""}`}
+                role={copyMessage.kind === "error" ? "alert" : "status"}
+              >
+                {copyMessage.text}
+              </p>
+            )}
           </section>
           <AccessSummary
             busy={props.busy}

@@ -179,8 +179,10 @@ function assertNoHorizontalOverflow(page) {
   });
 }
 
-async function assertVisibleInteractiveAccessibility(page, fixedNavigationSelector = null) {
-  const initial = await page.evaluate(() => {
+const accessibilityAuditCounts = {};
+
+async function assertVisibleInteractiveAccessibility(page, label, fixedNavigationSelector = null) {
+  const initial = await page.evaluate((auditLabel) => {
     const isVisible = (element) => {
       const style = getComputedStyle(element);
       const box = element.getBoundingClientRect();
@@ -192,19 +194,32 @@ async function assertVisibleInteractiveAccessibility(page, fixedNavigationSelect
       const labelledText = labelledBy
         ? labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent || "").join(" ")
         : "";
-      return (element.getAttribute("aria-label") || labelledText || element.textContent || "").trim();
+      const nativeLabels = "labels" in element
+        ? [...(element.labels || [])].map((item) => item.textContent || "").join(" ")
+        : "";
+      return (element.getAttribute("aria-label") || labelledText || nativeLabels
+        || element.closest("label")?.textContent || element.textContent || element.getAttribute("title") || "").trim();
     };
-    const controls = [...document.querySelectorAll("a[href], button, input, select, textarea")].filter(isVisible);
-    const tabbableControls = [...document.querySelectorAll(
-      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    )].filter(isVisible);
+    const selector = 'a[href], button, input, select, textarea, [contenteditable="true"], [tabindex]';
+    const controls = [...document.querySelectorAll(selector)].filter(isVisible);
+    const tabbableControls = controls.filter((element) => element.tabIndex >= 0
+      && !("disabled" in element && element.disabled));
+    tabbableControls.forEach((element, index) => {
+      element.setAttribute("data-portal-a11y-audit-id", `${auditLabel}-${index + 1}`);
+    });
     const unnamed = controls.filter((element) => !accessibleName(element)).map((element) => element.outerHTML);
     const exposedDecorativeSvg = [...document.querySelectorAll("svg")]
       .filter((element) => isVisible(element) && element.getAttribute("role") !== "img"
         && element.getAttribute("aria-hidden") !== "true")
       .map((element) => element.outerHTML);
-    return { count: tabbableControls.length, unnamed, exposedDecorativeSvg };
-  });
+    return {
+      ids: tabbableControls.map((element) => element.getAttribute("data-portal-a11y-audit-id")),
+      visibleCount: controls.length,
+      cap: Math.max(32, (tabbableControls.length + 1) * 2),
+      unnamed,
+      exposedDecorativeSvg,
+    };
+  }, label);
 
   assert.equal(initial.unnamed.length, 0, `visible controls without accessible names: ${initial.unnamed.join(" | ")}`);
   assert.equal(
@@ -218,20 +233,33 @@ async function assertVisibleInteractiveAccessibility(page, fixedNavigationSelect
     document.body.focus();
     window.scrollTo(0, 0);
   });
-  for (let index = 0; index < initial.count; index += 1) {
+  const reached = new Set();
+  let firstId = null;
+  let cycled = false;
+  for (let index = 0; index < initial.cap; index += 1) {
     await page.keyboard.press("Tab");
-    await page.waitForFunction((navigationSelector) => {
+    const activeId = await page.evaluate(() => document.activeElement?.getAttribute("data-portal-a11y-audit-id"));
+    if (!activeId) continue;
+    if (firstId === null) firstId = activeId;
+    else if (activeId === firstId) {
+      cycled = true;
+      break;
+    }
+    assert.equal(reached.has(activeId), false, `${label}: ${activeId} repeated before traversal wrapped`);
+    await page.waitForFunction(({ navigationSelector, auditId }) => {
       const element = document.activeElement;
-      if (!(element instanceof HTMLElement)) return false;
+      if (!(element instanceof HTMLElement)
+        || element.getAttribute("data-portal-a11y-audit-id") !== auditId) return false;
       const box = element.getBoundingClientRect();
       const navigation = navigationSelector ? document.querySelector(navigationSelector) : null;
       const navigationBox = navigation?.getBoundingClientRect() || null;
       const insideNavigation = Boolean(navigation?.contains(element));
-      const obscured = navigationBox && !insideNavigation && box.bottom > navigationBox.top;
+      const obscured = navigationBox && !insideNavigation
+        && box.top < navigationBox.bottom && box.bottom > navigationBox.top;
       return !obscured && box.top >= -1 && box.left >= -1
         && box.bottom <= innerHeight + 1 && box.right <= innerWidth + 1;
-    }, fixedNavigationSelector, { timeout: 750 }).catch(() => {});
-    const focus = await page.evaluate((navigationSelector) => {
+    }, { navigationSelector: fixedNavigationSelector, auditId: activeId }, { timeout: 1000 }).catch(() => {});
+    const focus = await page.evaluate(({ navigationSelector, auditId }) => {
       const element = document.activeElement;
       if (!(element instanceof HTMLElement)) return { error: "active element is not HTML" };
       const box = element.getBoundingClientRect();
@@ -239,32 +267,66 @@ async function assertVisibleInteractiveAccessibility(page, fixedNavigationSelect
       const navigation = navigationSelector ? document.querySelector(navigationSelector) : null;
       const navigationBox = navigation?.getBoundingClientRect() || null;
       const insideNavigation = Boolean(navigation?.contains(element));
-      const belowFixedNavigation = navigationBox && !insideNavigation && box.bottom > navigationBox.top;
+      const belowFixedNavigation = Boolean(navigationBox && !insideNavigation
+        && box.top < navigationBox.bottom && box.bottom > navigationBox.top);
       const visibleFocus = element.matches(":focus-visible")
         && ((style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2) || style.boxShadow !== "none");
       return {
         name: (element.getAttribute("aria-label") || element.textContent || "").trim(),
+        auditId: element.getAttribute("data-portal-a11y-audit-id"),
         tagName: element.tagName,
         withinViewport: box.top >= -1 && box.left >= -1
           && box.bottom <= innerHeight + 1 && box.right <= innerWidth + 1,
         belowFixedNavigation,
         visibleFocus,
       };
-    }, fixedNavigationSelector);
+    }, { navigationSelector: fixedNavigationSelector, auditId: activeId });
     assert.equal(focus.error, undefined, `keyboard traversal ${index + 1}: ${focus.error}`);
+    assert.equal(focus.auditId, activeId, `${label}: focus changed before it was audited`);
     assert.equal(focus.withinViewport, true, `keyboard traversal ${index + 1}: focused ${focus.tagName} "${focus.name}" is outside the viewport`);
     assert.equal(focus.belowFixedNavigation, false, `focused ${focus.tagName} "${focus.name}" is obscured by fixed navigation`);
     assert.equal(focus.visibleFocus, true, `focused ${focus.tagName} "${focus.name}" has no visible focus indication`);
+    reached.add(activeId);
   }
+  assert.equal(cycled, true, `${label}: keyboard traversal did not wrap within ${initial.cap} steps`);
+  assert.deepEqual([...reached].sort(), [...initial.ids].sort(), `${label}: not every visible tabbable was reached`);
+  accessibilityAuditCounts[label] = { visible: initial.visibleCount, tabbable: initial.ids.length };
+  await page.evaluate(() => document.querySelectorAll("[data-portal-a11y-audit-id]").forEach(
+    (element) => element.removeAttribute("data-portal-a11y-audit-id"),
+  ));
 }
 
-async function assertTwoHundredPercentTextReflow(page) {
-  await page.evaluate(() => {
-    document.documentElement.style.fontSize = "200%";
-  });
+async function applyTwoHundredPercentTextScaling(page, rootSelector = "body") {
+  // Deterministic browser text-only zoom: snapshot every computed size before applying 2× inline values.
+  await page.evaluate((selector) => {
+    const root = document.querySelector(selector);
+    if (!(root instanceof HTMLElement)) throw new Error(`missing text-scale root: ${selector}`);
+    const isVisible = (element) => {
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
+    };
+    const values = [root, ...root.querySelectorAll("*")]
+      .filter((element) => element instanceof HTMLElement && isVisible(element))
+      .map((element) => {
+        const style = getComputedStyle(element);
+        return { element, fontSize: parseFloat(style.fontSize), lineHeight: parseFloat(style.lineHeight) };
+      });
+    values.forEach(({ element, fontSize, lineHeight }) => {
+      if (Number.isFinite(fontSize)) element.style.setProperty("font-size", `${fontSize * 2}px`, "important");
+      if (Number.isFinite(lineHeight)) element.style.setProperty("line-height", `${lineHeight * 2}px`, "important");
+    });
+  }, rootSelector);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+}
+
+async function assertTwoHundredPercentTextReflow(page, label, fixedNavigationSelector = null) {
+  await applyTwoHundredPercentTextScaling(page);
+  await page.evaluate(() => {
+    window.scrollTo(0, 0);
+  });
   await assertNoHorizontalOverflow(page);
-  const clipped = await page.evaluate(() => {
+  const result = await page.evaluate((navigationSelector) => {
     const isVisible = (element) => {
       const style = getComputedStyle(element);
       const box = element.getBoundingClientRect();
@@ -273,19 +335,72 @@ async function assertTwoHundredPercentTextReflow(page) {
       return style.display !== "none" && style.visibility !== "hidden"
         && box.width > 0 && box.height > 0 && !visuallyHidden;
     };
-    return [...document.querySelectorAll("h1, h2, h3, p, a, button, label, dt, dd")]
-      .filter(isVisible)
-      .filter((element) => {
-        const style = getComputedStyle(element);
-        const clipsOverflow = ["hidden", "clip"].includes(style.overflowX)
-          || ["hidden", "clip"].includes(style.overflowY);
-        const boundedControl = element.matches("button, .button");
-        return (clipsOverflow || boundedControl)
-          && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
-      })
-      .map((element) => `${element.tagName}:${element.textContent?.trim().slice(0, 80)}`);
-  });
-  assert.deepEqual(clipped, [], `critical copy is clipped at 200% text size: ${clipped.join(" | ")}`);
+    const isContainedByHorizontalScroller = (element) => {
+      for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        const ancestorStyle = getComputedStyle(ancestor);
+        if (["auto", "scroll"].includes(ancestorStyle.overflowX)
+          && ancestor.scrollWidth > ancestor.clientWidth + 1) return true;
+      }
+      return false;
+    };
+    const hasDirectText = (element) => [...element.childNodes]
+      .some((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim());
+    const elements = [...document.querySelectorAll("*")]
+      .filter((element) => element instanceof HTMLElement && isVisible(element))
+      .filter((element) => hasDirectText(element)
+        || element.matches("input, textarea, select, button, a, h1, h2, h3, p, span, strong, small, label, dt, dd, th, td"));
+    const clipped = elements.filter((element) => {
+      const style = getComputedStyle(element);
+      const clips = ["hidden", "clip"].includes(style.overflowX)
+        || ["hidden", "clip"].includes(style.overflowY)
+        || element.matches("input, textarea, select, button, .button");
+      return clips && (element.scrollWidth > element.clientWidth + 1
+        || element.scrollHeight > element.clientHeight + 1);
+    }).map((element) => `${element.tagName}:${element.textContent?.trim().slice(0, 80)}`);
+    const outsidePage = elements.filter((element) => {
+      const box = element.getBoundingClientRect();
+      return (box.left < -1 || box.right > document.documentElement.clientWidth + 1)
+        && !isContainedByHorizontalScroller(element);
+    }).map((element) => `${element.tagName}:${element.textContent?.trim().slice(0, 80)}`);
+    const navigation = navigationSelector ? document.querySelector(navigationSelector) : null;
+    const navigationBox = navigation?.getBoundingClientRect() || null;
+    const navigationOcclusion = navigationBox ? elements.filter((element) => !navigation.contains(element)).filter((element) => {
+      const box = element.getBoundingClientRect();
+      const documentTop = box.top + scrollY;
+      const documentBottom = box.bottom + scrollY;
+      const maxScrollY = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+      const firstScrollThatClearsNavigation = Math.max(0, documentBottom - navigationBox.top);
+      const lastScrollThatKeepsTopVisible = Math.min(maxScrollY, documentTop);
+      const canFitAboveNavigation = box.height <= navigationBox.top + 1
+        && firstScrollThatClearsNavigation <= lastScrollThatKeepsTopVisible + 1;
+      return !canFitAboveNavigation;
+    }).map((element) => `${element.tagName}:${element.textContent?.trim().slice(0, 80)}`) : [];
+    const overlapCandidates = elements.filter((element) => hasDirectText(element)
+      || element.matches("input, textarea, select, button, a"));
+    const overlaps = [];
+    for (let leftIndex = 0; leftIndex < overlapCandidates.length; leftIndex += 1) {
+      const left = overlapCandidates[leftIndex];
+      const leftBox = left.getBoundingClientRect();
+      for (let rightIndex = leftIndex + 1; rightIndex < overlapCandidates.length; rightIndex += 1) {
+        const right = overlapCandidates[rightIndex];
+        if (left.contains(right) || right.contains(left)) continue;
+        if (navigation && navigation.contains(left) !== navigation.contains(right)) continue;
+        if (left.parentElement !== right.parentElement
+          && !(left.matches("input, textarea, select, button, a") && right.matches("input, textarea, select, button, a"))) continue;
+        const rightBox = right.getBoundingClientRect();
+        if (Math.min(leftBox.right, rightBox.right) - Math.max(leftBox.left, rightBox.left) > 1
+          && Math.min(leftBox.bottom, rightBox.bottom) - Math.max(leftBox.top, rightBox.top) > 1) {
+          overlaps.push(`${left.tagName}:${left.textContent?.trim().slice(0, 32)} <> ${right.tagName}:${right.textContent?.trim().slice(0, 32)}`);
+        }
+      }
+    }
+    return { clipped, outsidePage, navigationOcclusion, overlaps };
+  }, fixedNavigationSelector);
+  assert.deepEqual(result.clipped, [], `${label}: text/control clipping at 200%: ${result.clipped.join(" | ")}`);
+  assert.deepEqual(result.outsidePage, [], `${label}: text/control page overflow at 200%: ${result.outsidePage.join(" | ")}`);
+  assert.deepEqual(result.navigationOcclusion, [], `${label}: text is obscured by fixed navigation: ${result.navigationOcclusion.join(" | ")}`);
+  assert.deepEqual(result.overlaps, [], `${label}: overlapping text/control boxes at 200%: ${result.overlaps.join(" | ")}`);
+  await assertVisibleInteractiveAccessibility(page, `${label}-keyboard`, fixedNavigationSelector);
 }
 
 async function assertReducedMotionStopsContinuousDecoration(page) {
@@ -675,7 +790,9 @@ async function verifyFullPortal(browser, origin) {
   await assertNoHorizontalOverflow(page);
 
   await page.getByRole("button", { name: "Скопировать ссылку" }).click();
-  await page.getByText("Не удалось скопировать автоматически.").waitFor();
+  const homeCopyError = page.getByRole("alert").filter({ hasText: "Не удалось скопировать автоматически." });
+  await homeCopyError.waitFor();
+  assert.equal(await homeCopyError.count(), 1, "home copy failure must have one assertive announcement");
   await assertSecretAbsent(
     page,
     diagnostics,
@@ -713,7 +830,9 @@ async function verifyFullPortal(browser, origin) {
   await firstProfile.getByRole("button", { name: "Скрыть QR-код" }).click();
   assert.equal(await firstProfile.locator(".qr-code").count(), 0);
   await firstProfile.getByRole("button", { name: "Скопировать" }).click();
-  await firstProfile.getByText("Не удалось скопировать автоматически.").waitFor();
+  const profileCopyError = firstProfile.getByRole("alert").filter({ hasText: "Не удалось скопировать автоматически." });
+  await profileCopyError.waitFor();
+  assert.equal(await profileCopyError.count(), 1, "profile copy failure must have one assertive announcement");
 
   await firstProfile.getByRole("button", { name: "Переименовать" }).click();
   await firstProfile.getByLabel("Название профиля").fill("Личный iPhone");
@@ -721,7 +840,7 @@ async function verifyFullPortal(browser, origin) {
   await firstProfile.getByRole("heading", { name: "Личный iPhone" }).waitFor();
   assert.equal(await firstProfile.locator("textarea").count(), 0);
   await firstProfile.getByRole("button", { name: "Показать ссылку" }).click();
-  await firstProfile.getByText("Не удалось выполнить запрос.").waitFor();
+  await firstProfile.getByRole("alert").filter({ hasText: "Не удалось выполнить запрос." }).waitFor();
   await firstProfile.getByRole("button", { name: "Переименовать" }).click();
   await firstProfile.getByLabel("Название профиля").fill("Ошибка");
   await firstProfile.getByRole("button", { name: "Сохранить" }).click();
@@ -746,7 +865,9 @@ async function verifyInitialPortalStates(browser, origin) {
     });
 
     await page.goto(`${origin}/cabinet/`);
-    await page.getByRole("heading", { name: "Загружаем данные" }).waitFor();
+    const loadingStatus = page.getByRole("status").filter({ hasText: "Загружаем данные" });
+    await loadingStatus.getByRole("heading", { name: "Загружаем данные" }).waitFor();
+    assert.equal(await loadingStatus.count(), 1, "initial private-data loading must have one polite announcement");
     assert.equal(await page.getByText("Нет доступа", { exact: true }).count(), 0);
     assert.equal(await page.getByRole("heading", { name: "VPN‑профиля пока нет" }).count(), 0);
     assert.equal(await page.getByRole("button", { name: "Получить 7 дней" }).count(), 0);
@@ -778,6 +899,39 @@ async function verifyInitialPortalStates(browser, origin) {
     failData = false;
     await page.getByRole("button", { name: "Повторить" }).click();
     await page.getByRole("heading", { name: "Пробный доступ недоступен" }).waitFor();
+    await context.close();
+  }
+
+  {
+    const { context, page } = await newPortalPage(browser);
+    let firstLoad = true;
+    let pendingProfiles;
+    await installApi(page, async (route, pathname) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/plans")) return responseJson(route, []);
+      if (pathname.endsWith("/subscriptions")) {
+        return firstLoad ? responseJson(route, {}, 503) : responseJson(route, subscriptions.slice(0, 1));
+      }
+      if (pathname.endsWith("/profiles")) {
+        if (firstLoad) {
+          firstLoad = false;
+          return responseJson(route, {}, 503);
+        }
+        pendingProfiles = route;
+        return;
+      }
+      return responseJson(route, {}, 404);
+    });
+
+    await page.goto(`${origin}/cabinet/#profiles`);
+    await page.getByRole("button", { name: "Повторить", exact: true }).click();
+    const profilesLoading = page.getByRole("status").filter({ hasText: "Загружаем профили…" });
+    await profilesLoading.waitFor();
+    assert.equal(await profilesLoading.count(), 1, "profile reload must have one polite announcement");
+    assert.ok(pendingProfiles);
+    await responseJson(pendingProfiles, profiles.slice(0, 1));
+    await page.locator(".profile-card").getByRole("heading", { name: profiles[0].display_name, exact: true }).waitFor();
     await context.close();
   }
 }
@@ -1050,7 +1204,9 @@ async function verifySessionInvalidation(browser, origin) {
     await page.goto(`${origin}/cabinet/`);
     await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
     await page.getByRole("button", { name: "Скопировать ссылку" }).click();
-    await page.getByText("Ссылка скопирована", { exact: true }).waitFor();
+    const copySuccess = page.getByRole("status").filter({ hasText: "Ссылка скопирована" });
+    await copySuccess.getByText("Ссылка скопирована", { exact: true }).waitFor();
+    assert.equal(await copySuccess.count(), 1, "home copy success must have one polite announcement");
     assert.deepEqual(
       await page.evaluate(() => window.__portalClipboardWrites),
       ["vless://quick-copy-secret"],
@@ -1771,7 +1927,7 @@ async function captureResponsiveMatrix(browser, origin) {
     await assertAccessibleSubscriptionLayout(page);
     await assertPrimaryActionContrast(page);
     await assertNavSafeAreaAndReserve(page);
-    await assertVisibleInteractiveAccessibility(page, ".portal-nav");
+    await assertVisibleInteractiveAccessibility(page, scenario.name, ".portal-nav");
     await page.screenshot({
       path: path.join(outputRoot, `${scenario.name}.png`),
       fullPage: true,
@@ -1790,23 +1946,48 @@ async function captureResponsiveMatrix(browser, origin) {
   const reducedMotion = await page.locator(".portal-status-lens").evaluate((element) => ({
     animationDuration: getComputedStyle(element).animationDuration,
     titleVisible: element.querySelector("h1")?.getBoundingClientRect().height > 0,
+    scrollBehavior: getComputedStyle(document.documentElement).scrollBehavior,
   }));
   assert.ok(["0.01ms", "0s"].includes(reducedMotion.animationDuration));
   assert.equal(reducedMotion.titleVisible, true);
+  assert.equal(reducedMotion.scrollBehavior, "auto");
   await assertReducedMotionStopsContinuousDecoration(page);
   await context.close();
 
-  const scaled = await newPortalPage(browser, {
-    viewport: { width: 390, height: 844 },
+  for (const scaledScenario of [
+    { hash: "home", heading: "VPN‑профиль готов", name: "home" },
+    { hash: "profiles", heading: "Профили", name: "profiles" },
+    { hash: "account", heading: "Аккаунт", name: "account" },
+  ]) {
+    const scaled = await newPortalPage(browser, {
+      viewport: { width: 390, height: 844 },
+      colorScheme: "light",
+      reducedMotion: "reduce",
+    });
+    await installFixture(scaled.page);
+    await scaled.page.goto(`${origin}/cabinet/#${scaledScenario.hash}`);
+    await scaled.page.getByRole("heading", { name: scaledScenario.heading, exact: true }).waitFor();
+    await assertTwoHundredPercentTextReflow(
+      scaled.page,
+      `portal-${scaledScenario.name}-390-text-200`,
+      ".portal-nav",
+    );
+    await scaled.page.screenshot({
+      path: path.join(outputRoot, `portal-${scaledScenario.name}-390-text-200.png`),
+      fullPage: true,
+    });
+    await scaled.context.close();
+  }
+
+  const legacyPlans = await newPortalPage(browser, {
+    viewport: { width: 853, height: 1844 },
     colorScheme: "light",
-    reducedMotion: "reduce",
   });
-  await installFixture(scaled.page);
-  await scaled.page.goto(`${origin}/cabinet/#home`);
-  await scaled.page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
-  await assertTwoHundredPercentTextReflow(scaled.page);
-  await scaled.page.screenshot({ path: path.join(outputRoot, "portal-390-text-200.png"), fullPage: true });
-  await scaled.context.close();
+  await installFixture(legacyPlans.page);
+  await legacyPlans.page.goto(`${origin}/cabinet/#plans`);
+  await legacyPlans.page.getByRole("heading", { name: "Тарифы", exact: true }).waitFor();
+  await assertVisibleInteractiveAccessibility(legacyPlans.page, "portal-plans-853", ".portal-nav");
+  await legacyPlans.context.close();
 
   const states = await newPortalPage(browser, {
     viewport: { width: 390, height: 844 },
@@ -1815,10 +1996,12 @@ async function captureResponsiveMatrix(browser, origin) {
   await installFixture(states.page);
   await states.page.goto(`${origin}/cabinet/#profiles`);
   await states.page.getByRole("heading", { name: "Профили", exact: true }).waitFor();
+  await assertVisibleInteractiveAccessibility(states.page, "portal-profiles-390", ".portal-nav");
   await states.page.screenshot({ path: path.join(outputRoot, "portal-profiles-390-light.png"), fullPage: true });
   await assertHoveredPrimaryActionContrast(states.page);
   await states.page.locator('.portal-nav a[href="#account"]').click();
   await states.page.getByRole("heading", { name: "Аккаунт" }).waitFor();
+  await assertVisibleInteractiveAccessibility(states.page, "portal-account-390", ".portal-nav");
   await states.page.screenshot({ path: path.join(outputRoot, "portal-account-390-light.png"), fullPage: true });
   await states.context.close();
 
@@ -1943,7 +2126,7 @@ try {
   await verifyLongStatusLensStates(browser, server.origin);
   await captureResponsiveMatrix(browser, server.origin);
   const sdkResult = await verifyRealSdkCacheCleanup(browser, server.origin);
-  console.log(`Portal browser QA passed. Screenshots: ${outputRoot}`);
+  console.log(`Portal browser QA passed. accessibility=${JSON.stringify(accessibilityAuditCounts)} Screenshots: ${outputRoot}`);
   console.log(`Official SDK cache spot-check: ${sdkResult}`);
 } finally {
   await browser.close();

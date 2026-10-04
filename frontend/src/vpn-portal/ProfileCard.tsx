@@ -20,6 +20,8 @@ interface ProfileCardProps {
   onRenameSettled: (profileId: number) => void;
 }
 
+type ConnectionMessage = { kind: "success" | "error"; text: string };
+
 function errorText(error: unknown): string {
   return error instanceof PortalError
     ? error.message
@@ -40,7 +42,7 @@ export default function ProfileCard({
 }: ProfileCardProps) {
   const [connectionUri, setConnectionUri] = useState<string | null>(null);
   const [connectionBusy, setConnectionBusy] = useState(false);
-  const [connectionMessage, setConnectionMessage] = useState("");
+  const [connectionMessage, setConnectionMessage] = useState<ConnectionMessage | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [qrBusy, setQrBusy] = useState(false);
   const [qrError, setQrError] = useState("");
@@ -60,7 +62,7 @@ export default function ProfileCard({
     connectionEpoch.current += 1;
     setConnectionUri(null);
     setConnectionBusy(false);
-    setConnectionMessage("");
+    setConnectionMessage(null);
     qrRequestInFlight.current = false;
     setQrDataUrl(null);
     setQrBusy(false);
@@ -81,7 +83,7 @@ export default function ProfileCard({
     const generation = sessionGeneration.current();
     const epoch = ++connectionEpoch.current;
     setConnectionBusy(true);
-    setConnectionMessage("");
+    setConnectionMessage(null);
     qrRequestInFlight.current = false;
     setQrDataUrl(null);
     setQrBusy(false);
@@ -100,7 +102,7 @@ export default function ProfileCard({
         onUnauthorized();
         return;
       }
-      setConnectionMessage(errorText(error));
+      setConnectionMessage({ kind: "error", text: errorText(error) });
     } finally {
       if (sessionGeneration.isCurrent(generation) && connectionEpoch.current === epoch) {
         setConnectionBusy(false);
@@ -119,14 +121,15 @@ export default function ProfileCard({
       if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
         return;
       }
-      setConnectionMessage("Ссылка скопирована");
+      setConnectionMessage({ kind: "success", text: "Ссылка скопирована" });
     } catch {
       if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
         return;
       }
-      setConnectionMessage(
-        "Не удалось скопировать автоматически. Выделите ссылку в поле и скопируйте вручную.",
-      );
+      setConnectionMessage({
+        kind: "error",
+        text: "Не удалось скопировать автоматически. Выделите ссылку в поле и скопируйте вручную.",
+      });
     }
   }
 
@@ -186,7 +189,7 @@ export default function ProfileCard({
         return;
       }
       setConnectionUri(null);
-      setConnectionMessage("");
+      setConnectionMessage(null);
       setIsRenaming(false);
       onProfileChange(updated);
     } catch (error) {
@@ -217,7 +220,7 @@ export default function ProfileCard({
   function beginRename(): void {
     setRenameValue(profile.display_name);
     setRenameError("");
-    setConnectionMessage("");
+    setConnectionMessage(null);
     setIsRenaming(true);
   }
 
@@ -308,7 +311,12 @@ export default function ProfileCard({
           </>
         )}
         {connectionMessage && (
-          <p className="message" role="status">{connectionMessage}</p>
+          <p
+            className={`message ${connectionMessage.kind === "error" ? "message--error" : ""}`}
+            role={connectionMessage.kind === "error" ? "alert" : "status"}
+          >
+            {connectionMessage.text}
+          </p>
         )}
       </div>
     </article>

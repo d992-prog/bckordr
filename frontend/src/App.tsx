@@ -1523,8 +1523,9 @@ export default function App() {
       if (!destination) {
         return;
       }
+      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       destination.focus();
-      destination.scrollIntoView({ behavior: "smooth", block: "start" });
+      destination.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
     }, 0);
   }
 
@@ -2971,7 +2972,6 @@ export default function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Не удалось удалить ноду";
       setVpnNodeDeletionError(message);
-      setToast({ type: "error", text: message });
     } finally {
       vpnNodeDeletionLockRef.current = false;
       setVpnNodeDeletionBusy(false);
@@ -4604,7 +4604,12 @@ export default function App() {
         className="stack vpn-stack vpn-admin-shell"
         onFocusCapture={(event) => {
           if (event.target instanceof HTMLElement) {
-            event.target.scrollIntoView({ block: "nearest", inline: "nearest" });
+            const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            event.target.scrollIntoView({
+              behavior: reduceMotion ? "auto" : "smooth",
+              block: "nearest",
+              inline: "nearest",
+            });
           }
         }}
       >
@@ -4652,7 +4657,7 @@ export default function App() {
           </div>
           <div className="stats vpn-lifecycle-stats">
             <article><span>Проверено профилей</span><strong>{displayMetric(vpnLifecycleStatus?.checked_keys)}</strong></article>
-            <article><span>Синхронизировано</span><strong>{displayMetric(vpnLifecycleStatus?.provisioned_keys)}</strong></article>
+            <article><span>VPN‑сервис: синхронизировано профилей —</span><strong>{displayMetric(vpnLifecycleStatus?.provisioned_keys)}</strong></article>
             <article><span>Приостановлено</span><strong>{displayMetric(vpnLifecycleStatus?.suspended_keys)}</strong></article>
             <article><span>Отозвано</span><strong>{displayMetric(vpnLifecycleStatus?.revoked_keys)}</strong></article>
             <article><span>Истекло подписок</span><strong>{displayMetric(vpnLifecycleStatus?.expired_subscriptions)}</strong></article>
@@ -4667,8 +4672,8 @@ export default function App() {
         <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2 id="vpn-capacity-section" tabIndex={-1}>Ёмкость VPN‑нод</h2>
-              <p className="muted">Ограничивает число выданных профилей. Пустой лимит означает, что публичная автовыдача на VPN‑ноде отключена.</p>
+              <h2 id="vpn-capacity-section" tabIndex={-1}>Ёмкость точек подключения</h2>
+              <p className="muted">Ограничивает число выданных профилей. Пустой лимит отключает публичную автовыдачу через эту точку подключения.</p>
             </div>
           </div>
           <VpnEndpointCapacityPanel
@@ -4966,7 +4971,6 @@ export default function App() {
         aria-busy={vpnNodeDeletionBusy}
         aria-labelledby="vpn-node-dialog-title"
         aria-describedby="vpn-node-dialog-description"
-        aria-live="polite"
         tabIndex={-1}
         onCancel={(event) => {
           event.preventDefault();
