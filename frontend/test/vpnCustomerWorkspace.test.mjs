@@ -594,4 +594,14 @@ test("VPN node removal uses an accessible confirmation and preserves the mutatio
       < deleteFunction.indexOf("setWorkers((current)"),
     "the worker mutation barrier must advance before the optimistic removal",
   );
+  const confirmFunction = source.match(
+    /async function confirmVpnNodeDeletion\(\) \{[\s\S]*?\r?\n  \}\r?\n\r?\n  function formatDomainReadiness/,
+  )?.[0];
+  assert.ok(confirmFunction, "the confirmation flow must remain directly inspectable");
+  assert.match(confirmFunction, /dialog\.close\(\)/);
+  assert.ok(
+    confirmFunction.indexOf("dialog.close()")
+      < confirmFunction.indexOf("setVpnNodeDeletion(null)"),
+    "the native modal must close synchronously before React clears it and restores focus",
+  );
 });

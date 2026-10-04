@@ -640,6 +640,17 @@ try {
   await until(() => heldReloads.length > 0, "pre-delete stale load was not held");
   holdReload = false;
   const deleteCallsBeforeRace = workerDeleteCalls;
+  await page.evaluate(() => {
+    window.__nodeDeletionFocusSnapshots = [];
+    document.addEventListener("focusin", (event) => {
+      if (event.target?.getAttribute?.("href") !== "#vpn/nodes") return;
+      const dialog = document.querySelector(".vpn-node-dialog");
+      window.__nodeDeletionFocusSnapshots.push({
+        open: dialog?.open ?? false,
+        modal: dialog?.matches(":modal") ?? false,
+      });
+    });
+  });
   await deleteTrigger.click();
   await confirmDelete.evaluate((element) => { element.click(); element.click(); });
   await until(() => workerDeleteCalls === deleteCallsBeforeRace + 1,
@@ -665,6 +676,10 @@ try {
   assert.equal(await vpnNavigation.getByRole("link", { name: "Ноды", exact: true }).evaluate(
     (element) => document.activeElement === element,
   ), true, "successful deletion must return focus to a deterministic Nodes destination");
+  assert.deepEqual(await page.evaluate(() => window.__nodeDeletionFocusSnapshots.at(-1)), {
+    open: false,
+    modal: false,
+  }, "the native modal must close before focus returns to the Nodes navigation");
   const staleLoadResponse = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/control/vpn/access-keys" && response.status() === 200);
   await Promise.all(heldReloads.splice(0).map((release) => release()));

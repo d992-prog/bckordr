@@ -2959,6 +2959,10 @@ export default function App() {
     window.requestAnimationFrame(() => vpnNodeDeletionDialogRef.current?.focus());
     try {
       const refreshed = await deleteWorkerNode(worker);
+      const dialog = vpnNodeDeletionDialogRef.current;
+      if (dialog?.open) {
+        dialog.close();
+      }
       setVpnNodeDeletion(null);
       setToast(refreshed
         ? { type: "success", text: "Нода удалена из активной системы" }
