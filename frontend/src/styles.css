@@ -1,3 +1,5 @@
+@import "./brand/veltrix-brand.css";
+
 :root {
   color-scheme: light;
   --bg: #f4efe6;
@@ -38,6 +40,11 @@ textarea {
 
 button {
   cursor: pointer;
+}
+
+.app-shell :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: revert;
+  outline-offset: revert;
 }
 
 .shell {
@@ -1570,6 +1577,354 @@ button:disabled {
   line-height: 1.45;
 }
 
+.vpn-admin-shell {
+  --vpn-admin-surface: rgba(255, 255, 255, 0.94);
+  --vpn-admin-surface-muted: rgba(238, 244, 250, 0.72);
+  --vpn-admin-ink: var(--vx-ink);
+  --vpn-admin-muted: #536276;
+  --vpn-admin-border: var(--vx-border);
+  --panel: var(--vpn-admin-surface);
+  --panel-strong: #ffffff;
+  --border: var(--vpn-admin-border);
+  --text: var(--vpn-admin-ink);
+  --muted: var(--vpn-admin-muted);
+  --accent: var(--vx-blue);
+  --accent-strong: #174fc7;
+  --danger: #a52d34;
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--vx-border) 74%, transparent);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 8% 0%, color-mix(in srgb, var(--vx-mint) 18%, transparent), transparent 34%),
+    linear-gradient(145deg, color-mix(in srgb, var(--vx-lilac) 12%, var(--vx-pearl)), var(--vx-pearl) 46%);
+  color: var(--vpn-admin-ink);
+}
+
+.vpn-admin-shell > *,
+.vpn-admin-shell [data-vpn-admin-section],
+.vpn-admin-shell .card,
+.vpn-admin-shell .grid,
+.vpn-admin-shell .stack {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.vpn-admin-shell .card {
+  border-color: var(--vpn-admin-border);
+  border-radius: 20px;
+  background: var(--vpn-admin-surface);
+  box-shadow: 0 16px 40px rgba(37, 109, 255, 0.08);
+  backdrop-filter: none;
+}
+
+.vpn-admin-shell .vpn-admin-panel {
+  min-width: 0;
+  border: 1px solid var(--vpn-admin-border);
+  border-radius: 20px;
+  background: var(--vpn-admin-surface);
+}
+
+.vpn-admin-shell .vpn-admin-nav {
+  position: sticky;
+  top: 12px;
+  z-index: 8;
+  display: flex;
+  gap: 6px;
+  max-width: 100%;
+  margin: 16px 0;
+  padding: 6px;
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 12px 32px rgba(37, 109, 255, 0.12);
+  backdrop-filter: blur(22px) saturate(145%);
+  -webkit-backdrop-filter: blur(22px) saturate(145%);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--vx-blue) 38%, transparent) transparent;
+}
+
+.vpn-admin-shell .vpn-admin-nav .vpn-admin-navigation {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  min-width: max-content;
+  gap: 6px;
+}
+
+.vpn-admin-shell .vpn-admin-nav a {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 14px;
+  border-radius: 13px;
+  background: transparent;
+  color: #24415f;
+  white-space: nowrap;
+}
+
+.vpn-admin-shell .vpn-admin-nav a:hover {
+  background: color-mix(in srgb, var(--vx-blue) 10%, white);
+  color: #123f9b;
+}
+
+.vpn-admin-shell .vpn-admin-nav a[aria-current="page"] {
+  outline: none;
+  background: var(--vx-blue);
+  color: white;
+}
+
+.vpn-admin-shell :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid var(--vx-focus);
+  outline-offset: 3px;
+}
+
+.vpn-admin-shell .vpn-admin-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.vpn-admin-shell .vpn-admin-metric {
+  min-height: 96px;
+  padding: 15px;
+  border: 1px solid var(--vpn-admin-border);
+  border-radius: 20px;
+  background: var(--vpn-admin-surface);
+  box-shadow: none;
+}
+
+.vpn-admin-shell .vpn-admin-metrics > article {
+  min-height: 96px;
+  border: 1px solid var(--vpn-admin-border);
+  border-radius: 20px;
+  background: var(--vpn-admin-surface);
+  box-shadow: none;
+}
+
+.vpn-admin-shell .vpn-admin-metrics strong {
+  color: var(--vpn-admin-ink);
+  font-family: var(--vx-font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.vpn-admin-shell h2,
+.vpn-admin-shell h3 {
+  color: var(--vpn-admin-ink);
+  font-family: var(--vx-font-display);
+  letter-spacing: -0.02em;
+}
+
+.vpn-admin-shell button:not(.danger) {
+  background: var(--vx-blue);
+  color: white;
+}
+
+.vpn-admin-shell button:not(.danger):hover:not(:disabled) {
+  background: #174fc7;
+}
+
+.vpn-admin-shell button.ghost,
+.vpn-admin-shell .button-link.ghost {
+  background: color-mix(in srgb, var(--vx-blue) 9%, var(--vpn-admin-surface));
+  color: #174aaf;
+}
+
+.vpn-admin-shell button.ghost:hover:not(:disabled),
+.vpn-admin-shell .button-link.ghost:hover {
+  background: color-mix(in srgb, var(--vx-blue) 16%, var(--vpn-admin-surface));
+  color: #103a91;
+}
+
+.vpn-admin-shell button.danger {
+  background: color-mix(in srgb, var(--danger) 12%, var(--vpn-admin-surface));
+  color: #8b2029;
+}
+
+.vpn-admin-shell button.danger:hover:not(:disabled) {
+  background: #9f2932;
+  color: white;
+}
+
+.vpn-admin-shell input,
+.vpn-admin-shell textarea,
+.vpn-admin-shell select {
+  min-width: 0;
+  border-color: var(--vpn-admin-border);
+  border-radius: 13px;
+  background: #ffffff;
+  color: var(--vpn-admin-ink);
+}
+
+.vpn-admin-shell .vpn-customer-row.active-chip {
+  border-color: color-mix(in srgb, var(--vx-blue) 48%, transparent);
+  outline: none;
+  background: color-mix(in srgb, var(--vx-blue) 9%, var(--vpn-admin-surface));
+}
+
+.vpn-admin-shell button.vpn-customer-row {
+  background: transparent;
+  color: var(--vpn-admin-ink);
+}
+
+.vpn-admin-shell button.vpn-customer-row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vx-blue) 5%, var(--vpn-admin-surface));
+}
+
+.vpn-admin-shell button.vpn-customer-row.active-chip,
+.vpn-admin-shell button.vpn-customer-row.active-chip:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vx-blue) 9%, var(--vpn-admin-surface));
+}
+
+.vpn-admin-shell .vpn-customer-filters .active-chip {
+  outline: none;
+  background: var(--vx-blue);
+  color: white;
+}
+
+.vpn-admin-shell .vpn-workspace-section,
+.vpn-admin-shell .vpn-subscription-card,
+.vpn-admin-shell .vpn-key-card,
+.vpn-admin-shell .vpn-inline-form,
+.vpn-admin-shell .vpn-release-group,
+.vpn-admin-shell .vpn-release-commit {
+  border-color: var(--vpn-admin-border);
+  background: var(--vpn-admin-surface-muted);
+}
+
+.vpn-admin-shell .vpn-key-preview,
+.vpn-admin-shell .vpn-key-uri,
+.vpn-admin-shell .vpn-friend-invitation-link {
+  border: 1px solid var(--vpn-admin-border);
+  background: color-mix(in srgb, var(--vx-blue) 5%, white);
+  color: var(--vpn-admin-ink);
+}
+
+.vpn-admin-shell .vpn-key-uri {
+  width: 100%;
+  max-width: 100%;
+  resize: vertical;
+}
+
+.vpn-admin-shell .vpn-release-readiness {
+  border-inline-start-width: 1px;
+}
+
+.vpn-admin-shell .simple-table {
+  position: relative;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--vpn-admin-border);
+  border-radius: 14px;
+  background: var(--vpn-admin-surface);
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--vx-blue) 44%, transparent) var(--vpn-admin-surface-muted);
+}
+
+.vpn-admin-shell .simple-table table {
+  min-width: 680px;
+}
+
+.vpn-admin-shell .simple-table th {
+  background: var(--vpn-admin-surface-muted);
+  color: var(--vpn-admin-muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vpn-admin-shell .simple-table td,
+.vpn-admin-shell .simple-table th {
+  padding: 12px;
+  border-color: var(--vpn-admin-border);
+}
+
+.vpn-admin-shell .vpn-node-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(5, 15, 29, 0.62);
+}
+
+.vpn-admin-shell .vpn-node-dialog {
+  width: min(100%, 520px);
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+  border: 1px solid var(--vpn-admin-border);
+  border-radius: 20px;
+  background: var(--vpn-admin-surface);
+  box-shadow: 0 28px 72px rgba(5, 15, 29, 0.32);
+}
+
+.vpn-admin-shell .vpn-node-dialog h2,
+.vpn-admin-shell .vpn-node-dialog p {
+  margin: 0;
+}
+
+.vpn-admin-shell .vpn-node-dialog p {
+  margin-top: 8px;
+  color: var(--vpn-admin-muted);
+  line-height: 1.55;
+}
+
+.vpn-admin-shell .vpn-node-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .vpn-admin-shell .vpn-admin-nav {
+    background: var(--vpn-admin-surface);
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .vpn-admin-shell {
+    --vpn-admin-surface: rgba(13, 29, 47, 0.96);
+    --vpn-admin-surface-muted: rgba(22, 42, 63, 0.9);
+    --vpn-admin-ink: #f4f8ff;
+    --vpn-admin-muted: #bdcce0;
+    --vpn-admin-border: rgba(205, 225, 255, 0.18);
+    --panel-strong: #0d1d2f;
+    --accent-strong: #9ebdff;
+    --danger: #ff9299;
+  }
+
+  .vpn-admin-shell .vpn-admin-nav {
+    border-color: rgba(205, 225, 255, 0.2);
+    background: rgba(13, 29, 47, 0.76);
+  }
+
+  .vpn-admin-shell .vpn-admin-nav a,
+  .vpn-admin-shell button.ghost,
+  .vpn-admin-shell .button-link.ghost {
+    color: #d8e5ff;
+  }
+
+  .vpn-admin-shell input,
+  .vpn-admin-shell textarea,
+  .vpn-admin-shell select,
+  .vpn-admin-shell .vpn-key-preview,
+  .vpn-admin-shell .vpn-key-uri,
+  .vpn-admin-shell .vpn-friend-invitation-link {
+    background: #0d1d2f;
+    color: var(--vpn-admin-ink);
+  }
+
+  .vpn-admin-shell button.danger {
+    color: #ffb3b8;
+  }
+}
+
 .empty,
 .empty-block {
   color: var(--muted);
@@ -1689,6 +2044,45 @@ button:disabled {
   }
 
   .run-report-head {
+    flex-direction: column;
+  }
+
+  .vpn-admin-shell {
+    gap: 14px;
+    padding: 12px;
+    border-radius: 20px;
+  }
+
+  .vpn-admin-shell .card {
+    padding: 16px;
+  }
+
+  .vpn-admin-shell .vpn-admin-nav {
+    top: 6px;
+    margin-inline: -4px;
+  }
+
+  .vpn-admin-shell .vpn-admin-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .vpn-admin-shell .vpn-admin-metric,
+  .vpn-admin-shell .vpn-admin-metrics > article {
+    min-width: 0;
+    min-height: 88px;
+    padding: 13px;
+  }
+
+  .vpn-admin-shell .vpn-admin-metrics strong {
+    font-size: 1.5rem;
+  }
+
+  .vpn-admin-shell .vpn-node-dialog {
+    padding: 20px;
+  }
+
+  .vpn-admin-shell .vpn-node-dialog-actions {
+    align-items: stretch;
     flex-direction: column;
   }
 }

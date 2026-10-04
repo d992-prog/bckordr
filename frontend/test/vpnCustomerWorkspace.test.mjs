@@ -479,7 +479,7 @@ test("long profile names and rename controls wrap with visible spacing", async (
     readFile(new URL("../src/App.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(appSource, /<section className="stack vpn-stack">/);
+  assert.match(appSource, /<section className="stack vpn-stack vpn-admin-shell">/);
   assert.match(
     source,
     /\.vpn-stack \{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*min-width: 0;/s,
@@ -512,5 +512,42 @@ test("long profile names and rename controls wrap with visible spacing", async (
   assert.match(
     source,
     /\.vpn-key-rename-form input \{[^}]*flex: 1 1 16rem;[^}]*min-width: 0;/s,
+  );
+});
+
+test("VPN admin presentation stays scoped and uses the Veltrix admin primitives", async () => {
+  const [styles, appSource] = await Promise.all([
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/App.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(styles, /\.vpn-admin-shell\s*\{[^}]*display:\s*grid;[^}]*min-width:\s*0;/s);
+  assert.match(styles, /\.vpn-admin-shell\s+\.vpn-admin-nav\s*\{[^}]*position:\s*sticky;/s);
+  assert.match(styles, /\.vpn-admin-shell\s+\.vpn-admin-metric\s*\{[^}]*background:/s);
+  assert.match(appSource, /className="stack vpn-stack vpn-admin-shell"/);
+});
+
+test("admin profile links use explicit reveal and copy controls without exposing the URI by default", async () => {
+  const source = await readFile(
+    new URL("../src/VpnCustomerWorkspacePanel.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /Показать полную ссылку/);
+  assert.match(source, /Скрыть ссылку/);
+  assert.match(source, /Скопировать ссылку/);
+  assert.match(source, /maskAccessKeyUri\(accessKey\.config_uri\)/);
+});
+
+test("VPN node removal uses an accessible confirmation and preserves the mutation sequence", async () => {
+  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /role="dialog"/);
+  assert.match(source, /aria-modal="true"/);
+  assert.match(source, /Да, удалить ноду/);
+  assert.match(source, /Она перестанет принимать новые профили\./);
+  assert.match(
+    source,
+    /await api\.deleteWorker\(worker\.id\);\s*await loadAll\(\);\s*setToast/s,
   );
 });

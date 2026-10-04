@@ -90,7 +90,7 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
 
   if (!report) {
     return (
-      <section className="card full-span vpn-release-readiness" aria-busy={loading}>
+      <section className="card full-span vpn-release-readiness vpn-admin-panel" aria-busy={loading}>
         <div className="card-head">
           <div>
             <h2>Готовность VPN к релизу</h2>
@@ -111,7 +111,7 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
   const groups = groupVpnReleaseChecks(report.checks);
 
   return (
-    <section className={`card full-span vpn-release-readiness is-${tone}`} aria-busy={loading}>
+    <section className={`card full-span vpn-release-readiness vpn-admin-panel is-${tone}`} aria-busy={loading}>
       <div className="vpn-release-summary">
         <div>
           <p className="eyebrow">Релизный контур</p>

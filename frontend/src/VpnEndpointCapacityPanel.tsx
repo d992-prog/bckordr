@@ -42,7 +42,7 @@ function CapacityRow({ endpoint, onUpdated }: { endpoint: VpnEndpointCapacity } 
   }
 
   return (
-    <article className="vpn-capacity-card">
+    <article className="vpn-capacity-card vpn-admin-panel">
       <div className="vpn-capacity-head">
         <div>
           <strong>{endpoint.label}</strong>

@@ -220,6 +220,11 @@ function formatDateTime(value: string | null) {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("ru-RU");
 }
 
+function maskAccessKeyUri(value: string) {
+  const schemeEnd = value.indexOf("://");
+  return schemeEnd === -1 ? "••••••••••••" : `${value.slice(0, schemeEnd + 3)}••••••••••••`;
+}
+
 function subscriptionStatusClass(status: string) {
   if (status === "active") {
     return "status available";
@@ -1398,13 +1403,19 @@ export function VpnCustomerWorkspace({
           <p className="muted">Обновляем подпись ссылки…</p>
         ) : accessKey.config_uri ? (
           <div className="vpn-key-link-block">
-            <code className="vpn-key-preview">{accessKey.config_uri}</code>
+            <code className="vpn-key-preview">{maskAccessKeyUri(accessKey.config_uri)}</code>
             <div className="actions">
               <button type="button" className="ghost" onClick={() => void copyAccessKey(accessKey)}>
-                Копировать ссылку
+                Скопировать ссылку
               </button>
-              <button type="button" className="ghost" onClick={() => toggleAccessKeyUri(accessKey.id)}>
-                {expanded ? "Скрыть" : "Показать полностью"}
+              <button
+                type="button"
+                className="ghost"
+                aria-expanded={expanded}
+                aria-controls={`vpn-key-uri-${accessKey.id}`}
+                onClick={() => toggleAccessKeyUri(accessKey.id)}
+              >
+                {expanded ? "Скрыть ссылку" : "Показать полную ссылку"}
               </button>
             </div>
             {expanded ? (
@@ -1472,8 +1483,8 @@ export function VpnCustomerWorkspace({
   }
 
   return (
-    <div className="vpn-customer-workspace">
-      <aside className="vpn-customer-sidebar">
+    <div className="vpn-customer-workspace vpn-admin-workspace">
+      <aside className="vpn-customer-sidebar vpn-admin-panel">
         <div className="vpn-workspace-toolbar">
           <strong>Клиенты</strong>
           <button type="button" onClick={beginCustomerCreate}>
@@ -1538,7 +1549,7 @@ export function VpnCustomerWorkspace({
         </div>
       </aside>
 
-      <section className="vpn-customer-detail">
+      <section className="vpn-customer-detail vpn-admin-panel">
         {renderFriendInvitations()}
         {creatingCustomer ? (
           <form className="form vpn-workspace-section" onSubmit={saveCustomer}>

@@ -30,6 +30,24 @@ const fixtureKeys = () => [11, 12, 13].map((subscription_id, index) => ({
   status: "active", issued_at: stamp, expires_at: null, revoked_at: null,
   last_synced_at: stamp, last_error: null, ...timestamps,
 }));
+const worker = {
+  id: 41, name: "Frankfurt 1", registrar_slug: "gandi",
+  assigned_registrar_account_id: null, api_base_url: null, control_token: null,
+  status: "online", is_enabled: true, ip_address: "203.0.113.41", region: "DE",
+  notes: null, max_rps: 16, target_rps: 16, current_rps: 0,
+  current_capacity_rps: 16, cpu_load: 0, ram_usage_percent: 0, clock_drift_ms: 0,
+  runtime_mode: "live", registration_concurrency_multiplier: 1,
+  registration_max_concurrency: 1, vpn_role: "primary", vpn_enabled: true,
+  vpn_runtime_status: "ready", vpn_public_host: "vpn.example",
+  vpn_panel_url: null, vpn_panel_username: null, vpn_inbound_id: 7,
+  vpn_inbound_port: 443, vpn_inbound_protocol: "vless", vpn_inbound_transport: "tcp",
+  vpn_inbound_security: "reality", vpn_listener_status: "listening",
+  vpn_last_checked_at: stamp, vpn_last_error: null, current_domain_count: 0,
+  ssh_host: "203.0.113.41", ssh_port: 22, ssh_username: "root", ssh_key_path: null,
+  ssh_last_check_status: "ready", ssh_last_check_message: null,
+  ssh_last_checked_at: stamp, ssh_access_configured: true, last_seen_at: stamp,
+  last_heartbeat_at: stamp, ...timestamps,
+};
 const json = (route, body, status = 200) => route.fulfill({
   status, contentType: "application/json", body: JSON.stringify(body),
 });
@@ -74,9 +92,24 @@ try {
   let holdCommittedReply = false;
   let releaseCommittedReply = null;
   const patches = [];
+  let workerDeleted = false;
+  let workerDeleteCalls = 0;
+  let workerDeleteFailure = false;
+  let releaseWorkerDelete = null;
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
+    if (request.method() === "DELETE" && pathname === "/api/control/workers/41") {
+      workerDeleteCalls += 1;
+      if (workerDeleteFailure) return json(route, { detail: "Нода занята. Повторите позже" }, 503);
+      return new Promise((resolve) => {
+        releaseWorkerDelete = async () => {
+          workerDeleted = true;
+          await json(route, { detail: "Нода удалена" });
+          resolve();
+        };
+      });
+    }
     if (request.method() === "PATCH" && /^\/api\/control\/vpn\/access-keys\/(22|23)\/display-name$/.test(pathname)) {
       const id = Number(pathname.split("/").at(-2));
       const payload = request.postDataJSON();
@@ -115,6 +148,7 @@ try {
       }
       return reloadFailure ? json(route, { detail: "Не удалось обновить список" }, 503) : json(route, keys);
     }
+    if (pathname === "/api/control/workers") return json(route, workerDeleted ? [] : [worker]);
     if (pathname === "/api/control/vpn/release-readiness") return json(route, {
       ready: true, checked_at: stamp, release_id: null, checks: [],
     });
@@ -124,6 +158,8 @@ try {
     return json(route, []);
   });
   const appUrl = `http://127.0.0.1:${server.address().port}/`;
+  const output = path.resolve(root, "../.pytest_cache/admin-profile-ui-qa");
+  await mkdir(output, { recursive: true });
   const waitForHash = (expected) => page.waitForFunction(
     (hash) => window.location.hash === hash,
     expected,
@@ -136,14 +172,19 @@ try {
   await page.getByRole("button", { name: "VPN", exact: true }).click();
   await waitForHash("#vpn/overview");
   const vpnNavigation = page.getByRole("navigation", { name: "Разделы управления VPN" });
-  assert.equal(await vpnNavigation.getByRole("link", { name: "Обзор", exact: true }).getAttribute("aria-current"), "page");
+  const waitForCurrentVpnLink = (label) => page.waitForFunction((expectedLabel) =>
+    [...document.querySelectorAll('nav[aria-label="Разделы управления VPN"] a')]
+      .some((link) => link.textContent?.trim() === expectedLabel && link.getAttribute("aria-current") === "page"),
+  label);
+  await waitForCurrentVpnLink("Обзор");
+  await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-overview-1280.png") });
 
   await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).click();
   await waitForHash("#vpn/customers");
-  assert.equal(await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).getAttribute("aria-current"), "page");
+  await waitForCurrentVpnLink("Клиенты");
   await page.goBack();
   await waitForHash("#vpn/overview");
-  assert.equal(await vpnNavigation.getByRole("link", { name: "Обзор", exact: true }).getAttribute("aria-current"), "page");
+  await waitForCurrentVpnLink("Обзор");
   await page.goBack();
   await waitForHash("");
   assert.match(await page.getByRole("button", { name: "домены", exact: true }).getAttribute("class"), /active-chip/);
@@ -157,24 +198,46 @@ try {
   assert.match(await page.getByRole("button", { name: "домены", exact: true }).getAttribute("class"), /active-chip/);
   await page.goBack();
   await waitForHash("#vpn/customers");
-  assert.equal(await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).getAttribute("aria-current"), "page");
+  await waitForCurrentVpnLink("Клиенты");
   await page.goForward();
   await waitForHash("");
 
   await page.goto(`${appUrl}#vpn/customers`);
   await waitForHash("#vpn/customers");
-  assert.equal(await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).getAttribute("aria-current"), "page");
+  await waitForCurrentVpnLink("Клиенты");
+
+  const customerSearch = page.getByRole("textbox", { name: "Поиск", exact: true });
+  const firstProfileAction = page.getByRole("button", { name: "Изменить название", exact: true }).first();
+  await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).focus();
+  let searchFocusStep = -1;
+  let profileFocusStep = -1;
+  for (let step = 0; step < 48 && profileFocusStep < 0; step += 1) {
+    if (await customerSearch.evaluate((element) => document.activeElement === element)) searchFocusStep = step;
+    if (await firstProfileAction.evaluate((element) => document.activeElement === element)) profileFocusStep = step;
+    await page.keyboard.press("Tab");
+  }
+  assert.ok(searchFocusStep > 0, "Tab order must reach customer search after VPN navigation");
+  assert.ok(profileFocusStep > searchFocusStep, "Tab order must reach a profile action after customer search");
 
   await page.locator(".vpn-customer-row").filter({ hasText: "Борис" }).click();
+  assert.notEqual(
+    await page.locator(".vpn-customer-row").filter({ hasText: "Анна" }).evaluate(
+      (element) => getComputedStyle(element).backgroundColor,
+    ),
+    "rgb(37, 109, 255)",
+    "an unselected customer row must not look like a primary action",
+  );
   await page.getByRole("button", { name: "Новый клиент", exact: true }).click();
   const customerDraft = page.getByRole("textbox", { name: "Имя", exact: true });
   await customerDraft.fill("Черновик клиента");
   await vpnNavigation.getByRole("link", { name: "Обзор", exact: true }).click();
   await waitForHash("#vpn/overview");
+  await waitForCurrentVpnLink("Обзор");
   assert.equal(await page.locator('[data-vpn-admin-section="customers"]').isHidden(), true);
   assert.equal(await page.getByRole("button", { name: "Новый клиент", exact: true }).count(), 0);
   await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).click();
   await waitForHash("#vpn/customers");
+  await waitForCurrentVpnLink("Клиенты");
   assert.equal(await customerDraft.inputValue(), "Черновик клиента");
   await page.getByRole("button", { name: "Отмена", exact: true }).click();
   assert.match(await page.locator(".vpn-customer-row.active-chip").innerText(), /Борис/);
@@ -183,12 +246,16 @@ try {
   const key = page.locator(".vpn-subscription-card").filter({ hasText: "Подписка #12" }).locator(".vpn-key-card");
   await key.getByText("Телефон 2", { exact: true }).waitFor();
   assert.equal(await key.getByText(/dropcatch-old/).count(), 0);
-  await key.getByRole("button", { name: "Показать полностью", exact: true }).click();
+  assert.equal(await key.evaluate((element, secret) => element.textContent.includes(secret), labelled("Телефон 2")), false);
+  await key.getByRole("button", { name: "Показать полную ссылку", exact: true }).click();
   assert.equal(await key.locator("textarea").inputValue(), labelled("Телефон 2"));
+  assert.equal(await key.locator("textarea").getAttribute("readonly"), "");
   await page.setViewportSize({ width: 390, height: 844 });
   const initialNarrowBounds = await key.boundingBox();
   assert.ok(initialNarrowBounds.x >= 0 && initialNarrowBounds.x + initialNarrowBounds.width <= 391,
     "the profile card must fit the narrow viewport, not merely its oversized parent");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+    "the VPN admin page must not overflow the narrow viewport");
   await page.setViewportSize({ width: 1280, height: 1000 });
   await key.getByRole("button", { name: "Изменить название", exact: true }).click();
   assert.equal(await key.getByRole("textbox", { name: "Название профиля Телефон 2", exact: true }).getAttribute("maxlength"), "64");
@@ -209,7 +276,7 @@ try {
   assert.match(await page.locator(".vpn-customer-row.active-chip").innerText(), /Борис/);
   await page.getByRole("heading", { name: "Изменить подписку #13", exact: true }).waitFor();
   assert.equal(await key.locator("textarea").inputValue(), labelled("Рабочий iPhone"));
-  await key.getByRole("button", { name: "Копировать ссылку", exact: true }).click();
+  await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).click();
   assert.equal(await page.evaluate(() => window.__copies.at(-1)), labelled("Рабочий iPhone"));
 
   const until = async (condition, message) => {
@@ -235,7 +302,7 @@ try {
   await rename("Рабочий iPhone 2", "Ноутбук");
   await page.locator(".toast").filter({ hasText: "но список не обновлён" }).waitFor();
   assert.equal(await key.locator("textarea").inputValue(), labelled("Ноутбук"));
-  await key.getByRole("button", { name: "Копировать ссылку", exact: true }).click();
+  await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).click();
   assert.equal(await page.evaluate(() => window.__copies.at(-1)), labelled("Ноутбук"));
 
   reloadFailure = false;
@@ -254,13 +321,13 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   await key.getByText("Обновляем подпись ссылки…", { exact: true }).waitFor();
-  assert.equal(await key.getByRole("button", { name: "Копировать ссылку", exact: true }).count(), 0);
-  assert.equal(await key.getByRole("button", { name: /^(Скрыть|Показать полностью)$/ }).count(), 0);
+  assert.equal(await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).count(), 0);
+  assert.equal(await key.getByRole("button", { name: /^(Скрыть ссылку|Показать полную ссылку)$/ }).count(), 0);
   assert.equal(await key.locator("textarea").count(), 0);
   holdReload = false;
   await Promise.all(heldReloads.splice(0).map((release) => release()));
   await key.getByText("Домашний Mac", { exact: true }).waitFor();
-  await key.getByRole("button", { name: "Копировать ссылку", exact: true }).click();
+  await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).click();
   assert.equal(await page.evaluate(() => window.__copies.at(-1)), labelled("Домашний Mac"));
 
   heldRenameIds.add(22);
@@ -276,12 +343,12 @@ try {
     await secondKey.getByRole("button", { name: "Сохранить", exact: true }).click();
     await until(() => heldRenames.has(23), "held second rename not requested");
   }
-  assert.equal(await key.getByRole("button", { name: "Копировать ссылку", exact: true }).count(), 0);
+  assert.equal(await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).count(), 0);
   await heldRenames.get(22)();
   await key.getByText("Основной Mac", { exact: true }).waitFor();
   if (allowsSecondRename) {
     assert.equal(await secondKey.getByRole("textbox", { name: /^Название профиля / }).inputValue(), "Планшет");
-    assert.equal(await secondKey.getByRole("button", { name: "Копировать ссылку", exact: true }).count(), 0);
+    assert.equal(await secondKey.getByRole("button", { name: "Скопировать ссылку", exact: true }).count(), 0);
     await heldRenames.get(23)();
     await secondKey.getByText("Планшет", { exact: true }).waitFor();
   }
@@ -296,7 +363,7 @@ try {
   await page.evaluate(() => {
     navigator.clipboard.writeText = async () => { throw new Error("Synthetic clipboard denial"); };
   });
-  await key.getByRole("button", { name: "Копировать ссылку", exact: true }).click();
+  await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).click();
   await page.locator(".toast").filter({ hasText: "Полная ссылка выделена" }).waitFor();
   await page.waitForFunction(() => {
     const field = document.getElementById("vpn-key-uri-22");
@@ -307,8 +374,6 @@ try {
     [document.activeElement === field, field.selectionStart, field.selectionEnd]),
   [true, 0, labelled("Основной Mac").length]);
   assert.deepEqual(errors, []);
-  const output = path.resolve(root, "../.pytest_cache/admin-profile-ui-qa");
-  await mkdir(output, { recursive: true });
   await page.locator(".vpn-customer-workspace").screenshot({ path: path.join(output, "admin-profile-1280.png") });
   renameFailure = false;
   reloadFailure = true;
@@ -342,8 +407,58 @@ try {
   await failedFollowup;
   await key.getByText("Имя администратора", { exact: true }).waitFor();
   await key.getByText("Ключ отозван, ссылка больше недоступна.", { exact: true }).waitFor();
-  assert.equal(await key.getByRole("button", { name: "Копировать ссылку", exact: true }).count(), 0);
+  assert.equal(await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).count(), 0);
   assert.equal(await key.locator("textarea").count(), 0);
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await page.goto(`${appUrl}#vpn/nodes`);
+  await waitForHash("#vpn/nodes");
+  const deleteTrigger = page.getByRole("button", { name: "Удалить ноду", exact: true });
+  await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-nodes-1280.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+    "only the contained node table may scroll horizontally");
+  assert.ok(await page.locator('[data-vpn-admin-section="nodes"] .simple-table').evaluate(
+    (element) => element.scrollWidth > element.clientWidth,
+  ), "the wide node table should remain in a discoverable contained scroller");
+  await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-nodes-390.png") });
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await deleteTrigger.click();
+  const deleteDialog = page.getByRole("dialog", { name: "Удалить VPN‑ноду «Frankfurt 1»?", exact: true });
+  await deleteDialog.getByText(
+    "Она перестанет принимать новые профили. Активные профили будут обработаны по текущим правилам безопасного удаления.",
+    { exact: true },
+  ).waitFor();
+  await deleteDialog.screenshot({ path: path.join(output, "admin-node-delete-dialog-1280.png") });
+  const cancelDelete = deleteDialog.getByRole("button", { name: "Отмена", exact: true });
+  const confirmDelete = deleteDialog.getByRole("button", { name: "Да, удалить ноду", exact: true });
+  await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "Отмена");
+  assert.equal(await cancelDelete.evaluate((element) => document.activeElement === element), true);
+  await cancelDelete.click();
+  assert.equal(workerDeleteCalls, 0);
+  await page.waitForFunction(() => document.activeElement?.classList.contains("vpn-node-delete-trigger"));
+  assert.equal(await deleteTrigger.evaluate((element) => document.activeElement === element), true);
+  await deleteTrigger.click();
+  await page.keyboard.press("Escape");
+  assert.equal(workerDeleteCalls, 0);
+  await page.waitForFunction(() => document.activeElement?.classList.contains("vpn-node-delete-trigger"));
+  assert.equal(await deleteTrigger.evaluate((element) => document.activeElement === element), true);
+  workerDeleteFailure = true;
+  await deleteTrigger.click();
+  await confirmDelete.click();
+  await deleteDialog.getByRole("alert").getByText("Нода занята. Повторите позже", { exact: true }).waitFor();
+  assert.equal(workerDeleteCalls, 1);
+  assert.equal(await confirmDelete.isEnabled(), true);
+  workerDeleteFailure = false;
+  await cancelDelete.click();
+  await page.waitForFunction(() => document.activeElement?.classList.contains("vpn-node-delete-trigger"));
+  await deleteTrigger.click();
+  await confirmDelete.evaluate((element) => { element.click(); element.click(); });
+  await until(() => workerDeleteCalls === 2, "node deletion was not requested exactly once per confirmation");
+  assert.equal(await confirmDelete.isDisabled(), true);
+  await releaseWorkerDelete();
+  await page.locator(".toast").filter({ hasText: "Нода удалена из активной системы" }).waitFor();
+  assert.equal(workerDeleteCalls, 2);
+  assert.equal(await page.getByRole("dialog").count(), 0);
   assert.deepEqual(errors, []);
   console.log("PASS: actual admin bundle rename/cancel/selection/reload-failure/stale-GET/delayed-PATCH/external-rename/revoke/two-key-pending/copy-fallback/error/narrow-profile-bounds, synthetic HTTP only");
 } finally {
