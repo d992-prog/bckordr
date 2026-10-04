@@ -44,6 +44,8 @@ import {
   ZoneStrategy,
 } from "./api";
 import { isVpnConfigurationActionDisabled } from "./vpnMaintenance";
+import { VpnAdminNavigation } from "./VpnAdminNavigation";
+import { displayMetric, vpnAdminSectionFromHash } from "./vpnAdminView";
 import { VpnCustomerWorkspace } from "./VpnCustomerWorkspacePanel";
 import { shouldApplyLoadGeneration } from "./vpnCustomerWorkspace";
 import { VpnEndpointCapacityPanel } from "./VpnEndpointCapacityPanel";
@@ -1031,6 +1033,7 @@ function discoveryRuntimeSettingsToForm(settings: DiscoveryRuntimeSettings) {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("domains");
+  const [vpnAdminSection, setVpnAdminSection] = useState(() => vpnAdminSectionFromHash(window.location.hash));
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [toast, setToast] = useState<Toast>(null);
@@ -1285,6 +1288,19 @@ export default function App() {
     (activeDiscoveryPage - 1) * discoveryPageSize,
     activeDiscoveryPage * discoveryPageSize,
   );
+
+  useEffect(() => {
+    const syncVpnAdminSection = () => {
+      if (!/^#\/?vpn(?:\/|\?|$)/.test(window.location.hash)) {
+        return;
+      }
+      setVpnAdminSection(vpnAdminSectionFromHash(window.location.hash));
+      setTab("vpn");
+    };
+    syncVpnAdminSection();
+    window.addEventListener("hashchange", syncVpnAdminSection);
+    return () => window.removeEventListener("hashchange", syncVpnAdminSection);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -4470,15 +4486,20 @@ export default function App() {
             </div>
             <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
           </div>
-          <div className="stats">
-            <article><span>VPN ноды</span><strong>{vpnOverview?.enabled_nodes ?? 0}</strong></article>
-            <article><span>Готовые ноды</span><strong>{vpnOverview?.ready_nodes ?? 0}</strong></article>
-            <article><span>Клиенты</span><strong>{vpnOverview?.active_customers ?? 0}</strong></article>
-            <article><span>Подписки</span><strong>{vpnOverview?.active_subscriptions ?? 0}</strong></article>
-            <article><span>Ключи</span><strong>{vpnOverview?.active_keys ?? 0}</strong></article>
-          </div>
+          <VpnAdminNavigation activeSection={vpnAdminSection} />
+          {vpnAdminSection === "overview" ? (
+            <div className="stats">
+              <article><span>VPN-ноды</span><strong>{displayMetric(vpnOverview?.enabled_nodes)}</strong></article>
+              <article><span>Готовые ноды</span><strong>{displayMetric(vpnOverview?.ready_nodes)}</strong></article>
+              <article><span>Клиенты</span><strong>{displayMetric(vpnOverview?.active_customers)}</strong></article>
+              <article><span>Подписки</span><strong>{displayMetric(vpnOverview?.active_subscriptions)}</strong></article>
+              <article><span>Ключи</span><strong>{displayMetric(vpnOverview?.active_keys)}</strong></article>
+            </div>
+          ) : null}
         </div>
 
+        {vpnAdminSection === "overview" ? (
+          <>
         <VpnReleaseReadinessPanel
           key={vpnReadinessUiGeneration}
           report={vpnReleaseReadiness}
@@ -4497,16 +4518,16 @@ export default function App() {
             <button type="button" className="ghost" onClick={() => void runVpnLifecycleMaintenance()}>Запустить сейчас</button>
           </div>
           <div className="stats vpn-lifecycle-stats">
-            <article><span>Проверено ключей</span><strong>{vpnLifecycleStatus?.checked_keys ?? 0}</strong></article>
-            <article><span>Синхронизировано</span><strong>{vpnLifecycleStatus?.provisioned_keys ?? 0}</strong></article>
-            <article><span>Приостановлено</span><strong>{vpnLifecycleStatus?.suspended_keys ?? 0}</strong></article>
-            <article><span>Отозвано</span><strong>{vpnLifecycleStatus?.revoked_keys ?? 0}</strong></article>
-            <article><span>Истекло подписок</span><strong>{vpnLifecycleStatus?.expired_subscriptions ?? 0}</strong></article>
-            <article><span>Ждут синхронизации</span><strong>{vpnLifecycleStatus?.pending_sync_keys ?? 0}</strong></article>
-            <article><span>Ждут приостановки</span><strong>{vpnLifecycleStatus?.pending_suspend_keys ?? 0}</strong></article>
-            <article><span>Ждут отзыва</span><strong>{vpnLifecycleStatus?.pending_revoke_keys ?? 0}</strong></article>
-            <article><span>Пропущено безопасностью</span><strong>{vpnLifecycleStatus?.skipped_unsafe_keys ?? 0}</strong></article>
-            <article><span>Ошибки</span><strong>{vpnLifecycleStatus?.failed_keys ?? 0}</strong></article>
+            <article><span>Проверено ключей</span><strong>{displayMetric(vpnLifecycleStatus?.checked_keys)}</strong></article>
+            <article><span>Синхронизировано</span><strong>{displayMetric(vpnLifecycleStatus?.provisioned_keys)}</strong></article>
+            <article><span>Приостановлено</span><strong>{displayMetric(vpnLifecycleStatus?.suspended_keys)}</strong></article>
+            <article><span>Отозвано</span><strong>{displayMetric(vpnLifecycleStatus?.revoked_keys)}</strong></article>
+            <article><span>Истекло подписок</span><strong>{displayMetric(vpnLifecycleStatus?.expired_subscriptions)}</strong></article>
+            <article><span>Ждут синхронизации</span><strong>{displayMetric(vpnLifecycleStatus?.pending_sync_keys)}</strong></article>
+            <article><span>Ждут приостановки</span><strong>{displayMetric(vpnLifecycleStatus?.pending_suspend_keys)}</strong></article>
+            <article><span>Ждут отзыва</span><strong>{displayMetric(vpnLifecycleStatus?.pending_revoke_keys)}</strong></article>
+            <article><span>Пропущено безопасностью</span><strong>{displayMetric(vpnLifecycleStatus?.skipped_unsafe_keys)}</strong></article>
+            <article><span>Ошибки</span><strong>{displayMetric(vpnLifecycleStatus?.failed_keys)}</strong></article>
           </div>
         </div>
 
@@ -4526,7 +4547,10 @@ export default function App() {
             }}
           />
         </div>
+          </>
+        ) : null}
 
+        {vpnAdminSection === "plans" ? (
         <section className="grid">
           <div className="card full-span">
             <h2>Новый тариф</h2>
@@ -4549,7 +4573,9 @@ export default function App() {
           </div>
 
         </section>
+        ) : null}
 
+        {vpnAdminSection === "customers" ? (
         <div className="card full-span">
           <div className="card-head">
             <div>
@@ -4568,7 +4594,9 @@ export default function App() {
             notify={(type: "success" | "error", text: string) => setToast({ type, text })}
           />
         </div>
+        ) : null}
 
+        {vpnAdminSection === "nodes" ? (
         <div className="card full-span">
           <div className="card-head">
             <div>
@@ -4663,7 +4691,9 @@ export default function App() {
           </div>
           {vpnNodes.length === 0 ? <p className="empty">VPN-ноды пока не включены. Открой воркер, задай роль VPN и включи VPN.</p> : null}
         </div>
+        ) : null}
 
+        {vpnAdminSection === "plans" ? (
         <div className="card full-span">
           <h2>Тарифы</h2>
           <div className="simple-table">
@@ -4703,7 +4733,10 @@ export default function App() {
           </div>
           {vpnPlans.length === 0 ? <p className="empty">Тарифов пока нет.</p> : null}
         </div>
+        ) : null}
 
+        {vpnAdminSection === "events" ? (
+          <>
         <div className="card full-span">
           <h2>Telegram</h2>
           <p className="muted">Последние обращения клиентов к VPN-боту и результат доставки ответа.</p>
@@ -4766,6 +4799,8 @@ export default function App() {
           </div>
           {vpnNodeEvents.length === 0 ? <p className="empty">Событий пока нет.</p> : null}
         </div>
+          </>
+        ) : null}
       </section>
     );
   }
