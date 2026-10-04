@@ -315,7 +315,7 @@
     "review": {
       "status": "closed",
       "openedAt": "2026-10-04T05:32:24.413Z",
-      "closedAt": "2026-10-04T06:50:01.148Z",
+      "closedAt": "2026-10-04T07:33:56.742Z",
       "attempts": 0,
       "notes": [
         {
@@ -333,6 +333,14 @@
         {
           "at": "2026-10-04T06:42:11.522Z",
           "text": "Current full browser evidence is complete: public VPN QA passes desktop/mobile/dark/200% text and payment-safety assertions; VPN admin QA passes overview/customers/nodes/plans/events on desktop and 390px at 200%, including dialog and secret/error paths. These reruns use the current production build and synthetic HTTP fixtures only. The temporary local browser launcher shim was removed and is not an artifact. Review remains open for an independent disposition."
+        },
+        {
+          "at": "2026-10-04T07:24:23.451Z",
+          "text": "Release-review evidence correction: the authoritative final comp-diff now compares the approved 853x1844 portrait comp with the freshly captured 853x1844 hero-repro first viewport, not the unrelated 1440px responsive topology. The supported tool reports 80.92% overall, verdict match, in .impeccable/review/diff/final/report.json. Wide 1200/1440 behavior remains independently covered by passing browser QA. The historical hero gate ok:false and its numerical results remain unmodified; its named semantic/control differences are the previously documented product-truth and accessibility adaptations reviewed before the ship disposition. No force or manual numeric edit was used."
+        },
+        {
+          "at": "2026-10-04T07:33:56.710Z",
+          "text": "Independent corrected-evidence review PASS on 2026-10-04: exact-size 853x1844 final report is an overall 80.92% match; named product-truth/accessibility deviations (honest profile-ready copy, solid AA primary action, compact equal-cell safe-area navigation) are explicitly approved under the release criterion. All measured assets/plates paths exist and are regression-tested; provenance remains repo-only."
         }
       ],
       "gate": null,
@@ -341,7 +349,7 @@
   },
   "finish": {
     "disposition": "ship",
-    "at": "2026-10-04T06:50:01.148Z",
+    "at": "2026-10-04T07:33:56.742Z",
     "phaseAtFinish": "review"
   },
   "plates": {

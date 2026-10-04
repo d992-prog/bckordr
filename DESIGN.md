@@ -118,6 +118,8 @@ Veltrix переводит техническую услугу в спокойн
 
 Показывает продукт, простоту подключения, поддерживаемые клиенты и переход к кабинету/боту. До подключения платежей запрещены purchase CTA, вымышленные цены, скорость, стабильность, число клиентов и отзывы.
 
+Подтверждённая клиентская матрица на текущем релизе: Happ на iPhone (iOS) и Hiddify на Windows. Android и macOS не показываются как поддерживаемые, пока не появится реальный тест подключения и отдельная проверенная инструкция.
+
 ### Админ-панель
 
 VPN-раздел сохраняет высокую плотность, табы/секции overview, customers, nodes, plans и events, явные состояния readiness и предупреждения. Деструктивные действия используют отдельный danger-стиль и подтверждающий dialog. Пароли, токены и connection URI маскируются и раскрываются только явным действием; они не попадают в уведомления, снимки и логи.
@@ -126,12 +128,12 @@ VPN-раздел сохраняет высокую плотность, табы/
 
 | Путь | Регион | Размер | Альфа/фон | Provenance |
 | --- | --- | ---: | --- | --- |
-| `frontend/public/brand/atmosphere.webp` | атмосферное поле | 512×1108 | opaque, `yuv420p` | `atmosphere.webp.json` |
-| `frontend/public/brand/brand-mark.webp` | трёхлепестковый знак | 512×551 | transparent, `argb` | `brand-mark.webp.json` |
-| `frontend/public/brand/signal-orb.webp` | signal orb | 512×484 | transparent, `argb` | `signal-orb.webp.json` |
-| `frontend/public/brand/status-lens.webp` | оптическая линза статуса | 1200×710 | transparent, `argb` | `status-lens.webp.json` |
+| `frontend/public/brand/atmosphere.webp` | атмосферное поле | 512×1108 | opaque, `yuv420p` | `.impeccable/provenance/brand/atmosphere.webp.json` |
+| `frontend/public/brand/brand-mark.webp` | трёхлепестковый знак | 512×551 | transparent, `argb` | `.impeccable/provenance/brand/brand-mark.webp.json` |
+| `frontend/public/brand/signal-orb.webp` | signal orb | 512×484 | transparent, `argb` | `.impeccable/provenance/brand/signal-orb.webp.json` |
+| `frontend/public/brand/status-lens.webp` | оптическая линза статуса | 1200×710 | transparent, `argb` | `.impeccable/provenance/brand/status-lens.webp.json` |
 
-Каждый sibling JSON фиксирует исходный prompt, tool/model truth, дату, source PNG, назначение, approval, точный SHA-256, размер и alpha. Исходные lossless-пластины и их sidecar лежат в `.impeccable/assets/`.
+Каждый repo-only JSON в `.impeccable/provenance/brand/` фиксирует исходный prompt, tool/model truth, дату, source PNG, назначение, approval, точный SHA-256, размер и alpha. Исходные lossless-пластины и их sidecar лежат в `.impeccable/assets/`. В `frontend/public/brand/` находятся только оптимизированные WebP без prompt/provenance metadata.
 
 ## Do's and Don'ts
 
@@ -140,6 +142,7 @@ VPN-раздел сохраняет высокую плотность, табы/
 - **Do** начинать пользовательский экран со статуса и одного понятного следующего действия.
 - **Do** сохранять focus ring `3px` с offset `3px`, контраст, safe areas, 44px touch targets и live regions.
 - **Do** проверять `npm test`, `npm run build`, три browser QA script и матрицу 320/390/853/1024/1200/1440, включая 1440×1200, dark mode и 200% text.
+- **Do** сравнивать portrait comp только с first-viewport capture того же размера `853×1844`; широкую responsive-топологию подтверждать browser QA, а не растягивать её под portrait spec. Авторитетный release diff лежит в `.impeccable/review/diff/final/report.json`.
 - **Do** обновлять raster sidecar и SHA-256 при каждой замене shipping asset; не тайлить `atmosphere.webp`.
 - **Do** сохранять `prefers-reduced-motion`: без непрерывной декорации, lens arrival `0s/0.01ms`, route loop выключен, scroll behavior `auto`.
 

@@ -530,6 +530,15 @@ async function verifyConfigStates(browser, origin) {
     await unavailable.first().waitFor();
     assert.ok(await unavailable.count() >= 2);
     assert.equal(await unavailable.first().isDisabled(), true);
+    const unavailableTrialCard = loading.page.locator(".plan-card").filter({ hasText: "Пробный" });
+    assert.equal(
+      await unavailableTrialCard.getByRole("button", { name: "Бот временно недоступен", exact: true }).isDisabled(),
+      true,
+    );
+    assert.equal(
+      await unavailableTrialCard.getByRole("button", { name: "Покупка скоро будет доступна", exact: true }).count(),
+      0,
+    );
     assert.equal(await loading.page.getByRole("link", { name: "Проверить доступность в боте", exact: true }).count(), 0);
     assert.equal(await loading.page.getByRole("link", { name: "Узнать о пробном доступе", exact: true }).count(), 0);
     assertOnlyPublicRequests(loading.attemptedPaths);

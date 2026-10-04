@@ -1,12 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, readdir, readFile } from "node:fs/promises";
 
 const markUrl = new URL("../src/brand/VeltrixMark.tsx", import.meta.url);
 const cssUrl = new URL("../src/brand/veltrix-brand.css", import.meta.url);
 const assetUrl = new URL("../public/veltrix-mark.svg", import.meta.url);
 const rawAssetRoot = new URL("../../.impeccable/assets/", import.meta.url);
+const provenanceRoot = new URL("../../.impeccable/provenance/brand/", import.meta.url);
 const shippingAssetRoot = new URL("../public/brand/", import.meta.url);
+const repositoryRoot = new URL("../../", import.meta.url);
+const measuredSpecUrl = new URL("../../.impeccable/build/spec.json", import.meta.url);
 
 function luminance(hex) {
   const channels = hex
@@ -92,7 +96,7 @@ test("reduced motion and atmosphere are scoped, responsive, and honest", async (
   const [css, atmosphereMeta, shippingMeta, shippingAsset] = await Promise.all([
     readFile(cssUrl, "utf8"),
     readFile(new URL("atmosphere.json", rawAssetRoot), "utf8").then(JSON.parse),
-    readFile(new URL("atmosphere.webp.json", shippingAssetRoot), "utf8").then(JSON.parse),
+    readFile(new URL("atmosphere.webp.json", provenanceRoot), "utf8").then(JSON.parse),
     readFile(new URL("atmosphere.webp", shippingAssetRoot)),
   ]);
   const reducedMotionCss = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
@@ -109,6 +113,44 @@ test("reduced motion and atmosphere are scoped, responsive, and honest", async (
   assert.ok(shippingMeta.dimensions.width <= atmosphereMeta.dimensions.width);
   assert.ok(shippingMeta.dimensions.height <= atmosphereMeta.dimensions.height);
   assert.ok(shippingAsset.length > 1_000);
+});
+
+test("shipping raster provenance stays complete and outside the browser bundle", async () => {
+  const publicFiles = await readdir(shippingAssetRoot);
+  assert.deepEqual(publicFiles.sort(), [
+    "atmosphere.webp",
+    "brand-mark.webp",
+    "signal-orb.webp",
+    "status-lens.webp",
+  ]);
+
+  for (const id of ["atmosphere", "brand-mark", "signal-orb", "status-lens"]) {
+    const [metadata, asset] = await Promise.all([
+      readFile(new URL(`${id}.webp.json`, provenanceRoot), "utf8").then(JSON.parse),
+      readFile(new URL(`${id}.webp`, shippingAssetRoot)),
+    ]);
+    assert.equal(metadata.regionId, id);
+    assert.equal(metadata.asset, `${id}.webp`);
+    assert.match(metadata.sourceTool, /image_gen/);
+    assert.equal(typeof metadata.sourceModel, "string");
+    assert.match(metadata.prompt, /\S/);
+    assert.match(metadata.sha256, /^[a-f0-9]{64}$/);
+    assert.equal(createHash("sha256").update(asset).digest("hex"), metadata.sha256);
+    assert.ok(metadata.dimensions.width > 0);
+    assert.ok(metadata.dimensions.height > 0);
+    assert.equal(typeof metadata.alpha, "boolean");
+    assert.equal(metadata.approved, true);
+  }
+});
+
+test("every measured raster plate remains available at its recorded contract path", async () => {
+  const spec = JSON.parse(await readFile(measuredSpecUrl, "utf8"));
+  const plates = spec.regions
+    .map((region) => region.plate)
+    .filter((plate) => typeof plate === "string");
+
+  assert.ok(plates.length > 0);
+  await Promise.all(plates.map((plate) => access(new URL(plate, repositoryRoot))));
 });
 
 test("generated plate metadata matches PNG dimensions and alpha intent", async () => {

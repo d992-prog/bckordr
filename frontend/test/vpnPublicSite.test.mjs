@@ -100,6 +100,22 @@ test("public site contains honest product, trial, support, privacy, and terms co
   assert.match(account, /href="\/vpn\/#privacy"/);
   assert.match(account, /href="\/vpn\/#terms"/);
   assert.match(portal, /bootstrapResult\.config\?\.support_text/);
+  assert.match(portal, /iPhone[\s\S]*Happ/);
+  assert.match(portal, /Windows[\s\S]*Hiddify/);
+  assert.doesNotMatch(portal, /["']Android["']|["']macOS["']/);
+});
+
+test("trial plan keeps trial copy when the bot link is unavailable", async () => {
+  const source = await readFile(siteUrl, "utf8");
+  const planAction = source.slice(
+    source.indexOf('<div className="plan-card__action">'),
+    source.indexOf("</article>", source.indexOf('<div className="plan-card__action">')),
+  );
+
+  assert.match(planAction, /plan\.is_trial\s*\?/);
+  assert.match(planAction, /<BotAction config=\{config\} label="Узнать о пробном доступе" \/>/);
+  assert.match(planAction, /Покупка скоро будет доступна/);
+  assert.doesNotMatch(planAction, /plan\.is_trial\s*&&\s*config\?\.bot_url/);
 });
 
 test("public site keeps the release sections in the intended reading order", async () => {

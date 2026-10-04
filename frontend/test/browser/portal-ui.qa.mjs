@@ -911,6 +911,15 @@ async function verifyFullPortal(browser, origin) {
 
   await page.getByRole("link", { name: "Инструкция" }).click();
   await page.getByRole("heading", { name: "Как подключиться" }).waitFor();
+  const clientPlatforms = page.getByRole("group", { name: "Выберите платформу" });
+  assert.deepEqual(
+    await clientPlatforms.getByRole("button").allTextContents(),
+    ["iPhone", "Windows"],
+  );
+  await page.getByText("Установите приложение Happ.", { exact: true }).waitFor();
+  await clientPlatforms.getByRole("button", { name: "Windows", exact: true }).click();
+  await page.getByText("Установите приложение Hiddify.", { exact: true }).waitFor();
+  assert.equal(await page.getByText("Установите приложение Happ.", { exact: true }).count(), 0);
   assert.equal(await page.locator("main .portal-section").count(), 2);
   assert.equal(await page.locator('.portal-nav a[aria-current="page"][href="#profiles"]').count(), 1);
   await page.locator('.portal-nav a[href="#account"]').click();

@@ -197,7 +197,7 @@ function PlansSection({ config, plans, busy, error, onRetry }: PlansSectionProps
               </dl>
               <div className="plan-card__action">
                 <strong>{formatPlanPrice(plan.price_amount, plan.currency)}</strong>
-                {plan.is_trial && config?.bot_url ? (
+                {plan.is_trial ? (
                   <BotAction config={config} label="Узнать о пробном доступе" />
                 ) : (
                   <button className="button button--disabled" type="button" disabled>

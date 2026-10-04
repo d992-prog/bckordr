@@ -102,6 +102,13 @@ interface ProfileOperation {
   renamePending: boolean;
 }
 
+const VERIFIED_CLIENTS = [
+  { platform: "iPhone", app: "Happ" },
+  { platform: "Windows", app: "Hiddify" },
+] as const;
+
+type VerifiedPlatform = (typeof VERIFIED_CLIENTS)[number]["platform"];
+
 function ProfilesSection(props: ProfilesSectionProps) {
   return (
     <section id="profiles" className="portal-section">
@@ -140,29 +147,31 @@ function ConnectionSection({
   platform,
   onPlatformChange,
 }: {
-  platform: string;
-  onPlatformChange: (platform: string) => void;
+  platform: VerifiedPlatform;
+  onPlatformChange: (platform: VerifiedPlatform) => void;
 }) {
+  const client = VERIFIED_CLIENTS.find((item) => item.platform === platform) ?? VERIFIED_CLIENTS[0];
+
   return (
     <section id="connect" className="portal-section">
       <div className="section-heading"><p className="eyebrow">Инструкция</p><h2>Как подключиться</h2></div>
       <div className="card connect-card">
         <div className="platforms" role="group" aria-label="Выберите платформу">
-          {["iPhone", "Android", "Windows", "macOS"].map((item) => (
+          {VERIFIED_CLIENTS.map((item) => (
             <button
               type="button"
-              key={item}
-              className={`platform ${platform === item ? "platform--active" : ""}`}
-              aria-pressed={platform === item}
-              onClick={() => onPlatformChange(item)}
-            >{item}</button>
+              key={item.platform}
+              className={`platform ${platform === item.platform ? "platform--active" : ""}`}
+              aria-pressed={platform === item.platform}
+              onClick={() => onPlatformChange(item.platform)}
+            >{item.platform}</button>
           ))}
         </div>
         <h3>{platform}</h3>
         <ol className="steps">
-          <li>Установите официальное приложение Happ.</li>
+          <li>Установите приложение {client.app}.</li>
           <li>В разделе <a href="#profiles">«Профили»</a> откройте и скопируйте ссылку.</li>
-          <li>В Happ выберите импорт по ссылке и вставьте её.</li>
+          <li>В {client.app} выберите импорт по ссылке и вставьте её.</li>
           <li>Выберите импортированный профиль и включите подключение.</li>
         </ol>
         <p className="hint">Нужна помощь? Перейдите в <a href="#help">раздел поддержки</a>.</p>
@@ -186,7 +195,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const [trialPollCount, setTrialPollCount] = useState(0);
   const [dataBusy, setDataBusy] = useState(false);
   const [dataError, setDataError] = useState("");
-  const [platform, setPlatform] = useState("iPhone");
+  const [platform, setPlatform] = useState<VerifiedPlatform>("iPhone");
   const [activeSection, setActiveSection] = useState<PortalSection>(() => portalSectionFromHash(window.location.hash));
   const [activeAnchor, setActiveAnchor] = useState(() => window.location.hash.replace(/^#\/?/, "").split("?", 1)[0]);
   const [profileOperations, setProfileOperations] = useState<Record<number, ProfileOperation>>({});

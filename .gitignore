@@ -13,3 +13,4 @@ candidates-*.txt
 redemption-candidates-*.csv
 redemption-candidates-*.txt
 .impeccable/questions/
+frontend/debug.log

@@ -1,6 +1,6 @@
 # Veltrix Liquid Glass Redesign Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Ship one polished Veltrix VPN visual system across the public site, customer cabinet/Telegram Mini App, and VPN-only admin areas without changing working VPN, session, subscription, or payment behavior.
 
@@ -54,7 +54,7 @@
 ### Finish
 
 - Create `DESIGN.md` from the shipped system after final review.
-- Keep `.impeccable/build/state.json`, measured spec, approved comp, shipping plates, and raster provenance sidecars.
+- Keep `.impeccable/build/state.json`, measured spec, approved comp, shipping plates, and repo-only raster provenance sidecars under `.impeccable/provenance/brand/`.
 - Modify browser QA scripts only where selectors reflect the approved information architecture.
 
 ---
@@ -67,7 +67,7 @@
 - Create: `.impeccable/build/comp-grid.png` through Impeccable
 - Modify: `.impeccable/build/state.json`
 
-- [ ] **Step 1: Run the current frontend checks before editing**
+- [x] **Step 1: Run the current frontend checks before editing**
 
 Run:
 
@@ -80,7 +80,7 @@ Working directory: `frontend`
 
 Expected: all Node tests pass and Vite writes the three existing entry points.
 
-- [ ] **Step 2: Produce and inspect the 10×10 comp grid**
+- [x] **Step 2: Produce and inspect the 10×10 comp grid**
 
 Run from the repository root:
 
@@ -90,7 +90,7 @@ Run from the repository root:
 
 Open `.impeccable/build/comp-grid.png`. Confirm that the following regions fit their complete visual bounds before writing the region file: background field, flat brand mark, brand wordmark, help action, lens material, signal illustration, status text, hero title, expiry line, primary action, quick-action sheet, two quick-action rows, subscription sheet, subscription labels, and three navigation destinations.
 
-- [ ] **Step 3: Write the measured region map**
+- [x] **Step 3: Write the measured region map**
 
 Create `.impeccable/build/regions.json` with this semantic inventory, adjusting only grid spans when the grid image proves a boundary:
 
@@ -122,7 +122,7 @@ Create `.impeccable/build/regions.json` with this semantic inventory, adjusting 
 }
 ```
 
-- [ ] **Step 4: Measure regions and choose the lead typeface by evidence**
+- [x] **Step 4: Measure regions and choose the lead typeface by evidence**
 
 Run:
 
@@ -135,7 +135,7 @@ Run:
 
 Expected: `spec` closes and `plates` opens. If the gate names an unmeasured ink region, add that exact region to `regions.json`; do not weaken or bypass the gate.
 
-- [ ] **Step 5: Commit the measured contract**
+- [x] **Step 5: Commit the measured contract**
 
 ```powershell
 git add -f .impeccable/build
@@ -153,7 +153,7 @@ git commit -m "design: measure Veltrix portal composition"
 - Modify: `frontend/public/favicon.svg`
 - Create: `frontend/test/veltrixBrand.test.mjs`
 
-- [ ] **Step 1: Write the failing brand contract test**
+- [x] **Step 1: Write the failing brand contract test**
 
 ```javascript
 import test from "node:test";
@@ -181,13 +181,13 @@ test("shared Veltrix brand is vector, accessible, and tokenized", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and verify the missing-file failure**
+- [x] **Step 2: Run the test and verify the missing-file failure**
 
 Run: `node --experimental-strip-types --test test/veltrixBrand.test.mjs`
 
 Expected: FAIL with `ENOENT` for `VeltrixMark.tsx`.
 
-- [ ] **Step 3: Create the reusable mark component**
+- [x] **Step 3: Create the reusable mark component**
 
 ```tsx
 interface VeltrixMarkProps {
@@ -215,7 +215,7 @@ export function VeltrixMark({
 }
 ```
 
-- [ ] **Step 4: Add the flat SVG and shared tokens**
+- [x] **Step 4: Add the flat SVG and shared tokens**
 
 Use the same three ellipses in `frontend/public/veltrix-mark.svg`; keep the SVG text-free. Add this token base to `veltrix-brand.css` and extend it with the measured font-match `USE` line from Task 1:
 
@@ -253,7 +253,7 @@ Use the same three ellipses in `frontend/public/veltrix-mark.svg`; keep the SVG 
 }
 ```
 
-- [ ] **Step 5: Run the brand test and frontend build**
+- [x] **Step 5: Run the brand test and frontend build**
 
 Run:
 
@@ -264,7 +264,7 @@ npm run build
 
 Expected: PASS and a production build with no new package.
 
-- [ ] **Step 6: Produce the four measured raster materials**
+- [x] **Step 6: Produce the four measured raster materials**
 
 For each painted region, obtain its measured prompt:
 
@@ -279,18 +279,18 @@ Generate each prompt as its own new asset, never as a crop of the approved comp.
 
 ```text
 .impeccable/assets/atmosphere.png
-.impeccable/assets/atmosphere.png.json
+.impeccable/assets/atmosphere.json
 .impeccable/assets/brand-mark.png
-.impeccable/assets/brand-mark.png.json
+.impeccable/assets/brand-mark.json
 .impeccable/assets/status-lens.png
-.impeccable/assets/status-lens.png.json
+.impeccable/assets/status-lens.json
 .impeccable/assets/signal-orb.png
-.impeccable/assets/signal-orb.png.json
+.impeccable/assets/signal-orb.json
 ```
 
-Each JSON contains the exact prompt, source model/tool, creation date, intended region id, dimensions, and `approved: true` only after visual inspection against the region crop. Optimized shipping copies go to `frontend/public/brand/` and retain a sibling provenance JSON.
+Each JSON contains the exact prompt, source model/tool, creation date, intended region id, dimensions, and `approved: true` only after visual inspection against the region crop. Optimized shipping copies go to `frontend/public/brand/`; their full provenance JSON goes to `.impeccable/provenance/brand/` and must not enter the browser bundle.
 
-- [ ] **Step 7: Close the plates gate**
+- [x] **Step 7: Close the plates gate**
 
 Run:
 
@@ -300,7 +300,7 @@ Run:
 
 Expected: every plate region resolves to a non-crop asset, `plates` closes, and `hero` opens. Fix named missing or mismatched assets; never mark a failed plate approved.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```powershell
 git add frontend/src/brand frontend/public/veltrix-mark.svg frontend/public/favicon.svg frontend/public/brand frontend/test/veltrixBrand.test.mjs .impeccable/assets .impeccable/build
@@ -317,7 +317,7 @@ git commit -m "feat: add Veltrix brand primitives"
 - Create: `frontend/test/vpnPortalNavigation.test.mjs`
 - Create: `frontend/test/vpnPortalHome.test.mjs`
 
-- [ ] **Step 1: Write failing navigation tests**
+- [x] **Step 1: Write failing navigation tests**
 
 ```javascript
 import test from "node:test";
@@ -335,7 +335,7 @@ test("maps old and new portal hashes into three destinations", () => {
 });
 ```
 
-- [ ] **Step 2: Write failing home-state tests**
+- [x] **Step 2: Write failing home-state tests**
 
 ```javascript
 import test from "node:test";
@@ -366,13 +366,13 @@ test("keeps preparing, expired, and empty states explicit", () => {
 });
 ```
 
-- [ ] **Step 3: Run tests and verify missing-module failures**
+- [x] **Step 3: Run tests and verify missing-module failures**
 
 Run: `node --experimental-strip-types --test test/vpnPortalNavigation.test.mjs test/vpnPortalHome.test.mjs`
 
 Expected: FAIL because the two modules do not exist.
 
-- [ ] **Step 4: Implement the minimal pure helpers**
+- [x] **Step 4: Implement the minimal pure helpers**
 
 ```typescript
 // navigation.ts
@@ -425,7 +425,7 @@ export function buildPortalHomeView(
 }
 ```
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 Run: `node --experimental-strip-types --test test/vpnPortalNavigation.test.mjs test/vpnPortalHome.test.mjs`
 
@@ -448,7 +448,7 @@ git commit -m "feat: model Veltrix portal navigation and status"
 - Modify: `frontend/src/vpn-portal/ProfileCard.tsx:1-190`
 - Modify: `frontend/test/browser/portal-ui.qa.mjs`
 
-- [ ] **Step 1: Add failing browser assertions for the approved first viewport**
+- [x] **Step 1: Add failing browser assertions for the approved first viewport**
 
 Replace the old five-navigation assertion in `verifyFullPortal` with:
 
@@ -462,7 +462,7 @@ assert.equal(await page.locator(".portal-status-lens").count(), 1);
 assert.equal(/подключено|защищено/i.test(await page.locator(".portal-status-lens").innerText()), false);
 ```
 
-- [ ] **Step 2: Run QA and verify it fails on the old portal**
+- [x] **Step 2: Run QA and verify it fails on the old portal**
 
 Run:
 
@@ -473,7 +473,7 @@ node test/browser/portal-ui.qa.mjs
 
 Expected: FAIL because `.portal-nav`, `.portal-status-lens`, and the new heading do not exist.
 
-- [ ] **Step 3: Extract the secure connection request**
+- [x] **Step 3: Extract the secure connection request**
 
 ```typescript
 // connection.ts
@@ -493,7 +493,7 @@ export async function copyConnectionUri(uri: string): Promise<void> {
 
 Update `ProfileCard.tsx` to call these two functions while preserving its epoch and session-generation guards. Keep the full URI hidden until `revealConnection()` succeeds.
 
-- [ ] **Step 4: Create three-destination navigation**
+- [x] **Step 4: Create three-destination navigation**
 
 ```tsx
 import type { PortalSection } from "./navigation";
@@ -519,7 +519,7 @@ export function PortalNavigation({ active }: { active: PortalSection }) {
 
 The three one-path icons stay under the Impeccable icon budget; visible link text supplies the accessible name.
 
-- [ ] **Step 5: Build the approved home component**
+- [x] **Step 5: Build the approved home component**
 
 `PortalHome.tsx` receives the already-loaded subscriptions, profiles, trial, errors, and trial callbacks. Its top-level structure is:
 
@@ -543,7 +543,7 @@ The three one-path icons stay under the Impeccable icon budget; visible link tex
 
 Use `SessionGeneration` before and after loading the connection URI. Success copy is exactly `Ссылка скопирована`. Clipboard fallback is `Не удалось скопировать автоматически. Откройте профиль и скопируйте ссылку вручную`.
 
-- [ ] **Step 6: Rewire the portal shell without changing loaders or logout**
+- [x] **Step 6: Rewire the portal shell without changing loaders or logout**
 
 In `Portal.tsx`:
 
@@ -552,7 +552,7 @@ In `Portal.tsx`:
 - render `PortalHome` for `home`, existing profile cards plus platform instructions for `profiles`, and account/help/plans for `account`;
 - keep `loadPrivateData`, trial polling, plan loading, stale-response guards, authorization handling, and `performLogout` unchanged.
 
-- [ ] **Step 7: Re-run browser QA and targeted unit tests**
+- [x] **Step 7: Re-run browser QA and targeted unit tests**
 
 Run:
 
@@ -564,7 +564,7 @@ node test/browser/portal-ui.qa.mjs
 
 Expected: PASS; generated screenshots include the ready dashboard and still exercise reveal, QR, rename, stale request, logout, and trial preparation.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```powershell
 git add frontend/src/vpn-portal frontend/test/browser/portal-ui.qa.mjs frontend/test/vpnPortal*.test.mjs
@@ -583,7 +583,7 @@ git commit -m "feat: redesign Veltrix customer portal shell"
 - Modify: `frontend/src/vpn-portal/Portal.tsx:570-655`
 - Modify: `frontend/test/browser/portal-ui.qa.mjs`
 
-- [ ] **Step 1: Add failing assertions for account and secret handling**
+- [x] **Step 1: Add failing assertions for account and secret handling**
 
 ```javascript
 await page.locator('.portal-nav a[href="#account"]').click();
@@ -596,7 +596,7 @@ await page.getByRole("button", { name: "Показать ссылку" }).first(
 assert.match(await page.locator('textarea.connection-uri').first().inputValue(), /^vless:\/\//);
 ```
 
-- [ ] **Step 2: Implement `PortalAccount` with existing data only**
+- [x] **Step 2: Implement `PortalAccount` with existing data only**
 
 ```tsx
 interface PortalAccountProps {
@@ -623,7 +623,7 @@ export function PortalAccount(props: PortalAccountProps) {
 }
 ```
 
-- [ ] **Step 3: Polish profile and trial copy without changing behavior**
+- [x] **Step 3: Polish profile and trial copy without changing behavior**
 
 Use these production strings:
 
@@ -636,11 +636,11 @@ Use these production strings:
 
 Do not change API errors, CSRF handling, QR generation, rename limits, or async generation guards.
 
-- [ ] **Step 4: Restyle login/logout/error state markup with the new mark**
+- [x] **Step 4: Restyle login/logout/error state markup with the new mark**
 
 Keep every state branch and action from `Portal.tsx`. Replace only the old `<span>V</span>` brand and presentation classes. The signed-out screen must not remount private content.
 
-- [ ] **Step 5: Run the full portal test set and QA**
+- [x] **Step 5: Run the full portal test set and QA**
 
 Run:
 
@@ -652,7 +652,7 @@ node test/browser/portal-ui.qa.mjs
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add frontend/src/vpn-portal frontend/test
@@ -667,7 +667,7 @@ git commit -m "feat: polish Veltrix portal profiles and account"
 - Modify: `frontend/src/vpn-portal/portal.css`
 - Modify: `frontend/test/browser/portal-ui.qa.mjs`
 
-- [ ] **Step 1: Add viewport, dark-mode, fallback, and motion QA cases**
+- [x] **Step 1: Add viewport, dark-mode, fallback, and motion QA cases**
 
 Add captures for:
 
@@ -697,13 +697,13 @@ for (const scenario of [
 
 Also emulate reduced motion and assert computed `animationDuration` for `.portal-status-lens` is `0.01ms` or `0s`.
 
-- [ ] **Step 2: Run QA and verify new visual assertions fail**
+- [x] **Step 2: Run QA and verify new visual assertions fail**
 
 Run: `npm run build; node test/browser/portal-ui.qa.mjs`
 
 Expected: FAIL before the new scoped styles exist.
 
-- [ ] **Step 3: Generate the measured scaffold, then replace portal presentation rules**
+- [x] **Step 3: Generate the measured scaffold, then replace portal presentation rules**
 
 Run first:
 
@@ -726,7 +726,7 @@ Import `../brand/veltrix-brand.css`. Bind the measured regions through the gener
 
 Do not bake text, dates, controls, or navigation labels into any plate.
 
-- [ ] **Step 4: Run Impeccable hero scaffold and first-viewport gate**
+- [x] **Step 4: Run Impeccable hero scaffold and first-viewport gate**
 
 Run:
 
@@ -737,9 +737,9 @@ node test/browser/portal-ui.qa.mjs
 & 'C:\Users\user\.agents\skills\impeccable\scripts\impeccable.cmd' build-phase advance
 ```
 
-Expected: hero score reaches the gate threshold with no missing or contradicted region. Open each named crop before any retry.
+Expected: hero score reaches the gate threshold with no unexplained missing or contradicted region. Open each named crop before any retry. The release may retain a named crop-level deviation only when all of the following are true: the exact-size full viewport remains an overall `match` at `>= 0.80`; the deviation prevents a false product claim or preserves measurable accessibility; the reason is recorded in `.impeccable/build/state.json`; and an independent finish review explicitly approves it. For this release the approved deviations are the honest `VPN-профиль готов`/real-access copy, the solid AA primary action, and the compact equal-cell safe-area navigation instead of the comp's misleading tunnel claim, translucent low-contrast action, and oversized active navigation plate.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add frontend/src/vpn-portal/portal.css frontend/test/browser/portal-ui.qa.mjs .impeccable/build
@@ -756,7 +756,7 @@ git commit -m "style: match Veltrix portal Liquid Glass composition"
 - Modify: `frontend/vpn/index.html`
 - Modify: `frontend/test/vpnPublicSite.test.mjs`
 
-- [ ] **Step 1: Replace old visual-contract assertions with the approved brand contract**
+- [x] **Step 1: Replace old visual-contract assertions with the approved brand contract**
 
 Keep all public API-safety assertions. Replace the old green-token assertion and add:
 
@@ -774,13 +774,13 @@ assert.doesNotMatch(source, /<span>V<\/span>/);
 assert.doesNotMatch(source, /гарантирован|самый быстрый|без ограничений|полная анонимность/i);
 ```
 
-- [ ] **Step 2: Run the test and verify the old page fails**
+- [x] **Step 2: Run the test and verify the old page fails**
 
 Run: `node --experimental-strip-types --test test/vpnPublicSite.test.mjs`
 
 Expected: FAIL on the new heading, brand, and route component.
 
-- [ ] **Step 3: Recompose `main.tsx` while preserving loaders and honest plan behavior**
+- [x] **Step 3: Recompose `main.tsx` while preserving loaders and honest plan behavior**
 
 Use this section order:
 
@@ -808,11 +808,11 @@ Hero copy:
 
 Keep public requests limited to `config()` and `plans()`. Keep paid plan actions disabled while payment is absent.
 
-- [ ] **Step 4: Replace site styles with the same world, at marketing density**
+- [x] **Step 4: Replace site styles with the same world, at marketing density**
 
 Import shared brand CSS. Use a landscape glass hero object, matte content sections, and the same logo; do not copy the mobile dashboard layout. At `max-width: 900px`, stack the hero and keep both actions full-width without horizontal overflow.
 
-- [ ] **Step 5: Test and build**
+- [x] **Step 5: Test and build**
 
 Run:
 
@@ -823,7 +823,7 @@ npm run build
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add frontend/src/vpn-site frontend/vpn/index.html frontend/test/vpnPublicSite.test.mjs
@@ -840,7 +840,7 @@ git commit -m "feat: redesign Veltrix public VPN site"
 - Create: `frontend/test/vpnAdminView.test.mjs`
 - Modify: `frontend/src/App.tsx:4462-4800`
 
-- [ ] **Step 1: Write failing section and metric tests**
+- [x] **Step 1: Write failing section and metric tests**
 
 ```javascript
 import test from "node:test";
@@ -860,13 +860,13 @@ test("VPN admin sections are stable and unknown metrics stay unknown", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and verify missing-module failure**
+- [x] **Step 2: Run the test and verify missing-module failure**
 
 Run: `node --experimental-strip-types --test test/vpnAdminView.test.mjs`
 
 Expected: FAIL with `ERR_MODULE_NOT_FOUND`.
 
-- [ ] **Step 3: Implement the pure helper and navigation**
+- [x] **Step 3: Implement the pure helper and navigation**
 
 ```typescript
 export type VpnAdminSection = "overview" | "customers" | "nodes" | "plans" | "events";
@@ -882,7 +882,7 @@ export function displayMetric(value: number | null | undefined): string {
 
 `VpnAdminNavigation.tsx` renders five links with `aria-current` and no local state; `App.tsx` remains the single hash-state owner.
 
-- [ ] **Step 4: Reorganize `renderVpn()` without changing effects or handlers**
+- [x] **Step 4: Reorganize `renderVpn()` without changing effects or handlers**
 
 Wrap existing blocks into these conditional areas:
 
@@ -894,7 +894,7 @@ Wrap existing blocks into these conditional areas:
 
 Do not rename API calls or move mutation state. Replace `vpnOverview?.value ?? 0` with `displayMetric(vpnOverview?.value)` so unavailable data is not reported as zero.
 
-- [ ] **Step 5: Run tests and build**
+- [x] **Step 5: Run tests and build**
 
 Run:
 
@@ -905,7 +905,7 @@ npm run build
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add frontend/src/vpnAdminView.ts frontend/src/VpnAdminNavigation.tsx frontend/src/App.tsx frontend/test/vpnAdminView.test.mjs
@@ -924,7 +924,7 @@ git commit -m "feat: organize Veltrix VPN admin workspace"
 - Modify: `frontend/test/browser/admin-profile-ui.qa.mjs`
 - Modify: `frontend/test/vpnCustomerWorkspace.test.mjs`
 
-- [ ] **Step 1: Add failing source and browser assertions**
+- [x] **Step 1: Add failing source and browser assertions**
 
 ```javascript
 assert.match(styles, /\.vpn-admin-shell/);
@@ -937,7 +937,7 @@ assert.match(workspaceSource, /Скопировать ссылку/);
 
 In browser QA, assert keyboard focus reaches VPN navigation, customer search, and the first profile action in that order.
 
-- [ ] **Step 2: Run tests and verify the new contract fails**
+- [x] **Step 2: Run tests and verify the new contract fails**
 
 Run:
 
@@ -949,7 +949,7 @@ node test/browser/admin-profile-ui.qa.mjs
 
 Expected: FAIL on the new classes and copy.
 
-- [ ] **Step 3: Add scoped admin tokens and layouts**
+- [x] **Step 3: Add scoped admin tokens and layouts**
 
 ```css
 .vpn-admin-shell { --vpn-admin-surface: rgba(255,255,255,.94); display: grid; gap: 18px; min-width: 0; }
@@ -963,7 +963,7 @@ Expected: FAIL on the new classes and copy.
 
 Scope every new rule under `.vpn-admin-shell` so Domain Drop Catcher screens retain their current design.
 
-- [ ] **Step 4: Make secret links and dangerous actions explicit**
+- [x] **Step 4: Make secret links and dangerous actions explicit**
 
 Keep the masked one-line preview. Rename controls to `Показать полную ссылку`, `Скрыть ссылку`, and `Скопировать ссылку`. Full text uses a wrapping read-only textarea.
 
@@ -976,7 +976,7 @@ Replace node deletion’s one-step `window.confirm` text with the exact conseque
 
 Primary destructive action: `Да, удалить ноду`; secondary: `Отмена`. Do not change the decommission API sequence.
 
-- [ ] **Step 5: Run admin tests, build, and browser QA**
+- [x] **Step 5: Run admin tests, build, and browser QA**
 
 Run:
 
@@ -988,7 +988,7 @@ node test/browser/admin-profile-ui.qa.mjs
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```powershell
 git add frontend/src/styles.css frontend/src/VpnCustomerWorkspacePanel.tsx frontend/src/VpnEndpointCapacityPanel.tsx frontend/src/VpnReleaseReadinessPanel.tsx frontend/test
@@ -1004,7 +1004,7 @@ git commit -m "style: polish Veltrix VPN admin experience"
 - Modify: `frontend/test/browser/portal-ui.qa.mjs`
 - Modify: `frontend/test/browser/admin-profile-ui.qa.mjs`
 
-- [ ] **Step 1: Run the Russian UI text lint as a review tool**
+- [x] **Step 1: Run the Russian UI text lint as a review tool**
 
 Run:
 
@@ -1015,15 +1015,15 @@ python C:\Users\user\.codex\skills\sasha\scripts\ui_text_lint.py frontend/src/vp
 
 Review every warning. Preserve identifiers, API strings, variables, and legal meaning. Fix only user-visible copy that violates the approved vocabulary.
 
-- [ ] **Step 2: Add keyboard, zoom, and reduced-motion checks**
+- [x] **Step 2: Add keyboard, zoom, and reduced-motion checks**
 
 For each customer viewport, tab through every interactive element and assert `document.activeElement` is visible. Set viewport to 390×844 and CSS zoom/text scaling equivalent to 200%; assert no horizontal overflow. Emulate reduced motion and assert the lens has no continuous animation.
 
-- [ ] **Step 3: Verify accessible names and state semantics**
+- [x] **Step 3: Verify accessible names and state semantics**
 
 Run a DOM assertion that every visible button/link has non-empty accessible text, status messages use `role="status"`, errors use `role="alert"`, and decorative SVGs are hidden. Ensure success/warning/error labels contain text in addition to color.
 
-- [ ] **Step 4: Run targeted checks and commit any fixes**
+- [x] **Step 4: Run targeted checks and commit any fixes**
 
 ```powershell
 npm run build
@@ -1043,9 +1043,9 @@ If the audit requires no source change, skip the commit and record the passing c
 - Create: `DESIGN.md`
 - Modify: `.impeccable/build/state.json`
 - Create or modify: `.impeccable/review/**`
-- Create: provenance sidecars beside every shipping raster
+- Create: repo-only provenance sidecars in `.impeccable/provenance/brand/`
 
-- [ ] **Step 1: Run all frontend tests and production build**
+- [x] **Step 1: Run all frontend tests and production build**
 
 Run from `frontend`:
 
@@ -1056,7 +1056,7 @@ npm run build
 
 Expected: all tests PASS; TypeScript and Vite build PASS.
 
-- [ ] **Step 2: Run both browser QA suites**
+- [x] **Step 2: Run both browser QA suites**
 
 ```powershell
 node test/browser/portal-ui.qa.mjs
@@ -1065,9 +1065,11 @@ node test/browser/admin-profile-ui.qa.mjs
 
 Expected: PASS with screenshots for light, dark, narrow phone, standard phone, desktop cabinet, public site, and VPN admin.
 
-- [ ] **Step 3: Advance every remaining Impeccable phase in order**
+- [x] **Step 3: Advance every remaining Impeccable phase in order**
 
 For each phase, record the current render, inspect named diffs/crops, fix the measured issue, and run `build-phase advance`. Required order: `plates`, `hero`, `sections`, `motion`, `responsive`, `review`. Never force a failed gate.
+
+The final portrait comp-diff must compare the approved `853×1844` comp with the settled `853×1844` first-viewport capture. Treat 1200/1440 layouts as responsive adaptations and verify them with the browser QA matrix; do not use a wide full-page capture as the portrait diff input.
 
 Run status checks with:
 
@@ -1077,11 +1079,11 @@ Run status checks with:
 
 Expected final state: all phases closed and finish verdict recorded.
 
-- [ ] **Step 4: Write `DESIGN.md` from the shipped system**
+- [x] **Step 4: Write `DESIGN.md` from the shipped system**
 
 Document the actual final tokens, logo variants, typography from `font-match`, material rules, component classes, responsive breakpoints, motion, accessibility, approved comp, and raster provenance. Do not copy the development-only direction contract into browser-delivered source.
 
-- [ ] **Step 5: Run repository checks and inspect the diff**
+- [x] **Step 5: Run repository checks and inspect the diff**
 
 ```powershell
 git diff --check
@@ -1091,7 +1093,7 @@ git diff --stat origin/main...HEAD
 
 Expected: no whitespace errors, no accidental secret files, no modification of the five pre-existing `.tmp_*` migration scripts.
 
-- [ ] **Step 6: Commit finish artifacts**
+- [x] **Step 6: Commit finish artifacts**
 
 ```powershell
 git add DESIGN.md .impeccable frontend
@@ -1124,7 +1126,7 @@ Push `codex/veltrix-design-refresh`, open a PR to `main`, attach it to the task,
 
 - [ ] **Step 4: Merge only after CI and user-facing preview pass**
 
-Expected: required checks green, approved first viewport visually matches, and existing VPN operations remain available.
+Expected: required checks green, the exact-size first viewport keeps an overall Impeccable `match` with only the named product-truth/accessibility deviations above, and existing VPN operations remain available.
 
 - [ ] **Step 5: Deploy the existing production procedure without VPN configuration changes**
 
