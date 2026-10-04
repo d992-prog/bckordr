@@ -1107,7 +1107,7 @@ git commit -m "docs: finalize Veltrix design system"
 **Files:**
 - No source file is intentionally changed during this task; fixes found by review receive their own focused commit.
 
-- [ ] **Step 1: Request correctness and design review**
+- [x] **Step 1: Request correctness and design review**
 
 Review the complete branch against:
 
@@ -1116,7 +1116,7 @@ Review the complete branch against:
 - portal/public/admin test evidence;
 - the no-payment and no-fake-claim constraints.
 
-- [ ] **Step 2: Fix each confirmed finding with a failing test first**
+- [x] **Step 2: Fix each confirmed finding with a failing test first**
 
 For every accepted finding: add the smallest failing test, run it to see the failure, make the minimal fix, run the targeted test, then run `npm test` and `npm run build` before committing.
 
