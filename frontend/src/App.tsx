@@ -1088,6 +1088,7 @@ export default function App() {
   const [vpnFriendInvitations, setVpnFriendInvitations] = useState<VpnFriendInvitation[]>([]);
   const loadAllGenerationRef = useRef(0);
   const lastAppliedLoadGenerationRef = useRef(0);
+  const workerMutationGenerationRef = useRef(0);
   const vpnCapacityMutationGenerationRef = useRef(0);
   const vpnReadinessRequestGateRef = useRef(createVpnReleaseRequestGate());
   const vpnPlanPublicationLockRef = useRef<number | null>(null);
@@ -1530,6 +1531,7 @@ export default function App() {
   async function loadAll(options?: { silent?: boolean; throwOnError?: boolean }) {
     void refreshVpnReadiness({ silent: options?.silent });
     const generation = ++loadAllGenerationRef.current;
+    const workerMutationGeneration = workerMutationGenerationRef.current;
     const capacityMutationGeneration = vpnCapacityMutationGenerationRef.current;
     try {
       const [
@@ -1605,14 +1607,19 @@ export default function App() {
       setAllZonefilesSettings(allZonefilesSettingsData);
       setZoneScanJobs(zoneScanJobsData);
       setZoneScanCandidates(zoneScanCandidatesData);
-      setWorkers(workersData);
-      setWorkerMaintenanceJobs(workerMaintenanceJobsData);
+      const canApplyWorkerData = workerMutationGeneration === workerMutationGenerationRef.current;
+      if (canApplyWorkerData) {
+        setWorkers(workersData);
+        setWorkerMaintenanceJobs(workerMaintenanceJobsData);
+      }
       setAccounts(accountsData);
       setContacts(contactsData);
       setAttacks(attacksData);
       setTasks(tasksData);
       setEvents(eventsData);
-      setVpnOverview(vpnOverviewData);
+      if (canApplyWorkerData) {
+        setVpnOverview(vpnOverviewData);
+      }
       if (capacityMutationGeneration === vpnCapacityMutationGenerationRef.current) {
         setVpnEndpointCapacities(vpnEndpointCapacitiesData);
       }
@@ -1623,9 +1630,11 @@ export default function App() {
       setVpnFriendInvitations(vpnFriendInvitationsData);
       setVpnNodeEvents(vpnNodeEventsData);
       setVpnLifecycleStatus(vpnLifecycleStatusData);
-      setVpnNodeEligibility(Object.fromEntries(
-        vpnNodeEligibilityData.map((item) => [item.worker_id, item]),
-      ));
+      if (canApplyWorkerData) {
+        setVpnNodeEligibility(Object.fromEntries(
+          vpnNodeEligibilityData.map((item) => [item.worker_id, item]),
+        ));
+      }
       setVpnTelegramUpdates(vpnTelegramUpdatesData);
       setDiagnosticTelegram(diagnosticData);
     } catch (error) {
@@ -2898,6 +2907,8 @@ export default function App() {
 
   async function deleteWorkerNode(worker: WorkerNode) {
     await api.deleteWorker(worker.id);
+    workerMutationGenerationRef.current += 1;
+    vpnCapacityMutationGenerationRef.current += 1;
     setWorkers((current) => current.filter((item) => item.id !== worker.id));
     setVpnEndpointCapacities((current) => current.filter((item) => item.worker_id !== worker.id));
     setVpnNodeEligibility((current) => {

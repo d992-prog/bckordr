@@ -48,6 +48,14 @@ const worker = {
   ssh_last_checked_at: stamp, ssh_access_configured: true, last_seen_at: stamp,
   last_heartbeat_at: stamp, ...timestamps,
 };
+const replacementWorker = {
+  ...worker,
+  id: 42,
+  name: "Amsterdam 2",
+  ip_address: "203.0.113.42",
+  region: "NL",
+  vpn_public_host: "nl.vpn.example",
+};
 const json = (route, body, status = 200) => route.fulfill({
   status, contentType: "application/json", body: JSON.stringify(body),
 });
@@ -98,6 +106,7 @@ try {
   let workerDeleteCalls = 0;
   let workerDeleteFailure = false;
   let workerRefreshFailures = 0;
+  let replacementWorkerAvailable = false;
   let releaseWorkerDelete = null;
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -156,7 +165,7 @@ try {
         workerRefreshFailures -= 1;
         return json(route, { detail: "Список временно недоступен" }, 503);
       }
-      return json(route, workerDeleted ? [] : [worker]);
+      return json(route, workerDeleted ? (replacementWorkerAvailable ? [replacementWorker] : []) : [worker]);
     }
     if (pathname === "/api/control/vpn/release-readiness") return json(route, {
       ready: true, checked_at: stamp, release_id: null, checks: [],
@@ -625,9 +634,16 @@ try {
   workerDeleteFailure = false;
   await cancelDelete.click();
   await page.waitForFunction(() => document.activeElement?.classList.contains("vpn-node-delete-trigger"));
+  reloadFailure = false;
+  holdReload = true;
+  await page.locator(".toolbar-actions").getByRole("button", { name: "Обновить", exact: true }).click();
+  await until(() => heldReloads.length > 0, "pre-delete stale load was not held");
+  holdReload = false;
+  const deleteCallsBeforeRace = workerDeleteCalls;
   await deleteTrigger.click();
   await confirmDelete.evaluate((element) => { element.click(); element.click(); });
-  await until(() => workerDeleteCalls === 2, "node deletion was not requested exactly once per confirmation");
+  await until(() => workerDeleteCalls === deleteCallsBeforeRace + 1,
+    "node deletion was not requested exactly once per confirmation");
   assert.equal(await confirmDelete.isDisabled(), true);
   await deleteDialog.getByRole("status").getByText("Удаляем ноду…", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Обновить", exact: true }).first().focus();
@@ -641,7 +657,7 @@ try {
   workerRefreshFailures = 1;
   await releaseWorkerDelete();
   await page.locator(".toast").filter({ hasText: "Нода удалена, но список не удалось обновить" }).waitFor();
-  assert.equal(workerDeleteCalls, 2);
+  assert.equal(workerDeleteCalls - deleteCallsBeforeRace, 1);
   assert.equal(await page.getByRole("dialog").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Удалить ноду", exact: true }).count(), 0,
     "a successfully deleted node must not retain a stale repeat action after refresh failure");
@@ -649,6 +665,27 @@ try {
   assert.equal(await vpnNavigation.getByRole("link", { name: "Ноды", exact: true }).evaluate(
     (element) => document.activeElement === element,
   ), true, "successful deletion must return focus to a deterministic Nodes destination");
+  const staleLoadResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/control/vpn/access-keys" && response.status() === 200);
+  await Promise.all(heldReloads.splice(0).map((release) => release()));
+  await staleLoadResponse;
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.getByRole("button", { name: "Удалить ноду", exact: true }).count(), 0,
+    "a pre-delete stale load must never restore the deleted node");
+  assert.equal(workerDeleteCalls - deleteCallsBeforeRace, 1,
+    "settling the stale load must not repeat DELETE");
+  replacementWorkerAvailable = true;
+  const freshWorkerResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/control/workers" && response.status() === 200);
+  await page.locator(".toolbar-actions").getByRole("button", { name: "Обновить", exact: true }).click();
+  await freshWorkerResponse;
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.getByText("Amsterdam 2", { exact: true }).waitFor();
+  assert.equal(await page.getByText("Frankfurt 1", { exact: true }).count(), 0,
+    "a later successful refresh must not restore the deleted node");
+  assert.equal(await page.getByRole("button", { name: "Удалить ноду", exact: true }).count(), 1,
+    "the worker barrier must still allow a later fresh node list to apply");
+  assert.equal(workerDeleteCalls - deleteCallsBeforeRace, 1);
   assert.deepEqual(errors, []);
   console.log("PASS: actual admin bundle rename/cancel/selection/reload-failure/stale-GET/delayed-PATCH/external-rename/revoke/two-key-pending/copy-fallback/error/narrow-profile-bounds, synthetic HTTP only");
 } finally {

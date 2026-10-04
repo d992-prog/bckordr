@@ -575,6 +575,9 @@ test("VPN node removal uses an accessible confirmation and preserves the mutatio
   assert.doesNotMatch(source, /async function decommissionWorker/);
   assert.doesNotMatch(source, /Удалить ноду \$\{worker\.name\}/);
   assert.match(source, /setWorkers\(\(current\) => current\.filter/);
+  assert.match(source, /const workerMutationGenerationRef = useRef\(0\)/);
+  assert.match(source, /const workerMutationGeneration = workerMutationGenerationRef\.current/);
+  assert.match(source, /workerMutationGeneration === workerMutationGenerationRef\.current/);
   assert.match(source, /loadAll\(\{ silent: true, throwOnError: true \}\)/);
   assert.match(source, /Нода удалена, но список не удалось обновить/);
   const deleteFunction = source.match(
@@ -585,5 +588,10 @@ test("VPN node removal uses an accessible confirmation and preserves the mutatio
     deleteFunction.indexOf("await api.deleteWorker(worker.id)")
       < deleteFunction.indexOf("await loadAll({ silent: true, throwOnError: true })"),
     "DELETE must finish before the refresh attempt",
+  );
+  assert.ok(
+    deleteFunction.indexOf("workerMutationGenerationRef.current += 1")
+      < deleteFunction.indexOf("setWorkers((current)"),
+    "the worker mutation barrier must advance before the optimistic removal",
   );
 });
