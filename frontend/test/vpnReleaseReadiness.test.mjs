@@ -368,6 +368,12 @@ test("VPN workspace renders readiness and refreshes it after capacity changes", 
   assert.match(source, /destination\.focus\(\);[\s\S]*destination\.scrollIntoView/);
   assert.match(source, /matchMedia\("\(prefers-reduced-motion: reduce\)"\)\.matches/);
   assert.match(source, /behavior: reduceMotion \? "auto" : "smooth"/);
+  const focusAccommodation = source.slice(
+    source.indexOf("onFocusCapture="),
+    source.indexOf("<VpnAdminNavigation", source.indexOf("onFocusCapture=")),
+  );
+  assert.match(focusAccommodation, /scrollIntoView\(\{\s*behavior: "auto"/);
+  assert.doesNotMatch(focusAccommodation, /reduceMotion|"smooth"/);
   assert.match(css, /\.vpn-release-readiness\s*\{/);
   assert.doesNotMatch(css, /border-inline-start:\s*5px/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.vpn-release/);

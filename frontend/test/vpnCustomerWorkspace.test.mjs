@@ -546,7 +546,8 @@ test("VPN admin presentation stays scoped and uses the Veltrix admin primitives"
   assert.match(appSource, /VPN‑ноды/);
   assert.match(appSource, /данные SSH/);
   assert.match(appSource, /Клиент, его подписки и VPN‑профили/);
-  assert.match(appSource, /VPN‑сервис: синхронизировано профилей —/);
+  assert.match(appSource, /<span>Синхронизировано профилей<\/span>/);
+  assert.doesNotMatch(appSource, /VPN‑сервис: синхронизировано профилей —/);
   assert.match(appSource, /Выдача профилей/);
   assert.match(appSource, /Ёмкость точек подключения/);
   assert.match(appSource, /<article><span>Профили<\/span>/);

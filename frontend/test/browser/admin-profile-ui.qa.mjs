@@ -311,17 +311,7 @@ try {
         break;
       }
 
-      await targetPage.waitForFunction((auditId) => {
-        const element = document.querySelector(`[data-vpn-a11y-audit-id="${auditId}"]`);
-        if (!(element instanceof HTMLElement) || document.activeElement !== element) return false;
-        const box = element.getBoundingClientRect();
-        const navigation = document.querySelector(".vpn-admin-nav");
-        const navigationBox = navigation?.getBoundingClientRect() || null;
-        const obscuredByNavigation = navigationBox && !navigation.contains(element)
-          && box.top < navigationBox.bottom && box.bottom > navigationBox.top;
-        return !obscuredByNavigation && box.top >= -1 && box.left >= -1
-          && box.bottom <= innerHeight + 1 && box.right <= innerWidth + 1;
-      }, activeAuditId, { timeout: 750 }).catch(() => {});
+      await targetPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve())));
       const focus = await targetPage.evaluate((auditId) => {
         const element = document.querySelector(`[data-vpn-a11y-audit-id="${auditId}"]`);
         if (!(element instanceof HTMLElement)) return { error: "audited element is missing" };
@@ -668,6 +658,12 @@ try {
     };
   });
   await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.evaluate(() => { window.__scrollIntoViewCalls = []; });
+  await maximumCapacity.click();
+  assert.equal(await page.evaluate(() => window.__scrollIntoViewCalls.length > 0
+    && window.__scrollIntoViewCalls.every((options) => options?.behavior === "auto")), true,
+    "mouse focus accommodation must be instant even when motion is allowed");
+  await page.evaluate(() => { window.__scrollIntoViewCalls = []; });
   await page.getByRole("navigation", { name: "Быстрые переходы проверки" })
     .getByRole("button", { name: "Ёмкость", exact: true }).click();
   await page.waitForFunction(() => window.__scrollIntoViewCalls.some((options) => options?.behavior === "smooth"));

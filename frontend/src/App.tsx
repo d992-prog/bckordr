@@ -4604,9 +4604,8 @@ export default function App() {
         className="stack vpn-stack vpn-admin-shell"
         onFocusCapture={(event) => {
           if (event.target instanceof HTMLElement) {
-            const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
             event.target.scrollIntoView({
-              behavior: reduceMotion ? "auto" : "smooth",
+              behavior: "auto",
               block: "nearest",
               inline: "nearest",
             });
@@ -4657,7 +4656,7 @@ export default function App() {
           </div>
           <div className="stats vpn-lifecycle-stats">
             <article><span>Проверено профилей</span><strong>{displayMetric(vpnLifecycleStatus?.checked_keys)}</strong></article>
-            <article><span>VPN‑сервис: синхронизировано профилей —</span><strong>{displayMetric(vpnLifecycleStatus?.provisioned_keys)}</strong></article>
+            <article><span>Синхронизировано профилей</span><strong>{displayMetric(vpnLifecycleStatus?.provisioned_keys)}</strong></article>
             <article><span>Приостановлено</span><strong>{displayMetric(vpnLifecycleStatus?.suspended_keys)}</strong></article>
             <article><span>Отозвано</span><strong>{displayMetric(vpnLifecycleStatus?.revoked_keys)}</strong></article>
             <article><span>Истекло подписок</span><strong>{displayMetric(vpnLifecycleStatus?.expired_subscriptions)}</strong></article>
