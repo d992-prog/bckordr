@@ -72,6 +72,7 @@ _STRINGS = {
     "trafficReset",
 }
 _CLIENT_FIELDS = _NUMBERS | _STRINGS | {"reverse", "enable", "tgId"}
+_MIN_RUNTIME_OBSERVATION_BUDGET_SECONDS = 0.1
 
 
 def _require(condition: object) -> None:
@@ -505,9 +506,12 @@ def execute_node_client_operation(
                 deadline = time.monotonic() + (5.0 if forced or provisioning else 3.0)
                 last = None
                 while time.monotonic() < deadline:
+                    remaining = deadline - time.monotonic()
+                    if remaining < _MIN_RUNTIME_OBSERVATION_BUDGET_SECONDS:
+                        break
                     try:
                         observed = runtime(
-                            min(8.0, max(0.001, deadline - time.monotonic()))
+                            min(8.0, remaining)
                         )
                         generation = (observed.process_id, observed.process_start_ticks)
                         ready = (

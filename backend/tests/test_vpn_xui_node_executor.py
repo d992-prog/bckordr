@@ -335,6 +335,8 @@ def node(tmp_path):
             and kwargs["flow"] == "xtls-rprx-vision"
         )
         fault = data["runtime_fault"]
+        if fault == "deadline_timeout" and kwargs["timeout_seconds"] < 0.1:
+            raise XrayRuntimeError("vpn_xray_runtime_unavailable")
         if fault == "transient" and data["writes"] and data["runtime_reads"] < 4:
             raise XrayRuntimeError("vpn_xray_runtime_unavailable")
         if fault == "new_still_present" and data["writes"]:
@@ -774,6 +776,19 @@ def test_old_process_requires_one_forced_restart(executor, node, enabled):
     assert [path for path, _ in node["writes"]].count(
         "/panel/api/server/restartXrayService"
     ) == 1
+    assert all(node["mark_checks"])
+
+
+def test_restart_poll_skips_observation_without_a_meaningful_timeout(executor, node):
+    node["records"][0]["enable"] = False
+    node["runtime_fault"] = "deadline_timeout"
+
+    receipt = run(executor, node, action="revoke")
+
+    assert receipt.state == "observed"
+    assert [path for path, _ in node["writes"]] == [
+        "/panel/api/server/restartXrayService"
+    ]
     assert all(node["mark_checks"])
 
 
