@@ -4600,7 +4600,14 @@ export default function App() {
 
   function renderVpn() {
     return (
-      <section className="stack vpn-stack vpn-admin-shell">
+      <section
+        className="stack vpn-stack vpn-admin-shell"
+        onFocusCapture={(event) => {
+          if (event.target instanceof HTMLElement) {
+            event.target.scrollIntoView({ block: "nearest", inline: "nearest" });
+          }
+        }}
+      >
         <div className="card full-span">
           <div className="card-head">
             <div>

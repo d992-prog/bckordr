@@ -480,7 +480,7 @@ test("long profile names and rename controls wrap with visible spacing", async (
     readFile(new URL("../src/App.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(appSource, /<section className="stack vpn-stack vpn-admin-shell">/);
+  assert.match(appSource, /<section\s+className="stack vpn-stack vpn-admin-shell"/);
   assert.match(
     source,
     /\.vpn-stack \{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*min-width: 0;/s,

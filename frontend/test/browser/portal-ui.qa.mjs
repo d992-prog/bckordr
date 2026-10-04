@@ -1771,9 +1771,7 @@ async function captureResponsiveMatrix(browser, origin) {
     await assertAccessibleSubscriptionLayout(page);
     await assertPrimaryActionContrast(page);
     await assertNavSafeAreaAndReserve(page);
-    if (scenario.name !== "portal-853-light") {
-      await assertVisibleInteractiveAccessibility(page, ".portal-nav");
-    }
+    await assertVisibleInteractiveAccessibility(page, ".portal-nav");
     await page.screenshot({
       path: path.join(outputRoot, `${scenario.name}.png`),
       fullPage: true,

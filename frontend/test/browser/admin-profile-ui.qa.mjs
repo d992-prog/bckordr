@@ -227,8 +227,9 @@ try {
     });
     assert.deepEqual(focus, { active: true, visible: true, withinViewport: true }, `${label} must have visible unobscured focus`);
   };
-  const assertVisibleVpnControlsNamed = async () => {
-    const audit = await page.locator(".vpn-admin-shell").evaluate((root) => {
+  const accessibilityAuditCounts = {};
+  const assertVisibleVpnInteractiveTraversal = async (label) => {
+    const audit = await page.locator(".vpn-admin-shell").evaluate((root, auditLabel) => {
       const isVisible = (element) => {
         const style = getComputedStyle(element);
         const box = element.getBoundingClientRect();
@@ -240,19 +241,124 @@ try {
         const labelledText = labelledBy
           ? labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent || "").join(" ")
           : "";
-        return (element.getAttribute("aria-label") || labelledText || element.textContent || "").trim();
+        const nativeLabels = "labels" in element
+          ? [...(element.labels || [])].map((item) => item.textContent || "").join(" ")
+          : "";
+        const wrappingLabel = element.closest("label")?.textContent || "";
+        return (element.getAttribute("aria-label") || labelledText || nativeLabels
+          || wrappingLabel || element.textContent || element.getAttribute("title") || "").trim();
       };
-      const controls = [...root.querySelectorAll("a[href], button")].filter(isVisible);
+      const selector = 'a[href], button, input, select, textarea, [contenteditable="true"], [tabindex]';
+      const controls = [...root.querySelectorAll(selector)].filter(isVisible);
+      const tabbable = controls.filter((element) => element.tabIndex >= 0
+        && !("disabled" in element && element.disabled));
+      tabbable.forEach((element, index) => {
+        element.setAttribute("data-vpn-a11y-audit-id", `${auditLabel}-${index + 1}`);
+      });
+      const globalTabbableCount = [...document.querySelectorAll(selector)]
+        .filter(isVisible)
+        .filter((element) => element.tabIndex >= 0 && !("disabled" in element && element.disabled))
+        .length;
       return {
         unnamed: controls.filter((element) => !accessibleName(element)).map((element) => element.outerHTML),
+        tabbableIds: tabbable.map((element) => element.getAttribute("data-vpn-a11y-audit-id")),
+        visibleCount: controls.length,
+        deterministicCap: Math.max(32, (globalTabbableCount + 1) * 2),
         exposedDecorativeSvg: [...root.querySelectorAll("svg")]
           .filter((element) => isVisible(element) && element.getAttribute("role") !== "img"
             && element.getAttribute("aria-hidden") !== "true")
           .map((element) => element.outerHTML),
       };
-    });
-    assert.deepEqual(audit.unnamed, [], "every visible VPN admin button and link must have an accessible name");
+    }, label);
+    assert.deepEqual(audit.unnamed, [], `${label}: every visible VPN admin interactive must have an accessible name`);
     assert.deepEqual(audit.exposedDecorativeSvg, [], "decorative VPN admin SVGs must be hidden");
+    assert.ok(audit.tabbableIds.length > 0, `${label}: expected visible tabbable controls`);
+
+    await page.evaluate(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+      window.scrollTo(0, 0);
+      const navigation = document.querySelector(".vpn-admin-nav");
+      if (navigation) navigation.scrollLeft = 0;
+    });
+    const reached = new Set();
+    let firstAuditId = null;
+    let cycled = false;
+    for (let step = 0; step < audit.deterministicCap; step += 1) {
+      await page.keyboard.press("Tab");
+      const activeAuditId = await page.evaluate(() => document.activeElement?.getAttribute("data-vpn-a11y-audit-id"));
+      if (!activeAuditId) continue;
+      if (firstAuditId === null) firstAuditId = activeAuditId;
+      else if (activeAuditId === firstAuditId) {
+        cycled = true;
+        break;
+      }
+
+      await page.waitForFunction((auditId) => {
+        const element = document.querySelector(`[data-vpn-a11y-audit-id="${auditId}"]`);
+        if (!(element instanceof HTMLElement) || document.activeElement !== element) return false;
+        const box = element.getBoundingClientRect();
+        const navigation = document.querySelector(".vpn-admin-nav");
+        const navigationBox = navigation?.getBoundingClientRect() || null;
+        const obscuredByNavigation = navigationBox && !navigation.contains(element)
+          && box.top < navigationBox.bottom && box.bottom > navigationBox.top;
+        return !obscuredByNavigation && box.top >= -1 && box.left >= -1
+          && box.bottom <= innerHeight + 1 && box.right <= innerWidth + 1;
+      }, activeAuditId, { timeout: 750 }).catch(() => {});
+      const focus = await page.evaluate((auditId) => {
+        const element = document.querySelector(`[data-vpn-a11y-audit-id="${auditId}"]`);
+        if (!(element instanceof HTMLElement)) return { error: "audited element is missing" };
+        const box = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        const navigation = document.querySelector(".vpn-admin-nav");
+        const navigationBox = navigation?.getBoundingClientRect() || null;
+        const obscuredByNavigation = Boolean(navigationBox && !navigation?.contains(element)
+          && box.top < navigationBox.bottom && box.bottom > navigationBox.top);
+        return {
+          error: null,
+          name: (element.getAttribute("aria-label") || element.textContent || "").trim(),
+          rect: { top: box.top, right: box.right, bottom: box.bottom, left: box.left },
+          viewport: { width: innerWidth, height: innerHeight },
+          navigation: navigation ? {
+            scrollLeft: navigation.scrollLeft,
+            clientWidth: navigation.clientWidth,
+            scrollWidth: navigation.scrollWidth,
+          } : null,
+          withinViewport: box.top >= -1 && box.left >= -1
+            && box.bottom <= innerHeight + 1 && box.right <= innerWidth + 1,
+          obscuredByNavigation,
+          focusVisibleMatch: element.matches(":focus-visible"),
+          outlineStyle: style.outlineStyle,
+          outlineWidth: style.outlineWidth,
+          boxShadow: style.boxShadow,
+          focusVisible: element.matches(":focus-visible")
+            && ((style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2) || style.boxShadow !== "none"),
+        };
+      }, activeAuditId);
+      assert.equal(focus.error, null, `${label}: ${focus.error}`);
+      assert.equal(focus.withinViewport, true,
+        `${label}: ${activeAuditId} "${focus.name}" is outside the viewport: ${JSON.stringify(focus)}`);
+      assert.equal(focus.obscuredByNavigation, false,
+        `${label}: ${activeAuditId} "${focus.name}" is obscured by sticky navigation`);
+      assert.equal(focus.focusVisible, true,
+        `${label}: ${activeAuditId} "${focus.name}" has no visible focus: ${JSON.stringify(focus)}`);
+      reached.add(activeAuditId);
+    }
+    assert.equal(cycled, true, `${label}: keyboard traversal did not cycle within ${audit.deterministicCap} steps`);
+    assert.deepEqual([...reached].sort(), [...audit.tabbableIds].sort(),
+      `${label}: keyboard traversal did not reach every visible tabbable control`);
+    accessibilityAuditCounts[label] = {
+      visible: audit.visibleCount,
+      tabbable: audit.tabbableIds.length,
+    };
+    await page.evaluate(() => {
+      document.querySelectorAll("[data-vpn-a11y-audit-id]").forEach((element) => {
+        element.removeAttribute("data-vpn-a11y-audit-id");
+      });
+      window.scrollTo(0, 0);
+      const navigation = document.querySelector(".vpn-admin-nav");
+      if (navigation) navigation.scrollLeft = 0;
+    });
   };
   const assertAdminTwoHundredPercentTextReflow = async () => {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -277,6 +383,32 @@ try {
             && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
         })
         .map((element) => `${element.tagName}:${element.textContent?.trim().slice(0, 80)}`);
+      const isContainedByHorizontalScroller = (element) => {
+        for (let ancestor = element.parentElement; ancestor && ancestor !== root.parentElement; ancestor = ancestor.parentElement) {
+          const style = getComputedStyle(ancestor);
+          if (["auto", "scroll", "hidden", "clip"].includes(style.overflowX)
+            && ancestor.scrollWidth > ancestor.clientWidth + 1) return true;
+        }
+        return false;
+      };
+      const overflowing = [...root.querySelectorAll("*")]
+        .filter(isVisible)
+        .map((element) => {
+          const style = getComputedStyle(element);
+          const box = element.getBoundingClientRect();
+          const controlClipped = element.matches("a, button, input, select, textarea")
+            && (["hidden", "clip"].includes(style.overflowX) || ["hidden", "clip"].includes(style.overflowY))
+            && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
+          const escapesPage = (box.left < -1 || box.right > document.documentElement.clientWidth + 1)
+            && !isContainedByHorizontalScroller(element);
+          return {
+            tag: element.tagName,
+            className: typeof element.className === "string" ? element.className : "",
+            text: element.textContent?.trim().slice(0, 60) || "",
+            reason: controlClipped ? "control-clipped" : escapesPage ? "outside-page" : null,
+          };
+        })
+        .filter((element) => element.reason !== null);
       return {
         pageFits: document.documentElement.scrollWidth <= innerWidth,
         rootFits: root.scrollWidth <= root.clientWidth,
@@ -286,24 +418,16 @@ try {
           rootClientWidth: root.clientWidth,
           rootScrollWidth: root.scrollWidth,
         },
-        overflowing: [...root.querySelectorAll("*")]
-          .filter(isVisible)
-          .map((element) => ({
-            tag: element.tagName,
-            className: typeof element.className === "string" ? element.className : "",
-            text: element.textContent?.trim().slice(0, 60) || "",
-            right: element.getBoundingClientRect().right,
-            scrollWidth: element.scrollWidth,
-            clientWidth: element.clientWidth,
-          }))
-          .filter((element) => element.right > innerWidth + 1 || element.scrollWidth > element.clientWidth + 1)
-          .slice(0, 20),
+        overflowing,
         clipped,
       };
     });
     assert.equal(result.pageFits, true, `VPN admin page must not overflow at 200% text size: ${JSON.stringify(result)}`);
     assert.equal(result.rootFits, true, `VPN admin workspace must not overflow at 200% text size: ${JSON.stringify(result)}`);
+    assert.deepEqual(result.overflowing, [],
+      `VPN admin has true page/control overflow at 200% text size: ${JSON.stringify(result.overflowing)}`);
     assert.deepEqual(result.clipped, [], `VPN admin copy is clipped at 200% text size: ${result.clipped.join(" | ")}`);
+    await assertVisibleVpnInteractiveTraversal("customers-390-text-200");
     await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-customers-390-text-200.png") });
     await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
     await page.setViewportSize({ width: 1280, height: 1000 });
@@ -396,6 +520,7 @@ try {
   await assertContrast(commitReadiness, "dark disabled primary action");
   await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-overview-dark-1280.png") });
   await page.emulateMedia({ colorScheme: "light" });
+  await assertVisibleVpnInteractiveTraversal("overview-desktop");
 
   await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).click();
   await waitForHash("#vpn/customers");
@@ -444,7 +569,7 @@ try {
   await assertContrast(allCustomersFilter, "dark active filter hover");
   await page.emulateMedia({ colorScheme: "light" });
   const firstProfileAction = page.getByRole("button", { name: "Изменить название", exact: true }).first();
-  await assertVisibleVpnControlsNamed();
+  await assertVisibleVpnInteractiveTraversal("customers-desktop");
   await assertFocusVisible(vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }), "VPN navigation");
   await assertFocusVisible(customerSearch, "customer search");
   await assertFocusVisible(firstProfileAction, "profile action");
@@ -676,6 +801,7 @@ try {
   await page.goto(`${appUrl}#vpn/nodes`);
   await waitForHash("#vpn/nodes");
   await waitForCurrentVpnLink("Ноды");
+  await assertVisibleVpnInteractiveTraversal("nodes-desktop");
   const deleteTrigger = page.getByRole("button", { name: "Удалить ноду", exact: true });
   await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-nodes-1280.png") });
   await page.setViewportSize({ width: 1280, height: 700 });
@@ -708,6 +834,7 @@ try {
   for (const link of await vpnNavigation.getByRole("link").all()) {
     assert.ok((await link.boundingBox()).height >= 44, "each VPN navigation link must have a 44px touch target");
   }
+  await assertVisibleVpnInteractiveTraversal("nodes-mobile");
   await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-nodes-390.png") });
   await page.setViewportSize({ width: 1280, height: 1000 });
   await deleteTrigger.click();
@@ -809,7 +936,7 @@ try {
     "the worker barrier must still allow a later fresh node list to apply");
   assert.equal(workerDeleteCalls - deleteCallsBeforeRace, 1);
   assert.deepEqual(errors, []);
-  console.log("PASS: actual admin bundle rename/cancel/selection/reload-failure/stale-GET/delayed-PATCH/external-rename/revoke/two-key-pending/copy-fallback/error/narrow-profile-bounds, synthetic HTTP only");
+  console.log(`PASS: actual admin bundle accessibility=${JSON.stringify(accessibilityAuditCounts)} rename/cancel/selection/reload-failure/stale-GET/delayed-PATCH/external-rename/revoke/two-key-pending/copy-fallback/error/narrow-profile-bounds, synthetic HTTP only`);
 } finally {
   await browser?.close();
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
