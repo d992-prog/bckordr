@@ -128,7 +128,7 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
         </button>
       </div>
 
-      <nav className="vpn-release-links" aria-label="Разделы управления VPN">
+      <nav className="vpn-release-links" aria-label="Быстрые переходы проверки">
         <button type="button" className="ghost" onClick={() => onNavigate("nodes")}>Ноды</button>
         <button type="button" className="ghost" onClick={() => onNavigate("capacity")}>Ёмкость</button>
         <button type="button" className="ghost" onClick={() => onNavigate("maintenance")}>Обслуживание</button>

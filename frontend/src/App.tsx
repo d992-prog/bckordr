@@ -45,7 +45,12 @@ import {
 } from "./api";
 import { isVpnConfigurationActionDisabled } from "./vpnMaintenance";
 import { VpnAdminNavigation } from "./VpnAdminNavigation";
-import { displayMetric, vpnAdminSectionFromHash } from "./vpnAdminView";
+import {
+  displayMetric,
+  isVpnAdminHash,
+  type VpnAdminSection,
+  vpnAdminSectionFromHash,
+} from "./vpnAdminView";
 import { VpnCustomerWorkspace } from "./VpnCustomerWorkspacePanel";
 import { shouldApplyLoadGeneration } from "./vpnCustomerWorkspace";
 import { VpnEndpointCapacityPanel } from "./VpnEndpointCapacityPanel";
@@ -1033,7 +1038,8 @@ function discoveryRuntimeSettingsToForm(settings: DiscoveryRuntimeSettings) {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("domains");
-  const [vpnAdminSection, setVpnAdminSection] = useState(() => vpnAdminSectionFromHash(window.location.hash));
+  const [vpnAdminSection, setVpnAdminSection] = useState<VpnAdminSection>("overview");
+  const lastNonVpnTabRef = useRef<Exclude<Tab, "vpn">>("domains");
   const [session, setSession] = useState<SessionResponse | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [toast, setToast] = useState<Toast>(null);
@@ -1290,8 +1296,13 @@ export default function App() {
   );
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
     const syncVpnAdminSection = () => {
-      if (!/^#\/?vpn(?:\/|\?|$)/.test(window.location.hash)) {
+      if (!isVpnAdminHash(window.location.hash)) {
+        setVpnAdminSection("overview");
+        setTab(lastNonVpnTabRef.current);
         return;
       }
       setVpnAdminSection(vpnAdminSectionFromHash(window.location.hash));
@@ -1458,9 +1469,30 @@ export default function App() {
     }
   }
 
+  function navigateToTab(nextTab: Tab) {
+    if (nextTab === "vpn") {
+      if (tab !== "vpn") {
+        lastNonVpnTabRef.current = tab;
+      }
+      setTab("vpn");
+      setVpnAdminSection("overview");
+      if (typeof window !== "undefined" && window.location.hash !== "#vpn/overview") {
+        window.location.hash = "#vpn/overview";
+      }
+      return;
+    }
+
+    lastNonVpnTabRef.current = nextTab;
+    setTab(nextTab);
+    setVpnAdminSection("overview");
+    if (typeof window !== "undefined" && isVpnAdminHash(window.location.hash)) {
+      window.location.hash = "";
+    }
+  }
+
   function navigateVpnReadiness(target: VpnReleaseNavigationTarget) {
     const navigation = getVpnReleaseNavigationDestination(target);
-    setTab(navigation.tab);
+    navigateToTab(navigation.tab);
     window.setTimeout(() => {
       const destination = document.getElementById(navigation.elementId);
       if (!destination) {
@@ -4498,8 +4530,11 @@ export default function App() {
           ) : null}
         </div>
 
-        {vpnAdminSection === "overview" ? (
-          <>
+        <section
+          className="stack"
+          data-vpn-admin-section="overview"
+          hidden={vpnAdminSection !== "overview"}
+        >
         <VpnReleaseReadinessPanel
           key={vpnReadinessUiGeneration}
           report={vpnReleaseReadiness}
@@ -4547,10 +4582,13 @@ export default function App() {
             }}
           />
         </div>
-          </>
-        ) : null}
+        </section>
 
-        {vpnAdminSection === "plans" ? (
+        <section
+          className="stack"
+          data-vpn-admin-section="plans"
+          hidden={vpnAdminSection !== "plans"}
+        >
         <section className="grid">
           <div className="card full-span">
             <h2>Новый тариф</h2>
@@ -4573,9 +4611,52 @@ export default function App() {
           </div>
 
         </section>
-        ) : null}
+        <div className="card full-span">
+          <h2>Тарифы</h2>
+          <div className="simple-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Тариф</th>
+                  <th>Срок</th>
+                  <th>Лимиты</th>
+                  <th>Цена</th>
+                  <th>Статус</th>
+                  <th>Публикация</th>
+                  <th>Порядок</th>
+                  <th>Действия</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vpnPlans.map((plan) => (
+                  <tr key={plan.id}>
+                    <td><strong>{plan.name}</strong><div className="row-hint">{plan.slug}</div>{plan.description ? <div className="row-hint">{plan.description}</div> : null}</td>
+                    <td>{plan.duration_days ? `${plan.duration_days} дней` : "ручной"}</td>
+                    <td>{formatVpnTraffic(plan.traffic_limit_gb)} · {plan.max_devices} устройств</td>
+                    <td>{plan.price_amount} {plan.currency}</td>
+                    <td><span className={statusClass(plan.is_active ? "ready" : "disabled")}>{plan.is_active ? "активен" : "выключен"}</span></td>
+                    <td><span className={statusClass(plan.is_public ? "ready" : "disabled")}>{plan.is_public ? "Публичный" : "Скрыт"}</span></td>
+                    <td>{plan.display_order}</td>
+                    <td>
+                      <div className="actions">
+                        <button type="button" className="ghost" disabled={publishingVpnPlanId !== null} onClick={() => void toggleVpnPlanPublication(plan)}>{plan.is_public ? "Скрыть" : "Опубликовать"}</button>
+                        <button type="button" className="danger" onClick={() => void deleteVpnPlan(plan)}>Удалить</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {vpnPlans.length === 0 ? <p className="empty">Тарифов пока нет.</p> : null}
+        </div>
+        </section>
 
-        {vpnAdminSection === "customers" ? (
+        <section
+          className="stack"
+          data-vpn-admin-section="customers"
+          hidden={vpnAdminSection !== "customers"}
+        >
         <div className="card full-span">
           <div className="card-head">
             <div>
@@ -4594,9 +4675,13 @@ export default function App() {
             notify={(type: "success" | "error", text: string) => setToast({ type, text })}
           />
         </div>
-        ) : null}
+        </section>
 
-        {vpnAdminSection === "nodes" ? (
+        <section
+          className="stack"
+          data-vpn-admin-section="nodes"
+          hidden={vpnAdminSection !== "nodes"}
+        >
         <div className="card full-span">
           <div className="card-head">
             <div>
@@ -4691,52 +4776,13 @@ export default function App() {
           </div>
           {vpnNodes.length === 0 ? <p className="empty">VPN-ноды пока не включены. Открой воркер, задай роль VPN и включи VPN.</p> : null}
         </div>
-        ) : null}
+        </section>
 
-        {vpnAdminSection === "plans" ? (
-        <div className="card full-span">
-          <h2>Тарифы</h2>
-          <div className="simple-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>Тариф</th>
-                  <th>Срок</th>
-                  <th>Лимиты</th>
-                  <th>Цена</th>
-                  <th>Статус</th>
-                  <th>Публикация</th>
-                  <th>Порядок</th>
-                  <th>Действия</th>
-                </tr>
-              </thead>
-              <tbody>
-                {vpnPlans.map((plan) => (
-                  <tr key={plan.id}>
-                    <td><strong>{plan.name}</strong><div className="row-hint">{plan.slug}</div>{plan.description ? <div className="row-hint">{plan.description}</div> : null}</td>
-                    <td>{plan.duration_days ? `${plan.duration_days} дней` : "ручной"}</td>
-                    <td>{formatVpnTraffic(plan.traffic_limit_gb)} · {plan.max_devices} устройств</td>
-                    <td>{plan.price_amount} {plan.currency}</td>
-                    <td><span className={statusClass(plan.is_active ? "ready" : "disabled")}>{plan.is_active ? "активен" : "выключен"}</span></td>
-                    <td><span className={statusClass(plan.is_public ? "ready" : "disabled")}>{plan.is_public ? "Публичный" : "Скрыт"}</span></td>
-                    <td>{plan.display_order}</td>
-                    <td>
-                      <div className="actions">
-                        <button type="button" className="ghost" disabled={publishingVpnPlanId !== null} onClick={() => void toggleVpnPlanPublication(plan)}>{plan.is_public ? "Скрыть" : "Опубликовать"}</button>
-                        <button type="button" className="danger" onClick={() => void deleteVpnPlan(plan)}>Удалить</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {vpnPlans.length === 0 ? <p className="empty">Тарифов пока нет.</p> : null}
-        </div>
-        ) : null}
-
-        {vpnAdminSection === "events" ? (
-          <>
+        <section
+          className="stack"
+          data-vpn-admin-section="events"
+          hidden={vpnAdminSection !== "events"}
+        >
         <div className="card full-span">
           <h2>Telegram</h2>
           <p className="muted">Последние обращения клиентов к VPN-боту и результат доставки ответа.</p>
@@ -4799,8 +4845,7 @@ export default function App() {
           </div>
           {vpnNodeEvents.length === 0 ? <p className="empty">Событий пока нет.</p> : null}
         </div>
-          </>
-        ) : null}
+        </section>
       </section>
     );
   }
@@ -5757,7 +5802,7 @@ export default function App() {
       <div className="toolbar">
         <div className="tab-strip">
           {(["domains", "discovery", "scanner", "strategies", "workers", "vpn", "accounts", "contacts", "attacks", "settings"] as Tab[]).map((item) => (
-            <button key={item} type="button" className={tab === item ? "ghost active-chip" : "ghost"} onClick={() => setTab(item)}>
+            <button key={item} type="button" className={tab === item ? "ghost active-chip" : "ghost"} onClick={() => navigateToTab(item)}>
               {formatTabLabel(item)}
             </button>
           ))}

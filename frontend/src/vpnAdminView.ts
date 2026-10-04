@@ -8,9 +8,17 @@ const SECTION_KEYS = new Set<VpnAdminSection>([
   "events",
 ]);
 
-export function vpnAdminSectionFromHash(hash: string): VpnAdminSection {
+function hashSegments(hash: string): string[] {
   const [path] = hash.replace(/^#\/?/, "").split("?", 1);
-  const segments = path.split("/").filter(Boolean);
+  return path.split("/").filter(Boolean);
+}
+
+export function isVpnAdminHash(hash: string): boolean {
+  return hashSegments(hash)[0] === "vpn";
+}
+
+export function vpnAdminSectionFromHash(hash: string): VpnAdminSection {
+  const segments = hashSegments(hash);
   const [root, candidate] = segments;
   return segments.length === 2 && root === "vpn" && SECTION_KEYS.has(candidate as VpnAdminSection)
     ? candidate as VpnAdminSection

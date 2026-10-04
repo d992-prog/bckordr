@@ -380,6 +380,10 @@ button {
   max-width: 100%;
 }
 
+.vpn-stack [hidden] {
+  display: none !important;
+}
+
 .full-span {
   grid-column: 1 / -1;
 }

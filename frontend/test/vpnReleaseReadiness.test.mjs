@@ -310,6 +310,8 @@ test("release panel guards both mutations and does not duplicate node operations
   assert.match(source, /НЕ включает оплату и пробный доступ/);
   assert.doesNotMatch(source, /dangerouslySetInnerHTML/);
   assert.match(source, /Релизный контур/);
+  assert.match(source, /aria-label="Быстрые переходы проверки"/);
+  assert.doesNotMatch(source, /aria-label="Разделы управления VPN"/);
   assert.match(source, /\{check\.message\}/);
   assert.doesNotMatch(source, /Release gate/);
   assert.doesNotMatch(source, /\{check\.code\}/);

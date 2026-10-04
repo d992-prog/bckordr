@@ -115,13 +115,70 @@ try {
       }
       return reloadFailure ? json(route, { detail: "Не удалось обновить список" }, 503) : json(route, keys);
     }
+    if (pathname === "/api/control/vpn/release-readiness") return json(route, {
+      ready: true, checked_at: stamp, release_id: null, checks: [],
+    });
     if (["/api/control/vpn/overview", "/api/control/vpn/lifecycle/status",
       "/api/admin/diagnostic-telegram", "/api/control/discovery/runtime-settings",
       "/api/control/zone-scanner/settings"].includes(pathname)) return json(route, {});
     return json(route, []);
   });
-  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  const appUrl = `http://127.0.0.1:${server.address().port}/`;
+  const waitForHash = (expected) => page.waitForFunction(
+    (hash) => window.location.hash === hash,
+    expected,
+  );
+
+  await page.goto(appUrl);
+  assert.equal(await page.evaluate(() => window.location.hash), "");
+  assert.match(await page.getByRole("button", { name: "домены", exact: true }).getAttribute("class"), /active-chip/);
+
   await page.getByRole("button", { name: "VPN", exact: true }).click();
+  await waitForHash("#vpn/overview");
+  const vpnNavigation = page.getByRole("navigation", { name: "Разделы управления VPN" });
+  assert.equal(await vpnNavigation.getByRole("link", { name: "Обзор", exact: true }).getAttribute("aria-current"), "page");
+
+  await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).click();
+  await waitForHash("#vpn/customers");
+  assert.equal(await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).getAttribute("aria-current"), "page");
+  await page.goBack();
+  await waitForHash("#vpn/overview");
+  assert.equal(await vpnNavigation.getByRole("link", { name: "Обзор", exact: true }).getAttribute("aria-current"), "page");
+  await page.goBack();
+  await waitForHash("");
+  assert.match(await page.getByRole("button", { name: "домены", exact: true }).getAttribute("class"), /active-chip/);
+  await page.goForward();
+  await waitForHash("#vpn/overview");
+  await page.goForward();
+  await waitForHash("#vpn/customers");
+
+  await page.getByRole("button", { name: "домены", exact: true }).click();
+  await waitForHash("");
+  assert.match(await page.getByRole("button", { name: "домены", exact: true }).getAttribute("class"), /active-chip/);
+  await page.goBack();
+  await waitForHash("#vpn/customers");
+  assert.equal(await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).getAttribute("aria-current"), "page");
+  await page.goForward();
+  await waitForHash("");
+
+  await page.goto(`${appUrl}#vpn/customers`);
+  await waitForHash("#vpn/customers");
+  assert.equal(await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).getAttribute("aria-current"), "page");
+
+  await page.locator(".vpn-customer-row").filter({ hasText: "Борис" }).click();
+  await page.getByRole("button", { name: "Новый клиент", exact: true }).click();
+  const customerDraft = page.getByRole("textbox", { name: "Имя", exact: true });
+  await customerDraft.fill("Черновик клиента");
+  await vpnNavigation.getByRole("link", { name: "Обзор", exact: true }).click();
+  await waitForHash("#vpn/overview");
+  assert.equal(await page.locator('[data-vpn-admin-section="customers"]').isHidden(), true);
+  assert.equal(await page.getByRole("button", { name: "Новый клиент", exact: true }).count(), 0);
+  await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).click();
+  await waitForHash("#vpn/customers");
+  assert.equal(await customerDraft.inputValue(), "Черновик клиента");
+  await page.getByRole("button", { name: "Отмена", exact: true }).click();
+  assert.match(await page.locator(".vpn-customer-row.active-chip").innerText(), /Борис/);
+
   await page.locator(".vpn-customer-row").filter({ hasText: "Борис" }).click();
   const key = page.locator(".vpn-subscription-card").filter({ hasText: "Подписка #12" }).locator(".vpn-key-card");
   await key.getByText("Телефон 2", { exact: true }).waitFor();
