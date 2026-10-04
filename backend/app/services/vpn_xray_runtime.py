@@ -28,6 +28,7 @@ _CONFLICT = "vpn_xray_runtime_conflict"
 _LIMIT = 2 * 1024 * 1024
 _ENTRY_LIMIT = 65536
 _PROC = Path("/proc")
+_SUPPORTED_XRAY_VERSION = re.compile(rb"Xray (?:26\.7\.28|26\.9\.9)(?:\s|$)")
 
 
 class XrayRuntimeError(ValueError):
@@ -401,7 +402,7 @@ def _observe(port: int, uid: UUID, email: str, flow: str,
     namespace = _network_namespace(process, deadline)
     listener = _listener(process, api_port, deadline)
     version = _run([str(executable), "version"], deadline)
-    _require(re.match(rb"Xray 26\.7\.28(?:\s|$)", version))
+    _require(_SUPPORTED_XRAY_VERSION.match(version))
     matched = False
     for tag in tags:
         seconds = _remaining(deadline)

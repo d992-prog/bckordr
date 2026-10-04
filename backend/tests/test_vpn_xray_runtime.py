@@ -331,9 +331,17 @@ def test_observe_empty_users(runtime, node):
     assert runtime.observe_xray_client(**inputs()).state == "not_observed"
 
 
+def test_current_3xui_binary_version_is_supported(runtime, node):
+    node["responses"][0] = (
+        b"Xray 26.9.9 (Xray, Penetrates Everything.) 52a412d "
+        b"(go1.27.1 linux/amd64)\n"
+    )
+    assert runtime.observe_xray_client(**inputs()).state == "matched"
+
+
 @pytest.mark.parametrize(
     "version",
-    [b"Xray 26.9.9\n", b"Xray 26.7.27\n", b"Xray 26.7.280\n", b"secret"],
+    [b"Xray 26.9.10\n", b"Xray 26.7.27\n", b"Xray 26.7.280\n", b"secret"],
 )
 def test_unsupported_binary_version(runtime, node, version):
     node["responses"][0] = version
