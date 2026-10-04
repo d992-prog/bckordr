@@ -32,6 +32,37 @@ export interface TelegramLaunch {
   isMiniAppLaunch: boolean;
 }
 
+function readTelegramUrlLaunch(
+  location: LaunchEnvironment["location"],
+): Pick<TelegramLaunch, "initData" | "platform"> {
+  if (!location) {
+    return { initData: "", platform: "unknown" };
+  }
+  try {
+    const url = new URL(location.href);
+    const parameterSets = [url.searchParams];
+    const rawHash = url.hash.slice(1);
+    if (rawHash.includes("=")) {
+      const routeSeparator = rawHash.indexOf("?");
+      parameterSets.push(new URLSearchParams(
+        routeSeparator >= 0 ? rawHash.slice(routeSeparator + 1) : rawHash,
+      ));
+    }
+    for (const parameters of parameterSets) {
+      const initData = parameters.get("tgWebAppData") ?? "";
+      if (initData.length > 0) {
+        return {
+          initData,
+          platform: parameters.get("tgWebAppPlatform") || "unknown",
+        };
+      }
+    }
+  } catch {
+    // Invalid or unavailable URLs are handled as ordinary browser launches.
+  }
+  return { initData: "", platform: "unknown" };
+}
+
 interface BootstrapApi {
   config: () => Promise<PortalConfig>;
   loginMiniApp: (initData: string) => Promise<PortalMe>;
@@ -112,8 +143,11 @@ export function captureTelegramLaunch(
   environment: LaunchEnvironment = window,
 ): TelegramLaunch {
   const webApp = environment.Telegram?.WebApp;
-  const initData = typeof webApp?.initData === "string" ? webApp.initData : "";
-  const platform = typeof webApp?.platform === "string" ? webApp.platform : "unknown";
+  const urlLaunch = readTelegramUrlLaunch(environment.location);
+  const sdkInitData = typeof webApp?.initData === "string" ? webApp.initData : "";
+  const sdkPlatform = typeof webApp?.platform === "string" ? webApp.platform : "unknown";
+  const initData = sdkInitData || urlLaunch.initData;
+  const platform = sdkPlatform !== "unknown" ? sdkPlatform : urlLaunch.platform;
   const launch = {
     initData,
     platform,

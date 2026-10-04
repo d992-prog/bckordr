@@ -84,6 +84,26 @@ test("storage and URL cleanup failures never lose captured launch data", () => {
   assert.equal(launch.isMiniAppLaunch, true);
 });
 
+test("captures signed Mini App launch data from the URL when Telegram SDK is unavailable", () => {
+  let replacement = "";
+  const launch = captureTelegramLaunch({
+    location: {
+      href: "https://vpn.example/cabinet/#tgWebAppData=query_id%3Dabc%26auth_date%3D123%26hash%3Dsigned&tgWebAppPlatform=ios&tgWebAppVersion=9.1",
+    },
+    history: {
+      state: null,
+      replaceState: (_state, _unused, url) => { replacement = String(url); },
+    },
+  });
+
+  assert.deepEqual(launch, {
+    initData: "query_id=abc&auth_date=123&hash=signed",
+    platform: "ios",
+    isMiniAppLaunch: true,
+  });
+  assert.equal(replacement, "/cabinet/");
+});
+
 test("strips launch data after a safe hash route while preserving the route and unrelated parameters", () => {
   let replacement = "";
   captureTelegramLaunch({

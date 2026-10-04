@@ -14,11 +14,11 @@ test("cabinet HTML is an independent safe Russian Mini App entry", async () => {
   assert.match(html, /<title>Veltrix VPN<\/title>/);
   assert.match(html, /viewport-fit=cover/);
   assert.match(html, /<meta name="referrer" content="no-referrer"/);
-  const sdkPosition = html.indexOf("https://telegram.org/js/telegram-web-app.js");
-  const entryPosition = html.indexOf("/src/vpn-portal/main.tsx");
-  assert.ok(sdkPosition >= 0);
-  assert.ok(entryPosition > sdkPosition);
-  assert.match(html, /<div id="root"><\/div>/);
+  assert.match(
+    html,
+    /<script\s+async\s+data-telegram-sdk\s+src="https:\/\/telegram\.org\/js\/telegram-web-app\.js"><\/script>/,
+  );
+  assert.match(html, /<div id="root">[\s\S]*role="status"[\s\S]*Открываем личный кабинет…[\s\S]*<\/div>/);
   assert.doesNotMatch(html, /src\/main\.tsx/);
 });
 

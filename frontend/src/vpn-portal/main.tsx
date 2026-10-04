@@ -9,8 +9,17 @@ import "./portal.css";
 const launch = captureTelegramLaunch();
 const bootstrap = createPortalBootstrap(portalApi);
 
-window.Telegram?.WebApp?.ready?.();
-window.Telegram?.WebApp?.expand?.();
+function activateTelegramWebApp(): void {
+  window.Telegram?.WebApp?.ready?.();
+  window.Telegram?.WebApp?.expand?.();
+}
+
+activateTelegramWebApp();
+document.querySelector("[data-telegram-sdk]")?.addEventListener(
+  "load",
+  activateTelegramWebApp,
+  { once: true },
+);
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

@@ -1789,6 +1789,7 @@ async function verifyMountedFragmentPreservation(browser, origin) {
     const { context, page } = await newPortalPage(browser, { seedCache: false });
     await installApi(page, async (route, pathname) => {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/auth/mini-app")) return responseJson(route, me);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions);
       if (pathname.endsWith("/profiles")) return responseJson(route, profiles);
@@ -2254,6 +2255,41 @@ async function verifyRealSdkCacheCleanup(browser, origin) {
   return "passed with downloaded official SDK and synthetic launch data (not a live Telegram client)";
 }
 
+async function verifyTelegramSdkOutageResilience(browser, origin) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  const diagnostics = [];
+  let exchangedInitData = null;
+  page.on("console", (message) => diagnostics.push(message.text()));
+  page.on("pageerror", (error) => diagnostics.push(error.message));
+  await page.route("https://telegram.org/js/telegram-web-app.js", () => new Promise(() => {}));
+  await installApi(page, async (route, pathname, request) => {
+    if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+    if (pathname.endsWith("/auth/mini-app")) {
+      exchangedInitData = (await request.postDataJSON()).init_data;
+      return responseJson(route, { display_name: "Synthetic QA", csrf_token: "csrf-qa" });
+    }
+    if (pathname.endsWith("/me")) return responseJson(route, { display_name: "Synthetic QA", csrf_token: "csrf-qa" });
+    if (pathname.endsWith("/subscriptions") || pathname.endsWith("/profiles") || pathname.endsWith("/plans")) {
+      return responseJson(route, []);
+    }
+    return responseJson(route, {}, 404);
+  });
+  const signed = "query_id=synthetic-qa&user=%7B%22id%22%3A1%7D&auth_date=1&hash=synthetic";
+  const hash = new URLSearchParams({
+    tgWebAppData: signed,
+    tgWebAppVersion: "9.1",
+    tgWebAppPlatform: "ios",
+  });
+
+  await page.goto(`${origin}/cabinet/#${hash}`, { waitUntil: "domcontentloaded" });
+  await page.getByRole("heading", { name: "Пробный доступ недоступен" }).waitFor();
+  assert.equal(exchangedInitData, signed);
+  assert.equal((await page.url()).includes("tgWebAppData"), false);
+  assert.deepEqual(diagnostics, []);
+  await context.close();
+}
+
 await mkdir(outputRoot, { recursive: true });
 process.env.CHROME_LOG_FILE = path.join(outputRoot, "chromium.log");
 const server = await startStaticServer();
@@ -2280,6 +2316,7 @@ try {
   await verifyTelegramSafeAreaGeometry(browser, server.origin);
   await verifyLongStatusLensStates(browser, server.origin);
   await captureResponsiveMatrix(browser, server.origin);
+  await verifyTelegramSdkOutageResilience(browser, server.origin);
   const sdkResult = await verifyRealSdkCacheCleanup(browser, server.origin);
   console.log(`Portal browser QA passed. accessibility=${JSON.stringify(accessibilityAuditCounts)} Screenshots: ${outputRoot}`);
   console.log(`Official SDK cache spot-check: ${sdkResult}`);
