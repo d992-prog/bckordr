@@ -1,0 +1,43 @@
+{
+  "title": "Veltrix VPN · компоновка личного кабинета",
+  "question": "Все три варианта используют утверждённый Liquid Glass. Выбери, какая структура лучше для обычного пользователя.",
+  "options": [
+    {
+      "id": "focus-orb",
+      "label": "Фокус на готовности",
+      "kicker": "ВАРИАНТ A",
+      "thesis": "Один эмоциональный экран: пользователь сразу видит, что всё готово, и открывает профиль.",
+      "palette": ["#EEF4FA", "#101C2C", "#256DFF", "#72E2C0", "#C6B7FF"],
+      "materials": ["optical glass", "matte content"],
+      "viewport": "Крупная сфера состояния, одна кнопка, подписка и нижняя навигация.",
+      "risk": "Самый эффектный вариант, но быстрые действия находятся глубже.",
+      "comp": ".impeccable/mocks/portal-liquid-glass-a.png"
+    },
+    {
+      "id": "connection-route",
+      "label": "Путь подключения",
+      "kicker": "ВАРИАНТ B",
+      "thesis": "Показывает человеку понятный маршрут Telegram → профиль → защита и снижает тревогу при первом запуске.",
+      "palette": ["#EEF4FA", "#101C2C", "#256DFF", "#72E2C0", "#C6B7FF"],
+      "materials": ["optical glass", "matte status cards"],
+      "viewport": "Статус-маршрут, явное подключение, ссылка и сведения о доступе.",
+      "risk": "Самый понятный, но чуть менее воздушный и премиальный.",
+      "comp": ".impeccable/mocks/portal-liquid-glass-b.png"
+    },
+    {
+      "id": "status-lens",
+      "label": "Статус и действия",
+      "kicker": "ВАРИАНТ C · РЕКОМЕНДУЮ",
+      "thesis": "Сочетает сильный визуальный образ с практичными действиями, которые нужны после выдачи доступа.",
+      "palette": ["#EEF4FA", "#101C2C", "#256DFF", "#72E2C0", "#C6B7FF"],
+      "materials": ["single glass lens", "matte action sheets"],
+      "viewport": "Крупная линза статуса, открытие профиля, копирование ссылки и инструкция.",
+      "risk": "Нужно аккуратно упростить стеклянную линзу при реализации, сохранив характер.",
+      "comp": ".impeccable/mocks/portal-liquid-glass-c.png"
+    }
+  ],
+  "reroll": false,
+  "canon": false,
+  "steer": true,
+  "buildPath": {"value": "comp", "toggle": false}
+}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { PortalError, portalApi } from "./api";
 import type { SessionGeneration } from "./bootstrap";
+import { copyConnectionUri, loadConnectionUri } from "./connection";
 import { createQrDataUrl } from "./qr";
 import type { PortalProfile } from "./types";
 import { stateLabel } from "./view";
@@ -18,6 +19,8 @@ interface ProfileCardProps {
   onRenameStart: (profileId: number) => void;
   onRenameSettled: (profileId: number) => void;
 }
+
+type ConnectionMessage = { kind: "success" | "error"; text: string };
 
 function errorText(error: unknown): string {
   return error instanceof PortalError
@@ -39,7 +42,7 @@ export default function ProfileCard({
 }: ProfileCardProps) {
   const [connectionUri, setConnectionUri] = useState<string | null>(null);
   const [connectionBusy, setConnectionBusy] = useState(false);
-  const [connectionMessage, setConnectionMessage] = useState("");
+  const [connectionMessage, setConnectionMessage] = useState<ConnectionMessage | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [qrBusy, setQrBusy] = useState(false);
   const [qrError, setQrError] = useState("");
@@ -59,7 +62,7 @@ export default function ProfileCard({
     connectionEpoch.current += 1;
     setConnectionUri(null);
     setConnectionBusy(false);
-    setConnectionMessage("");
+    setConnectionMessage(null);
     qrRequestInFlight.current = false;
     setQrDataUrl(null);
     setQrBusy(false);
@@ -68,9 +71,9 @@ export default function ProfileCard({
 
   const canReveal = profile.state === "active" && profile.can_connect;
   const unavailableHint = profile.state === "active" && !profile.can_connect
-    ? "Подключение для этого профиля пока недоступно."
+    ? "Ссылка пока недоступна. Попробуйте через несколько минут"
     : profile.state !== "active"
-      ? "Неактивный профиль можно переименовать, но подключение недоступно."
+      ? "Профиль неактивен. Подключение недоступно"
       : "";
 
   async function revealConnection(): Promise<void> {
@@ -80,17 +83,17 @@ export default function ProfileCard({
     const generation = sessionGeneration.current();
     const epoch = ++connectionEpoch.current;
     setConnectionBusy(true);
-    setConnectionMessage("");
+    setConnectionMessage(null);
     qrRequestInFlight.current = false;
     setQrDataUrl(null);
     setQrBusy(false);
     setQrError("");
     try {
-      const connection = await portalApi.connection(profile.id);
+      const uri = await loadConnectionUri(profile.id);
       if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
         return;
       }
-      setConnectionUri(connection.uri);
+      setConnectionUri(uri);
     } catch (error) {
       if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
         return;
@@ -99,7 +102,7 @@ export default function ProfileCard({
         onUnauthorized();
         return;
       }
-      setConnectionMessage(errorText(error));
+      setConnectionMessage({ kind: "error", text: errorText(error) });
     } finally {
       if (sessionGeneration.isCurrent(generation) && connectionEpoch.current === epoch) {
         setConnectionBusy(false);
@@ -111,16 +114,22 @@ export default function ProfileCard({
     if (connectionUri === null) {
       return;
     }
+    const generation = sessionGeneration.current();
+    const epoch = connectionEpoch.current;
     try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error("clipboard unavailable");
+      await copyConnectionUri(connectionUri);
+      if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
+        return;
       }
-      await navigator.clipboard.writeText(connectionUri);
-      setConnectionMessage("Скопировано.");
+      setConnectionMessage({ kind: "success", text: "Ссылка скопирована" });
     } catch {
-      setConnectionMessage(
-        "Не удалось скопировать автоматически. Выделите ссылку в поле и скопируйте вручную.",
-      );
+      if (!sessionGeneration.isCurrent(generation) || connectionEpoch.current !== epoch) {
+        return;
+      }
+      setConnectionMessage({
+        kind: "error",
+        text: "Не удалось скопировать автоматически. Выделите ссылку в поле и скопируйте вручную.",
+      });
     }
   }
 
@@ -180,7 +189,7 @@ export default function ProfileCard({
         return;
       }
       setConnectionUri(null);
-      setConnectionMessage("");
+      setConnectionMessage(null);
       setIsRenaming(false);
       onProfileChange(updated);
     } catch (error) {
@@ -211,7 +220,7 @@ export default function ProfileCard({
   function beginRename(): void {
     setRenameValue(profile.display_name);
     setRenameError("");
-    setConnectionMessage("");
+    setConnectionMessage(null);
     setIsRenaming(true);
   }
 
@@ -242,16 +251,16 @@ export default function ProfileCard({
           />
           {renameError && <p className="message message--error" role="alert">{renameError}</p>}
           <div className="button-row">
-            <button className="button button--primary" disabled={renameBusy} onClick={saveName}>
+            <button type="button" className="button button--primary" disabled={renameBusy} onClick={saveName}>
               {renameBusy ? "Сохраняем…" : "Сохранить"}
             </button>
-            <button className="button button--ghost" disabled={renameBusy} onClick={cancelRename}>
+            <button type="button" className="button button--ghost" disabled={renameBusy} onClick={cancelRename}>
               Отмена
             </button>
           </div>
         </div>
       ) : (
-        <button className="button button--ghost" disabled={renamePending} onClick={beginRename}>
+        <button type="button" className="button button--ghost" disabled={renamePending} onClick={beginRename}>
           {renamePending ? "Переименование…" : "Переименовать"}
         </button>
       )}
@@ -259,11 +268,12 @@ export default function ProfileCard({
       <div className="connection-box">
         {connectionUri === null ? (
           <button
+            type="button"
             className="button button--primary"
             disabled={!canReveal || connectionBusy || renameBusy || renamePending}
             onClick={revealConnection}
           >
-            {connectionBusy ? "Получаем ссылку…" : "Показать ссылку подключения"}
+            {connectionBusy ? "Получаем ссылку…" : "Показать ссылку"}
           </button>
         ) : (
           <>
@@ -277,15 +287,15 @@ export default function ProfileCard({
               onFocus={(event) => event.currentTarget.select()}
             />
             <div className="button-row">
-              <button className="button button--primary" onClick={copyConnection}>
+              <button type="button" className="button button--primary" onClick={copyConnection}>
                 Скопировать
               </button>
               {qrDataUrl === null ? (
-                <button className="button button--ghost" disabled={qrBusy} onClick={showQrCode}>
+                <button type="button" className="button button--ghost" disabled={qrBusy} onClick={showQrCode}>
                   {qrBusy ? "Создаём QR-код…" : "Показать QR-код"}
                 </button>
               ) : (
-                <button className="button button--ghost" onClick={hideQrCode}>
+                <button type="button" className="button button--ghost" onClick={hideQrCode}>
                   Скрыть QR-код
                 </button>
               )}
@@ -301,7 +311,12 @@ export default function ProfileCard({
           </>
         )}
         {connectionMessage && (
-          <p className="message" role="status">{connectionMessage}</p>
+          <p
+            className={`message ${connectionMessage.kind === "error" ? "message--error" : ""}`}
+            role={connectionMessage.kind === "error" ? "alert" : "status"}
+          >
+            {connectionMessage.text}
+          </p>
         )}
       </div>
     </article>

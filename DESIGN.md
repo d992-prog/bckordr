@@ -1,0 +1,155 @@
+---
+name: Veltrix VPN
+description: Спокойный оптический интерфейс для простого подключения к VPN.
+colors:
+  pearl: "#eef4fa"
+  ink: "#101c2c"
+  blue: "#256dff"
+  mint: "#72e2c0"
+  lilac: "#c6b7ff"
+  focus: "#0b57d0"
+  action: "#246cf8"
+  action-hover: "#1f5bc9"
+  success: "#0d6a56"
+  warning: "#805500"
+  danger: "#a52c41"
+  muted: "#62728c"
+  dark-ground: "#07111e"
+  dark-ink: "#f4f8ff"
+typography:
+  display:
+    fontFamily: "Moderustic, Avenir Next, Segoe UI Variable Display, Segoe UI, sans-serif"
+    fontSize: "clamp(28px, 6.56vw, 56px)"
+    fontWeight: 700
+    lineHeight: 1.02
+    letterSpacing: "-0.035em"
+  body:
+    fontFamily: "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    fontSize: "16px"
+    fontWeight: 400
+    lineHeight: 1.55
+rounded:
+  control: "18px"
+  card: "28px"
+  lens: "44px"
+  pill: "999px"
+spacing:
+  xs: "8px"
+  sm: "12px"
+  md: "18px"
+  lg: "24px"
+  xl: "34px"
+components:
+  button-primary:
+    backgroundColor: "{colors.action}"
+    textColor: "#ffffff"
+    rounded: "{rounded.pill}"
+    padding: "12px 20px"
+    height: "64px"
+  button-primary-hover:
+    backgroundColor: "{colors.action-hover}"
+    textColor: "#ffffff"
+    rounded: "{rounded.pill}"
+  card-matte:
+    backgroundColor: "rgba(255, 255, 255, 0.88)"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.card}"
+    padding: "24px"
+---
+
+# Design System: Veltrix VPN
+
+## Overview
+
+**Creative North Star: “Оптический сигнал”**
+
+Veltrix переводит техническую услугу в спокойный бытовой сценарий: статус виден сразу, следующее действие очевидно, а протоколы и секретные строки не конкурируют с задачей пользователя. Утверждённое направление — Liquid Glass, компоновка «Статус и действия», направление `1a448fec`, seed/reference `portal-liquid-glass-c.png`.
+
+Собственный мир строится на жемчужно-голубом поле, трёх оптических лепестках, большой линзе состояния и одном ясном синем действии. Стекло — функциональный материал навигации и управления; данные и длинный текст остаются на матовых поверхностях.
+
+**Ключевые характеристики:** три взаимосвязанные линзы вместо буквального `V`; спокойный синий с мятой и сиренью; честные формулировки о готовности профиля, но не о состоянии туннеля; крупная мобильная композиция; плотная, утилитарная админ-панель.
+
+## Colors
+
+Светлая тема использует холодный жемчужный фон `#eef4fa`, чернильный текст `#101c2c`, синий `#256dff`, мяту `#72e2c0` и сирень `#c6b7ff`. Основное действие — `#246cf8`, hover — `#1f5bc9`; фокус — `#0b57d0`. Состояния: success `#0d6a56`, warning `#805500`, danger `#a52c41`, muted `#62728c`.
+
+В тёмной теме фон становится `#07111e`, текст `#f4f8ff`, акценты — blue `#7aa7ff`, mint `#8ef0d3`, lilac `#d4c8ff`, focus `#91c2ff`. Матовые поверхности: `rgba(13, 29, 47, 0.94)` в общей системе и `0.92` в кабинете; границы — `rgba(205, 225, 255, 0.18)` и `0.14` соответственно.
+
+**Правило одного сигнала.** Насыщенный синий обозначает главное действие или выбранное состояние. Он не используется как декоративная заливка плотных таблиц.
+
+## Typography
+
+**Display Font:** `Moderustic` с fallback `Avenir Next`, `Segoe UI Variable Display`, `Segoe UI`, sans-serif. Moderustic — измеренное совпадение с утверждённым компом только когда шрифт доступен локально; проект не загружает и не обещает внешний веб-шрифт.
+
+**Body Font:** `ui-sans-serif`, `system-ui`, `-apple-system`, `BlinkMacSystemFont`, `Segoe UI`, sans-serif.
+
+Главный заголовок кабинета использует фактический диапазон `clamp(28px, 6.56vw, 56px)`, weight `700`, line-height `1.02`, tracking `-0.035em`. На эталонном высоком viewport он измерен как `44px`; `56px/700` остаётся верхним design token. Заголовки секций используют display stack и плотный tracking до `-0.035em`; основной текст — системный, обычно `16px/1.55`. Короткие статусы могут быть uppercase, но интерфейсные заголовки не получают декоративных eyebrow/kicker.
+
+## Layout
+
+Кабинет mobile-first: минимально проверенная ширина `320px`, стандарт — `390px`; изменения сетки происходят на `350px`, `639/640px`, `760px`, высоком `760px + 1200px height` и широком `1200px`. Контент учитывает Telegram/iOS safe-area inset со всех сторон. Фиксированная нижняя навигация всегда имеет зарезервированное пространство и не должна перекрывать последний интерактивный элемент.
+
+На `853×1844` композиция повторяет утверждённый портретный comp; на `1024px` остаётся компактной. На `1200px+` header и content имеют нативную ширину до `1120px`: линза статуса и primary action занимают левую колонку, быстрые действия — правую, а карточки доступа — обе. Ни `zoom`, ни transform-масштабирование для layout не используются. Нижняя навигация остаётся единообразной и компактной: `68–80px` в зависимости от класса viewport, `76px` на wide. Текст при 200% должен рефлоуиться без горизонтального скролла, клиппинга, пересечений nav-элементов и разрыва однословных подписей действий посередине слова.
+
+Публичная страница использует просторную маркетинговую композицию без кнопки оплаты. Админ-панель desktop-first: overview, customers, nodes, plans и events держат плотную информационную сетку, а на узком экране таблицы превращаются в читаемые блоки без сокрытия операций.
+
+## Elevation & Depth
+
+Глубина создаётся оптическими растровыми пластинами, тональными слоями и мягкими тенями с видимым смещением. `.vx-glass` использует `blur(24px) saturate(145%)`, светлую границу и `0 18px 48px rgba(37, 109, 255, 0.13)`; при отсутствии backdrop-filter он становится матовой поверхностью. В тёмной теме стекло — `rgba(13, 29, 47, 0.7)` с тенью `0 18px 48px rgba(0,0,0,0.32)`.
+
+Стекло разрешено на линзе состояния, главном действии и навигации. Карточки подписок, профилей, справочный текст, формы и все плотные данные — матовые; стекло на таблицах и админских списках запрещено.
+
+## Shapes
+
+Базовые радиусы: controls `18px`, cards `28px`, optical lens `44px`, status chips и primary actions `999px`. Логотип состоит ровно из трёх лепестков: высокий синий, нижний левый мятный и нижний правый сиреневый. Знак не превращается в букву V, щит, замок или глобус.
+
+Горизонтальный логотип объединяет знак и текст `Veltrix VPN`; малые поверхности используют только знак с доступным текстовым именем рядом или через `aria-label`/alt. Растровый знак нужен для материального оптического вида, а `veltrix-mark.svg`/`favicon.svg` — плоские системные варианты для малых размеров.
+
+## Components
+
+### Кабинет
+
+- `.portal-status-lens` сообщает `ready`, `preparing`, `paused`, `expired`, `empty` и `error`. Текст «VPN‑профиль готов» означает только готовность профиля и никогда не утверждает, что туннель подключён или защищён.
+- `.portal-primary` — одно главное синее действие; `.portal-actions` содержит копирование ссылки и инструкцию; `.vx-matte` хранит подписки, профили, тарифы и аккаунт.
+- `.portal-nav` имеет три равных постоянных пункта: Главная, Профили, Аккаунт. Active-state меняет цвет, фон и заливку иконки, но не раздувает ячейку и не сдвигает соседей. Fragment navigation и keyboard focus используют мгновенную прокрутку; плавность допустима только для явной пользовательской навигации вне reduced motion.
+- Динамические загрузка/ошибка/результат используют один корректно типизированный live region. Секретная ссылка показывается или копируется только после явного действия.
+
+### Публичная страница
+
+Показывает продукт, простоту подключения, поддерживаемые клиенты и переход к кабинету/боту. До подключения платежей запрещены purchase CTA, вымышленные цены, скорость, стабильность, число клиентов и отзывы.
+
+Подтверждённая клиентская матрица на текущем релизе: Happ на iPhone (iOS) и Hiddify на Windows. Android и macOS не показываются как поддерживаемые, пока не появится реальный тест подключения и отдельная проверенная инструкция.
+
+### Админ-панель
+
+VPN-раздел сохраняет высокую плотность, табы/секции overview, customers, nodes, plans и events, явные состояния readiness и предупреждения. Деструктивные действия используют отдельный danger-стиль и подтверждающий dialog. Пароли, токены и connection URI маскируются и раскрываются только явным действием; они не попадают в уведомления, снимки и логи.
+
+### Растровые материалы
+
+| Путь | Регион | Размер | Альфа/фон | Provenance |
+| --- | --- | ---: | --- | --- |
+| `frontend/public/brand/atmosphere.webp` | атмосферное поле | 512×1108 | opaque, `yuv420p` | `.impeccable/provenance/brand/atmosphere.webp.json` |
+| `frontend/public/brand/brand-mark.webp` | трёхлепестковый знак | 512×551 | transparent, `argb` | `.impeccable/provenance/brand/brand-mark.webp.json` |
+| `frontend/public/brand/signal-orb.webp` | signal orb | 512×484 | transparent, `argb` | `.impeccable/provenance/brand/signal-orb.webp.json` |
+| `frontend/public/brand/status-lens.webp` | оптическая линза статуса | 1200×710 | transparent, `argb` | `.impeccable/provenance/brand/status-lens.webp.json` |
+
+Каждый repo-only JSON в `.impeccable/provenance/brand/` фиксирует исходный prompt, tool/model truth, дату, source PNG, назначение, approval, точный SHA-256, размер и alpha. Исходные lossless-пластины и их sidecar лежат в `.impeccable/assets/`. В `frontend/public/brand/` находятся только оптимизированные WebP без prompt/provenance metadata.
+
+## Do's and Don'ts
+
+### Do
+
+- **Do** начинать пользовательский экран со статуса и одного понятного следующего действия.
+- **Do** сохранять focus ring `3px` с offset `3px`, контраст, safe areas, 44px touch targets и live regions.
+- **Do** проверять `npm test`, `npm run build`, три browser QA script и матрицу 320/390/853/1024/1200/1440, включая 1440×1200, dark mode и 200% text.
+- **Do** сравнивать portrait comp только с first-viewport capture того же размера `853×1844`; широкую responsive-топологию подтверждать browser QA, а не растягивать её под portrait spec. Авторитетный release diff лежит в `.impeccable/review/diff/final/report.json`.
+- **Do** обновлять raster sidecar и SHA-256 при каждой замене shipping asset; не тайлить `atmosphere.webp`.
+- **Do** сохранять `prefers-reduced-motion`: без непрерывной декорации, lens arrival `0s/0.01ms`, route loop выключен, scroll behavior `auto`.
+
+### Don't
+
+- **Don't** заявлять «подключено», «защищено», гарантированную скорость или стабильность без реального измерения состояния.
+- **Don't** добавлять оплату или создавать впечатление доступной покупки до подключения платёжного сценария.
+- **Don't** использовать стекло на таблицах, длинных формах или плотных карточках данных.
+- **Don't** копировать generation prompts, debug contracts, токены, пароли, connection URI или синтетические секреты в browser source.
+- **Don't** вводить UI-библиотеку ради существующих CSS-примитивов; поддерживайте одну brand stylesheet и минимальные React/CSS компоненты.

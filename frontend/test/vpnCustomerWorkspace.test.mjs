@@ -458,6 +458,7 @@ test("admin profile UI uses display names and exposes inline rename controls", a
   assert.match(source, /renameBusy \? \(\s*<p className="muted">Обновляем подпись ссылки…<\/p>/);
   assert.match(source, /nextAccessKeyEditorAfterRename\(current, accessKey\.id\)/);
   assert.doesNotMatch(source, /setBusyAction\(`key-rename-/);
+  assert.doesNotMatch(source, /(?<![А-Яа-яЁё])[Кк]люч(?:и|а|ей|ом|у)?(?![А-Яа-яЁё])/u);
 });
 
 test("workspace reload opts into load error propagation without changing other callers", async () => {
@@ -479,7 +480,7 @@ test("long profile names and rename controls wrap with visible spacing", async (
     readFile(new URL("../src/App.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(appSource, /<section className="stack vpn-stack">/);
+  assert.match(appSource, /<section\s+className="stack vpn-stack vpn-admin-shell"/);
   assert.match(
     source,
     /\.vpn-stack \{[^}]*grid-template-columns: minmax\(0, 1fr\);[^}]*min-width: 0;/s,
@@ -512,5 +513,110 @@ test("long profile names and rename controls wrap with visible spacing", async (
   assert.match(
     source,
     /\.vpn-key-rename-form input \{[^}]*flex: 1 1 16rem;[^}]*min-width: 0;/s,
+  );
+});
+
+test("VPN admin presentation stays scoped and uses the Veltrix admin primitives", async () => {
+  const [styles, appSource, navigationSource] = await Promise.all([
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+    readFile(new URL("../src/App.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/VpnAdminNavigation.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(styles, /\.vpn-admin-shell\s*\{[^}]*display:\s*grid;[^}]*min-width:\s*0;/s);
+  assert.match(styles, /\.vpn-admin-shell\s+\.vpn-admin-nav\s*\{[^}]*position:\s*sticky;/s);
+  assert.match(
+    styles,
+    /\.vpn-admin-shell\s+\.vpn-admin-metric,\s*\.vpn-admin-shell\s+\.stats\s*>\s*article\s*\{[^}]*background:/s,
+  );
+  assert.match(appSource, /className="stack vpn-stack vpn-admin-shell"/);
+  assert.match(navigationSource, /className="tab-strip vpn-admin-navigation vpn-admin-nav"/);
+  assert.doesNotMatch(styles, /@import\s+["']\.\/brand\/veltrix-brand\.css["']/);
+  assert.doesNotMatch(styles, /\.app-shell\s+:where\([^)]*\):focus-visible/);
+  assert.doesNotMatch(appSource, /vpn-admin-panel|vpn-admin-metrics|vpn-admin-metric|<div className="vpn-admin-nav">/);
+  assert.match(appSource, /role=\{toast\.type === "error" \? "alert" : "status"\}/);
+  assert.match(styles, /--vpn-admin-primary-bg:/);
+  assert.match(styles, /--vpn-admin-primary-fg:/);
+  assert.match(styles, /\.vpn-admin-shell\s+\.status\.available/);
+  assert.match(styles, /@media\s*\(max-width:\s*720px\)[\s\S]*data-vpn-admin-section="nodes"/);
+  assert.match(styles, /\.vpn-admin-shell\s+\.vpn-admin-nav\s+a\s*\{[^}]*min-height:\s*44px/s);
+  assert.match(appSource, /<VpnAdminNavigation[\s\S]*?<section[\s\S]*?data-vpn-admin-section="overview"/);
+  assert.match(appSource, /<td data-label="Действия">/);
+  assert.match(appSource, /VPN‑сервис/);
+  assert.match(appSource, /VPN‑ноды/);
+  assert.match(appSource, /данные SSH/);
+  assert.match(appSource, /Клиент, его подписки и VPN‑профили/);
+  assert.match(appSource, /<span>Синхронизировано профилей<\/span>/);
+  assert.doesNotMatch(appSource, /VPN‑сервис: синхронизировано профилей —/);
+  assert.match(appSource, /Выдача профилей/);
+  assert.match(appSource, /Ёмкость точек подключения/);
+  assert.match(appSource, /<article><span>Профили<\/span>/);
+  assert.doesNotMatch(
+    appSource,
+    /Эти поля готовят сервер как VPN-node|IP или домен VPN-node|VPN-ключи собраны|автовыдача на endpoint|Выдача ключей|Проверено ключей|обращения клиентов к VPN-боту|Ёмкость VPN endpoint’ов|>VPN endpoint<|>Endpoint<|data-label="Endpoint"|>VPN host<|>VPN inbound<|>Inbound<|data-label="Inbound"|>Host<|data-label="Host"|>[Сс]оздание inbound|>Создать inbound<|3x-UI URL|SSH host|SSH port|SSH key path/,
+  );
+});
+
+test("admin profile links use explicit reveal and copy controls without exposing the URI by default", async () => {
+  const source = await readFile(
+    new URL("../src/VpnCustomerWorkspacePanel.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /Показать полную ссылку/);
+  assert.match(source, /Скрыть ссылку/);
+  assert.match(source, /Скопировать ссылку/);
+  assert.match(source, /maskAccessKeyUri\(accessKey\.config_uri\)/);
+  assert.match(source, /selectionStart === 0/);
+  assert.match(source, /Не удалось скопировать или выделить ссылку/);
+});
+
+test("VPN node removal uses an accessible confirmation and preserves the mutation sequence", async () => {
+  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+
+  assert.match(source, /<dialog/);
+  assert.match(source, /\.showModal\(\)/);
+  assert.match(source, /aria-modal="true"/);
+  assert.match(source, /Да, удалить ноду/);
+  assert.match(source, /Она перестанет принимать новые профили\./);
+  assert.equal(
+    source.match(/openVpnNodeDeletion\(worker, event\.currentTarget\)/g)?.length,
+    2,
+  );
+  assert.doesNotMatch(source, /async function decommissionWorker/);
+  assert.doesNotMatch(source, /Удалить ноду \$\{worker\.name\}/);
+  assert.match(source, /setWorkers\(\(current\) => current\.filter/);
+  assert.match(source, /const workerMutationGenerationRef = useRef\(0\)/);
+  assert.match(source, /const workerMutationGeneration = workerMutationGenerationRef\.current/);
+  assert.match(source, /workerMutationGeneration === workerMutationGenerationRef\.current/);
+  assert.match(source, /loadAll\(\{ silent: true, throwOnError: true \}\)/);
+  assert.match(source, /Нода удалена, но список не удалось обновить/);
+  const deleteFunction = source.match(
+    /async function deleteWorkerNode\(worker: WorkerNode\) \{[\s\S]*?\n  \}\n\n  function focusVpnNodesAfterDeletion/,
+  )?.[0];
+  assert.ok(deleteFunction, "the node deletion helper must remain directly inspectable");
+  assert.ok(
+    deleteFunction.indexOf("await api.deleteWorker(worker.id)")
+      < deleteFunction.indexOf("await loadAll({ silent: true, throwOnError: true })"),
+    "DELETE must finish before the refresh attempt",
+  );
+  assert.ok(
+    deleteFunction.indexOf("workerMutationGenerationRef.current += 1")
+      < deleteFunction.indexOf("setWorkers((current)"),
+    "the worker mutation barrier must advance before the optimistic removal",
+  );
+  const confirmFunction = source.match(
+    /async function confirmVpnNodeDeletion\(\) \{[\s\S]*?\r?\n  \}\r?\n\r?\n  function formatDomainReadiness/,
+  )?.[0];
+  assert.ok(confirmFunction, "the confirmation flow must remain directly inspectable");
+  assert.match(confirmFunction, /dialog\.close\(\)/);
+  const failureBranch = confirmFunction.match(/\} catch \(error\) \{[\s\S]*?\} finally \{/)?.[0] ?? "";
+  assert.match(failureBranch, /setVpnNodeDeletionError\(message\)/);
+  assert.doesNotMatch(failureBranch, /setToast/);
+  assert.doesNotMatch(source, /className="vpn-admin-shell vpn-node-dialog"[^>]*aria-live=/);
+  assert.ok(
+    confirmFunction.indexOf("dialog.close()")
+      < confirmFunction.indexOf("setVpnNodeDeletion(null)"),
+    "the native modal must close synchronously before React clears it and restores focus",
   );
 });

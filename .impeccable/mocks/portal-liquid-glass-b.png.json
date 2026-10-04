@@ -1,0 +1,10 @@
+{
+  "surface": "authenticated-customer-portal",
+  "variant": "b-connection-route",
+  "direction": "Liquid Glass",
+  "seed": "1a448fec",
+  "approved": false,
+  "image": "portal-liquid-glass-b.png",
+  "reference": ".impeccable/mocks/decision/model-pick.png",
+  "prompt": "Use the referenced Veltrix VPN Liquid Glass mobile UI only as the locked visual identity: same pearl atmospheric blue field, deep navy typography, blue/mint/lilac optical highlights, same original three-petal abstract Veltrix mark, thick optical glass only for floating controls/navigation, matte content surfaces. Create a structurally different full-fidelity composition comp for the authenticated Russian customer cabinet, exact portrait screen with no phone/device frame and no browser chrome. Build the first viewport as a clear top-to-bottom route. Top compact brand row: mark and Veltrix VPN, with profile affordance. Below, a wide matte status panel with Всё готово к подключению, Профиль активен, and route Telegram to Профиль to Защищено. Center: one large blue Liquid Glass primary control Подключиться, then secondary action Показать ссылку. Lower: restrained matte cards 7 дней бесплатно / Активна and 1 устройство / Можно подключить сейчас. Bottom: compact floating optical-glass navigation Главная, Профили, Помощь. Implementable, premium, calm, accessible, one primary action, 44px touch targets, no invented prices, speed metrics, testimonials, flags, exposed URI, UUID, generic shield, padlock, globe, stock icons, watermark, or extra copy."
+}

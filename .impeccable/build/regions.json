@@ -1,0 +1,130 @@
+{
+  "regions": [
+    {
+      "id": "atmosphere",
+      "kind": "texture",
+      "grid": "G0:G0",
+      "note": "Clean sample of the pearl-blue atmospheric field with its iridescent light streak and no foreground ink."
+    },
+    {
+      "id": "brand-mark",
+      "kind": "plate",
+      "grid": "A0:B0",
+      "note": "Three-lens Veltrix brand mark; regenerate without surrounding header text."
+    },
+    {
+      "id": "brand-name",
+      "kind": "text",
+      "box": { "x": 0.175, "y": 0.05, "w": 0.29, "h": 0.035 },
+      "note": "Isolated Veltrix VPN wordmark text, excluding the three-lens mark."
+    },
+    {
+      "id": "help-action",
+      "kind": "control",
+      "grid": "H0:J0",
+      "note": "Header help action."
+    },
+    {
+      "id": "status-lens",
+      "kind": "plate",
+      "box": { "x": 0.025, "y": 0.095, "w": 0.95, "h": 0.26 },
+      "note": "Tight crop of the complete asymmetric glass status lens; regenerate as an empty optical plate without text, icons, signal orb, or the intentionally overlapping primary action."
+    },
+    {
+      "id": "signal-orb",
+      "kind": "plate",
+      "box": { "x": 0.11, "y": 0.19, "w": 0.32, "h": 0.14 },
+      "note": "Tight near-square crop of the mint and blue signal orb with concentric connection arcs; no surrounding copy or controls."
+    },
+    {
+      "id": "status-label",
+      "kind": "text",
+      "grid": "F1:H1",
+      "note": "Active-state label text inside the status pill."
+    },
+    {
+      "id": "hero-title",
+      "kind": "text",
+      "grid": "E2:J2",
+      "note": "Primary status heading, «Ваш VPN готов»."
+    },
+    {
+      "id": "hero-detail",
+      "kind": "text",
+      "box": { "x": 0.47, "y": 0.27, "w": 0.44, "h": 0.045 },
+      "note": "Isolated two-line gray profile state and expiry detail below the hero title."
+    },
+    {
+      "id": "primary-action",
+      "kind": "control",
+      "grid": "A3:J4",
+      "note": "Complete blue glass «Открыть профиль» action crossing the lower edge of the lens."
+    },
+    {
+      "id": "quick-title",
+      "kind": "text",
+      "grid": "A4:G5",
+      "note": "Quick-actions section heading."
+    },
+    {
+      "id": "copy-action",
+      "kind": "control",
+      "grid": "A5:J5",
+      "note": "Complete copy-link row, including its icon, label, and chevron."
+    },
+    {
+      "id": "guide-action",
+      "kind": "control",
+      "grid": "A6:J6",
+      "note": "Complete instructions row, including its icon, label, and chevron."
+    },
+    {
+      "id": "access-card",
+      "kind": "chrome",
+      "grid": "A7:J8",
+      "note": "Complete matte access card chrome, including its decorative icon and status-pill chrome but excluding live text."
+    },
+    {
+      "id": "access-label",
+      "kind": "text",
+      "grid": "C7:F7",
+      "note": "Access-type eyebrow text."
+    },
+    {
+      "id": "access-value",
+      "kind": "text",
+      "box": { "x": 0.245, "y": 0.78, "w": 0.4, "h": 0.035 },
+      "note": "Isolated access duration value below the eyebrow label."
+    },
+    {
+      "id": "access-status",
+      "kind": "text",
+      "grid": "H7:I7",
+      "note": "Access-status label text inside the mint pill."
+    },
+    {
+      "id": "navigation",
+      "kind": "chrome",
+      "grid": "A8:J9",
+      "note": "Complete floating glass navigation tray."
+    },
+    {
+      "id": "nav-home",
+      "kind": "control",
+      "grid": "B8:D9",
+      "note": "Selected Home destination, including the optical selection plate, icon, and label."
+    },
+    {
+      "id": "nav-profiles",
+      "kind": "control",
+      "grid": "E8:F9",
+      "note": "Profiles destination icon and label."
+    },
+    {
+      "id": "nav-account",
+      "kind": "control",
+      "grid": "H8:I9",
+      "note": "Account destination icon and label."
+    }
+  ]
+}

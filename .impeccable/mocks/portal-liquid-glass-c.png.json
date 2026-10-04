@@ -1,0 +1,10 @@
+{
+  "surface": "authenticated-customer-portal",
+  "variant": "c-status-lens",
+  "direction": "Liquid Glass",
+  "seed": "1a448fec",
+  "approved": true,
+  "image": "portal-liquid-glass-c.png",
+  "reference": ".impeccable/mocks/decision/model-pick.png",
+  "prompt": "Use the referenced Veltrix VPN Liquid Glass mobile UI only as the locked visual identity: same pearl atmospheric blue field, deep navy typography, blue/mint/lilac optical highlights, same original three-petal abstract Veltrix mark, thick optical glass only for floating controls/navigation, matte content surfaces. Create a structurally different full-fidelity composition comp for the authenticated Russian customer cabinet. Top: compact brand row with mark and Veltrix VPN, plus Помощь. Upper hero: one asymmetrical optical-glass status lens with mint signal orb, status АКТИВЕН, headline Ваш VPN готов, line Профиль работает до 30 сентября. Overlap a floating primary action Открыть профиль. Middle: matte Быстрые действия with Скопировать ссылку and Инструкция. Below: matte Тестовый доступ / 7 дней бесплатно / Активна. Bottom: compact floating navigation Главная, Профили, Аккаунт. Premium, calm, approachable and implementable, one primary action, large typography, 44px touch targets, high contrast; no invented prices, speed metrics, testimonials, flags, exposed URI, UUID, device frame, generic shield, padlock, globe, stock icons, watermark, or extra copy."
+}

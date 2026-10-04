@@ -1,0 +1,10 @@
+Use case: ui-mockup
+Asset type: full-fidelity mobile product UI direction comp, portrait 390x844
+Primary request: Design a polished but category-standard first authenticated customer-dashboard viewport for "Veltrix VPN". It should look like a highly competent modern VPN service while intentionally using familiar conventions.
+Scene/backdrop: clean white and very pale blue app canvas, no phone frame.
+Style/medium: shippable mainstream SaaS/mobile product UI, crisp and accessible, not concept art.
+Composition/framing: exact portrait screen. Top: simple original abstract Veltrix logo mark, not a letter V, plus "Veltrix VPN". Center: familiar large circular connection control with blue accent and status "Подключение готово"; one button "Открыть профиль". Below: neutral cards for "Подписка" with "7 дней бесплатно" and "Активна", and "Основной профиль". Standard bottom navigation with three destinations.
+Color palette: white #FFFFFF, near-black #111827, blue #2563EB, pale blue #E8EEF8, status green #22A06B.
+Materials/textures: clean grid, neutral cards, standard rounded controls, subtle restrained shadows.
+Text (verbatim, Russian): "Veltrix VPN", "Подключение готово", "Открыть профиль", "Подписка", "7 дней бесплатно", "Активна", "Основной профиль".
+Constraints: practical accessible layout; large readable Russian typography; one primary action; no VPN URI, UUID, speed claim, fake metrics, price, testimonials, letter V icon, shield, padlock, globe, watermark, browser chrome or phone hardware. Keep all text inside the screen and do not add extra copy.

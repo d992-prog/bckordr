@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 
 const helpersUrl = new URL("../src/vpn-portal/planFormatting.ts", import.meta.url);
 const catalogUrl = new URL("../src/vpn-portal/PlanCatalog.tsx", import.meta.url);
+const accountUrl = new URL("../src/vpn-portal/PortalAccount.tsx", import.meta.url);
 const portalUrl = new URL("../src/vpn-portal/Portal.tsx", import.meta.url);
 const typesUrl = new URL("../src/vpn-portal/types.ts", import.meta.url);
 const cssUrl = new URL("../src/vpn-portal/portal.css", import.meta.url);
@@ -70,7 +71,10 @@ test("catalog cards expose only safe plan fields and reuse the existing trial fl
 });
 
 test("portal loads and retries the catalog independently and rejects stale responses", async () => {
-  const source = await readFile(portalUrl, "utf8");
+  const [source, account] = await Promise.all([
+    readFile(portalUrl, "utf8"),
+    readFile(accountUrl, "utf8"),
+  ]);
   const loadStart = source.indexOf("async function loadPlans");
   const loadEnd = source.indexOf("async function loadPrivateData", loadStart);
   const loader = source.slice(loadStart, loadEnd);
@@ -86,8 +90,24 @@ test("portal loads and retries the catalog independently and rejects stale respo
   assert.doesNotMatch(loader, /handleUnauthorized|clearPrivateData|setDataError|setDataBusy/);
 
   assert.match(source, /void loadPrivateData\(\);\s*void loadPlans\(\);/);
-  assert.match(source, /<PlanCatalog[\s\S]*onRetry=\{\(\) => void loadPlans\(\)\}/);
+  assert.match(source, /<PortalAccount[\s\S]*onPlansRetry=\{\(\) => void loadPlans\(\)\}/);
+  assert.match(account, /<PlanCatalog[\s\S]*onRetry=\{props\.onPlansRetry\}/);
   assert.match(source, /plansLoadEpoch\.current \+= 1/);
+});
+
+test("account keeps plans, support, documents, and logout in one semantic view", async () => {
+  const source = await readFile(accountUrl, "utf8");
+
+  assert.match(source, /<section id="account" className="portal-account">/);
+  assert.match(source, /<p className="eyebrow">Настройки<\/p>/);
+  assert.match(source, /<h1>Аккаунт<\/h1>/);
+  assert.match(source, /<span>Telegram<\/span>/);
+  assert.match(source, /<strong>\{props\.displayName\}<\/strong>/);
+  assert.match(source, /<h2>Помощь<\/h2>/);
+  assert.match(source, /aria-label="Документы"/);
+  assert.match(source, /href="\/vpn\/#privacy"/);
+  assert.match(source, /href="\/vpn\/#terms"/);
+  assert.match(source, /type="button"[\s\S]*onClick=\{props\.onLogout\}[\s\S]*Выйти/);
 });
 
 test("catalog styling reuses portal tokens and the existing mobile breakpoint", async () => {

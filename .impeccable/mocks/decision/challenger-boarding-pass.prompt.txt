@@ -1,0 +1,10 @@
+Use case: ui-mockup
+Asset type: full-fidelity mobile product UI direction comp, portrait 390x844
+Primary request: Design the first authenticated customer-dashboard viewport for "Veltrix VPN" as a premium digital access pass inspired by mobile Wallet passes and precise travel documents, without looking like an airline app. The product is for nontechnical Russian-speaking users.
+Scene/backdrop: warm off-white digital paper canvas, no phone frame.
+Style/medium: shippable high-end product UI with structured typographic segmentation, not concept art.
+Composition/framing: exact portrait screen. Top: original geometric Veltrix logo mark, not a letter V and not a shield, plus "Veltrix VPN". Main element: one large dark-ink segmented personal pass with a cobalt top band and lime active indicator. It contains profile name "Основной профиль", status "Готов к подключению", validity "до 10 октября", device "iPhone", and a small abstract scannable pattern that is clearly decorative and contains no real secret. One prominent cobalt button "Открыть профиль". Below the pass, a clear three-step strip "Получен · Добавлен · Защищён". Compact bottom navigation.
+Color palette: warm paper #F7F6F1, ink #131722, cobalt #315CF4, active lime #B9F36B, alert coral #FF745E.
+Materials/textures: segmented pass, microgrid, precise perforation-like dividers, tabular figures, restrained scannable block.
+Text (verbatim, Russian): "Veltrix VPN", "Основной профиль", "Готов к подключению", "до 10 октября", "iPhone", "Открыть профиль", "Получен", "Добавлен", "Защищён".
+Constraints: practical accessible layout; large readable Russian typography; one primary action; no QR code, real barcode, VPN URI, UUID, speed claim, fake metrics, price, testimonials, plane, boarding gate, shield, padlock, globe, watermark, browser chrome or phone hardware. Keep all text inside the screen and do not add extra copy.

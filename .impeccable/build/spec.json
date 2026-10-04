@@ -1,0 +1,1287 @@
+{
+  "tool": "comp-spec",
+  "version": 1,
+  "createdAt": "2026-10-03T15:54:54.395Z",
+  "comp": ".impeccable/mocks/portal-liquid-glass-c.png",
+  "warnings": [],
+  "uncoveredInkCells": [],
+  "compSize": {
+    "width": 853,
+    "height": 1844
+  },
+  "aspect": 0.4626,
+  "orientation": "portrait",
+  "palette": [
+    {
+      "hex": "#e6f2f8",
+      "coverage": 0.8612
+    },
+    {
+      "hex": "#badaf8",
+      "coverage": 0.0823
+    },
+    {
+      "hex": "#69a0f8",
+      "coverage": 0.0207
+    },
+    {
+      "hex": "#91c0f8",
+      "coverage": 0.0203
+    },
+    {
+      "hex": "#5186f8",
+      "coverage": 0.0154
+    }
+  ],
+  "bands": [
+    {
+      "y": 0.0578,
+      "strength": 0.3167
+    },
+    {
+      "y": 0.2383,
+      "strength": 0.5216
+    },
+    {
+      "y": 0.2852,
+      "strength": 0.2537
+    },
+    {
+      "y": 0.3863,
+      "strength": 0.327
+    },
+    {
+      "y": 0.426,
+      "strength": 0.2479
+    },
+    {
+      "y": 0.5054,
+      "strength": 0.9996
+    },
+    {
+      "y": 0.5632,
+      "strength": 0.604
+    },
+    {
+      "y": 0.6534,
+      "strength": 0.3877
+    },
+    {
+      "y": 0.787,
+      "strength": 0.4518
+    }
+  ],
+  "regions": [
+    {
+      "id": "atmosphere",
+      "kind": "texture",
+      "note": "Clean sample of the pearl-blue atmospheric field with its iridescent light streak and no foreground ink.",
+      "grid": "G0:G0",
+      "box": {
+        "x": 0.6,
+        "y": 0,
+        "w": 0.1,
+        "h": 0.1
+      },
+      "px": {
+        "x": 512,
+        "y": 0,
+        "w": 85,
+        "h": 184
+      },
+      "aspect": 0.462,
+      "palette": [
+        {
+          "hex": "#dfeef8",
+          "coverage": 0.9922
+        },
+        {
+          "hex": "#c8d8f8",
+          "coverage": 0.0078
+        }
+      ],
+      "detail": {
+        "energy": 0.3657
+      },
+      "medium": "raster",
+      "plate": "assets/plates/atmosphere.png",
+      "text": null
+    },
+    {
+      "id": "brand-mark",
+      "kind": "plate",
+      "note": "Three-lens Veltrix brand mark; regenerate without surrounding header text.",
+      "grid": "A0:B0",
+      "box": {
+        "x": 0,
+        "y": 0,
+        "w": 0.2,
+        "h": 0.1
+      },
+      "px": {
+        "x": 0,
+        "y": 0,
+        "w": 171,
+        "h": 184
+      },
+      "aspect": 0.9293,
+      "palette": [
+        {
+          "hex": "#dcedf8",
+          "coverage": 0.8555
+        },
+        {
+          "hex": "#5b93f8",
+          "coverage": 0.0555
+        },
+        {
+          "hex": "#73aef8",
+          "coverage": 0.0348
+        },
+        {
+          "hex": "#b1c1f8",
+          "coverage": 0.0309
+        },
+        {
+          "hex": "#4772f8",
+          "coverage": 0.0234
+        }
+      ],
+      "detail": {
+        "energy": 5.3624
+      },
+      "medium": "raster",
+      "plate": "assets/plates/brand-mark.png",
+      "text": null
+    },
+    {
+      "id": "brand-name",
+      "kind": "text",
+      "note": "Isolated Veltrix VPN wordmark text, excluding the three-lens mark.",
+      "grid": null,
+      "box": {
+        "x": 0.175,
+        "y": 0.05,
+        "w": 0.29,
+        "h": 0.035
+      },
+      "px": {
+        "x": 149,
+        "y": 92,
+        "w": 247,
+        "h": 65
+      },
+      "aspect": 3.8,
+      "palette": [
+        {
+          "hex": "#daeaf8",
+          "coverage": 0.7721
+        },
+        {
+          "hex": "#090b25",
+          "coverage": 0.1659
+        },
+        {
+          "hex": "#abbdd5",
+          "coverage": 0.0263
+        },
+        {
+          "hex": "#263151",
+          "coverage": 0.0196
+        },
+        {
+          "hex": "#6f809b",
+          "coverage": 0.0162
+        }
+      ],
+      "detail": {
+        "energy": 37.0213
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null,
+      "type": {
+        "comp": {
+          "lines": 1,
+          "glyphs": 10,
+          "capHeightPx": 31.1,
+          "inkIsDark": true,
+          "allCaps": false,
+          "advance": 0.4829,
+          "advTall": 0.4829,
+          "advX": 0.5795,
+          "gap": 0.0966,
+          "xRatio": 0.7354,
+          "stemW": 0.2269,
+          "contrast": 1.264,
+          "serif": 0.7327,
+          "densTall": 0.5492,
+          "densX": 0.5693,
+          "weight": 0.5492
+        },
+        "widthClass": "condensed",
+        "weightClass": "medium"
+      }
+    },
+    {
+      "id": "help-action",
+      "kind": "control",
+      "note": "Header help action.",
+      "grid": "H0:J0",
+      "coverBox": {
+        "x": 0.7,
+        "y": 0,
+        "w": 0.3,
+        "h": 0.1
+      },
+      "box": {
+        "x": 0.7843,
+        "y": 0.0521,
+        "w": 0.1688,
+        "h": 0.026
+      },
+      "px": {
+        "x": 669,
+        "y": 96,
+        "w": 144,
+        "h": 48
+      },
+      "aspect": 3,
+      "palette": [
+        {
+          "hex": "#c3def8",
+          "coverage": 0.7849
+        },
+        {
+          "hex": "#2152f8",
+          "coverage": 0.0914
+        },
+        {
+          "hex": "#9cc0f8",
+          "coverage": 0.0484
+        },
+        {
+          "hex": "#5381f8",
+          "coverage": 0.043
+        },
+        {
+          "hex": "#79a1f8",
+          "coverage": 0.0323
+        }
+      ],
+      "detail": {
+        "energy": 18.7483
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null
+    },
+    {
+      "id": "status-lens",
+      "kind": "plate",
+      "note": "Tight crop of the complete asymmetric glass status lens; regenerate as an empty optical plate without text, icons, signal orb, or the intentionally overlapping primary action.",
+      "grid": null,
+      "box": {
+        "x": 0.025,
+        "y": 0.095,
+        "w": 0.95,
+        "h": 0.26
+      },
+      "px": {
+        "x": 21,
+        "y": 175,
+        "w": 810,
+        "h": 479
+      },
+      "aspect": 1.691,
+      "palette": [
+        {
+          "hex": "#d4eaf8",
+          "coverage": 0.9069
+        },
+        {
+          "hex": "#a1d4f8",
+          "coverage": 0.0322
+        },
+        {
+          "hex": "#aaeef2",
+          "coverage": 0.026
+        },
+        {
+          "hex": "#84ede0",
+          "coverage": 0.0204
+        },
+        {
+          "hex": "#080b25",
+          "coverage": 0.0146
+        }
+      ],
+      "detail": {
+        "energy": 18.6495
+      },
+      "medium": "raster",
+      "plate": "assets/plates/status-lens.png",
+      "text": null
+    },
+    {
+      "id": "signal-orb",
+      "kind": "plate",
+      "note": "Tight near-square crop of the mint and blue signal orb with concentric connection arcs; no surrounding copy or controls.",
+      "grid": null,
+      "box": {
+        "x": 0.11,
+        "y": 0.19,
+        "w": 0.32,
+        "h": 0.14
+      },
+      "px": {
+        "x": 94,
+        "y": 350,
+        "w": 273,
+        "h": 258
+      },
+      "aspect": 1.0581,
+      "palette": [
+        {
+          "hex": "#c2ebf8",
+          "coverage": 0.7422
+        },
+        {
+          "hex": "#89efe1",
+          "coverage": 0.1286
+        },
+        {
+          "hex": "#8ccef8",
+          "coverage": 0.0503
+        },
+        {
+          "hex": "#90dfe5",
+          "coverage": 0.0433
+        },
+        {
+          "hex": "#f8f8f8",
+          "coverage": 0.0356
+        }
+      ],
+      "detail": {
+        "energy": 6.2158
+      },
+      "medium": "raster",
+      "plate": "assets/plates/signal-orb.png",
+      "text": null
+    },
+    {
+      "id": "status-label",
+      "kind": "text",
+      "note": "Active-state label text inside the status pill.",
+      "grid": "F1:H1",
+      "coverBox": {
+        "x": 0.5,
+        "y": 0.1,
+        "w": 0.3,
+        "h": 0.1
+      },
+      "box": {
+        "x": 0.5006,
+        "y": 0.1844,
+        "w": 0.204,
+        "h": 0.0152
+      },
+      "px": {
+        "x": 427,
+        "y": 340,
+        "w": 174,
+        "h": 28
+      },
+      "aspect": 6.2143,
+      "palette": [
+        {
+          "hex": "#d8f7f5",
+          "coverage": 0.7125
+        },
+        {
+          "hex": "#0e5f4c",
+          "coverage": 0.1411
+        },
+        {
+          "hex": "#17846f",
+          "coverage": 0.0768
+        },
+        {
+          "hex": "#6caea1",
+          "coverage": 0.0446
+        },
+        {
+          "hex": "#22a989",
+          "coverage": 0.025
+        }
+      ],
+      "detail": {
+        "energy": 35.835
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null,
+      "type": {
+        "comp": {
+          "lines": 1,
+          "glyphs": 9,
+          "capHeightPx": 17.5,
+          "inkIsDark": true,
+          "allCaps": false,
+          "advance": 0.7141,
+          "advTall": 0.7141,
+          "advX": null,
+          "gap": 0.2285,
+          "xRatio": 0.5929,
+          "stemW": 0.2162,
+          "contrast": 1.2097,
+          "serif": 0.4285,
+          "densTall": 0.6211,
+          "densX": null,
+          "weight": 0.6211
+        },
+        "widthClass": "normal",
+        "weightClass": "bold"
+      }
+    },
+    {
+      "id": "hero-title",
+      "kind": "text",
+      "note": "Primary status heading, «Ваш VPN готов».",
+      "grid": "E2:J2",
+      "coverBox": {
+        "x": 0.4,
+        "y": 0.2,
+        "w": 0.6,
+        "h": 0.1
+      },
+      "box": {
+        "x": 0.4631,
+        "y": 0.2261,
+        "w": 0.4642,
+        "h": 0.0325
+      },
+      "px": {
+        "x": 395,
+        "y": 417,
+        "w": 396,
+        "h": 60
+      },
+      "aspect": 6.6,
+      "palette": [
+        {
+          "hex": "#deecf7",
+          "coverage": 0.7031
+        },
+        {
+          "hex": "#090d28",
+          "coverage": 0.2376
+        },
+        {
+          "hex": "#6d7d94",
+          "coverage": 0.0224
+        },
+        {
+          "hex": "#080838",
+          "coverage": 0.0204
+        },
+        {
+          "hex": "#98aac2",
+          "coverage": 0.0165
+        }
+      ],
+      "detail": {
+        "energy": 62.685
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null,
+      "type": {
+        "comp": {
+          "lines": 1,
+          "glyphs": 11,
+          "capHeightPx": 39.4,
+          "inkIsDark": true,
+          "allCaps": false,
+          "advance": 0.7357,
+          "advTall": 0.7865,
+          "advX": 0.685,
+          "gap": 0.0761,
+          "xRatio": 0.6983,
+          "stemW": 0.2304,
+          "contrast": 1.3035,
+          "serif": 2.0711,
+          "densTall": 0.6476,
+          "densX": 0.6591,
+          "weight": 0.6476
+        },
+        "widthClass": "normal",
+        "weightClass": "bold",
+        "chosen": {
+          "family": "Moderustic",
+          "weight": 700,
+          "fontSizePx": 56,
+          "source": "catalog",
+          "estimatedSize": true,
+          "stamp": "70830953b721"
+        }
+      }
+    },
+    {
+      "id": "hero-detail",
+      "kind": "text",
+      "note": "Isolated two-line gray profile state and expiry detail below the hero title.",
+      "grid": null,
+      "box": {
+        "x": 0.47,
+        "y": 0.27,
+        "w": 0.44,
+        "h": 0.045
+      },
+      "px": {
+        "x": 401,
+        "y": 498,
+        "w": 375,
+        "h": 83
+      },
+      "aspect": 4.5181,
+      "palette": [
+        {
+          "hex": "#d7eaf8",
+          "coverage": 0.8163
+        },
+        {
+          "hex": "#6376a0",
+          "coverage": 0.1402
+        },
+        {
+          "hex": "#a4b7d5",
+          "coverage": 0.0436
+        }
+      ],
+      "detail": {
+        "energy": 40.592
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null,
+      "type": {
+        "comp": {
+          "lines": 2,
+          "glyphs": 28,
+          "capHeightPx": 25.8,
+          "inkIsDark": true,
+          "allCaps": false,
+          "advance": 0.648,
+          "advTall": 0.667,
+          "advX": 0.648,
+          "gap": 0.1178,
+          "xRatio": 0.7586,
+          "stemW": 0.1616,
+          "contrast": 1.1521,
+          "serif": 0.9881,
+          "densTall": 0.5165,
+          "densX": 0.5568,
+          "weight": 0.5165
+        },
+        "widthClass": "normal",
+        "weightClass": "medium"
+      }
+    },
+    {
+      "id": "primary-action",
+      "kind": "control",
+      "note": "Complete blue glass «Открыть профиль» action crossing the lower edge of the lens.",
+      "grid": "A3:J4",
+      "coverBox": {
+        "x": 0,
+        "y": 0.3,
+        "w": 1,
+        "h": 0.2
+      },
+      "box": {
+        "x": 0.1301,
+        "y": 0.3552,
+        "w": 0.7632,
+        "h": 0.07
+      },
+      "px": {
+        "x": 111,
+        "y": 655,
+        "w": 651,
+        "h": 129
+      },
+      "aspect": 5.0465,
+      "palette": [
+        {
+          "hex": "#598ff8",
+          "coverage": 0.4126
+        },
+        {
+          "hex": "#7db0f8",
+          "coverage": 0.3172
+        },
+        {
+          "hex": "#a2cdf8",
+          "coverage": 0.169
+        },
+        {
+          "hex": "#f3f6f8",
+          "coverage": 0.0727
+        },
+        {
+          "hex": "#4277f8",
+          "coverage": 0.0285
+        }
+      ],
+      "detail": {
+        "energy": 21.6251
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null
+    },
+    {
+      "id": "quick-title",
+      "kind": "text",
+      "note": "Quick-actions section heading.",
+      "grid": "A4:G5",
+      "coverBox": {
+        "x": 0,
+        "y": 0.4,
+        "w": 0.7,
+        "h": 0.2
+      },
+      "box": {
+        "x": 0.0774,
+        "y": 0.4799,
+        "w": 0.5311,
+        "h": 0.0358
+      },
+      "px": {
+        "x": 66,
+        "y": 885,
+        "w": 453,
+        "h": 66
+      },
+      "aspect": 6.8636,
+      "palette": [
+        {
+          "hex": "#f7f7f8",
+          "coverage": 0.7481
+        },
+        {
+          "hex": "#080b23",
+          "coverage": 0.1927
+        },
+        {
+          "hex": "#6c7587",
+          "coverage": 0.0268
+        },
+        {
+          "hex": "#454e61",
+          "coverage": 0.0212
+        },
+        {
+          "hex": "#090b0b",
+          "coverage": 0.0112
+        }
+      ],
+      "detail": {
+        "energy": 69.4288
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null,
+      "type": {
+        "comp": {
+          "lines": 1,
+          "glyphs": 15,
+          "capHeightPx": 36.2,
+          "inkIsDark": true,
+          "allCaps": false,
+          "advance": 0.6908,
+          "advTall": 0.746,
+          "advX": 0.6631,
+          "gap": 0.0829,
+          "xRatio": 0.707,
+          "stemW": 0.2224,
+          "contrast": 1.2966,
+          "serif": 0.6512,
+          "densTall": 0.6549,
+          "densX": 0.6958,
+          "weight": 0.6549
+        },
+        "widthClass": "normal",
+        "weightClass": "bold"
+      }
+    },
+    {
+      "id": "copy-action",
+      "kind": "control",
+      "note": "Complete copy-link row, including its icon, label, and chevron.",
+      "grid": "A5:J5",
+      "coverBox": {
+        "x": 0,
+        "y": 0.5,
+        "w": 1,
+        "h": 0.1
+      },
+      "box": {
+        "x": 0.2532,
+        "y": 0.5553,
+        "w": 0.4291,
+        "h": 0.026
+      },
+      "px": {
+        "x": 216,
+        "y": 1024,
+        "w": 366,
+        "h": 48
+      },
+      "aspect": 7.625,
+      "palette": [
+        {
+          "hex": "#f7f7f8",
+          "coverage": 0.7765
+        },
+        {
+          "hex": "#0b0e25",
+          "coverage": 0.1437
+        },
+        {
+          "hex": "#c2c9d2",
+          "coverage": 0.0306
+        },
+        {
+          "hex": "#090b0b",
+          "coverage": 0.0259
+        },
+        {
+          "hex": "#8e93a2",
+          "coverage": 0.0232
+        }
+      ],
+      "detail": {
+        "energy": 74.1548
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null
+    },
+    {
+      "id": "guide-action",
+      "kind": "control",
+      "note": "Complete instructions row, including its icon, label, and chevron.",
+      "grid": "A6:J6",
+      "coverBox": {
+        "x": 0,
+        "y": 0.6,
+        "w": 1,
+        "h": 0.1
+      },
+      "box": {
+        "x": 0.2532,
+        "y": 0.6453,
+        "w": 0.2532,
+        "h": 0.026
+      },
+      "px": {
+        "x": 216,
+        "y": 1190,
+        "w": 216,
+        "h": 48
+      },
+      "aspect": 4.5,
+      "palette": [
+        {
+          "hex": "#f8f8f8",
+          "coverage": 0.7791
+        },
+        {
+          "hex": "#090c22",
+          "coverage": 0.1583
+        },
+        {
+          "hex": "#a4a7b6",
+          "coverage": 0.0313
+        },
+        {
+          "hex": "#090c0c",
+          "coverage": 0.0161
+        },
+        {
+          "hex": "#3c4454",
+          "coverage": 0.0152
+        }
+      ],
+      "detail": {
+        "energy": 45.6647
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null
+    },
+    {
+      "id": "access-card",
+      "kind": "chrome",
+      "note": "Complete matte access card chrome, including its decorative icon and status-pill chrome but excluding live text.",
+      "grid": "A7:J8",
+      "box": {
+        "x": 0,
+        "y": 0.7,
+        "w": 1,
+        "h": 0.2
+      },
+      "px": {
+        "x": 0,
+        "y": 1291,
+        "w": 853,
+        "h": 369
+      },
+      "aspect": 2.3117,
+      "palette": [
+        {
+          "hex": "#ebf4f7",
+          "coverage": 0.9682
+        },
+        {
+          "hex": "#c8f8e8",
+          "coverage": 0.0153
+        },
+        {
+          "hex": "#080c25",
+          "coverage": 0.0091
+        },
+        {
+          "hex": "#6c7c9c",
+          "coverage": 0.0038
+        },
+        {
+          "hex": "#146c5c",
+          "coverage": 0.0036
+        }
+      ],
+      "detail": {
+        "energy": 12.4195
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null
+    },
+    {
+      "id": "access-label",
+      "kind": "text",
+      "note": "Access-type eyebrow text.",
+      "grid": "C7:F7",
+      "coverBox": {
+        "x": 0.2,
+        "y": 0.7,
+        "w": 0.4,
+        "h": 0.1
+      },
+      "box": {
+        "x": 0.2427,
+        "y": 0.7522,
+        "w": 0.2743,
+        "h": 0.0228
+      },
+      "px": {
+        "x": 207,
+        "y": 1387,
+        "w": 234,
+        "h": 42
+      },
+      "aspect": 5.5714,
+      "palette": [
+        {
+          "hex": "#f6f7f8",
+          "coverage": 0.793
+        },
+        {
+          "hex": "#bdc6d6",
+          "coverage": 0.0998
+        },
+        {
+          "hex": "#6b799b",
+          "coverage": 0.0815
+        },
+        {
+          "hex": "#949cb6",
+          "coverage": 0.0247
+        },
+        {
+          "hex": "#585888",
+          "coverage": 0.0009
+        }
+      ],
+      "detail": {
+        "energy": 30.0246
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null,
+      "type": {
+        "comp": {
+          "lines": 1,
+          "glyphs": 15,
+          "capHeightPx": 20,
+          "inkIsDark": true,
+          "allCaps": false,
+          "advance": 0.6489,
+          "advTall": 0.6489,
+          "advX": 0.6489,
+          "gap": 0.0749,
+          "xRatio": 0.761,
+          "stemW": 0.1683,
+          "contrast": 1.1565,
+          "serif": 0.9171,
+          "densTall": 0.5586,
+          "densX": 0.5334,
+          "weight": 0.5586
+        },
+        "widthClass": "normal",
+        "weightClass": "medium"
+      }
+    },
+    {
+      "id": "access-value",
+      "kind": "text",
+      "note": "Isolated access duration value below the eyebrow label.",
+      "grid": null,
+      "box": {
+        "x": 0.245,
+        "y": 0.78,
+        "w": 0.4,
+        "h": 0.035
+      },
+      "px": {
+        "x": 209,
+        "y": 1438,
+        "w": 341,
+        "h": 65
+      },
+      "aspect": 5.2462,
+      "palette": [
+        {
+          "hex": "#f7f7f8",
+          "coverage": 0.8247
+        },
+        {
+          "hex": "#090d25",
+          "coverage": 0.131
+        },
+        {
+          "hex": "#b3bac7",
+          "coverage": 0.0192
+        },
+        {
+          "hex": "#586174",
+          "coverage": 0.0127
+        },
+        {
+          "hex": "#0a0d0d",
+          "coverage": 0.0123
+        }
+      ],
+      "detail": {
+        "energy": 54.2106
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null,
+      "type": {
+        "comp": {
+          "lines": 1,
+          "glyphs": 14,
+          "capHeightPx": 29.6,
+          "inkIsDark": true,
+          "allCaps": false,
+          "advance": 0.6758,
+          "advTall": 0.6758,
+          "advX": 0.6758,
+          "gap": 0.1014,
+          "xRatio": 0.7466,
+          "stemW": 0.2026,
+          "contrast": 1.1993,
+          "serif": null,
+          "densTall": 0.6078,
+          "densX": 0.6341,
+          "weight": 0.6078
+        },
+        "widthClass": "normal",
+        "weightClass": "bold"
+      }
+    },
+    {
+      "id": "access-status",
+      "kind": "text",
+      "note": "Access-status label text inside the mint pill.",
+      "grid": "H7:I7",
+      "coverBox": {
+        "x": 0.7,
+        "y": 0.7,
+        "w": 0.2,
+        "h": 0.1
+      },
+      "box": {
+        "x": 0.7491,
+        "y": 0.7749,
+        "w": 0.1477,
+        "h": 0.0195
+      },
+      "px": {
+        "x": 639,
+        "y": 1429,
+        "w": 126,
+        "h": 36
+      },
+      "aspect": 3.5,
+      "palette": [
+        {
+          "hex": "#d5f6ea",
+          "coverage": 0.7758
+        },
+        {
+          "hex": "#0b5947",
+          "coverage": 0.121
+        },
+        {
+          "hex": "#85bcaf",
+          "coverage": 0.0655
+        },
+        {
+          "hex": "#3c8777",
+          "coverage": 0.0337
+        },
+        {
+          "hex": "#185858",
+          "coverage": 0.004
+        }
+      ],
+      "detail": {
+        "energy": 23.5707
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null,
+      "type": {
+        "comp": {
+          "lines": 1,
+          "glyphs": 7,
+          "capHeightPx": 19.1,
+          "inkIsDark": true,
+          "allCaps": false,
+          "advance": 0.6792,
+          "advTall": 0.9143,
+          "advX": 0.6792,
+          "gap": 0.1045,
+          "xRatio": 0.7514,
+          "stemW": 0.214,
+          "contrast": 1.289,
+          "serif": null,
+          "densTall": 0.5025,
+          "densX": 0.6699,
+          "weight": 0.5025
+        },
+        "widthClass": "normal",
+        "weightClass": "medium"
+      }
+    },
+    {
+      "id": "navigation",
+      "kind": "chrome",
+      "note": "Complete floating glass navigation tray.",
+      "grid": "A8:J9",
+      "box": {
+        "x": 0,
+        "y": 0.8,
+        "w": 1,
+        "h": 0.2
+      },
+      "px": {
+        "x": 0,
+        "y": 1475,
+        "w": 853,
+        "h": 369
+      },
+      "aspect": 2.3117,
+      "palette": [
+        {
+          "hex": "#e1eef8",
+          "coverage": 0.9419
+        },
+        {
+          "hex": "#bfd7f8",
+          "coverage": 0.0374
+        },
+        {
+          "hex": "#6e7ea0",
+          "coverage": 0.009
+        },
+        {
+          "hex": "#cdf8e8",
+          "coverage": 0.0081
+        },
+        {
+          "hex": "#4070f8",
+          "coverage": 0.0036
+        }
+      ],
+      "detail": {
+        "energy": 7.6431
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null
+    },
+    {
+      "id": "nav-home",
+      "kind": "control",
+      "note": "Selected Home destination, including the optical selection plate, icon, and label.",
+      "grid": "B8:D9",
+      "coverBox": {
+        "x": 0.1,
+        "y": 0.8,
+        "w": 0.3,
+        "h": 0.2
+      },
+      "box": {
+        "x": 0.1489,
+        "y": 0.8845,
+        "w": 0.1336,
+        "h": 0.0651
+      },
+      "px": {
+        "x": 127,
+        "y": 1631,
+        "w": 114,
+        "h": 120
+      },
+      "aspect": 0.95,
+      "palette": [
+        {
+          "hex": "#dbebf8",
+          "coverage": 0.7934
+        },
+        {
+          "hex": "#4070f8",
+          "coverage": 0.1086
+        },
+        {
+          "hex": "#4e88f8",
+          "coverage": 0.053
+        },
+        {
+          "hex": "#2253f8",
+          "coverage": 0.0252
+        },
+        {
+          "hex": "#a1c4f8",
+          "coverage": 0.0199
+        }
+      ],
+      "detail": {
+        "energy": 9.0211
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null
+    },
+    {
+      "id": "nav-profiles",
+      "kind": "control",
+      "note": "Profiles destination icon and label.",
+      "grid": "E8:F9",
+      "coverBox": {
+        "x": 0.4,
+        "y": 0.8,
+        "w": 0.2,
+        "h": 0.2
+      },
+      "box": {
+        "x": 0.4349,
+        "y": 0.8845,
+        "w": 0.1336,
+        "h": 0.0618
+      },
+      "px": {
+        "x": 371,
+        "y": 1631,
+        "w": 114,
+        "h": 114
+      },
+      "aspect": 1,
+      "palette": [
+        {
+          "hex": "#d9eaf8",
+          "coverage": 0.8061
+        },
+        {
+          "hex": "#7182a2",
+          "coverage": 0.1274
+        },
+        {
+          "hex": "#abbbd6",
+          "coverage": 0.0457
+        },
+        {
+          "hex": "#5d6d98",
+          "coverage": 0.0208
+        }
+      ],
+      "detail": {
+        "energy": 11.3731
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null
+    },
+    {
+      "id": "nav-account",
+      "kind": "control",
+      "note": "Account destination icon and label.",
+      "grid": "H8:I9",
+      "coverBox": {
+        "x": 0.7,
+        "y": 0.8,
+        "w": 0.2,
+        "h": 0.2
+      },
+      "box": {
+        "x": 0.7702,
+        "y": 0.8845,
+        "w": 0.0703,
+        "h": 0.039
+      },
+      "px": {
+        "x": 657,
+        "y": 1631,
+        "w": 60,
+        "h": 72
+      },
+      "aspect": 0.8333,
+      "palette": [
+        {
+          "hex": "#d8e8f8",
+          "coverage": 0.7563
+        },
+        {
+          "hex": "#6c7b9e",
+          "coverage": 0.1979
+        },
+        {
+          "hex": "#a6b4d1",
+          "coverage": 0.0458
+        }
+      ],
+      "detail": {
+        "energy": 6.5764
+      },
+      "medium": "semantic",
+      "plate": null,
+      "text": null
+    }
+  ]
+}

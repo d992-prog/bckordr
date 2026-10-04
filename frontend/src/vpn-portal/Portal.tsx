@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
+import { VeltrixMark } from "../brand/VeltrixMark";
 import { PortalError, portalApi } from "./api";
 import {
   SessionGeneration,
   type PortalBootstrapResult,
   type TelegramLaunch,
 } from "./bootstrap";
+import { DataError } from "./DataError";
+import { PortalAccount } from "./PortalAccount";
+import { PortalHome } from "./PortalHome";
+import { PortalNavigation } from "./PortalNavigation";
 import ProfileCard from "./ProfileCard";
-import PlanCatalog from "./PlanCatalog";
-import TrialCard from "./TrialCard";
+import { portalSectionFromHash, type PortalSection } from "./navigation";
 import { nextTrialPoll, updateTrialPollCount } from "./trialPolling";
 import type {
   PortalConfig,
@@ -19,7 +23,7 @@ import type {
   PortalSubscription,
   PortalTrial,
 } from "./types";
-import { portalDate, stateLabel } from "./view";
+import { portalDate } from "./view";
 
 interface PortalProps {
   launch: TelegramLaunch;
@@ -27,22 +31,6 @@ interface PortalProps {
 }
 
 type ManualScreen = "ready" | "signed-out" | "logging-out" | "logout-failed" | "unauthorized";
-
-const NAVIGATION = [
-  ["subscription", "Подписка"],
-  ["profiles", "Профили"],
-  ["connect", "Подключение"],
-  ["plans", "Тарифы"],
-  ["help", "Помощь"],
-] as const;
-type SectionId = (typeof NAVIGATION)[number][0];
-
-function sectionFromHash(hash: string): SectionId {
-  const requested = hash.replace(/^#\/?/, "").split("?", 1)[0];
-  return NAVIGATION.some(([id]) => id === requested)
-    ? requested as SectionId
-    : "subscription";
-}
 
 function isUnauthorized(error: unknown): boolean {
   return error instanceof PortalError && error.status === 401;
@@ -82,8 +70,8 @@ function StatePage({
 }) {
   return (
     <main className="state-page">
-      <div className="brand" aria-label="Veltrix VPN"><span>V</span> Veltrix VPN</div>
-      <section className="card state-card">
+      <VeltrixMark decorative={title === "Veltrix VPN"} />
+      <section className="card state-card vx-matte">
         <h1>{title}</h1>
         {children}
       </section>
@@ -95,85 +83,6 @@ interface DataSectionProps {
   busy: boolean;
   error: string;
   onRetry: () => void;
-}
-
-function DataError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <div className="card message message--error" role="alert">
-      <p>{message}</p>
-      <button className="button button--primary" onClick={onRetry}>Повторить</button>
-    </div>
-  );
-}
-
-function SubscriptionSection({
-  busy,
-  error,
-  onRetry,
-  subscriptions,
-  trial,
-  trialBusy,
-  trialError,
-  onActivateTrial,
-  onRefreshTrial,
-}: DataSectionProps & {
-  subscriptions: PortalSubscription[];
-  trial: PortalTrial | null;
-  trialBusy: boolean;
-  trialError: string;
-  onActivateTrial: () => void;
-  onRefreshTrial: () => void;
-}) {
-  return (
-    <section id="subscription" className="portal-section">
-      <div className="section-heading">
-        <p className="eyebrow">Личный кабинет</p>
-        <h1>Ваша подписка</h1>
-      </div>
-      <TrialCard
-        trial={trial}
-        busy={trialBusy}
-        error={trialError}
-        onActivate={onActivateTrial}
-        onRefresh={onRefreshTrial}
-      />
-      {busy && <p className="card">Загружаем подписки…</p>}
-      {error && <DataError message={error} onRetry={onRetry} />}
-      {!busy && !error && subscriptions.length === 0 && (
-        <p className="card">Подписок пока нет. Если вы ожидали доступ, напишите в поддержку.</p>
-      )}
-      <div className="card-grid">
-        {subscriptions.map((subscription) => (
-          <article className="card subscription-card" key={subscription.id}>
-            <div className="card-row">
-              <h2>Veltrix VPN</h2>
-              <span className={`status status--${subscription.state === "active" ? "good" : "quiet"}`}>
-                {stateLabel(subscription.state)}
-              </span>
-            </div>
-            <dl className="facts">
-              <div>
-                <dt>Начало</dt>
-                <dd>{subscription.starts_at === null ? "Дата начала не указана" : portalDate(subscription.starts_at)}</dd>
-              </div>
-              <div><dt>Окончание</dt><dd>{portalDate(subscription.expires_at)}</dd></div>
-              <div><dt>Профили</dt><dd>{subscription.profiles_used} из {subscription.profile_limit}</dd></div>
-              {subscription.traffic_limit_gb_per_profile !== null && (
-                <div><dt>Трафик</dt><dd>{subscription.traffic_limit_gb_per_profile} ГБ на профиль</dd></div>
-              )}
-            </dl>
-            <p className="hint">Статистика пока недоступна</p>
-          </article>
-        ))}
-      </div>
-      {!busy && !error && subscriptions.length > 0 && (
-        <div className="section-actions">
-          <a className="button button--primary" href="#connect">Подключить VPN</a>
-          <a className="button button--ghost" href="#profiles">Мои профили</a>
-        </div>
-      )}
-    </section>
-  );
 }
 
 interface ProfilesSectionProps extends DataSectionProps {
@@ -193,11 +102,18 @@ interface ProfileOperation {
   renamePending: boolean;
 }
 
+const VERIFIED_CLIENTS = [
+  { platform: "iPhone", app: "Happ" },
+  { platform: "Windows", app: "Hiddify" },
+] as const;
+
+type VerifiedPlatform = (typeof VERIFIED_CLIENTS)[number]["platform"];
+
 function ProfilesSection(props: ProfilesSectionProps) {
   return (
     <section id="profiles" className="portal-section">
-      <div className="section-heading"><p className="eyebrow">Доступ</p><h2>Профили</h2></div>
-      {props.busy && <p className="card">Загружаем профили…</p>}
+      <div className="section-heading"><p className="eyebrow">Доступ</p><h1>Профили</h1></div>
+      {props.busy && <p className="card" role="status">Загружаем профили…</p>}
       {props.error && <DataError message={props.error} onRetry={props.onRetry} />}
       {!props.busy && !props.error && props.profiles.length === 0 && <p className="card">Профилей пока нет.</p>}
       <div className="profile-grid">
@@ -231,28 +147,31 @@ function ConnectionSection({
   platform,
   onPlatformChange,
 }: {
-  platform: string;
-  onPlatformChange: (platform: string) => void;
+  platform: VerifiedPlatform;
+  onPlatformChange: (platform: VerifiedPlatform) => void;
 }) {
+  const client = VERIFIED_CLIENTS.find((item) => item.platform === platform) ?? VERIFIED_CLIENTS[0];
+
   return (
     <section id="connect" className="portal-section">
       <div className="section-heading"><p className="eyebrow">Инструкция</p><h2>Как подключиться</h2></div>
       <div className="card connect-card">
         <div className="platforms" role="group" aria-label="Выберите платформу">
-          {["iPhone", "Android", "Windows", "macOS"].map((item) => (
+          {VERIFIED_CLIENTS.map((item) => (
             <button
-              key={item}
-              className={`platform ${platform === item ? "platform--active" : ""}`}
-              aria-pressed={platform === item}
-              onClick={() => onPlatformChange(item)}
-            >{item}</button>
+              type="button"
+              key={item.platform}
+              className={`platform ${platform === item.platform ? "platform--active" : ""}`}
+              aria-pressed={platform === item.platform}
+              onClick={() => onPlatformChange(item.platform)}
+            >{item.platform}</button>
           ))}
         </div>
         <h3>{platform}</h3>
         <ol className="steps">
-          <li>Установите официальное приложение Happ.</li>
+          <li>Установите приложение {client.app}.</li>
           <li>В разделе <a href="#profiles">«Профили»</a> откройте и скопируйте ссылку.</li>
-          <li>В Happ выберите импорт по ссылке и вставьте её.</li>
+          <li>В {client.app} выберите импорт по ссылке и вставьте её.</li>
           <li>Выберите импортированный профиль и включите подключение.</li>
         </ol>
         <p className="hint">Нужна помощь? Перейдите в <a href="#help">раздел поддержки</a>.</p>
@@ -276,8 +195,9 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const [trialPollCount, setTrialPollCount] = useState(0);
   const [dataBusy, setDataBusy] = useState(false);
   const [dataError, setDataError] = useState("");
-  const [platform, setPlatform] = useState("iPhone");
-  const [activeSection, setActiveSection] = useState<SectionId>(() => sectionFromHash(window.location.hash));
+  const [platform, setPlatform] = useState<VerifiedPlatform>("iPhone");
+  const [activeSection, setActiveSection] = useState<PortalSection>(() => portalSectionFromHash(window.location.hash));
+  const [activeAnchor, setActiveAnchor] = useState(() => window.location.hash.replace(/^#\/?/, "").split("?", 1)[0]);
   const [profileOperations, setProfileOperations] = useState<Record<number, ProfileOperation>>({});
   const sessionGeneration = useMemo(() => new SessionGeneration(), []);
   const logoutCsrf = useRef<string | null>(null);
@@ -397,7 +317,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
       }
       const message = error instanceof PortalError
         ? error.message
-        : "Не удалось загрузить данные. Попробуйте ещё раз.";
+        : "Не удалось загрузить данные. Попробуйте снова";
       if (silent) {
         setTrialError(message);
       } else {
@@ -524,13 +444,24 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
 
   useEffect(() => {
     const updateSection = () => {
-      const section = sectionFromHash(window.location.hash);
+      setActiveAnchor(window.location.hash.replace(/^#\/?/, "").split("?", 1)[0]);
+      const section = portalSectionFromHash(window.location.hash);
       setActiveSection(section);
     };
     window.addEventListener("hashchange", updateSection);
     updateSection();
     return () => window.removeEventListener("hashchange", updateSection);
   }, []);
+
+  useEffect(() => {
+    if (!activeAnchor) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(activeAnchor)?.scrollIntoView({ block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeAnchor, activeSection, dataBusy, me, plansBusy]);
 
   async function performLogout(csrf: string | null): Promise<void> {
     clearPrivateData("logging-out");
@@ -581,7 +512,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     return (
       <StatePage title="Не удалось выйти">
         <p>Сервер не подтвердил выход. Личные данные скрыты на этом экране.</p>
-        <button className="button button--primary" onClick={() => void performLogout(logoutCsrf.current)}>
+        <button type="button" className="button button--primary" onClick={() => void performLogout(logoutCsrf.current)}>
           Повторить выход
         </button>
       </StatePage>
@@ -599,7 +530,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   }
 
   if (bootstrapResult === null) {
-    return <StatePage title="Veltrix VPN"><p>Загружаем личный кабинет…</p></StatePage>;
+    return <StatePage title="Veltrix VPN"><p role="status">Загружаем личный кабинет…</p></StatePage>;
   }
   if (bootstrapResult.kind === "disabled") {
     return <StatePage title="Личный кабинет пока недоступен"><p>{bootstrapResult.config?.support_text}</p></StatePage>;
@@ -629,7 +560,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     return (
       <StatePage title="Открыт другой аккаунт">
         <p>Сначала выйдите из текущей сессии, затем заново откройте Mini App из Telegram.</p>
-        <button className="button button--primary" onClick={() => void performLogout(null)}>
+        <button type="button" className="button button--primary" onClick={() => void performLogout(null)}>
           Выйти из текущего аккаунта
         </button>
       </StatePage>
@@ -656,79 +587,71 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   return (
     <div className="portal-shell">
       <header className="portal-header">
-        <a className="brand" href="#subscription" aria-label="Veltrix VPN">
-          <span>V</span> Veltrix VPN
+        <a className="portal-brand-link" href="#home" aria-label="Veltrix VPN">
+          <VeltrixMark decorative />
         </a>
         <div className="account">
-          <span>{me.display_name}</span>
-          <button className="button button--ghost" onClick={startLogout}>Выйти</button>
+          <a className="button button--ghost" href="#help">Помощь</a>
         </div>
       </header>
 
-      <nav className="section-nav" aria-label="Разделы кабинета">
-        {NAVIGATION.map(([id, label]) => (
-          <a key={id} href={`#${id}`} aria-current={activeSection === id ? "page" : undefined}>
-            {label}
-          </a>
-        ))}
-      </nav>
+      <PortalNavigation active={activeSection} />
 
       <main className="portal-content">
-        {activeSection === "subscription" && (
-          <SubscriptionSection
+        {activeSection === "home" && (
+          <PortalHome
             busy={dataBusy}
             error={dataError}
             subscriptions={subscriptions}
+            profiles={profiles}
+            plans={plans}
+            plansBusy={plansBusy}
+            plansError={plansError}
+            showPlans={activeAnchor === "plans"}
             onRetry={() => void loadPrivateData()}
+            onRetryPlans={() => void loadPlans()}
             trial={trial}
             trialBusy={trialBusy || dataBusy}
             trialError={trialError}
+            sessionGeneration={sessionGeneration}
             onActivateTrial={() => void activateTrial()}
             onRefreshTrial={() => void refreshTrial()}
+            onUnauthorized={handleUnauthorized}
           />
         )}
 
         {activeSection === "profiles" && (
-          <ProfilesSection
-            busy={dataBusy}
-            error={dataError}
-            profiles={profiles}
-            subscriptions={subscriptions}
-            csrfToken={me.csrf_token}
-            sessionGeneration={sessionGeneration}
-            onRetry={() => void loadPrivateData()}
-            onUnauthorized={handleUnauthorized}
-            profileOperations={profileOperations}
-            onRenameStart={(profileId) => setProfileRenamePending(profileId, true)}
-            onRenameSettled={(profileId) => setProfileRenamePending(profileId, false)}
-            onProfileChange={(updated) => {
-              setProfiles((current) => current.map((item) => item.id === updated.id ? updated : item));
-            }}
-          />
+          <>
+            <ProfilesSection
+              busy={dataBusy}
+              error={dataError}
+              profiles={profiles}
+              subscriptions={subscriptions}
+              csrfToken={me.csrf_token}
+              sessionGeneration={sessionGeneration}
+              onRetry={() => void loadPrivateData()}
+              onUnauthorized={handleUnauthorized}
+              profileOperations={profileOperations}
+              onRenameStart={(profileId) => setProfileRenamePending(profileId, true)}
+              onRenameSettled={(profileId) => setProfileRenamePending(profileId, false)}
+              onProfileChange={(updated) => {
+                setProfiles((current) => current.map((item) => item.id === updated.id ? updated : item));
+              }}
+            />
+            <ConnectionSection platform={platform} onPlatformChange={setPlatform} />
+          </>
         )}
 
-        {activeSection === "connect" && (
-          <ConnectionSection platform={platform} onPlatformChange={setPlatform} />
-        )}
-
-        {activeSection === "plans" && (
-          <PlanCatalog
+        {activeSection === "account" && (
+          <PortalAccount
+            displayName={me.display_name}
+            supportText={bootstrapResult.config?.support_text ?? ""}
             plans={plans}
-            busy={plansBusy}
-            error={plansError}
-            onRetry={() => void loadPlans()}
+            plansBusy={plansBusy}
+            plansError={plansError}
+            onPlansRetry={() => void loadPlans()}
+            onLogout={startLogout}
           />
-        )}
-
-        {activeSection === "help" && (
-        <section id="help" className="portal-section">
-          <div className="section-heading"><p className="eyebrow">Поддержка</p><h2>Помощь</h2></div>
-          <p className="card support-text">{bootstrapResult.config?.support_text ?? ""}</p>
-          <div className="section-actions">
-            <a className="button button--ghost" href="/vpn/#privacy">Конфиденциальность</a>
-            <a className="button button--ghost" href="/vpn/#terms">Условия использования</a>
-          </div>
-        </section>
         )}
       </main>
     </div>

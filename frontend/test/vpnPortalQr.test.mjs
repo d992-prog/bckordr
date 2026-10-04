@@ -65,6 +65,19 @@ test("profile QR controls are reveal-only, race-gated, and clear with connection
   assert.doesNotMatch(source, /localStorage|sessionStorage|console\./);
 });
 
+test("profile actions use concise production copy", async () => {
+  const source = await readFile(
+    new URL("../src/vpn-portal/ProfileCard.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(source, /Показать ссылку/);
+  assert.doesNotMatch(source, /Показать ссылку подключения/);
+  assert.match(source, /Ссылка скопирована/);
+  assert.match(source, /Ссылка пока недоступна\. Попробуйте через несколько минут/);
+  assert.match(source, /Профиль неактивен\. Подключение недоступно/);
+});
+
 test("QR image is centered, bounded, and padded on a white quiet zone", async () => {
   const css = await readFile(new URL("../src/vpn-portal/portal.css", import.meta.url), "utf8");
 

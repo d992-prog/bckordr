@@ -46,7 +46,7 @@ test("groups release checks in the fixed operational order with a safe fallback"
       { key: "infrastructure", title: "Инфраструктура", codes: ["system_health"] },
       {
         key: "nodes",
-        title: "Ноды",
+        title: "VPN‑ноды",
         codes: ["worker_active", "endpoint_configuration", "endpoint_health"],
       },
       { key: "capacity", title: "Ёмкость", codes: ["aggregate_capacity"] },
@@ -117,16 +117,16 @@ test("counts every state and permits commit only for a ready report without fail
 });
 
 test("uses code-aware labels only for positive safe entity identifiers", () => {
-  assert.equal(formatVpnReleaseEntityLabel(check("worker_health", "pass", 42)), "Нода #42");
+  assert.equal(formatVpnReleaseEntityLabel(check("worker_health", "pass", 42)), "VPN‑нода #42");
   for (const code of [
     "endpoint_configuration",
     "endpoint_health",
     "endpoint_external_proof",
     "endpoint_capacity",
   ]) {
-    assert.equal(formatVpnReleaseEntityLabel(check(code, "pass", 7)), "VPN-точка #7");
+    assert.equal(formatVpnReleaseEntityLabel(check(code, "pass", 7)), "Точка подключения #7");
   }
-  assert.equal(formatVpnReleaseEntityLabel(check("maintenance", "pass", 3)), "Нода #3");
+  assert.equal(formatVpnReleaseEntityLabel(check("maintenance", "pass", 3)), "VPN‑нода #3");
   assert.equal(formatVpnReleaseEntityLabel(check("public_trial_plan", "pass", 9)), "Тариф #9");
   assert.equal(formatVpnReleaseEntityLabel(check("release_id", "pass", 2)), null);
 
@@ -168,7 +168,11 @@ test("readiness types expose no sensitive fields", async () => {
 test("maps readiness codes to fixed Russian labels with a safe fallback", () => {
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("system_health"), "Состояние системы");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_external_proof"), "Внешняя проверка подключения");
-  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_capacity"), "Ёмкость VPN-точки");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_capacity"), "Ёмкость точки подключения");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_configuration"), "Конфигурация точки подключения");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_health"), "Состояние точки подключения");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("worker_health"), "Состояние VPN‑ноды");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_redundancy"), "Резервирование VPN‑нод");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("public_trial_plan"), "Тариф пробного доступа");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("system"), "Проверка");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("unexpected_code"), "Проверка");
@@ -304,12 +308,14 @@ test("release panel guards both mutations and does not duplicate node operations
   assert.match(source, /setCommitConfirmation/);
   assert.match(source, /disabled=\{actionInFlight !== null \|\| loading\}/);
   assert.match(source, /api\.confirmVpnEndpointExternalVerification/);
-  assert.match(source, /Внешний тест для VPN-точки #\$\{endpointId\} подтверждён\./);
-  assert.doesNotMatch(source, /Внешний тест для ноды/);
+  assert.match(source, /Внешний тест для точки подключения #\$\{endpointId\} подтверждён/);
+  assert.doesNotMatch(source, /Внешний тест для VPN‑ноды/);
   assert.match(source, /api\.commitVpnReleaseReadiness/);
   assert.match(source, /НЕ включает оплату и пробный доступ/);
   assert.doesNotMatch(source, /dangerouslySetInnerHTML/);
   assert.match(source, /Релизный контур/);
+  assert.match(source, /aria-label="Быстрые переходы проверки"/);
+  assert.doesNotMatch(source, /aria-label="Разделы управления VPN"/);
   assert.match(source, /\{check\.message\}/);
   assert.doesNotMatch(source, /Release gate/);
   assert.doesNotMatch(source, /\{check\.code\}/);
@@ -360,7 +366,16 @@ test("VPN workspace renders readiness and refreshes it after capacity changes", 
   assert.match(source, /<h2 id="vpn-capacity-section" tabIndex=\{-1\}>/);
   assert.match(source, /<h2 id="vpn-maintenance-section" tabIndex=\{-1\}>/);
   assert.match(source, /destination\.focus\(\);[\s\S]*destination\.scrollIntoView/);
+  assert.match(source, /matchMedia\("\(prefers-reduced-motion: reduce\)"\)\.matches/);
+  assert.match(source, /behavior: reduceMotion \? "auto" : "smooth"/);
+  const focusAccommodation = source.slice(
+    source.indexOf("onFocusCapture="),
+    source.indexOf("<VpnAdminNavigation", source.indexOf("onFocusCapture=")),
+  );
+  assert.match(focusAccommodation, /scrollIntoView\(\{\s*behavior: "auto"/);
+  assert.doesNotMatch(focusAccommodation, /reduceMotion|"smooth"/);
   assert.match(css, /\.vpn-release-readiness\s*\{/);
+  assert.doesNotMatch(css, /border-inline-start:\s*5px/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.vpn-release/);
 });
 

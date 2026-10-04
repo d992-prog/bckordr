@@ -1,0 +1,15 @@
+{
+  "regionId": "signal-orb",
+  "asset": "signal-orb.webp",
+  "sourceTool": "OpenAI built-in image_gen; optimized with ffmpeg",
+  "sourceModel": "not exposed by tool",
+  "derivedFrom": ".impeccable/assets/signal-orb.png",
+  "background": "transparent",
+  "alpha": true,
+  "pixelFormat": "argb",
+  "sha256": "c330f85c959c0fac33ec19131782b3397b83f90ee40c52fbe9df6a5769922a0e",
+  "dimensions": { "width": 512, "height": 484 },
+  "approved": true,
+  "prompt": "Use the provided crop as the approved visual reference and recreate it as a clean production asset at the target aspect ratio. This is a designed illustration plate. Output the same drawing, same style, same line weight and shading. Preserve silhouette, composition, perspective, palette (#e6f2f8, #badaf8, #69a0f8), lighting, material, and texture exactly. Remove every piece of UI text, label, caption, button, and interface chrome that is not part of the artwork itself. Remove interface borders, card corners, and layout backgrounds; retain only shadows that belong to the referenced object itself. Do not add objects, change the concept, or restyle. Preserve the reference's placement, scale, and clear margins exactly; do not enlarge the subject to fill the frame. Remove the page ground and interior gaps to genuine transparent alpha. Keep white paint and other solid foreground colors opaque, preserve fine edges, and retain partial alpha only for genuinely translucent material or soft shadows in the reference. No chroma background, baked-in checkerboard, or matte. Output a transparent PNG cutout. Region: Tight near-square crop of the mint and blue signal orb with concentric connection arcs; no surrounding copy or controls.\n",
+  "createdAt": "2026-10-03T16:22:06.637Z"
+}

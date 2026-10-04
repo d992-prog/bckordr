@@ -1,0 +1,10 @@
+Use case: ui-mockup
+Asset type: full-fidelity mobile product UI direction comp, portrait 390x844
+Primary request: Design the first authenticated customer-dashboard viewport for "Veltrix VPN" in the visual world "Линия сигнала". The product is for nontechnical Russian-speaking users and the screen must make setup feel like a short route with three stations: Telegram, Профиль, Защищено.
+Scene/backdrop: calm matte off-white mobile app canvas, no device frame, no hands.
+Style/medium: shippable high-end product UI, crisp vector-like interface, not concept art.
+Composition/framing: exact portrait screen. Top: original abstract Veltrix logo mark with a strong silhouette, not a letter V and not a shield, plus wordmark "Veltrix VPN". Main thesis occupies most of first viewport: a bold dark-navy transit-like signal line connecting three large stations labeled "Telegram", "Профиль", "Защищено"; first two complete, third active with a subtle green pulse. Clear headline "Подключение готово". One prominent cobalt button "Открыть профиль". Below it, the beginning of a matte subscription panel with "7 дней бесплатно", "Активна" and date. Compact bottom navigation with three clear destinations.
+Color palette: deep navy #071A33, mist #F5F8FB, cobalt #2F6BFF, ready green #23A873, restrained amber #F3B545.
+Materials/textures: matte navigation plates, precise route lines, high-contrast status markers, restrained hairline dividers.
+Text (verbatim, Russian): "Veltrix VPN", "Подключение готово", "Telegram", "Профиль", "Защищено", "Открыть профиль", "7 дней бесплатно", "Активна".
+Constraints: practical accessible layout; large readable Russian typography; one primary action; 44px touch targets; no exposed VPN URI, UUID, speed claim, fake metrics, price, testimonials, gradients, generic shield, padlock, globe, stock icons, watermark, browser chrome or phone hardware. Keep all text inside the screen and do not add extra copy.

@@ -99,8 +99,14 @@ test("capacity panel exposes accessible native controls and bounded errors", asy
   assert.match(source, /max="100"/);
   assert.match(source, /Пусто — лимит не задан/);
   assert.doesNotMatch(source, /Пусто — без лимита/);
+  assert.match(source, /Точка подключения #\{endpoint\.endpoint_id\}/);
+  assert.match(source, /VPN‑нода #\{endpoint\.worker_id\}/);
+  assert.match(source, /Точки подключения пока не зарегистрированы/);
+  assert.doesNotMatch(source, /VPN‑нода #\{endpoint\.endpoint_id\}/);
+  assert.doesNotMatch(source, /Endpoint #|VPN endpoint’ы/);
   assert.match(source, /aria-label=/);
-  assert.match(source, /aria-live="polite"/);
+  assert.match(source, /role="alert">\{error\}/);
+  assert.match(source, /role="status">\{message\}/);
   assert.match(source, /disabled=\{saving\}/);
   assert.match(source, /api\.updateVpnEndpointCapacity/);
   assert.match(source, /\.slice\(0, 160\)/);
@@ -119,6 +125,9 @@ test("VPN workspace loads capacity safely and preserves a newer saved row", asyn
   );
   assert.match(source, /replaceVpnEndpointCapacity/);
   assert.match(source, /<VpnEndpointCapacityPanel/);
+  assert.match(source, />Ёмкость точек подключения</);
+  assert.doesNotMatch(source, />Ёмкость VPN‑нод</);
+  assert.doesNotMatch(source, />VPN endpoint<|>Endpoint<|data-label="Endpoint"/);
   assert.match(css, /\.vpn-capacity-grid\s*\{/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.vpn-capacity-fields/);
 });

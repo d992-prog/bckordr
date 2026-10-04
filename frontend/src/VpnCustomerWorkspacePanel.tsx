@@ -220,6 +220,11 @@ function formatDateTime(value: string | null) {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("ru-RU");
 }
 
+function maskAccessKeyUri(value: string) {
+  const schemeEnd = value.indexOf("://");
+  return schemeEnd === -1 ? "••••••••••••" : `${value.slice(0, schemeEnd + 3)}••••••••••••`;
+}
+
 function subscriptionStatusClass(status: string) {
   if (status === "active") {
     return "status available";
@@ -550,7 +555,7 @@ export function VpnCustomerWorkspace({
   async function archiveCustomer(customer: VpnCustomer) {
     if (
       !window.confirm(
-        `Перенести ${customerName(customer)} в архив? Подписки будут отключены, а ключи отправлены на отзыв.`,
+        `Перенести ${customerName(customer)} в архив? Подписки будут отключены, а VPN‑профили отправлены на отзыв.`,
       )
     ) {
       return;
@@ -564,7 +569,7 @@ export function VpnCustomerWorkspace({
         : "";
       notify(
         "success",
-        `Клиент перенесён в архив. Отозвано ключей: ${result.revoked_keys}${pending}`,
+        `Клиент перенесён в архив. Отозвано профилей: ${result.revoked_keys}${pending}`,
       );
     } catch (error) {
       notify(
@@ -583,7 +588,7 @@ export function VpnCustomerWorkspace({
       await reload();
       notify(
         "success",
-        "Клиент восстановлен. Подписки и ключи нужно активировать отдельно.",
+        "Клиент восстановлен. Подписки и VPN‑профили нужно активировать отдельно.",
       );
     } catch (error) {
       notify(
@@ -679,10 +684,10 @@ export function VpnCustomerWorkspace({
       reload,
     );
     const feedback = !result.refreshed
-      ? "Обновите страницу, чтобы увидеть актуальный статус ключей."
+      ? "Обновите страницу, чтобы увидеть актуальный статус профилей."
       : !result.syncRequested
-        ? "Синхронизация будет повторена автоматически. Проверьте статус ключей."
-        : "Результат применения на ноде — в статусе ключей ниже.";
+        ? "Синхронизация будет повторена автоматически. Проверьте статус профилей."
+        : "Результат применения на VPN‑ноде — в статусе профилей ниже.";
     notify(result.refreshed && result.syncRequested ? "success" : "error", `${savedMessage}. ${feedback}`);
   }
 
@@ -759,12 +764,12 @@ export function VpnCustomerWorkspace({
         accessReady ? "success" : "error",
         accessReady
           ? "VPN доступ выдан"
-          : accessKey.last_error || "VPN ключ сохранён и ожидает выдачи",
+          : accessKey.last_error || "VPN‑профиль сохранён и ожидает выдачи",
       );
     } catch (error) {
       notify(
         "error",
-        error instanceof Error ? error.message : "Не удалось создать VPN ключ",
+        error instanceof Error ? error.message : "Не удалось создать VPN‑профиль",
       );
     } finally {
       setBusyAction(null);
@@ -780,12 +785,12 @@ export function VpnCustomerWorkspace({
         provisioned.status === "active" ? "success" : "error",
         provisioned.status === "active"
           ? "VPN доступ выдан"
-          : provisioned.last_error || "Ключ пока не выдан на ноду",
+          : provisioned.last_error || "Профиль пока не выдан на VPN‑ноду",
       );
     } catch (error) {
       notify(
         "error",
-        error instanceof Error ? error.message : "Не удалось повторить выдачу VPN ключа",
+        error instanceof Error ? error.message : "Не удалось повторить выдачу VPN‑профиля",
       );
     } finally {
       setBusyAction(null);
@@ -797,7 +802,7 @@ export function VpnCustomerWorkspace({
     if (
       requireConfirmation &&
       !window.confirm(
-        `Отключить VPN ключ ${keyName} на 3x-UI? Запись останется в панели для истории.`,
+        `Отключить VPN‑профиль ${keyName} на 3x-UI? Запись останется в панели для истории.`,
       )
     ) {
       return;
@@ -809,13 +814,13 @@ export function VpnCustomerWorkspace({
       notify(
         revoked.status === "pending_revoke" ? "error" : "success",
         revoked.status === "pending_revoke"
-          ? revoked.last_error || "Ключ ожидает повторного отзыва"
-          : "VPN ключ отключён",
+          ? revoked.last_error || "Профиль ожидает повторного отзыва"
+          : "VPN‑профиль отключён",
       );
     } catch (error) {
       notify(
         "error",
-        error instanceof Error ? error.message : "Не удалось отключить VPN ключ",
+        error instanceof Error ? error.message : "Не удалось отключить VPN‑профиль",
       );
     } finally {
       setBusyAction(null);
@@ -896,19 +901,27 @@ export function VpnCustomerWorkspace({
     }
     try {
       await navigator.clipboard.writeText(accessKey.config_uri);
-      notify("success", "Полная VPN-ссылка скопирована");
+      notify("success", "Полная VPN‑ссылка скопирована");
     } catch {
       setExpandedKeyIds((current) => new Set(current).add(accessKey.id));
-      window.requestAnimationFrame(() => {
-        const field = document.getElementById(
-          `vpn-key-uri-${accessKey.id}`,
-        ) as HTMLTextAreaElement | null;
-        field?.focus();
-        field?.select();
-      });
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      const field = document.getElementById(
+        `vpn-key-uri-${accessKey.id}`,
+      ) as HTMLTextAreaElement | null;
+      const canSelect = field?.value === accessKey.config_uri;
+      if (canSelect) {
+        field.focus();
+        field.select();
+      }
+      const selected = canSelect
+        && document.activeElement === field
+        && field.selectionStart === 0
+        && field.selectionEnd === field.value.length;
       notify(
         "error",
-        "Буфер обмена недоступен. Полная ссылка выделена — скопируйте её вручную.",
+        selected
+          ? "Буфер обмена недоступен. Полная ссылка выделена — скопируйте её вручную."
+          : "Не удалось скопировать или выделить ссылку. Обновите профиль и попробуйте снова.",
       );
     }
   }
@@ -1250,10 +1263,10 @@ export function VpnCustomerWorkspace({
   function renderAccessKeyForm(subscription: VpnSubscription) {
     return (
       <form className="form vpn-inline-form" onSubmit={saveAccessKey}>
-        <h4>Новый ключ для подписки #{subscription.id}</h4>
+        <h4>Новый VPN‑профиль для подписки #{subscription.id}</h4>
         <div className="form two-columns">
           <label>
-            <span>VPN-нода</span>
+            <span>VPN‑нода</span>
             <select
               value={accessKeyForm.workerId}
               onChange={(event) =>
@@ -1307,7 +1320,7 @@ export function VpnCustomerWorkspace({
             type="submit"
             disabled={busyAction === `key-create-${subscription.id}`}
           >
-            Выдать ключ
+            Выдать профиль
           </button>
           <button
             type="button"
@@ -1398,13 +1411,19 @@ export function VpnCustomerWorkspace({
           <p className="muted">Обновляем подпись ссылки…</p>
         ) : accessKey.config_uri ? (
           <div className="vpn-key-link-block">
-            <code className="vpn-key-preview">{accessKey.config_uri}</code>
+            <code className="vpn-key-preview">{maskAccessKeyUri(accessKey.config_uri)}</code>
             <div className="actions">
               <button type="button" className="ghost" onClick={() => void copyAccessKey(accessKey)}>
-                Копировать ссылку
+                Скопировать ссылку
               </button>
-              <button type="button" className="ghost" onClick={() => toggleAccessKeyUri(accessKey.id)}>
-                {expanded ? "Скрыть" : "Показать полностью"}
+              <button
+                type="button"
+                className="ghost"
+                aria-expanded={expanded}
+                aria-controls={`vpn-key-uri-${accessKey.id}`}
+                onClick={() => toggleAccessKeyUri(accessKey.id)}
+              >
+                {expanded ? "Скрыть ссылку" : "Показать полную ссылку"}
               </button>
             </div>
             {expanded ? (
@@ -1421,8 +1440,8 @@ export function VpnCustomerWorkspace({
         ) : (
           <p className="muted">
             {accessKey.status === "revoked"
-              ? "Ключ отозван, ссылка больше недоступна."
-              : "Ссылка появится после успешной выдачи ключа на VPN-ноду."}
+              ? "Профиль отозван, ссылка больше недоступна."
+              : "Ссылка появится после успешной выдачи профиля на VPN‑ноду."}
           </p>
         )}
         {["suspended", "pending_suspend"].includes(accessKey.status) ? (
@@ -1472,8 +1491,8 @@ export function VpnCustomerWorkspace({
   }
 
   return (
-    <div className="vpn-customer-workspace">
-      <aside className="vpn-customer-sidebar">
+    <div className="vpn-customer-workspace vpn-admin-workspace">
+      <aside className="vpn-customer-sidebar vpn-admin-panel">
         <div className="vpn-workspace-toolbar">
           <strong>Клиенты</strong>
           <button type="button" onClick={beginCustomerCreate}>
@@ -1538,7 +1557,7 @@ export function VpnCustomerWorkspace({
         </div>
       </aside>
 
-      <section className="vpn-customer-detail">
+      <section className="vpn-customer-detail vpn-admin-panel">
         {renderFriendInvitations()}
         {creatingCustomer ? (
           <form className="form vpn-workspace-section" onSubmit={saveCustomer}>
@@ -1624,9 +1643,9 @@ export function VpnCustomerWorkspace({
             <section className="vpn-workspace-section">
               <div className="vpn-workspace-section-head">
                 <div>
-                  <h3>Подписки и ключи</h3>
+                  <h3>Подписки и профили</h3>
                   <p className="muted">
-                    Изменяйте срок и лимиты, затем управляйте ключами конкретной подписки.
+                    Изменяйте срок и лимиты, затем управляйте VPN‑профилями конкретной подписки.
                   </p>
                 </div>
                 {selectedCustomer.status !== "archived" && !creatingSubscription ? (
@@ -1725,7 +1744,7 @@ export function VpnCustomerWorkspace({
 
                       <div className="vpn-key-section">
                         <div className="vpn-workspace-section-head">
-                          <strong>Ключи доступа</strong>
+                          <strong>VPN‑профили</strong>
                           {selectedCustomer.status !== "archived" &&
                           isUsable &&
                           creatingKeyForSubscriptionId !== subscription.id ? (
@@ -1734,7 +1753,7 @@ export function VpnCustomerWorkspace({
                               className="ghost"
                               onClick={() => beginAccessKeyCreate(subscription)}
                             >
-                              Выдать новый ключ
+                              Выдать новый профиль
                             </button>
                           ) : null}
                         </div>
@@ -1744,7 +1763,7 @@ export function VpnCustomerWorkspace({
                         <div className="vpn-key-list">
                           {subscriptionKeys.map(renderAccessKey)}
                           {subscriptionKeys.length === 0 ? (
-                            <p className="empty">У этой подписки пока нет ключей.</p>
+                            <p className="empty">У этой подписки пока нет VPN‑профилей.</p>
                           ) : null}
                         </div>
                       </div>
