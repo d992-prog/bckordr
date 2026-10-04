@@ -1,5 +1,3 @@
-@import "./brand/veltrix-brand.css";
-
 :root {
   color-scheme: light;
   --bg: #f4efe6;
@@ -40,11 +38,6 @@ textarea {
 
 button {
   cursor: pointer;
-}
-
-.app-shell :where(a, button, input, select, textarea, [tabindex]):focus-visible {
-  outline: revert;
-  outline-offset: revert;
 }
 
 .shell {
@@ -1578,6 +1571,14 @@ button:disabled {
 }
 
 .vpn-admin-shell {
+  --vx-pearl: #eef4fa;
+  --vx-ink: #101c2c;
+  --vx-blue: #256dff;
+  --vx-mint: #72e2c0;
+  --vx-lilac: #c6b7ff;
+  --vx-border: rgba(16, 28, 44, 0.1);
+  --vx-focus: #0b57d0;
+  --vx-font-display: "Moderustic", "Avenir Next", "Segoe UI Variable Display", "Segoe UI", sans-serif;
   --vpn-admin-surface: rgba(255, 255, 255, 0.94);
   --vpn-admin-surface-muted: rgba(238, 244, 250, 0.72);
   --vpn-admin-ink: var(--vx-ink);
@@ -1633,7 +1634,10 @@ button:disabled {
   top: 12px;
   z-index: 8;
   display: flex;
+  flex-wrap: nowrap;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
   margin: 16px 0;
   padding: 6px;
@@ -1646,13 +1650,6 @@ button:disabled {
   -webkit-backdrop-filter: blur(22px) saturate(145%);
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--vx-blue) 38%, transparent) transparent;
-}
-
-.vpn-admin-shell .vpn-admin-nav .vpn-admin-navigation {
-  flex: 0 0 auto;
-  flex-wrap: nowrap;
-  min-width: max-content;
-  gap: 6px;
 }
 
 .vpn-admin-shell .vpn-admin-nav a {
@@ -1682,13 +1679,15 @@ button:disabled {
   outline-offset: 3px;
 }
 
-.vpn-admin-shell .vpn-admin-metrics {
+.vpn-admin-shell .vpn-admin-metrics,
+.vpn-admin-shell .stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
 }
 
-.vpn-admin-shell .vpn-admin-metric {
+.vpn-admin-shell .vpn-admin-metric,
+.vpn-admin-shell .stats > article {
   min-height: 96px;
   padding: 15px;
   border: 1px solid var(--vpn-admin-border);
@@ -1697,15 +1696,8 @@ button:disabled {
   box-shadow: none;
 }
 
-.vpn-admin-shell .vpn-admin-metrics > article {
-  min-height: 96px;
-  border: 1px solid var(--vpn-admin-border);
-  border-radius: 20px;
-  background: var(--vpn-admin-surface);
-  box-shadow: none;
-}
-
-.vpn-admin-shell .vpn-admin-metrics strong {
+.vpn-admin-shell .vpn-admin-metrics strong,
+.vpn-admin-shell .stats strong {
   color: var(--vpn-admin-ink);
   font-family: var(--vx-font-display);
   font-variant-numeric: tabular-nums;
@@ -1843,13 +1835,16 @@ button:disabled {
   border-color: var(--vpn-admin-border);
 }
 
-.vpn-admin-shell .vpn-node-dialog-backdrop {
+.vpn-admin-shell.vpn-node-dialog-backdrop {
   position: fixed;
   inset: 0;
   z-index: 100;
   display: grid;
   place-items: center;
+  max-width: none;
   padding: 20px;
+  border: 0;
+  border-radius: 0;
   background: rgba(5, 15, 29, 0.62);
 }
 
@@ -1889,6 +1884,13 @@ button:disabled {
 
 @media (prefers-color-scheme: dark) {
   .vpn-admin-shell {
+    --vx-pearl: #07111e;
+    --vx-ink: #f4f8ff;
+    --vx-blue: #7aa7ff;
+    --vx-mint: #8ef0d3;
+    --vx-lilac: #d4c8ff;
+    --vx-border: rgba(205, 225, 255, 0.18);
+    --vx-focus: #91c2ff;
     --vpn-admin-surface: rgba(13, 29, 47, 0.96);
     --vpn-admin-surface-muted: rgba(22, 42, 63, 0.9);
     --vpn-admin-ink: #f4f8ff;
@@ -2062,18 +2064,21 @@ button:disabled {
     margin-inline: -4px;
   }
 
-  .vpn-admin-shell .vpn-admin-metrics {
+  .vpn-admin-shell .vpn-admin-metrics,
+  .vpn-admin-shell .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .vpn-admin-shell .vpn-admin-metric,
-  .vpn-admin-shell .vpn-admin-metrics > article {
+  .vpn-admin-shell .vpn-admin-metrics > article,
+  .vpn-admin-shell .stats > article {
     min-width: 0;
     min-height: 88px;
     padding: 13px;
   }
 
-  .vpn-admin-shell .vpn-admin-metrics strong {
+  .vpn-admin-shell .vpn-admin-metrics strong,
+  .vpn-admin-shell .stats strong {
     font-size: 1.5rem;
   }
 

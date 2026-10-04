@@ -2907,25 +2907,6 @@ export default function App() {
     setToast({ type: "success", text: "Нода удалена из активной системы" });
   }
 
-  async function decommissionWorker(worker: WorkerNode) {
-    const confirmed = window.confirm(
-      `Удалить ноду ${worker.name} из активной системы?\n\n` +
-        "Она перестанет использоваться для drop-задач и VPN. Активные ключи будут отозваны локально, " +
-        "история сохранится. Удаленный VPS и 3x-UI не изменяются — сервер нужно отдельно удалить или защитить у хостера.",
-    );
-    if (!confirmed) {
-      return;
-    }
-    try {
-      await deleteWorkerNode(worker);
-    } catch (error) {
-      setToast({
-        type: "error",
-        text: error instanceof Error ? error.message : "Ошибка удаления ноды",
-      });
-    }
-  }
-
   function openVpnNodeDeletion(worker: WorkerNode, trigger: HTMLButtonElement) {
     vpnNodeDeletionTriggerRef.current = trigger;
     setVpnNodeDeletionError(null);
@@ -4460,7 +4441,13 @@ export default function App() {
                     <div className="actions">
                       <button type="button" className="ghost" onClick={() => startEditWorker(worker)}>Редактировать</button>
                       <button type="button" className="ghost" onClick={() => void toggleWorker(worker)}>{worker.is_enabled ? "Выключить" : "Включить"}</button>
-                      <button type="button" className="danger" onClick={() => void decommissionWorker(worker)}>Удалить</button>
+                      <button
+                        type="button"
+                        className="danger vpn-node-delete-trigger"
+                        onClick={(event) => openVpnNodeDeletion(worker, event.currentTarget)}
+                      >
+                        Удалить
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -4580,7 +4567,7 @@ export default function App() {
   function renderVpn() {
     return (
       <section className="stack vpn-stack vpn-admin-shell">
-        <div className="card full-span vpn-admin-panel">
+        <div className="card full-span">
           <div className="card-head">
             <div>
               <h2>VPN сервис</h2>
@@ -4588,16 +4575,14 @@ export default function App() {
             </div>
             <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
           </div>
-          <div className="vpn-admin-nav">
-            <VpnAdminNavigation activeSection={vpnAdminSection} />
-          </div>
+          <VpnAdminNavigation activeSection={vpnAdminSection} />
           {vpnAdminSection === "overview" ? (
-            <div className="stats vpn-admin-metrics">
-              <article className="vpn-admin-metric"><span>VPN-ноды</span><strong>{displayMetric(vpnOverview?.enabled_nodes)}</strong></article>
-              <article className="vpn-admin-metric"><span>Готовые ноды</span><strong>{displayMetric(vpnOverview?.ready_nodes)}</strong></article>
-              <article className="vpn-admin-metric"><span>Клиенты</span><strong>{displayMetric(vpnOverview?.active_customers)}</strong></article>
-              <article className="vpn-admin-metric"><span>Подписки</span><strong>{displayMetric(vpnOverview?.active_subscriptions)}</strong></article>
-              <article className="vpn-admin-metric"><span>Ключи</span><strong>{displayMetric(vpnOverview?.active_keys)}</strong></article>
+            <div className="stats">
+              <article><span>VPN-ноды</span><strong>{displayMetric(vpnOverview?.enabled_nodes)}</strong></article>
+              <article><span>Готовые ноды</span><strong>{displayMetric(vpnOverview?.ready_nodes)}</strong></article>
+              <article><span>Клиенты</span><strong>{displayMetric(vpnOverview?.active_customers)}</strong></article>
+              <article><span>Подписки</span><strong>{displayMetric(vpnOverview?.active_subscriptions)}</strong></article>
+              <article><span>Ключи</span><strong>{displayMetric(vpnOverview?.active_keys)}</strong></article>
             </div>
           ) : null}
         </div>
@@ -4616,7 +4601,7 @@ export default function App() {
           onNavigate={navigateVpnReadiness}
         />
 
-        <div className="card full-span vpn-admin-panel">
+        <div className="card full-span">
           <div className="card-head">
             <div>
               <h2>Автоматическое обслуживание</h2>
@@ -4624,7 +4609,7 @@ export default function App() {
             </div>
             <button type="button" className="ghost" onClick={() => void runVpnLifecycleMaintenance()}>Запустить сейчас</button>
           </div>
-          <div className="stats vpn-lifecycle-stats vpn-admin-metrics">
+          <div className="stats vpn-lifecycle-stats">
             <article><span>Проверено ключей</span><strong>{displayMetric(vpnLifecycleStatus?.checked_keys)}</strong></article>
             <article><span>Синхронизировано</span><strong>{displayMetric(vpnLifecycleStatus?.provisioned_keys)}</strong></article>
             <article><span>Приостановлено</span><strong>{displayMetric(vpnLifecycleStatus?.suspended_keys)}</strong></article>
@@ -4638,7 +4623,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="card full-span vpn-admin-panel">
+        <div className="card full-span">
           <div className="card-head">
             <div>
               <h2 id="vpn-capacity-section" tabIndex={-1}>Ёмкость VPN endpoint’ов</h2>
@@ -4924,63 +4909,69 @@ export default function App() {
           {vpnNodeEvents.length === 0 ? <p className="empty">Событий пока нет.</p> : null}
         </div>
         </section>
-        {vpnNodeDeletion ? (
-          <div className="vpn-node-dialog-backdrop">
-            <section
-              className="vpn-node-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-busy={vpnNodeDeletionBusy}
-              aria-labelledby="vpn-node-dialog-title"
-              aria-describedby="vpn-node-dialog-description"
-              onKeyDown={(event) => {
-                if (event.key !== "Tab") {
-                  return;
-                }
-                const first = vpnNodeDeletionCancelRef.current;
-                const last = vpnNodeDeletionConfirmRef.current;
-                if (event.shiftKey && document.activeElement === first) {
-                  event.preventDefault();
-                  last?.focus();
-                } else if (!event.shiftKey && document.activeElement === last) {
-                  event.preventDefault();
-                  first?.focus();
-                }
-              }}
-            >
-              <div>
-                <h2 id="vpn-node-dialog-title">Удалить VPN‑ноду «{vpnNodeDeletion.name}»?</h2>
-                <p id="vpn-node-dialog-description">
-                  Она перестанет принимать новые профили. Активные профили будут обработаны по текущим правилам безопасного удаления.
-                </p>
-              </div>
-              {vpnNodeDeletionError ? (
-                <p className="inline-alert error" role="alert">{vpnNodeDeletionError}</p>
-              ) : null}
-              <div className="vpn-node-dialog-actions">
-                <button
-                  type="button"
-                  className="ghost"
-                  ref={vpnNodeDeletionCancelRef}
-                  disabled={vpnNodeDeletionBusy}
-                  onClick={cancelVpnNodeDeletion}
-                >
-                  Отмена
-                </button>
-                <button
-                  type="button"
-                  className="danger"
-                  ref={vpnNodeDeletionConfirmRef}
-                  disabled={vpnNodeDeletionBusy}
-                  onClick={() => void confirmVpnNodeDeletion()}
-                >
-                  Да, удалить ноду
-                </button>
-              </div>
-            </section>
-          </div>
-        ) : null}
       </section>
+    );
+  }
+
+  function renderVpnNodeDeletionDialog() {
+    if (!vpnNodeDeletion) {
+      return null;
+    }
+    return (
+      <div className="vpn-admin-shell vpn-node-dialog-backdrop">
+        <section
+          className="vpn-node-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-busy={vpnNodeDeletionBusy}
+          aria-labelledby="vpn-node-dialog-title"
+          aria-describedby="vpn-node-dialog-description"
+          onKeyDown={(event) => {
+            if (event.key !== "Tab") {
+              return;
+            }
+            const first = vpnNodeDeletionCancelRef.current;
+            const last = vpnNodeDeletionConfirmRef.current;
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first?.focus();
+            }
+          }}
+        >
+          <div>
+            <h2 id="vpn-node-dialog-title">Удалить VPN‑ноду «{vpnNodeDeletion.name}»?</h2>
+            <p id="vpn-node-dialog-description">
+              Она перестанет принимать новые профили. Активные профили будут обработаны по текущим правилам безопасного удаления.
+            </p>
+          </div>
+          {vpnNodeDeletionError ? (
+            <p className="inline-alert error" role="alert">{vpnNodeDeletionError}</p>
+          ) : null}
+          <div className="vpn-node-dialog-actions">
+            <button
+              type="button"
+              className="ghost"
+              ref={vpnNodeDeletionCancelRef}
+              disabled={vpnNodeDeletionBusy}
+              onClick={cancelVpnNodeDeletion}
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              className="danger"
+              ref={vpnNodeDeletionConfirmRef}
+              disabled={vpnNodeDeletionBusy}
+              onClick={() => void confirmVpnNodeDeletion()}
+            >
+              Да, удалить ноду
+            </button>
+          </div>
+        </section>
+      </div>
     );
   }
 
@@ -5947,11 +5938,8 @@ export default function App() {
         </div>
       </div>
 
-      {toast ? (
-        <div className={`toast ${toast.type}`} role={toast.type === "error" ? "alert" : "status"}>
-          {toast.text}
-        </div>
-      ) : null}
+      {toast ? <div className={`toast ${toast.type}`}>{toast.text}</div> : null}
+      {renderVpnNodeDeletionDialog()}
 
       {tab === "domains" ? renderDomains() : null}
       {tab === "discovery" ? renderDiscovery() : null}

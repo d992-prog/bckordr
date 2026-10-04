@@ -516,15 +516,24 @@ test("long profile names and rename controls wrap with visible spacing", async (
 });
 
 test("VPN admin presentation stays scoped and uses the Veltrix admin primitives", async () => {
-  const [styles, appSource] = await Promise.all([
+  const [styles, appSource, navigationSource] = await Promise.all([
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
     readFile(new URL("../src/App.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/VpnAdminNavigation.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(styles, /\.vpn-admin-shell\s*\{[^}]*display:\s*grid;[^}]*min-width:\s*0;/s);
   assert.match(styles, /\.vpn-admin-shell\s+\.vpn-admin-nav\s*\{[^}]*position:\s*sticky;/s);
-  assert.match(styles, /\.vpn-admin-shell\s+\.vpn-admin-metric\s*\{[^}]*background:/s);
+  assert.match(
+    styles,
+    /\.vpn-admin-shell\s+\.vpn-admin-metric,\s*\.vpn-admin-shell\s+\.stats\s*>\s*article\s*\{[^}]*background:/s,
+  );
   assert.match(appSource, /className="stack vpn-stack vpn-admin-shell"/);
+  assert.match(navigationSource, /className="tab-strip vpn-admin-navigation vpn-admin-nav"/);
+  assert.doesNotMatch(styles, /@import\s+["']\.\/brand\/veltrix-brand\.css["']/);
+  assert.doesNotMatch(styles, /\.app-shell\s+:where\([^)]*\):focus-visible/);
+  assert.doesNotMatch(appSource, /vpn-admin-panel|vpn-admin-metrics|vpn-admin-metric|<div className="vpn-admin-nav">/);
+  assert.doesNotMatch(appSource, /role=\{toast\.type/);
 });
 
 test("admin profile links use explicit reveal and copy controls without exposing the URI by default", async () => {
@@ -546,6 +555,12 @@ test("VPN node removal uses an accessible confirmation and preserves the mutatio
   assert.match(source, /aria-modal="true"/);
   assert.match(source, /Да, удалить ноду/);
   assert.match(source, /Она перестанет принимать новые профили\./);
+  assert.equal(
+    source.match(/openVpnNodeDeletion\(worker, event\.currentTarget\)/g)?.length,
+    2,
+  );
+  assert.doesNotMatch(source, /async function decommissionWorker/);
+  assert.doesNotMatch(source, /Удалить ноду \$\{worker\.name\}/);
   assert.match(
     source,
     /await api\.deleteWorker\(worker\.id\);\s*await loadAll\(\);\s*setToast/s,

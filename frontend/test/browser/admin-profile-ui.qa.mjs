@@ -169,6 +169,22 @@ try {
   assert.equal(await page.evaluate(() => window.location.hash), "");
   assert.match(await page.getByRole("button", { name: "домены", exact: true }).getAttribute("class"), /active-chip/);
 
+  await page.getByRole("button", { name: "воркеры", exact: true }).click();
+  const workerCard = page.locator("article.user-card").filter({ hasText: "Frankfurt 1" });
+  const workerCardDelete = workerCard.getByRole("button", { name: "Удалить", exact: true });
+  await workerCardDelete.click();
+  const workerCardDialog = page.getByRole("dialog", { name: "Удалить VPN‑ноду «Frankfurt 1»?", exact: true });
+  await workerCardDialog.getByText(
+    "Она перестанет принимать новые профили. Активные профили будут обработаны по текущим правилам безопасного удаления.",
+    { exact: true },
+  ).waitFor();
+  await workerCardDialog.getByRole("button", { name: "Отмена", exact: true }).click();
+  assert.equal(workerDeleteCalls, 0);
+  await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "Удалить");
+  assert.equal(await workerCardDelete.evaluate((element) => document.activeElement === element), true);
+  await page.getByRole("button", { name: "домены", exact: true }).click();
+  assert.match(await page.getByRole("button", { name: "домены", exact: true }).getAttribute("class"), /active-chip/);
+
   await page.getByRole("button", { name: "VPN", exact: true }).click();
   await waitForHash("#vpn/overview");
   const vpnNavigation = page.getByRole("navigation", { name: "Разделы управления VPN" });

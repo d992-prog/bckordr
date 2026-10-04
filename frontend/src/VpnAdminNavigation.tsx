@@ -14,7 +14,7 @@ const VPN_ADMIN_SECTIONS: ReadonlyArray<{
 
 export function VpnAdminNavigation({ activeSection }: { activeSection: VpnAdminSection }) {
   return (
-    <nav className="tab-strip vpn-admin-navigation" aria-label="Разделы управления VPN">
+    <nav className="tab-strip vpn-admin-navigation vpn-admin-nav" aria-label="Разделы управления VPN">
       {VPN_ADMIN_SECTIONS.map((item) => (
         <a
           key={item.key}
