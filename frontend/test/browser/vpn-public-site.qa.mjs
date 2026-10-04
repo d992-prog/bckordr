@@ -157,6 +157,91 @@ async function assertNoHorizontalOverflow(page) {
   );
 }
 
+async function assertVisibleInteractiveAccessibility(page) {
+  const initial = await page.evaluate(() => {
+    const isVisible = (element) => {
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden"
+        && box.width > 0 && box.height > 0;
+    };
+    const accessibleName = (element) => {
+      const labelledBy = element.getAttribute("aria-labelledby");
+      const labelledText = labelledBy
+        ? labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent || "").join(" ")
+        : "";
+      return (element.getAttribute("aria-label") || labelledText || element.textContent || "").trim();
+    };
+    const controls = [...document.querySelectorAll("a[href], button, input, select, textarea")].filter(isVisible);
+    const tabbableControls = [...document.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )].filter(isVisible);
+    return {
+      count: tabbableControls.length,
+      unnamed: controls.filter((element) => !accessibleName(element)).map((element) => element.outerHTML),
+      exposedDecorativeSvg: [...document.querySelectorAll("svg")]
+        .filter((element) => isVisible(element) && element.getAttribute("role") !== "img"
+          && element.getAttribute("aria-hidden") !== "true")
+        .map((element) => element.outerHTML),
+    };
+  });
+  assert.deepEqual(initial.unnamed, [], "every visible button and link must have an accessible name");
+  assert.deepEqual(initial.exposedDecorativeSvg, [], "decorative SVGs must be hidden from the accessibility tree");
+
+  await page.evaluate(() => {
+    document.body.tabIndex = -1;
+    document.body.focus();
+    window.scrollTo(0, 0);
+  });
+  for (let index = 0; index < initial.count; index += 1) {
+    await page.keyboard.press("Tab");
+    const focus = await page.evaluate(() => {
+      const element = document.activeElement;
+      if (!(element instanceof HTMLElement)) return { error: "active element is not HTML" };
+      const box = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return {
+        name: (element.getAttribute("aria-label") || element.textContent || "").trim(),
+        tagName: element.tagName,
+        withinViewport: box.top >= -1 && box.left >= -1
+          && box.bottom <= innerHeight + 1 && box.right <= innerWidth + 1,
+        visibleFocus: element.matches(":focus-visible")
+          && ((style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2) || style.boxShadow !== "none"),
+      };
+    });
+    assert.equal(focus.error, undefined, `keyboard traversal ${index + 1}: ${focus.error}`);
+    assert.equal(focus.withinViewport, true, `focused ${focus.tagName} "${focus.name}" is outside the viewport`);
+    assert.equal(focus.visibleFocus, true, `focused ${focus.tagName} "${focus.name}" has no visible focus indication`);
+  }
+}
+
+async function assertTwoHundredPercentTextReflow(page) {
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "200%";
+  });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await assertNoHorizontalOverflow(page);
+  const clipped = await page.evaluate(() => {
+    const isVisible = (element) => {
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
+    };
+    return [...document.querySelectorAll("h1, h2, h3, p, a, button, label, dt, dd")]
+      .filter(isVisible)
+      .filter((element) => {
+        const style = getComputedStyle(element);
+        const clipsOverflow = ["hidden", "clip"].includes(style.overflowX)
+          || ["hidden", "clip"].includes(style.overflowY);
+        const boundedControl = element.matches("button, .button");
+        return (clipsOverflow || boundedControl)
+          && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
+      })
+      .map((element) => `${element.tagName}:${element.textContent?.trim().slice(0, 80)}`);
+  });
+  assert.deepEqual(clipped, [], `critical public-site copy is clipped at 200% text size: ${clipped.join(" | ")}`);
+}
+
 async function verifySuccess(browser, origin) {
   const { context, page, diagnostics, attemptedPaths } = await newPublicPage(browser);
   try {
@@ -208,6 +293,8 @@ async function verifySuccess(browser, origin) {
     await assertNoHorizontalOverflow(page);
     await page.setViewportSize({ width: 390, height: 844 });
     await assertNoHorizontalOverflow(page);
+    await assertVisibleInteractiveAccessibility(page);
+    await assertTwoHundredPercentTextReflow(page);
     if (outputRoot) await page.screenshot({ path: path.join(outputRoot, "vpn-public-390.png"), fullPage: true });
     await page.setViewportSize({ width: 1440, height: 900 });
     await assertNoHorizontalOverflow(page);

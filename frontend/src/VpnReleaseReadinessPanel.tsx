@@ -55,7 +55,7 @@ export function VpnReleaseReadinessPanel({ report, loading, error, onRefresh, on
     try {
       await api.confirmVpnEndpointExternalVerification(endpointId);
       await onRefresh();
-      setSuccess(`Внешний тест для VPN-точки #${endpointId} подтверждён.`);
+      setSuccess(`Внешний тест для VPN‑ноды #${endpointId} подтверждён.`);
     } catch (caught) {
       setActionError((caught instanceof Error ? caught.message : "Не удалось подтвердить внешний тест.").slice(0, 180));
     } finally {

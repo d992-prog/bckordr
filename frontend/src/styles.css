@@ -1682,7 +1682,6 @@ button:disabled {
 }
 
 .vpn-admin-shell .vpn-admin-nav a[aria-current="page"] {
-  outline: none;
   background: var(--vpn-admin-primary-bg);
   color: var(--vpn-admin-primary-fg);
 }
@@ -2123,6 +2122,26 @@ button:disabled {
 
   .vpn-admin-shell .card {
     padding: 8px;
+  }
+
+  .vpn-admin-shell .card-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .vpn-admin-shell .card-head > :where(a, button) {
+    max-width: 100%;
+  }
+
+  .vpn-admin-shell .row-hint {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .vpn-admin-shell .vpn-key-title-row button {
+    flex: 1 1 100%;
+    min-width: 0;
+    white-space: normal;
   }
 
   .vpn-admin-shell .vpn-admin-nav {

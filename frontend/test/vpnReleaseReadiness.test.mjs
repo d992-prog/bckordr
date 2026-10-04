@@ -124,7 +124,7 @@ test("uses code-aware labels only for positive safe entity identifiers", () => {
     "endpoint_external_proof",
     "endpoint_capacity",
   ]) {
-    assert.equal(formatVpnReleaseEntityLabel(check(code, "pass", 7)), "VPN-точка #7");
+    assert.equal(formatVpnReleaseEntityLabel(check(code, "pass", 7)), "VPN‑нода #7");
   }
   assert.equal(formatVpnReleaseEntityLabel(check("maintenance", "pass", 3)), "Нода #3");
   assert.equal(formatVpnReleaseEntityLabel(check("public_trial_plan", "pass", 9)), "Тариф #9");
@@ -168,7 +168,7 @@ test("readiness types expose no sensitive fields", async () => {
 test("maps readiness codes to fixed Russian labels with a safe fallback", () => {
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("system_health"), "Состояние системы");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_external_proof"), "Внешняя проверка подключения");
-  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_capacity"), "Ёмкость VPN-точки");
+  assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("endpoint_capacity"), "Ёмкость VPN‑ноды");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("public_trial_plan"), "Тариф пробного доступа");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("system"), "Проверка");
   assert.equal(releaseHelpers.formatVpnReleaseCheckLabel("unexpected_code"), "Проверка");
@@ -304,8 +304,8 @@ test("release panel guards both mutations and does not duplicate node operations
   assert.match(source, /setCommitConfirmation/);
   assert.match(source, /disabled=\{actionInFlight !== null \|\| loading\}/);
   assert.match(source, /api\.confirmVpnEndpointExternalVerification/);
-  assert.match(source, /Внешний тест для VPN-точки #\$\{endpointId\} подтверждён\./);
-  assert.doesNotMatch(source, /Внешний тест для ноды/);
+  assert.match(source, /Внешний тест для VPN‑ноды #\$\{endpointId\} подтверждён\./);
+  assert.doesNotMatch(source, /VPN-точк/);
   assert.match(source, /api\.commitVpnReleaseReadiness/);
   assert.match(source, /НЕ включает оплату и пробный доступ/);
   assert.doesNotMatch(source, /dangerouslySetInnerHTML/);

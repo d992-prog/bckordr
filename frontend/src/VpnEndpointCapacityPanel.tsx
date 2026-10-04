@@ -46,7 +46,7 @@ function CapacityRow({ endpoint, onUpdated }: { endpoint: VpnEndpointCapacity } 
       <div className="vpn-capacity-head">
         <div>
           <strong>{endpoint.label}</strong>
-          <div className="row-hint">Endpoint #{endpoint.endpoint_id} · воркер #{endpoint.worker_id}</div>
+          <div className="row-hint">VPN‑нода #{endpoint.endpoint_id} · воркер #{endpoint.worker_id}</div>
         </div>
         <span className={`status ${endpoint.status === "ready" ? "available" : "info"}`}>
           {endpoint.status}
@@ -103,7 +103,7 @@ function CapacityRow({ endpoint, onUpdated }: { endpoint: VpnEndpointCapacity } 
 
 export function VpnEndpointCapacityPanel({ endpoints, onUpdated }: Props) {
   if (endpoints.length === 0) {
-    return <p className="empty">VPN endpoint’ы пока не зарегистрированы.</p>;
+    return <p className="empty">VPN‑ноды пока не зарегистрированы.</p>;
   }
   return (
     <div className="vpn-capacity-grid">

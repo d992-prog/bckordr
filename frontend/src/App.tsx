@@ -614,7 +614,7 @@ function formatMaintenanceAction(value: string | null | undefined) {
     vpn_update: "обновление VPN",
     vpn_restart: "рестарт VPN",
     vpn_autoconfig: "автонастройка VPN",
-    vpn_create_inbound: "создание inbound VPN",
+    vpn_create_inbound: "создание входящего VPN‑подключения",
   };
   return value ? labels[value] ?? value : "—";
 }
@@ -2521,7 +2521,7 @@ export default function App() {
       await loadAll();
       setToast({
         type: "success",
-        text: `VPN обслуживание: синхронизировано ${result.provisioned_keys}, приостановлено ${result.suspended_keys}, отозвано ${result.revoked_keys}, ожидают отключения ${result.pending_suspend_keys + result.pending_revoke_keys}`,
+        text: `VPN‑сервис: профилей синхронизировано ${result.provisioned_keys}, приостановлено ${result.suspended_keys}, отозвано ${result.revoked_keys}, ожидают отключения ${result.pending_suspend_keys + result.pending_revoke_keys}`,
       });
     } catch (error) {
       setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка обслуживания VPN" });
@@ -2766,7 +2766,7 @@ export default function App() {
         vpn_update: "Обновление VPN",
         vpn_restart: "Рестарт VPN",
         vpn_autoconfig: "Автонастройка VPN",
-        vpn_create_inbound: "Создание inbound VPN",
+        vpn_create_inbound: "Создание входящего VPN‑подключения",
       };
       const job = action === "check"
         ? await api.checkWorkerSsh(worker.id)
@@ -4186,14 +4186,14 @@ export default function App() {
             <h3>SSH доступ для установки и обновления</h3>
             <p className="muted">Пароль нужен для автоматизации через панель. API не возвращает пароль обратно в браузер.</p>
             <div className="form two-columns">
-              <label><span>SSH host</span><input value={workerForm.sshHost} onChange={(event) => setWorkerForm((current) => ({ ...current, sshHost: event.target.value }))} placeholder="обычно IP сервера" /></label>
-              <label><span>SSH port</span><input value={workerForm.sshPort} onChange={(event) => setWorkerForm((current) => ({ ...current, sshPort: event.target.value }))} /></label>
+              <label><span>Адрес SSH</span><input value={workerForm.sshHost} onChange={(event) => setWorkerForm((current) => ({ ...current, sshHost: event.target.value }))} placeholder="обычно IP сервера" /></label>
+              <label><span>Порт SSH</span><input value={workerForm.sshPort} onChange={(event) => setWorkerForm((current) => ({ ...current, sshPort: event.target.value }))} /></label>
               <label><span>SSH логин</span><input value={workerForm.sshUsername} onChange={(event) => setWorkerForm((current) => ({ ...current, sshUsername: event.target.value }))} /></label>
               <label><span>SSH пароль</span><input type="password" value={workerForm.sshPassword} onChange={(event) => setWorkerForm((current) => ({ ...current, sshPassword: event.target.value }))} placeholder={editingWorkerId ? "оставь пустым, чтобы не менять" : "root пароль"} /></label>
-              <label><span>SSH key path</span><input value={workerForm.sshKeyPath} onChange={(event) => setWorkerForm((current) => ({ ...current, sshKeyPath: event.target.value }))} placeholder="опционально, например /root/.ssh/id_ed25519" /></label>
+              <label><span>Путь к ключу SSH</span><input value={workerForm.sshKeyPath} onChange={(event) => setWorkerForm((current) => ({ ...current, sshKeyPath: event.target.value }))} placeholder="опционально, например /root/.ssh/id_ed25519" /></label>
             </div>
             <h3>VPN / 3x-UI</h3>
-            <p className="muted">Эти поля готовят сервер как VPN-node. Пароль 3x-UI сохраняется, но не возвращается обратно в браузер.</p>
+            <p className="muted">Эти поля готовят сервер как VPN‑ноду. Пароль 3x-UI сохраняется, но не возвращается обратно в браузер.</p>
             <div className="form two-columns">
               <label>
                 <span>Роль VPN</span>
@@ -4207,11 +4207,11 @@ export default function App() {
                 <input type="checkbox" checked={workerForm.vpnEnabled} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnEnabled: event.target.checked }))} />
                 <span>Включить VPN на сервере</span>
               </label>
-              <label><span>Публичный host</span><input value={workerForm.vpnPublicHost} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnPublicHost: event.target.value }))} placeholder="IP или домен VPN-node" /></label>
-              <label><span>3x-UI URL</span><input value={workerForm.vpnPanelUrl} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnPanelUrl: event.target.value }))} placeholder="https://node.example.com:2053" /></label>
+              <label><span>Публичный адрес</span><input value={workerForm.vpnPublicHost} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnPublicHost: event.target.value }))} placeholder="IP или домен VPN‑ноды" /></label>
+              <label><span>Адрес 3x-UI</span><input value={workerForm.vpnPanelUrl} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnPanelUrl: event.target.value }))} placeholder="https://node.example.com:2053" /></label>
               <label><span>Логин 3x-UI</span><input value={workerForm.vpnPanelUsername} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnPanelUsername: event.target.value }))} /></label>
               <label><span>Пароль 3x-UI</span><input type="password" value={workerForm.vpnPanelPassword} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnPanelPassword: event.target.value }))} placeholder={editingWorkerId ? "оставь пустым, чтобы не менять" : "пароль панели"} /></label>
-              <label><span>Inbound ID</span><input value={workerForm.vpnInboundId} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnInboundId: event.target.value }))} placeholder="опционально" /></label>
+              <label><span>ID входящего подключения</span><input value={workerForm.vpnInboundId} onChange={(event) => setWorkerForm((current) => ({ ...current, vpnInboundId: event.target.value }))} placeholder="опционально" /></label>
             </div>
             <label><span>Заметки</span><textarea rows={3} value={workerForm.notes} onChange={(event) => setWorkerForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             <div className="actions">
@@ -4414,8 +4414,8 @@ export default function App() {
                   <div><span>Параллельность реги</span><strong>{formatWorkerConcurrency(worker)}</strong></div>
                   <div><span>VPN роль</span><strong>{formatVpnRole(worker.vpn_role)}</strong></div>
                   <div><span>VPN статус</span><strong>{worker.vpn_enabled ? formatStatusLabel(worker.vpn_runtime_status) : "выключен"}</strong></div>
-                  <div><span>VPN host</span><strong>{worker.vpn_public_host ?? "—"}</strong></div>
-                  <div><span>VPN endpoint</span><strong>{formatVpnEndpoint(worker)}</strong></div>
+                  <div><span>Публичный адрес</span><strong>{worker.vpn_public_host ?? "—"}</strong></div>
+                  <div><span>Адрес VPN‑ноды</span><strong>{formatVpnEndpoint(worker)}</strong></div>
                   <div><span>VPN протокол</span><strong>{formatVpnRuntime(worker)}</strong></div>
                   <div>
                     <span>VPN порт</span>
@@ -4431,7 +4431,7 @@ export default function App() {
                       ) : "—"}
                     </strong>
                   </div>
-                  <div><span>VPN inbound</span><strong>{worker.vpn_inbound_id ? `#${worker.vpn_inbound_id}` : "—"}</strong></div>
+                  <div><span>Входящее VPN‑подключение</span><strong>{worker.vpn_inbound_id ? `#${worker.vpn_inbound_id}` : "—"}</strong></div>
                   <div><span>SSH доступ</span><strong>{worker.ssh_access_configured ? `${worker.ssh_username ?? "root"}@${worker.ssh_host ?? worker.ip_address}:${worker.ssh_port}` : "не настроен"}</strong></div>
                   <div><span>Установка</span><strong>{installState}</strong></div>
                   <div><span>Установка VPN</span><strong>{vpnInstallState}</strong></div>
@@ -4461,14 +4461,14 @@ export default function App() {
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить VPN</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "VPN установлен" : vpnInstallInProgress ? "VPN устанавливается" : "Установить VPN"}</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_autoconfig")} disabled={vpnConfigurationDisabled}>Автонастроить VPN</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={vpnConfigurationDisabled || Boolean(worker.vpn_inbound_id)}>Создать inbound</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={vpnConfigurationDisabled || Boolean(worker.vpn_inbound_id)}>Создать входящее подключение</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={vpnConfigurationDisabled}>Обновить VPN</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={vpnConfigurationDisabled}>Рестарт VPN</button>
                         </>
                       )}
                     </div>
                     {!isVpnNode ? <small>Сначала включи VPN‑ноду, затем появятся установка и обслуживание 3x-UI.</small> : null}
-                    {isVpnNode && !vpnInstalled ? <small>Сначала нажми «Установить VPN». После успешной установки станут доступны автонастройка и создание inbound.</small> : null}
+                    {isVpnNode && !vpnInstalled ? <small>Сначала нажми «Установить VPN». После успешной установки станут доступны автонастройка и создание входящего подключения.</small> : null}
                   </div>
                   <div className="worker-action-group">
                     <span>Карточка</span>
@@ -4524,7 +4524,7 @@ export default function App() {
                 <option value="vpn_restart">Рестарт VPN</option>
                 <option value="vpn_check">Проверка VPN</option>
                 <option value="vpn_autoconfig">Автонастройка VPN</option>
-                <option value="vpn_create_inbound">Создание inbound VPN</option>
+                <option value="vpn_create_inbound">Создание входящего VPN‑подключения</option>
               </select>
             </label>
             <label>
@@ -4605,7 +4605,7 @@ export default function App() {
           <div className="card-head">
             <div>
               <h2>VPN‑сервис</h2>
-              <p className="muted">Рабочий контур VPN: безопасная выдача через 3x-UI, автоматическое обслуживание подписок и доставка ключей через Telegram. Оплата пока намеренно отключена.</p>
+              <p className="muted">Рабочий контур VPN: безопасная выдача через 3x-UI, автоматическое обслуживание подписок и доставка профилей через Telegram. Оплата пока намеренно отключена.</p>
             </div>
             <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
           </div>
@@ -4615,7 +4615,7 @@ export default function App() {
               <article><span>Готовые ноды</span><strong>{displayMetric(vpnOverview?.ready_nodes)}</strong></article>
               <article><span>Клиенты</span><strong>{displayMetric(vpnOverview?.active_customers)}</strong></article>
               <article><span>Подписки</span><strong>{displayMetric(vpnOverview?.active_subscriptions)}</strong></article>
-              <article><span>Ключи</span><strong>{displayMetric(vpnOverview?.active_keys)}</strong></article>
+              <article><span>Профили</span><strong>{displayMetric(vpnOverview?.active_keys)}</strong></article>
             </div>
           ) : null}
         </div>
@@ -4644,7 +4644,7 @@ export default function App() {
             <button type="button" className="ghost" onClick={() => void runVpnLifecycleMaintenance()}>Запустить сейчас</button>
           </div>
           <div className="stats vpn-lifecycle-stats">
-            <article><span>Проверено ключей</span><strong>{displayMetric(vpnLifecycleStatus?.checked_keys)}</strong></article>
+            <article><span>Проверено профилей</span><strong>{displayMetric(vpnLifecycleStatus?.checked_keys)}</strong></article>
             <article><span>Синхронизировано</span><strong>{displayMetric(vpnLifecycleStatus?.provisioned_keys)}</strong></article>
             <article><span>Приостановлено</span><strong>{displayMetric(vpnLifecycleStatus?.suspended_keys)}</strong></article>
             <article><span>Отозвано</span><strong>{displayMetric(vpnLifecycleStatus?.revoked_keys)}</strong></article>
@@ -4660,8 +4660,8 @@ export default function App() {
         <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2 id="vpn-capacity-section" tabIndex={-1}>Ёмкость VPN endpoint’ов</h2>
-              <p className="muted">Ограничивает число выданных профилей. Пустой лимит означает, что публичная автовыдача на endpoint отключена.</p>
+              <h2 id="vpn-capacity-section" tabIndex={-1}>Ёмкость VPN‑нод</h2>
+              <p className="muted">Ограничивает число выданных профилей. Пустой лимит означает, что публичная автовыдача на VPN‑ноде отключена.</p>
             </div>
           </div>
           <VpnEndpointCapacityPanel
@@ -4752,7 +4752,7 @@ export default function App() {
           <div className="card-head">
             <div>
               <h2>Клиенты и доступ</h2>
-              <p className="muted">Клиент, его подписки и VPN-ключи собраны в одном рабочем экране.</p>
+              <p className="muted">Клиент, его подписки и VPN‑профили собраны в одном рабочем экране.</p>
             </div>
           </div>
           <VpnCustomerWorkspace
@@ -4793,11 +4793,11 @@ export default function App() {
                   <th>Воркер</th>
                   <th>Роль</th>
                   <th>Статус</th>
-                  <th>Выдача ключей</th>
-                  <th>Host</th>
-                  <th>Endpoint</th>
+                  <th>Выдача профилей</th>
+                  <th>Публичный адрес</th>
+                  <th>Адрес</th>
                   <th>3x-UI админка</th>
-                  <th>Inbound</th>
+                  <th>Входящее подключение</th>
                   <th>Порт</th>
                   <th>Последняя проверка</th>
                   <th>Действия</th>
@@ -4830,8 +4830,8 @@ export default function App() {
                           <div className="row-hint" key={reason}>{reason}</div>
                         ))}
                       </td>
-                      <td data-label="Host">{worker.vpn_public_host ?? "—"}</td>
-                      <td data-label="Endpoint"><strong>{formatVpnEndpoint(worker)}</strong><div className="row-hint">адрес для клиента</div></td>
+                      <td data-label="Публичный адрес">{worker.vpn_public_host ?? "—"}</td>
+                      <td data-label="Адрес"><strong>{formatVpnEndpoint(worker)}</strong><div className="row-hint">адрес для клиента</div></td>
                       <td data-label="3x-UI">
                         {worker.vpn_panel_url ? (
                           <>
@@ -4840,7 +4840,7 @@ export default function App() {
                           </>
                         ) : "—"}
                       </td>
-                      <td data-label="Inbound"><strong>{worker.vpn_inbound_id ? `#${worker.vpn_inbound_id}` : "—"}</strong><div className="row-hint">{formatVpnRuntime(worker)}</div></td>
+                      <td data-label="Входящее подключение"><strong>{worker.vpn_inbound_id ? `#${worker.vpn_inbound_id}` : "—"}</strong><div className="row-hint">{formatVpnRuntime(worker)}</div></td>
                       <td data-label="Listener">
                         <span className={statusClass(vpnListenerStatusClass(worker.vpn_listener_status))}>
                           {formatVpnListenerStatus(worker.vpn_listener_status)}
@@ -4853,7 +4853,7 @@ export default function App() {
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")}>Проверить</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "Установлен" : vpnInstallInProgress ? "Установка" : "Установить"}</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_autoconfig")} disabled={vpnConfigurationDisabled}>Автонастроить</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={vpnConfigurationDisabled || Boolean(worker.vpn_inbound_id)}>Создать inbound</button>
+                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={vpnConfigurationDisabled || Boolean(worker.vpn_inbound_id)}>Создать входящее подключение</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={vpnConfigurationDisabled}>Обновить</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={vpnConfigurationDisabled}>Рестарт</button>
                           <button
@@ -4882,7 +4882,7 @@ export default function App() {
         >
         <div className="card full-span">
           <h2>Telegram</h2>
-          <p className="muted">Последние обращения клиентов к VPN-боту и результат доставки ответа.</p>
+          <p className="muted">Последние обращения клиентов к боту Veltrix VPN и результат доставки ответа.</p>
           <div className="simple-table">
             <table>
               <thead>
@@ -5970,7 +5970,11 @@ export default function App() {
         </div>
       </div>
 
-      {toast ? <div className={`toast ${toast.type}`}>{toast.text}</div> : null}
+      {toast ? (
+        <div className={`toast ${toast.type}`} role={toast.type === "error" ? "alert" : "status"}>
+          {toast.text}
+        </div>
+      ) : null}
       {renderVpnNodeDeletionDialog()}
 
       {tab === "domains" ? renderDomains() : null}

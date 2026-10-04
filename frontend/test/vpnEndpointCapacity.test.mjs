@@ -99,6 +99,9 @@ test("capacity panel exposes accessible native controls and bounded errors", asy
   assert.match(source, /max="100"/);
   assert.match(source, /Пусто — лимит не задан/);
   assert.doesNotMatch(source, /Пусто — без лимита/);
+  assert.match(source, /VPN‑нода #\{endpoint\.endpoint_id\}/);
+  assert.match(source, /VPN‑ноды пока не зарегистрированы/);
+  assert.doesNotMatch(source, /Endpoint #|VPN endpoint’ы/);
   assert.match(source, /aria-label=/);
   assert.match(source, /aria-live="polite"/);
   assert.match(source, /disabled=\{saving\}/);
@@ -119,6 +122,7 @@ test("VPN workspace loads capacity safely and preserves a newer saved row", asyn
   );
   assert.match(source, /replaceVpnEndpointCapacity/);
   assert.match(source, /<VpnEndpointCapacityPanel/);
+  assert.doesNotMatch(source, />VPN endpoint<|>Endpoint<|data-label="Endpoint"/);
   assert.match(css, /\.vpn-capacity-grid\s*\{/);
   assert.match(css, /@media \(max-width: 720px\)[\s\S]*\.vpn-capacity-fields/);
 });

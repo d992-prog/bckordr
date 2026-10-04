@@ -7,7 +7,10 @@
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  scroll-padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px));
+}
 body {
   min-width: 0;
   min-height: 100vh;
@@ -52,6 +55,9 @@ body {
 .veltrix-portal textarea { font: inherit; }
 .veltrix-portal button,
 .veltrix-portal a { -webkit-tap-highlight-color: transparent; }
+.veltrix-portal :where(a, button, input, select, textarea) {
+  scroll-margin-block: 24px calc(var(--portal-nav-height) + var(--portal-nav-bottom-offset) + 16px);
+}
 .veltrix-portal a {
   color: var(--vx-blue);
   text-underline-offset: 0.2em;

@@ -51,7 +51,7 @@ const VPN_RELEASE_CHECK_LABELS: Readonly<Record<string, string>> = {
   endpoint_health: "Состояние точки доступа",
   endpoint_external_proof: "Внешняя проверка подключения",
   endpoint_redundancy: "Резервирование нод",
-  endpoint_capacity: "Ёмкость VPN-точки",
+  endpoint_capacity: "Ёмкость VPN‑ноды",
   aggregate_capacity: "Общая ёмкость",
   control_operations: "Операции управления",
   maintenance: "Обслуживание",
@@ -233,7 +233,7 @@ export function formatVpnReleaseEntityLabel(
     return `Тариф #${check.entity_id}`;
   }
   if (VPN_ENDPOINT_ENTITY_CODES.has(check.code)) {
-    return `VPN-точка #${check.entity_id}`;
+    return `VPN‑нода #${check.entity_id}`;
   }
   return NODE_ENTITY_CODES.has(check.code) ? `Нода #${check.entity_id}` : null;
 }

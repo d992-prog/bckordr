@@ -210,6 +210,104 @@ try {
     assert.ok(ratio >= 4.5, `${label} contrast ${ratio.toFixed(2)} must be at least 4.5:1`);
     return ratio;
   };
+  const assertFocusVisible = async (locator, label) => {
+    await locator.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    const focus = await locator.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return {
+        active: document.activeElement === element,
+        visible: element.matches(":focus-visible")
+          && ((style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2) || style.boxShadow !== "none"),
+        withinViewport: box.top >= -1 && box.left >= -1
+          && box.bottom <= innerHeight + 1 && box.right <= innerWidth + 1,
+      };
+    });
+    assert.deepEqual(focus, { active: true, visible: true, withinViewport: true }, `${label} must have visible unobscured focus`);
+  };
+  const assertVisibleVpnControlsNamed = async () => {
+    const audit = await page.locator(".vpn-admin-shell").evaluate((root) => {
+      const isVisible = (element) => {
+        const style = getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden"
+          && box.width > 0 && box.height > 0;
+      };
+      const accessibleName = (element) => {
+        const labelledBy = element.getAttribute("aria-labelledby");
+        const labelledText = labelledBy
+          ? labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent || "").join(" ")
+          : "";
+        return (element.getAttribute("aria-label") || labelledText || element.textContent || "").trim();
+      };
+      const controls = [...root.querySelectorAll("a[href], button")].filter(isVisible);
+      return {
+        unnamed: controls.filter((element) => !accessibleName(element)).map((element) => element.outerHTML),
+        exposedDecorativeSvg: [...root.querySelectorAll("svg")]
+          .filter((element) => isVisible(element) && element.getAttribute("role") !== "img"
+            && element.getAttribute("aria-hidden") !== "true")
+          .map((element) => element.outerHTML),
+      };
+    });
+    assert.deepEqual(audit.unnamed, [], "every visible VPN admin button and link must have an accessible name");
+    assert.deepEqual(audit.exposedDecorativeSvg, [], "decorative VPN admin SVGs must be hidden");
+  };
+  const assertAdminTwoHundredPercentTextReflow = async () => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => {
+      document.documentElement.style.fontSize = "200%";
+      window.scrollTo(0, 0);
+    });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const result = await page.locator(".vpn-admin-shell").evaluate((root) => {
+      const isVisible = (element) => {
+        const style = getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
+      };
+      const clipped = [...root.querySelectorAll("h1, h2, h3, p, a, button, label")]
+        .filter(isVisible)
+        .filter((element) => {
+          const style = getComputedStyle(element);
+          const clipsOverflow = ["hidden", "clip"].includes(style.overflowX)
+            || ["hidden", "clip"].includes(style.overflowY);
+          return (clipsOverflow || element.matches("button"))
+            && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
+        })
+        .map((element) => `${element.tagName}:${element.textContent?.trim().slice(0, 80)}`);
+      return {
+        pageFits: document.documentElement.scrollWidth <= innerWidth,
+        rootFits: root.scrollWidth <= root.clientWidth,
+        dimensions: {
+          viewport: innerWidth,
+          pageScrollWidth: document.documentElement.scrollWidth,
+          rootClientWidth: root.clientWidth,
+          rootScrollWidth: root.scrollWidth,
+        },
+        overflowing: [...root.querySelectorAll("*")]
+          .filter(isVisible)
+          .map((element) => ({
+            tag: element.tagName,
+            className: typeof element.className === "string" ? element.className : "",
+            text: element.textContent?.trim().slice(0, 60) || "",
+            right: element.getBoundingClientRect().right,
+            scrollWidth: element.scrollWidth,
+            clientWidth: element.clientWidth,
+          }))
+          .filter((element) => element.right > innerWidth + 1 || element.scrollWidth > element.clientWidth + 1)
+          .slice(0, 20),
+        clipped,
+      };
+    });
+    assert.equal(result.pageFits, true, `VPN admin page must not overflow at 200% text size: ${JSON.stringify(result)}`);
+    assert.equal(result.rootFits, true, `VPN admin workspace must not overflow at 200% text size: ${JSON.stringify(result)}`);
+    assert.deepEqual(result.clipped, [], `VPN admin copy is clipped at 200% text size: ${result.clipped.join(" | ")}`);
+    await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-customers-390-text-200.png") });
+    await page.evaluate(() => { document.documentElement.style.fontSize = ""; });
+    await page.setViewportSize({ width: 1280, height: 1000 });
+  };
   const assertSecretAbsent = async (secret, label) => {
     const exposure = await page.evaluate((candidate) => {
       const elements = [...document.querySelectorAll("*")];
@@ -346,6 +444,11 @@ try {
   await assertContrast(allCustomersFilter, "dark active filter hover");
   await page.emulateMedia({ colorScheme: "light" });
   const firstProfileAction = page.getByRole("button", { name: "Изменить название", exact: true }).first();
+  await assertVisibleVpnControlsNamed();
+  await assertFocusVisible(vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }), "VPN navigation");
+  await assertFocusVisible(customerSearch, "customer search");
+  await assertFocusVisible(firstProfileAction, "profile action");
+  await assertAdminTwoHundredPercentTextReflow();
   await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).focus();
   let searchFocusStep = -1;
   let profileFocusStep = -1;
@@ -417,7 +520,9 @@ try {
     await key.getByRole("button", { name: "Сохранить", exact: true }).click();
   };
   await rename("Телефон 2", "Рабочий iPhone");
-  await page.locator(".toast").filter({ hasText: "Название профиля сохранено" }).waitFor();
+  const successToast = page.locator(".toast").filter({ hasText: "Название профиля сохранено" });
+  await successToast.waitFor();
+  assert.equal(await successToast.getAttribute("role"), "status");
   assert.match(await page.locator(".vpn-customer-row.active-chip").innerText(), /Борис/);
   await page.getByRole("heading", { name: "Изменить подписку #13", exact: true }).waitFor();
   assert.equal(await key.locator("textarea").inputValue(), labelled("Рабочий iPhone"));
@@ -501,7 +606,9 @@ try {
 
   renameFailure = true;
   await rename("Основной Mac", "Отказанное имя");
-  await page.locator(".toast").filter({ hasText: "Имя отклонено" }).waitFor();
+  const errorToast = page.locator(".toast").filter({ hasText: "Имя отклонено" });
+  await errorToast.waitFor();
+  assert.equal(await errorToast.getAttribute("role"), "alert");
   await key.getByRole("button", { name: "Отмена", exact: true }).click();
   await key.getByText("Основной Mac", { exact: true }).waitFor();
   assert.equal(await key.locator("textarea").inputValue(), labelled("Основной Mac"));
@@ -562,7 +669,7 @@ try {
   await releaseCommittedReply();
   await failedFollowup;
   await key.getByText("Имя администратора", { exact: true }).waitFor();
-  await key.getByText("Ключ отозван, ссылка больше недоступна.", { exact: true }).waitFor();
+  await key.getByText("Профиль отозван, ссылка больше недоступна.", { exact: true }).waitFor();
   assert.equal(await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).count(), 0);
   assert.equal(await key.locator("textarea").count(), 0);
   await page.setViewportSize({ width: 1280, height: 1000 });

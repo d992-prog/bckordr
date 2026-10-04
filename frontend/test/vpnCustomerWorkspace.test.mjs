@@ -458,6 +458,7 @@ test("admin profile UI uses display names and exposes inline rename controls", a
   assert.match(source, /renameBusy \? \(\s*<p className="muted">Обновляем подпись ссылки…<\/p>/);
   assert.match(source, /nextAccessKeyEditorAfterRename\(current, accessKey\.id\)/);
   assert.doesNotMatch(source, /setBusyAction\(`key-rename-/);
+  assert.doesNotMatch(source, /(?<![А-Яа-яЁё])[Кк]люч(?:и|а|ей|ом|у)?(?![А-Яа-яЁё])/u);
 });
 
 test("workspace reload opts into load error propagation without changing other callers", async () => {
@@ -533,7 +534,7 @@ test("VPN admin presentation stays scoped and uses the Veltrix admin primitives"
   assert.doesNotMatch(styles, /@import\s+["']\.\/brand\/veltrix-brand\.css["']/);
   assert.doesNotMatch(styles, /\.app-shell\s+:where\([^)]*\):focus-visible/);
   assert.doesNotMatch(appSource, /vpn-admin-panel|vpn-admin-metrics|vpn-admin-metric|<div className="vpn-admin-nav">/);
-  assert.doesNotMatch(appSource, /role=\{toast\.type/);
+  assert.match(appSource, /role=\{toast\.type === "error" \? "alert" : "status"\}/);
   assert.match(styles, /--vpn-admin-primary-bg:/);
   assert.match(styles, /--vpn-admin-primary-fg:/);
   assert.match(styles, /\.vpn-admin-shell\s+\.status\.available/);
@@ -544,6 +545,14 @@ test("VPN admin presentation stays scoped and uses the Veltrix admin primitives"
   assert.match(appSource, /VPN‑сервис/);
   assert.match(appSource, /VPN‑ноды/);
   assert.match(appSource, /данные SSH/);
+  assert.match(appSource, /Клиент, его подписки и VPN‑профили/);
+  assert.match(appSource, /Выдача профилей/);
+  assert.match(appSource, /Ёмкость VPN‑нод/);
+  assert.match(appSource, /<article><span>Профили<\/span>/);
+  assert.doesNotMatch(
+    appSource,
+    /Эти поля готовят сервер как VPN-node|IP или домен VPN-node|VPN-ключи собраны|автовыдача на endpoint|Выдача ключей|Проверено ключей|обращения клиентов к VPN-боту|Ёмкость VPN endpoint’ов|>VPN endpoint<|>Endpoint<|data-label="Endpoint"|>VPN host<|>VPN inbound<|>Inbound<|data-label="Inbound"|>Host<|data-label="Host"|>[Сс]оздание inbound|>Создать inbound<|3x-UI URL|SSH host|SSH port|SSH key path/,
+  );
 });
 
 test("admin profile links use explicit reveal and copy controls without exposing the URI by default", async () => {

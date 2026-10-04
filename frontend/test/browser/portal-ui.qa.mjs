@@ -179,6 +179,128 @@ function assertNoHorizontalOverflow(page) {
   });
 }
 
+async function assertVisibleInteractiveAccessibility(page, fixedNavigationSelector = null) {
+  const initial = await page.evaluate(() => {
+    const isVisible = (element) => {
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden"
+        && box.width > 0 && box.height > 0;
+    };
+    const accessibleName = (element) => {
+      const labelledBy = element.getAttribute("aria-labelledby");
+      const labelledText = labelledBy
+        ? labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent || "").join(" ")
+        : "";
+      return (element.getAttribute("aria-label") || labelledText || element.textContent || "").trim();
+    };
+    const controls = [...document.querySelectorAll("a[href], button, input, select, textarea")].filter(isVisible);
+    const tabbableControls = [...document.querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )].filter(isVisible);
+    const unnamed = controls.filter((element) => !accessibleName(element)).map((element) => element.outerHTML);
+    const exposedDecorativeSvg = [...document.querySelectorAll("svg")]
+      .filter((element) => isVisible(element) && element.getAttribute("role") !== "img"
+        && element.getAttribute("aria-hidden") !== "true")
+      .map((element) => element.outerHTML);
+    return { count: tabbableControls.length, unnamed, exposedDecorativeSvg };
+  });
+
+  assert.equal(initial.unnamed.length, 0, `visible controls without accessible names: ${initial.unnamed.join(" | ")}`);
+  assert.equal(
+    initial.exposedDecorativeSvg.length,
+    0,
+    `decorative SVGs exposed to accessibility tree: ${initial.exposedDecorativeSvg.join(" | ")}`,
+  );
+
+  await page.evaluate(() => {
+    document.body.tabIndex = -1;
+    document.body.focus();
+    window.scrollTo(0, 0);
+  });
+  for (let index = 0; index < initial.count; index += 1) {
+    await page.keyboard.press("Tab");
+    await page.waitForFunction((navigationSelector) => {
+      const element = document.activeElement;
+      if (!(element instanceof HTMLElement)) return false;
+      const box = element.getBoundingClientRect();
+      const navigation = navigationSelector ? document.querySelector(navigationSelector) : null;
+      const navigationBox = navigation?.getBoundingClientRect() || null;
+      const insideNavigation = Boolean(navigation?.contains(element));
+      const obscured = navigationBox && !insideNavigation && box.bottom > navigationBox.top;
+      return !obscured && box.top >= -1 && box.left >= -1
+        && box.bottom <= innerHeight + 1 && box.right <= innerWidth + 1;
+    }, fixedNavigationSelector, { timeout: 750 }).catch(() => {});
+    const focus = await page.evaluate((navigationSelector) => {
+      const element = document.activeElement;
+      if (!(element instanceof HTMLElement)) return { error: "active element is not HTML" };
+      const box = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      const navigation = navigationSelector ? document.querySelector(navigationSelector) : null;
+      const navigationBox = navigation?.getBoundingClientRect() || null;
+      const insideNavigation = Boolean(navigation?.contains(element));
+      const belowFixedNavigation = navigationBox && !insideNavigation && box.bottom > navigationBox.top;
+      const visibleFocus = element.matches(":focus-visible")
+        && ((style.outlineStyle !== "none" && parseFloat(style.outlineWidth) >= 2) || style.boxShadow !== "none");
+      return {
+        name: (element.getAttribute("aria-label") || element.textContent || "").trim(),
+        tagName: element.tagName,
+        withinViewport: box.top >= -1 && box.left >= -1
+          && box.bottom <= innerHeight + 1 && box.right <= innerWidth + 1,
+        belowFixedNavigation,
+        visibleFocus,
+      };
+    }, fixedNavigationSelector);
+    assert.equal(focus.error, undefined, `keyboard traversal ${index + 1}: ${focus.error}`);
+    assert.equal(focus.withinViewport, true, `keyboard traversal ${index + 1}: focused ${focus.tagName} "${focus.name}" is outside the viewport`);
+    assert.equal(focus.belowFixedNavigation, false, `focused ${focus.tagName} "${focus.name}" is obscured by fixed navigation`);
+    assert.equal(focus.visibleFocus, true, `focused ${focus.tagName} "${focus.name}" has no visible focus indication`);
+  }
+}
+
+async function assertTwoHundredPercentTextReflow(page) {
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "200%";
+  });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await assertNoHorizontalOverflow(page);
+  const clipped = await page.evaluate(() => {
+    const isVisible = (element) => {
+      const style = getComputedStyle(element);
+      const box = element.getBoundingClientRect();
+      const visuallyHidden = style.position === "absolute" && box.width <= 1 && box.height <= 1
+        && (style.clip !== "auto" || style.clipPath !== "none");
+      return style.display !== "none" && style.visibility !== "hidden"
+        && box.width > 0 && box.height > 0 && !visuallyHidden;
+    };
+    return [...document.querySelectorAll("h1, h2, h3, p, a, button, label, dt, dd")]
+      .filter(isVisible)
+      .filter((element) => {
+        const style = getComputedStyle(element);
+        const clipsOverflow = ["hidden", "clip"].includes(style.overflowX)
+          || ["hidden", "clip"].includes(style.overflowY);
+        const boundedControl = element.matches("button, .button");
+        return (clipsOverflow || boundedControl)
+          && (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1);
+      })
+      .map((element) => `${element.tagName}:${element.textContent?.trim().slice(0, 80)}`);
+  });
+  assert.deepEqual(clipped, [], `critical copy is clipped at 200% text size: ${clipped.join(" | ")}`);
+}
+
+async function assertReducedMotionStopsContinuousDecoration(page) {
+  const animated = await page.evaluate(() => [...document.querySelectorAll(
+    ".portal-status-lens, .portal-status-lens *, .vx-atmosphere, .vx-atmosphere *",
+  )].filter((element) => {
+    const style = getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden"
+      && style.animationName !== "none"
+      && style.animationIterationCount === "infinite"
+      && parseFloat(style.animationDuration) > 0;
+  }).map((element) => `${element.tagName}.${element.className}`));
+  assert.deepEqual(animated, [], `continuous decoration remains under reduced motion: ${animated.join(" | ")}`);
+}
+
 async function assertAccessibleSubscriptionLayout(page) {
   const layout = await page.locator(".portal-access .card-grid").evaluate((grid) => {
     const gridBox = grid.getBoundingClientRect();
@@ -1649,6 +1771,9 @@ async function captureResponsiveMatrix(browser, origin) {
     await assertAccessibleSubscriptionLayout(page);
     await assertPrimaryActionContrast(page);
     await assertNavSafeAreaAndReserve(page);
+    if (scenario.name !== "portal-853-light") {
+      await assertVisibleInteractiveAccessibility(page, ".portal-nav");
+    }
     await page.screenshot({
       path: path.join(outputRoot, `${scenario.name}.png`),
       fullPage: true,
@@ -1670,7 +1795,20 @@ async function captureResponsiveMatrix(browser, origin) {
   }));
   assert.ok(["0.01ms", "0s"].includes(reducedMotion.animationDuration));
   assert.equal(reducedMotion.titleVisible, true);
+  await assertReducedMotionStopsContinuousDecoration(page);
   await context.close();
+
+  const scaled = await newPortalPage(browser, {
+    viewport: { width: 390, height: 844 },
+    colorScheme: "light",
+    reducedMotion: "reduce",
+  });
+  await installFixture(scaled.page);
+  await scaled.page.goto(`${origin}/cabinet/#home`);
+  await scaled.page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
+  await assertTwoHundredPercentTextReflow(scaled.page);
+  await scaled.page.screenshot({ path: path.join(outputRoot, "portal-390-text-200.png"), fullPage: true });
+  await scaled.context.close();
 
   const states = await newPortalPage(browser, {
     viewport: { width: 390, height: 844 },
