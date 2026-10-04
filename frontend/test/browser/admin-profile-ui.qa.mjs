@@ -74,7 +74,9 @@ try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
   page.setDefaultTimeout(10000);
   const errors = [];
+  const consoleMessages = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => consoleMessages.push(message.text()));
   await page.addInitScript(() => {
     window.__copies = [];
     Object.defineProperty(navigator, "clipboard", { configurable: true,
@@ -95,6 +97,7 @@ try {
   let workerDeleted = false;
   let workerDeleteCalls = 0;
   let workerDeleteFailure = false;
+  let workerRefreshFailures = 0;
   let releaseWorkerDelete = null;
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -148,7 +151,13 @@ try {
       }
       return reloadFailure ? json(route, { detail: "Не удалось обновить список" }, 503) : json(route, keys);
     }
-    if (pathname === "/api/control/workers") return json(route, workerDeleted ? [] : [worker]);
+    if (pathname === "/api/control/workers") {
+      if (workerDeleted && workerRefreshFailures > 0) {
+        workerRefreshFailures -= 1;
+        return json(route, { detail: "Список временно недоступен" }, 503);
+      }
+      return json(route, workerDeleted ? [] : [worker]);
+    }
     if (pathname === "/api/control/vpn/release-readiness") return json(route, {
       ready: true, checked_at: stamp, release_id: null, checks: [],
     });
@@ -164,6 +173,61 @@ try {
     (hash) => window.location.hash === hash,
     expected,
   );
+  const contrastRatio = (locator) => locator.evaluate((element) => {
+    const readColor = (value) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1;
+      canvas.height = 1;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.clearRect(0, 0, 1, 1);
+      context.fillStyle = value;
+      context.fillRect(0, 0, 1, 1);
+      return [...context.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+    };
+    const luminance = (rgb) => {
+      const channels = rgb.map((value) => {
+        const channel = value / 255;
+        return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+      });
+      return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+    };
+    const computed = getComputedStyle(element);
+    const foreground = luminance(readColor(computed.color));
+    const background = luminance(readColor(computed.backgroundColor));
+    return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+  });
+  const assertContrast = async (locator, label) => {
+    const ratio = await contrastRatio(locator);
+    assert.ok(ratio >= 4.5, `${label} contrast ${ratio.toFixed(2)} must be at least 4.5:1`);
+    return ratio;
+  };
+  const assertSecretAbsent = async (secret, label) => {
+    const exposure = await page.evaluate((candidate) => {
+      const elements = [...document.querySelectorAll("*")];
+      const attributeValues = elements.flatMap((element) =>
+        [...element.attributes].map((attribute) => attribute.value));
+      const formValues = [...document.querySelectorAll("input, textarea, select")]
+        .map((element) => element.value);
+      const urlAndDataValues = elements.flatMap((element) =>
+        [...element.attributes]
+          .filter((attribute) => /^(href|src|data-)/.test(attribute.name))
+          .map((attribute) => attribute.value));
+      return {
+        outerHTML: document.documentElement.outerHTML.includes(candidate),
+        attributes: attributeValues.some((value) => value.includes(candidate)),
+        formValues: formValues.some((value) => value.includes(candidate)),
+        urlAndData: urlAndDataValues.some((value) => value.includes(candidate)),
+      };
+    }, secret);
+    assert.deepEqual(exposure, {
+      outerHTML: false,
+      attributes: false,
+      formValues: false,
+      urlAndData: false,
+    }, `${label}: the full URI must stay out of DOM serialization, attributes, and form values`);
+    assert.equal(consoleMessages.some((message) => message.includes(secret)), false,
+      `${label}: the full URI must stay out of console output`);
+  };
 
   await page.goto(appUrl);
   assert.equal(await page.evaluate(() => window.location.hash), "");
@@ -178,6 +242,11 @@ try {
     "Она перестанет принимать новые профили. Активные профили будут обработаны по текущим правилам безопасного удаления.",
     { exact: true },
   ).waitFor();
+  assert.equal(await workerCardDialog.evaluate((element) => element.tagName), "DIALOG");
+  assert.equal(await workerCardDialog.evaluate((element) => element.open && element.matches(":modal")), true);
+  await page.getByRole("button", { name: "домены", exact: true }).focus();
+  assert.equal(await workerCardDialog.evaluate((element) => element.contains(document.activeElement)), true,
+    "a modal node-deletion dialog must keep background controls inert");
   await workerCardDialog.getByRole("button", { name: "Отмена", exact: true }).click();
   assert.equal(workerDeleteCalls, 0);
   await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "Удалить");
@@ -194,6 +263,32 @@ try {
   label);
   await waitForCurrentVpnLink("Обзор");
   await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-overview-1280.png") });
+  const overviewLink = vpnNavigation.getByRole("link", { name: "Обзор", exact: true });
+  const readyStatus = page.getByText("Пройдено: 0", { exact: true });
+  const warningStatus = page.getByText("Предупреждения: 0", { exact: true });
+  const errorStatus = page.getByText("Ошибки: 0", { exact: true });
+  const commitReadiness = page.getByRole("button", { name: "Зафиксировать готовность", exact: true });
+  assert.ok((await overviewLink.boundingBox()).height >= 44, "VPN navigation links must meet a 44px touch target");
+  await assertContrast(overviewLink, "light active navigation");
+  await overviewLink.hover();
+  await assertContrast(overviewLink, "light active navigation hover");
+  await overviewLink.focus();
+  await assertContrast(overviewLink, "light active navigation focus");
+  await assertContrast(readyStatus, "light success status");
+  await assertContrast(warningStatus, "light warning status");
+  await assertContrast(errorStatus, "light error status");
+  assert.equal(await commitReadiness.isDisabled(), true);
+  await assertContrast(commitReadiness, "light disabled primary action");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await assertContrast(overviewLink, "dark active navigation");
+  await overviewLink.hover();
+  await assertContrast(overviewLink, "dark active navigation hover");
+  await assertContrast(readyStatus, "dark success status");
+  await assertContrast(warningStatus, "dark warning status");
+  await assertContrast(errorStatus, "dark error status");
+  await assertContrast(commitReadiness, "dark disabled primary action");
+  await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-overview-dark-1280.png") });
+  await page.emulateMedia({ colorScheme: "light" });
 
   await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).click();
   await waitForHash("#vpn/customers");
@@ -223,6 +318,24 @@ try {
   await waitForCurrentVpnLink("Клиенты");
 
   const customerSearch = page.getByRole("textbox", { name: "Поиск", exact: true });
+  const newCustomer = page.getByRole("button", { name: "Новый клиент", exact: true });
+  const allCustomersFilter = page.getByRole("button", { name: "Все", exact: true });
+  await assertContrast(newCustomer, "light primary action");
+  await newCustomer.hover();
+  await assertContrast(newCustomer, "light primary action hover");
+  await newCustomer.focus();
+  await assertContrast(newCustomer, "light primary action focus");
+  await assertContrast(allCustomersFilter, "light active filter");
+  await allCustomersFilter.hover();
+  await assertContrast(allCustomersFilter, "light active filter hover");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await assertContrast(newCustomer, "dark primary action");
+  await newCustomer.hover();
+  await assertContrast(newCustomer, "dark primary action hover");
+  await assertContrast(allCustomersFilter, "dark active filter");
+  await allCustomersFilter.hover();
+  await assertContrast(allCustomersFilter, "dark active filter hover");
+  await page.emulateMedia({ colorScheme: "light" });
   const firstProfileAction = page.getByRole("button", { name: "Изменить название", exact: true }).first();
   await vpnNavigation.getByRole("link", { name: "Клиенты", exact: true }).focus();
   let searchFocusStep = -1;
@@ -262,14 +375,21 @@ try {
   const key = page.locator(".vpn-subscription-card").filter({ hasText: "Подписка #12" }).locator(".vpn-key-card");
   await key.getByText("Телефон 2", { exact: true }).waitFor();
   assert.equal(await key.getByText(/dropcatch-old/).count(), 0);
-  assert.equal(await key.evaluate((element, secret) => element.textContent.includes(secret), labelled("Телефон 2")), false);
+  const initialSecret = labelled("Телефон 2");
+  assert.equal(await key.evaluate((element, secret) => element.textContent.includes(secret), initialSecret), false);
+  await assertSecretAbsent(initialSecret, "before reveal");
+  await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).click();
+  assert.equal(await page.evaluate(() => window.__copies.at(-1)), initialSecret);
+  await assertSecretAbsent(initialSecret, "after hidden copy");
   await key.getByRole("button", { name: "Показать полную ссылку", exact: true }).click();
-  assert.equal(await key.locator("textarea").inputValue(), labelled("Телефон 2"));
+  assert.equal(await key.locator("textarea").inputValue(), initialSecret);
   assert.equal(await key.locator("textarea").getAttribute("readonly"), "");
   await page.setViewportSize({ width: 390, height: 844 });
   const initialNarrowBounds = await key.boundingBox();
   assert.ok(initialNarrowBounds.x >= 0 && initialNarrowBounds.x + initialNarrowBounds.width <= 391,
     "the profile card must fit the narrow viewport, not merely its oversized parent");
+  assert.ok(initialNarrowBounds.width >= 280,
+    `the nested profile card must remain usable at 390px (actual ${initialNarrowBounds.width}px)`);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
     "the VPN admin page must not overflow the narrow viewport");
   await page.setViewportSize({ width: 1280, height: 1000 });
@@ -405,6 +525,14 @@ try {
   assert.ok(renamedNarrowBounds.x >= 0 && renamedNarrowBounds.x + renamedNarrowBounds.width <= 391);
   await key.screenshot({ path: path.join(output, "admin-profile-390.png") });
   await key.getByRole("button", { name: "Отмена", exact: true }).click();
+  await page.evaluate(() => {
+    window.__rejectCopy = null;
+    navigator.clipboard.writeText = () => new Promise((_, reject) => {
+      window.__rejectCopy = () => reject(new Error("Delayed clipboard denial"));
+    });
+  });
+  await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).click();
+  await page.waitForFunction(() => typeof window.__rejectCopy === "function");
   holdCommittedReply = true;
   await rename(longName, "Более старое имя");
   await until(() => releaseCommittedReply !== null, "committed PATCH reply not held");
@@ -416,6 +544,9 @@ try {
   await page.locator(".toolbar-actions").getByRole("button", { name: "Обновить", exact: true }).click();
   await authoritativeGet;
   await key.getByText("отозван", { exact: true }).waitFor();
+  await page.evaluate(() => window.__rejectCopy());
+  await page.locator(".toast").filter({ hasText: "Не удалось скопировать или выделить ссылку" }).waitFor();
+  assert.equal(await key.locator("textarea").count(), 0);
   reloadFailure = true;
   const failedFollowup = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/control/vpn/access-keys" && response.status() === 503);
@@ -428,14 +559,39 @@ try {
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto(`${appUrl}#vpn/nodes`);
   await waitForHash("#vpn/nodes");
+  await waitForCurrentVpnLink("Ноды");
   const deleteTrigger = page.getByRole("button", { name: "Удалить ноду", exact: true });
   await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-nodes-1280.png") });
+  await page.setViewportSize({ width: 1280, height: 700 });
+  await page.evaluate(() => window.scrollTo(0, document.querySelector(".vpn-admin-shell").offsetTop + 700));
+  await page.waitForFunction(() => {
+    const nav = document.querySelector(".vpn-admin-nav");
+    return nav && nav.getBoundingClientRect().top <= 13;
+  });
+  const stickyNavTop = (await vpnNavigation.boundingBox()).y;
+  assert.ok(stickyNavTop >= 0 && stickyNavTop <= 13,
+    `VPN navigation must stay sticky across the active section (actual top ${stickyNavTop}px)`);
+  await page.evaluate(() => window.scrollTo(0, 0));
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
-    "only the contained node table may scroll horizontally");
-  assert.ok(await page.locator('[data-vpn-admin-section="nodes"] .simple-table').evaluate(
-    (element) => element.scrollWidth > element.clientWidth,
-  ), "the wide node table should remain in a discoverable contained scroller");
+    "the VPN admin page must not scroll horizontally");
+  assert.equal(await page.locator('[data-vpn-admin-section="nodes"] .simple-table').evaluate(
+    (element) => element.scrollWidth <= element.clientWidth,
+  ), true, "the mobile node view must stack instead of hiding actions in a horizontal table");
+  const mobileNodeRow = page.locator('[data-vpn-admin-section="nodes"] tbody tr').first();
+  const mobileNodeBounds = await mobileNodeRow.boundingBox();
+  assert.ok(mobileNodeBounds.x >= 0 && mobileNodeBounds.x + mobileNodeBounds.width <= 390,
+    "the first mobile node card must fit the viewport");
+  const mobileNodeActions = mobileNodeRow.getByRole("button");
+  assert.ok(await mobileNodeActions.count() >= 7, "all important node operations must remain visible on mobile");
+  for (let index = 0; index < await mobileNodeActions.count(); index += 1) {
+    const bounds = await mobileNodeActions.nth(index).boundingBox();
+    assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390,
+      `mobile node action ${index + 1} must be inside the viewport`);
+  }
+  for (const link of await vpnNavigation.getByRole("link").all()) {
+    assert.ok((await link.boundingBox()).height >= 44, "each VPN navigation link must have a 44px touch target");
+  }
   await page.locator(".vpn-admin-shell").screenshot({ path: path.join(output, "admin-nodes-390.png") });
   await page.setViewportSize({ width: 1280, height: 1000 });
   await deleteTrigger.click();
@@ -444,6 +600,8 @@ try {
     "Она перестанет принимать новые профили. Активные профили будут обработаны по текущим правилам безопасного удаления.",
     { exact: true },
   ).waitFor();
+  assert.equal(await deleteDialog.evaluate((element) => element.tagName), "DIALOG");
+  assert.equal(await deleteDialog.evaluate((element) => element.open && element.matches(":modal")), true);
   await deleteDialog.screenshot({ path: path.join(output, "admin-node-delete-dialog-1280.png") });
   const cancelDelete = deleteDialog.getByRole("button", { name: "Отмена", exact: true });
   const confirmDelete = deleteDialog.getByRole("button", { name: "Да, удалить ноду", exact: true });
@@ -471,10 +629,26 @@ try {
   await confirmDelete.evaluate((element) => { element.click(); element.click(); });
   await until(() => workerDeleteCalls === 2, "node deletion was not requested exactly once per confirmation");
   assert.equal(await confirmDelete.isDisabled(), true);
+  await deleteDialog.getByRole("status").getByText("Удаляем ноду…", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Обновить", exact: true }).first().focus();
+  assert.equal(await deleteDialog.evaluate((element) => element.contains(document.activeElement)), true,
+    "background focus must stay inert while DELETE is pending");
+  await page.keyboard.press("Tab");
+  assert.equal(await deleteDialog.evaluate((element) => element.contains(document.activeElement)), true,
+    "Tab must stay inside the dialog while DELETE is pending");
+  await page.keyboard.press("Escape");
+  assert.equal(await deleteDialog.isVisible(), true, "Escape must not close a busy destructive dialog");
+  workerRefreshFailures = 1;
   await releaseWorkerDelete();
-  await page.locator(".toast").filter({ hasText: "Нода удалена из активной системы" }).waitFor();
+  await page.locator(".toast").filter({ hasText: "Нода удалена, но список не удалось обновить" }).waitFor();
   assert.equal(workerDeleteCalls, 2);
   assert.equal(await page.getByRole("dialog").count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Удалить ноду", exact: true }).count(), 0,
+    "a successfully deleted node must not retain a stale repeat action after refresh failure");
+  await page.waitForFunction(() => document.activeElement?.getAttribute("href") === "#vpn/nodes");
+  assert.equal(await vpnNavigation.getByRole("link", { name: "Ноды", exact: true }).evaluate(
+    (element) => document.activeElement === element,
+  ), true, "successful deletion must return focus to a deterministic Nodes destination");
   assert.deepEqual(errors, []);
   console.log("PASS: actual admin bundle rename/cancel/selection/reload-failure/stale-GET/delayed-PATCH/external-rename/revoke/two-key-pending/copy-fallback/error/narrow-profile-bounds, synthetic HTTP only");
 } finally {

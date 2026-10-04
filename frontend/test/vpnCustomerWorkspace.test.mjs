@@ -534,6 +534,16 @@ test("VPN admin presentation stays scoped and uses the Veltrix admin primitives"
   assert.doesNotMatch(styles, /\.app-shell\s+:where\([^)]*\):focus-visible/);
   assert.doesNotMatch(appSource, /vpn-admin-panel|vpn-admin-metrics|vpn-admin-metric|<div className="vpn-admin-nav">/);
   assert.doesNotMatch(appSource, /role=\{toast\.type/);
+  assert.match(styles, /--vpn-admin-primary-bg:/);
+  assert.match(styles, /--vpn-admin-primary-fg:/);
+  assert.match(styles, /\.vpn-admin-shell\s+\.status\.available/);
+  assert.match(styles, /@media\s*\(max-width:\s*720px\)[\s\S]*data-vpn-admin-section="nodes"/);
+  assert.match(styles, /\.vpn-admin-shell\s+\.vpn-admin-nav\s+a\s*\{[^}]*min-height:\s*44px/s);
+  assert.match(appSource, /<VpnAdminNavigation[\s\S]*?<section[\s\S]*?data-vpn-admin-section="overview"/);
+  assert.match(appSource, /<td data-label="Действия">/);
+  assert.match(appSource, /VPN‑сервис/);
+  assert.match(appSource, /VPN‑ноды/);
+  assert.match(appSource, /данные SSH/);
 });
 
 test("admin profile links use explicit reveal and copy controls without exposing the URI by default", async () => {
@@ -546,12 +556,15 @@ test("admin profile links use explicit reveal and copy controls without exposing
   assert.match(source, /Скрыть ссылку/);
   assert.match(source, /Скопировать ссылку/);
   assert.match(source, /maskAccessKeyUri\(accessKey\.config_uri\)/);
+  assert.match(source, /selectionStart === 0/);
+  assert.match(source, /Не удалось скопировать или выделить ссылку/);
 });
 
 test("VPN node removal uses an accessible confirmation and preserves the mutation sequence", async () => {
   const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 
-  assert.match(source, /role="dialog"/);
+  assert.match(source, /<dialog/);
+  assert.match(source, /\.showModal\(\)/);
   assert.match(source, /aria-modal="true"/);
   assert.match(source, /Да, удалить ноду/);
   assert.match(source, /Она перестанет принимать новые профили\./);
@@ -561,8 +574,16 @@ test("VPN node removal uses an accessible confirmation and preserves the mutatio
   );
   assert.doesNotMatch(source, /async function decommissionWorker/);
   assert.doesNotMatch(source, /Удалить ноду \$\{worker\.name\}/);
-  assert.match(
-    source,
-    /await api\.deleteWorker\(worker\.id\);\s*await loadAll\(\);\s*setToast/s,
+  assert.match(source, /setWorkers\(\(current\) => current\.filter/);
+  assert.match(source, /loadAll\(\{ silent: true, throwOnError: true \}\)/);
+  assert.match(source, /Нода удалена, но список не удалось обновить/);
+  const deleteFunction = source.match(
+    /async function deleteWorkerNode\(worker: WorkerNode\) \{[\s\S]*?\n  \}\n\n  function focusVpnNodesAfterDeletion/,
+  )?.[0];
+  assert.ok(deleteFunction, "the node deletion helper must remain directly inspectable");
+  assert.ok(
+    deleteFunction.indexOf("await api.deleteWorker(worker.id)")
+      < deleteFunction.indexOf("await loadAll({ silent: true, throwOnError: true })"),
+    "DELETE must finish before the refresh attempt",
   );
 });

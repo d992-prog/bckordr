@@ -901,19 +901,27 @@ export function VpnCustomerWorkspace({
     }
     try {
       await navigator.clipboard.writeText(accessKey.config_uri);
-      notify("success", "Полная VPN-ссылка скопирована");
+      notify("success", "Полная VPN‑ссылка скопирована");
     } catch {
       setExpandedKeyIds((current) => new Set(current).add(accessKey.id));
-      window.requestAnimationFrame(() => {
-        const field = document.getElementById(
-          `vpn-key-uri-${accessKey.id}`,
-        ) as HTMLTextAreaElement | null;
-        field?.focus();
-        field?.select();
-      });
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      const field = document.getElementById(
+        `vpn-key-uri-${accessKey.id}`,
+      ) as HTMLTextAreaElement | null;
+      const canSelect = field?.value === accessKey.config_uri;
+      if (canSelect) {
+        field.focus();
+        field.select();
+      }
+      const selected = canSelect
+        && document.activeElement === field
+        && field.selectionStart === 0
+        && field.selectionEnd === field.value.length;
       notify(
         "error",
-        "Буфер обмена недоступен. Полная ссылка выделена — скопируйте её вручную.",
+        selected
+          ? "Буфер обмена недоступен. Полная ссылка выделена — скопируйте её вручную."
+          : "Не удалось скопировать или выделить ссылку. Обновите профиль и попробуйте снова.",
       );
     }
   }
@@ -1258,7 +1266,7 @@ export function VpnCustomerWorkspace({
         <h4>Новый ключ для подписки #{subscription.id}</h4>
         <div className="form two-columns">
           <label>
-            <span>VPN-нода</span>
+            <span>VPN‑нода</span>
             <select
               value={accessKeyForm.workerId}
               onChange={(event) =>
@@ -1433,7 +1441,7 @@ export function VpnCustomerWorkspace({
           <p className="muted">
             {accessKey.status === "revoked"
               ? "Ключ отозван, ссылка больше недоступна."
-              : "Ссылка появится после успешной выдачи ключа на VPN-ноду."}
+              : "Ссылка появится после успешной выдачи ключа на VPN‑ноду."}
           </p>
         )}
         {["suspended", "pending_suspend"].includes(accessKey.status) ? (

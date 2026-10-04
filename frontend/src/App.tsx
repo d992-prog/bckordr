@@ -1100,8 +1100,8 @@ export default function App() {
   const [vpnNodeDeletionError, setVpnNodeDeletionError] = useState<string | null>(null);
   const vpnNodeDeletionLockRef = useRef(false);
   const vpnNodeDeletionTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const vpnNodeDeletionDialogRef = useRef<HTMLDialogElement | null>(null);
   const vpnNodeDeletionCancelRef = useRef<HTMLButtonElement | null>(null);
-  const vpnNodeDeletionConfirmRef = useRef<HTMLButtonElement | null>(null);
 
   const [loginForm, setLoginForm] = useState({ username: "", password: "", remember_me: true });
   const [domainForm, setDomainForm] = useState(DEFAULT_DOMAIN_FORM);
@@ -1324,21 +1324,16 @@ export default function App() {
     if (!vpnNodeDeletion) {
       return;
     }
+    const dialog = vpnNodeDeletionDialogRef.current;
+    if (dialog && !dialog.open) {
+      dialog.showModal();
+    }
     const focusFrame = window.requestAnimationFrame(() => vpnNodeDeletionCancelRef.current?.focus());
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || vpnNodeDeletionLockRef.current) {
-        return;
-      }
-      event.preventDefault();
-      setVpnNodeDeletion(null);
-      setVpnNodeDeletionError(null);
-      const trigger = vpnNodeDeletionTriggerRef.current;
-      window.requestAnimationFrame(() => trigger?.focus());
-    };
-    document.addEventListener("keydown", handleEscape);
     return () => {
       window.cancelAnimationFrame(focusFrame);
-      document.removeEventListener("keydown", handleEscape);
+      if (dialog?.open) {
+        dialog.close();
+      }
     };
   }, [vpnNodeDeletion?.id]);
 
@@ -2733,9 +2728,9 @@ export default function App() {
         vpn_public_host: worker.vpn_public_host ?? worker.ip_address,
       });
       await loadAll();
-      setToast({ type: "success", text: `VPN-нода включена для ${worker.name}` });
+      setToast({ type: "success", text: `VPN‑нода включена для ${worker.name}` });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка включения VPN-ноды" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка включения VPN‑ноды" });
     }
   }
 
@@ -2810,10 +2805,10 @@ export default function App() {
       await loadAll();
       setToast({
         type: "success",
-        text: `Обновление VPN-нод запущено: ${result.started_count}; пропущено: ${result.skipped_count}`,
+        text: `Обновление VPN‑нод запущено: ${result.started_count}; пропущено: ${result.skipped_count}`,
       });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка массового обновления VPN-нод" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка массового обновления VPN‑нод" });
     }
   }
 
@@ -2823,10 +2818,10 @@ export default function App() {
       await loadAll();
       setToast({
         type: "success",
-        text: `Автонастройка VPN-нод запущена: ${result.started_count}; пропущено: ${result.skipped_count}`,
+        text: `Автонастройка VPN‑нод запущена: ${result.started_count}; пропущено: ${result.skipped_count}`,
       });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка автонастройки VPN-нод" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка автонастройки VPN‑нод" });
     }
   }
 
@@ -2903,8 +2898,27 @@ export default function App() {
 
   async function deleteWorkerNode(worker: WorkerNode) {
     await api.deleteWorker(worker.id);
-    await loadAll();
-    setToast({ type: "success", text: "Нода удалена из активной системы" });
+    setWorkers((current) => current.filter((item) => item.id !== worker.id));
+    setVpnEndpointCapacities((current) => current.filter((item) => item.worker_id !== worker.id));
+    setVpnNodeEligibility((current) => {
+      const next = { ...current };
+      delete next[worker.id];
+      return next;
+    });
+    try {
+      await loadAll({ silent: true, throwOnError: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function focusVpnNodesAfterDeletion() {
+    window.requestAnimationFrame(() => {
+      const navigationLink = document.querySelector<HTMLAnchorElement>('.vpn-admin-nav a[href="#vpn/nodes"]');
+      const sectionHeading = document.getElementById("vpn-nodes-section");
+      (navigationLink ?? sectionHeading)?.focus();
+    });
   }
 
   function openVpnNodeDeletion(worker: WorkerNode, trigger: HTMLButtonElement) {
@@ -2931,9 +2945,14 @@ export default function App() {
     vpnNodeDeletionLockRef.current = true;
     setVpnNodeDeletionBusy(true);
     setVpnNodeDeletionError(null);
+    window.requestAnimationFrame(() => vpnNodeDeletionDialogRef.current?.focus());
     try {
-      await deleteWorkerNode(worker);
+      const refreshed = await deleteWorkerNode(worker);
       setVpnNodeDeletion(null);
+      setToast(refreshed
+        ? { type: "success", text: "Нода удалена из активной системы" }
+        : { type: "error", text: "Нода удалена, но список не удалось обновить. Обновите страницу позже." });
+      focusVpnNodesAfterDeletion();
     } catch (error) {
       const message = error instanceof Error ? error.message : "Не удалось удалить ноду";
       setVpnNodeDeletionError(message);
@@ -4277,7 +4296,7 @@ export default function App() {
             </div>
             <div className="actions">
               <button type="button" className="ghost" onClick={() => void startAllWorkerUpdates()}>Обновить все серверы</button>
-              <button type="button" className="ghost" onClick={() => void startAllVpnUpdates()}>Обновить VPN-ноды</button>
+              <button type="button" className="ghost" onClick={() => void startAllVpnUpdates()}>Обновить VPN‑ноды</button>
               <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
             </div>
           </div>
@@ -4351,7 +4370,7 @@ export default function App() {
                     ? "можно установить"
                     : "SSH не настроен";
               const vpnInstallState = !isVpnNode
-                ? "не VPN-нода"
+                ? "не VPN‑нода"
                 : vpnInstalled
                   ? "VPN установлен"
                   : vpnInstallInProgress
@@ -4421,7 +4440,7 @@ export default function App() {
                     <span>VPN</span>
                     <div className="actions">
                       {!isVpnNode ? (
-                        <button type="button" className="ghost" onClick={() => void enableWorkerVpnNode(worker)}>Включить VPN-ноду</button>
+                        <button type="button" className="ghost" onClick={() => void enableWorkerVpnNode(worker)}>Включить VPN‑ноду</button>
                       ) : (
                         <>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить VPN</button>
@@ -4433,7 +4452,7 @@ export default function App() {
                         </>
                       )}
                     </div>
-                    {!isVpnNode ? <small>Сначала включи VPN-ноду, затем появятся установка и обслуживание 3x-UI.</small> : null}
+                    {!isVpnNode ? <small>Сначала включи VPN‑ноду, затем появятся установка и обслуживание 3x-UI.</small> : null}
                     {isVpnNode && !vpnInstalled ? <small>Сначала нажми «Установить VPN». После успешной установки станут доступны автонастройка и создание inbound.</small> : null}
                   </div>
                   <div className="worker-action-group">
@@ -4570,15 +4589,14 @@ export default function App() {
         <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>VPN сервис</h2>
+              <h2>VPN‑сервис</h2>
               <p className="muted">Рабочий контур VPN: безопасная выдача через 3x-UI, автоматическое обслуживание подписок и доставка ключей через Telegram. Оплата пока намеренно отключена.</p>
             </div>
             <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
           </div>
-          <VpnAdminNavigation activeSection={vpnAdminSection} />
           {vpnAdminSection === "overview" ? (
             <div className="stats">
-              <article><span>VPN-ноды</span><strong>{displayMetric(vpnOverview?.enabled_nodes)}</strong></article>
+              <article><span>VPN‑ноды</span><strong>{displayMetric(vpnOverview?.enabled_nodes)}</strong></article>
               <article><span>Готовые ноды</span><strong>{displayMetric(vpnOverview?.ready_nodes)}</strong></article>
               <article><span>Клиенты</span><strong>{displayMetric(vpnOverview?.active_customers)}</strong></article>
               <article><span>Подписки</span><strong>{displayMetric(vpnOverview?.active_subscriptions)}</strong></article>
@@ -4586,6 +4604,7 @@ export default function App() {
             </div>
           ) : null}
         </div>
+        <VpnAdminNavigation activeSection={vpnAdminSection} />
 
         <section
           className="stack"
@@ -4742,12 +4761,12 @@ export default function App() {
         <div className="card full-span">
           <div className="card-head">
             <div>
-              <h2>VPN ноды</h2>
-              <p className="muted">Установка, проверка, обновление и рестарт 3x-UI выполняются через SSH данные воркера.</p>
+              <h2 id="vpn-nodes-section" tabIndex={-1}>VPN‑ноды</h2>
+              <p className="muted">Установка, проверка, обновление и рестарт 3x-UI выполняются через данные SSH воркера.</p>
             </div>
             <div className="actions">
-              <button type="button" className="ghost" onClick={() => void startAllVpnAutoconfigs()}>Автонастроить VPN-ноды</button>
-              <button type="button" className="ghost" onClick={() => void startAllVpnUpdates()}>Обновить VPN-ноды</button>
+              <button type="button" className="ghost" onClick={() => void startAllVpnAutoconfigs()}>Автонастроить VPN‑ноды</button>
+              <button type="button" className="ghost" onClick={() => void startAllVpnUpdates()}>Обновить VPN‑ноды</button>
               <button type="button" className="ghost" onClick={() => void runVpnLifecycleMaintenance()}>Обслужить VPN</button>
               <button type="button" className="ghost" onClick={() => void loadAll()}>Обновить</button>
             </div>
@@ -4785,10 +4804,10 @@ export default function App() {
                   const vpnInstallDisabled = vpnMaintenanceBlocked || vpnInstalled || vpnInstallInProgress;
                   return (
                     <tr key={worker.id}>
-                      <td><strong>{worker.name}</strong><div className="row-hint">{worker.ip_address ?? "нет IP"} | {worker.region ?? "нет региона"}</div></td>
-                      <td>{formatVpnRole(worker.vpn_role)}</td>
-                      <td><span className={statusClass(worker.vpn_enabled ? worker.vpn_runtime_status : "disabled")}>{worker.vpn_enabled ? formatStatusLabel(worker.vpn_runtime_status) : "выключен"}</span>{worker.vpn_last_error ? <div className="row-hint">{worker.vpn_last_error}</div> : null}</td>
-                      <td>
+                      <td data-label="Воркер"><strong>{worker.name}</strong><div className="row-hint">{worker.ip_address ?? "нет IP"} | {worker.region ?? "нет региона"}</div></td>
+                      <td data-label="Роль">{formatVpnRole(worker.vpn_role)}</td>
+                      <td data-label="Статус"><span className={statusClass(worker.vpn_enabled ? worker.vpn_runtime_status : "disabled")}>{worker.vpn_enabled ? formatStatusLabel(worker.vpn_runtime_status) : "выключен"}</span>{worker.vpn_last_error ? <div className="row-hint">{worker.vpn_last_error}</div> : null}</td>
+                      <td data-label="Готовность">
                         <span className={eligibility?.eligible ? "status available" : "status error"}>
                           {eligibility?.eligible ? "готова к выдаче" : "заблокирована"}
                         </span>
@@ -4796,9 +4815,9 @@ export default function App() {
                           <div className="row-hint" key={reason}>{reason}</div>
                         ))}
                       </td>
-                      <td>{worker.vpn_public_host ?? "—"}</td>
-                      <td><strong>{formatVpnEndpoint(worker)}</strong><div className="row-hint">адрес для клиента</div></td>
-                      <td>
+                      <td data-label="Host">{worker.vpn_public_host ?? "—"}</td>
+                      <td data-label="Endpoint"><strong>{formatVpnEndpoint(worker)}</strong><div className="row-hint">адрес для клиента</div></td>
+                      <td data-label="3x-UI">
                         {worker.vpn_panel_url ? (
                           <>
                             <a href={worker.vpn_panel_url} target="_blank" rel="noreferrer">открыть 3x-UI</a>
@@ -4806,15 +4825,15 @@ export default function App() {
                           </>
                         ) : "—"}
                       </td>
-                      <td><strong>{worker.vpn_inbound_id ? `#${worker.vpn_inbound_id}` : "—"}</strong><div className="row-hint">{formatVpnRuntime(worker)}</div></td>
-                      <td>
+                      <td data-label="Inbound"><strong>{worker.vpn_inbound_id ? `#${worker.vpn_inbound_id}` : "—"}</strong><div className="row-hint">{formatVpnRuntime(worker)}</div></td>
+                      <td data-label="Listener">
                         <span className={statusClass(vpnListenerStatusClass(worker.vpn_listener_status))}>
                           {formatVpnListenerStatus(worker.vpn_listener_status)}
                         </span>
                         <div className="row-hint">{worker.vpn_inbound_port ? `порт ${worker.vpn_inbound_port}` : "порт неизвестен"}</div>
                       </td>
-                      <td>{formatDateTime(worker.vpn_last_checked_at)}</td>
-                      <td>
+                      <td data-label="Проверено">{formatDateTime(worker.vpn_last_checked_at)}</td>
+                      <td data-label="Действия">
                         <div className="actions">
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")}>Проверить</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "Установлен" : vpnInstallInProgress ? "Установка" : "Установить"}</button>
@@ -4837,7 +4856,7 @@ export default function App() {
               </tbody>
             </table>
           </div>
-          {vpnNodes.length === 0 ? <p className="empty">VPN-ноды пока не включены. Открой воркер, задай роль VPN и включи VPN.</p> : null}
+          {vpnNodes.length === 0 ? <p className="empty">VPN‑ноды пока не включены. Открой воркер, задай роль VPN и включи VPN.</p> : null}
         </div>
         </section>
 
@@ -4881,7 +4900,7 @@ export default function App() {
         </div>
 
         <div className="card full-span">
-          <h2>События VPN-нод</h2>
+          <h2>События VPN‑нод</h2>
           <div className="simple-table">
             <table>
               <thead>
@@ -4918,60 +4937,58 @@ export default function App() {
       return null;
     }
     return (
-      <div className="vpn-admin-shell vpn-node-dialog-backdrop">
-        <section
-          className="vpn-node-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-busy={vpnNodeDeletionBusy}
-          aria-labelledby="vpn-node-dialog-title"
-          aria-describedby="vpn-node-dialog-description"
-          onKeyDown={(event) => {
-            if (event.key !== "Tab") {
-              return;
-            }
-            const first = vpnNodeDeletionCancelRef.current;
-            const last = vpnNodeDeletionConfirmRef.current;
-            if (event.shiftKey && document.activeElement === first) {
-              event.preventDefault();
-              last?.focus();
-            } else if (!event.shiftKey && document.activeElement === last) {
-              event.preventDefault();
-              first?.focus();
-            }
-          }}
-        >
-          <div>
-            <h2 id="vpn-node-dialog-title">Удалить VPN‑ноду «{vpnNodeDeletion.name}»?</h2>
-            <p id="vpn-node-dialog-description">
-              Она перестанет принимать новые профили. Активные профили будут обработаны по текущим правилам безопасного удаления.
-            </p>
-          </div>
-          {vpnNodeDeletionError ? (
-            <p className="inline-alert error" role="alert">{vpnNodeDeletionError}</p>
-          ) : null}
-          <div className="vpn-node-dialog-actions">
-            <button
-              type="button"
-              className="ghost"
-              ref={vpnNodeDeletionCancelRef}
-              disabled={vpnNodeDeletionBusy}
-              onClick={cancelVpnNodeDeletion}
-            >
-              Отмена
-            </button>
-            <button
-              type="button"
-              className="danger"
-              ref={vpnNodeDeletionConfirmRef}
-              disabled={vpnNodeDeletionBusy}
-              onClick={() => void confirmVpnNodeDeletion()}
-            >
-              Да, удалить ноду
-            </button>
-          </div>
-        </section>
-      </div>
+      <dialog
+        ref={vpnNodeDeletionDialogRef}
+        className="vpn-admin-shell vpn-node-dialog"
+        aria-modal="true"
+        aria-busy={vpnNodeDeletionBusy}
+        aria-labelledby="vpn-node-dialog-title"
+        aria-describedby="vpn-node-dialog-description"
+        aria-live="polite"
+        tabIndex={-1}
+        onCancel={(event) => {
+          event.preventDefault();
+          if (!vpnNodeDeletionBusy) {
+            cancelVpnNodeDeletion();
+          }
+        }}
+        onKeyDown={(event) => {
+          if (vpnNodeDeletionBusy && event.key === "Tab") {
+            event.preventDefault();
+            vpnNodeDeletionDialogRef.current?.focus();
+          }
+        }}
+      >
+        <div>
+          <h2 id="vpn-node-dialog-title">Удалить VPN‑ноду «{vpnNodeDeletion.name}»?</h2>
+          <p id="vpn-node-dialog-description">
+            Она перестанет принимать новые профили. Активные профили будут обработаны по текущим правилам безопасного удаления.
+          </p>
+        </div>
+        {vpnNodeDeletionBusy ? <p role="status">Удаляем ноду…</p> : null}
+        {vpnNodeDeletionError ? (
+          <p className="inline-alert error" role="alert">{vpnNodeDeletionError}</p>
+        ) : null}
+        <div className="vpn-node-dialog-actions">
+          <button
+            type="button"
+            className="ghost"
+            ref={vpnNodeDeletionCancelRef}
+            disabled={vpnNodeDeletionBusy}
+            onClick={cancelVpnNodeDeletion}
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={vpnNodeDeletionBusy}
+            onClick={() => void confirmVpnNodeDeletion()}
+          >
+            Да, удалить ноду
+          </button>
+        </div>
+      </dialog>
     );
   }
 
