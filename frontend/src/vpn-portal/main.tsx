@@ -3,8 +3,12 @@ import ReactDOM from "react-dom/client";
 
 import { portalApi } from "./api";
 import { captureTelegramLaunch, createPortalBootstrap } from "./bootstrap";
+import { applyPortalCompatibilityMode } from "./compatibility";
 import Portal from "./Portal";
+import { PortalErrorBoundary } from "./PortalErrorBoundary";
 import "./portal.css";
+
+applyPortalCompatibilityMode(document.documentElement, navigator.userAgent);
 
 const launch = captureTelegramLaunch();
 const bootstrap = createPortalBootstrap(portalApi);
@@ -24,7 +28,9 @@ document.querySelector("[data-telegram-sdk]")?.addEventListener(
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <div className="veltrix-portal">
-      <Portal launch={launch} bootstrap={bootstrap} />
+      <PortalErrorBoundary>
+        <Portal launch={launch} bootstrap={bootstrap} />
+      </PortalErrorBoundary>
     </div>
   </React.StrictMode>,
 );
