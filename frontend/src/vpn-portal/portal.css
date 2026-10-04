@@ -1289,3 +1289,67 @@ body {
   .veltrix-portal .platform,
   .veltrix-portal .portal-nav a { transition-duration: 0.01ms !important; }
 }
+
+/*
+ * iOS 16 WebViews can lose the entire composited page when large alpha images,
+ * filters, blending and fixed glass layers are combined. Keep the same content
+ * and controls while using a deliberately simple paint path on those devices.
+ */
+html.portal-compat-lite { scroll-behavior: auto; }
+html.portal-compat-lite .veltrix-portal .portal-shell {
+  background: var(--vx-pearl);
+}
+html.portal-compat-lite .veltrix-portal .portal-status-lens {
+  border: 1px solid var(--vx-border);
+  background: linear-gradient(145deg, #e5f4ff, #e9fbf5 52%, #f0ebff);
+  animation: none;
+  isolation: auto;
+}
+html.portal-compat-lite .veltrix-portal .portal-status-lens::before,
+html.portal-compat-lite .veltrix-portal .portal-status-lens::after {
+  display: none;
+}
+html.portal-compat-lite .veltrix-portal .vx-glass {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+html.portal-compat-lite .veltrix-portal .portal-nav {
+  border-color: var(--vx-border);
+  background: var(--vx-surface);
+}
+html.portal-compat-lite .veltrix-portal .portal-brand-link .vx-brand::before {
+  display: none;
+}
+html.portal-compat-lite .veltrix-portal .portal-brand-link .vx-mark {
+  position: static;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  clip-path: none;
+}
+html.portal-compat-lite .veltrix-portal .vx-mark__lens {
+  mix-blend-mode: normal;
+  opacity: 0.82;
+}
+html.portal-compat-lite .veltrix-portal .portal-status-lens__badge::before {
+  box-shadow: none;
+}
+html.portal-compat-lite .veltrix-portal .status--good { background: #dff8f0; }
+html.portal-compat-lite .veltrix-portal .status--quiet { background: #edf1f5; }
+html.portal-compat-lite .veltrix-portal .button--ghost { background: var(--vx-surface); }
+html.portal-compat-lite .veltrix-portal .button--quiet { border-color: rgba(165, 44, 65, 0.22); }
+html.portal-compat-lite .veltrix-portal .connection-uri,
+html.portal-compat-lite .veltrix-portal .rename-form input { background: var(--vx-pearl); }
+html.portal-compat-lite .veltrix-portal .platform--active {
+  border-color: rgba(37, 109, 255, 0.48);
+  background: #e8f0ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  html.portal-compat-lite .veltrix-portal .portal-status-lens {
+    background: #12243a;
+  }
+  html.portal-compat-lite .veltrix-portal .status--good { background: #153f39; }
+  html.portal-compat-lite .veltrix-portal .status--quiet { background: #23354a; }
+  html.portal-compat-lite .veltrix-portal .platform--active { background: #18365f; }
+}

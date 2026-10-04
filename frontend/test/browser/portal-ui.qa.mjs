@@ -106,6 +106,7 @@ async function newPortalPage(browser, options = {}) {
     viewport: options.viewport || { width: 390, height: 844 },
     colorScheme: options.colorScheme || "light",
     reducedMotion: options.reducedMotion || "no-preference",
+    ...(options.userAgent ? { userAgent: options.userAgent } : {}),
   });
   const page = await context.newPage();
   const diagnostics = [];
@@ -2109,6 +2110,77 @@ async function captureResponsiveMatrix(browser, origin) {
   assert.equal(reducedMotion.scrollBehavior, "auto");
   await assertReducedMotionStopsContinuousDecoration(page);
   await context.close();
+
+  const ios16 = await newPortalPage(browser, {
+    viewport: { width: 375, height: 667 },
+    colorScheme: "dark",
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_7_12 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148",
+  });
+  await installFixture(ios16.page);
+  await ios16.page.goto(`${origin}/cabinet/#home`);
+  await ios16.page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
+  const ios16Compatibility = await ios16.page.evaluate(() => {
+    const shell = document.querySelector(".portal-shell");
+    const lens = document.querySelector(".portal-status-lens");
+    const glass = document.querySelector(".vx-glass");
+    const rasterMark = document.querySelector(".portal-brand-link .vx-brand");
+    const vectorMark = document.querySelector(".portal-brand-link .vx-mark");
+    if (!shell || !lens || !glass || !rasterMark || !vectorMark) {
+      throw new Error("compatibility fixture is incomplete");
+    }
+    const glassStyle = getComputedStyle(glass);
+    return {
+      enabled: document.documentElement.classList.contains("portal-compat-lite"),
+      shellBackgroundImage: getComputedStyle(shell).backgroundImage,
+      lensAnimation: getComputedStyle(lens).animationName,
+      lensIsolation: getComputedStyle(lens).isolation,
+      lensBeforeDisplay: getComputedStyle(lens, "::before").display,
+      lensAfterDisplay: getComputedStyle(lens, "::after").display,
+      backdropFilter: glassStyle.backdropFilter,
+      webkitBackdropFilter: glassStyle.webkitBackdropFilter || "none",
+      rasterMarkDisplay: getComputedStyle(rasterMark, "::before").display,
+      vectorMarkPosition: getComputedStyle(vectorMark).position,
+      headingHeight: document.querySelector(".portal-status-lens h1")?.getBoundingClientRect().height || 0,
+    };
+  });
+  assert.deepEqual(ios16Compatibility, {
+    enabled: true,
+    shellBackgroundImage: "none",
+    lensAnimation: "none",
+    lensIsolation: "auto",
+    lensBeforeDisplay: "none",
+    lensAfterDisplay: "none",
+    backdropFilter: "none",
+    webkitBackdropFilter: "none",
+    rasterMarkDisplay: "none",
+    vectorMarkPosition: "static",
+    headingHeight: ios16Compatibility.headingHeight,
+  });
+  assert.ok(ios16Compatibility.headingHeight > 0, "iOS 16 compatibility heading stays visible");
+  await assertNoHorizontalOverflow(ios16.page);
+  await assertVisibleInteractiveAccessibility(ios16.page, "portal-ios16-compat", ".portal-nav");
+  await ios16.page.screenshot({
+    path: path.join(outputRoot, "portal-ios16-compat-dark.png"),
+    fullPage: true,
+  });
+  await ios16.context.close();
+
+  const renderFailure = await newPortalPage(browser, {
+    viewport: { width: 390, height: 844 },
+    colorScheme: "dark",
+  });
+  await renderFailure.page.addInitScript(() => {
+    Intl.DateTimeFormat = class BrokenDateTimeFormat {
+      constructor() {
+        throw new Error("synthetic render failure");
+      }
+    };
+  });
+  await installFixture(renderFailure.page);
+  await renderFailure.page.goto(`${origin}/cabinet/#home`);
+  await renderFailure.page.getByRole("heading", { name: "Не удалось отобразить кабинет" }).waitFor();
+  await renderFailure.page.getByRole("button", { name: "Попробовать ещё раз" }).waitFor();
+  await renderFailure.context.close();
 
   for (const scaledScenario of [
     { hash: "home", heading: "VPN‑профиль готов", name: "home" },
