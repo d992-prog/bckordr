@@ -6,7 +6,7 @@
   "direction": "1a448fec",
   "breakpoint": "853x1844",
   "artifact": null,
-  "phase": "sections",
+  "phase": "review",
   "phases": {
     "comps": {
       "status": "skipped",
@@ -246,10 +246,10 @@
       ]
     },
     "sections": {
-      "status": "open",
+      "status": "closed",
       "openedAt": "2026-10-03T20:42:14.415Z",
-      "closedAt": null,
-      "attempts": 0,
+      "closedAt": "2026-10-04T04:56:41.760Z",
+      "attempts": 1,
       "notes": [
         {
           "at": "2026-10-03T22:14:24.839Z",
@@ -258,40 +258,92 @@
         {
           "at": "2026-10-03T22:18:56.286Z",
           "text": "A uniform 96px tall-breakpoint navigation was tested with the same safe-area reserve and no positional nth-child rules; it reduced the exact supported score to 79% and added a status-label contradiction without removing either navigation veto. It was therefore rejected, and the product-quality 80px compact navigation was restored and re-recorded at 81%."
+        },
+        {
+          "at": "2026-10-04T04:56:41.722Z",
+          "text": "Sections evidence from current HEAD: portal profiles/account/login/error plus preparing, paused, expired, empty and trial-used states were freshly rendered in .impeccable/review at 320/390/853/1024 widths; the public site and VPN admin use the same blue/mint/lilac identity with matte content surfaces. Visual inspection confirmed honest profile-readiness copy, no purchase action, explicit secret reveal controls, and the approved functional-glass/navigation versus matte-data rule."
+        }
+      ],
+      "gate": {
+        "ok": true,
+        "reasons": [],
+        "summary": "no mechanical gate",
+        "at": "2026-10-04T04:56:41.760Z"
+      },
+      "forced": null
+    },
+    "motion": {
+      "status": "closed",
+      "openedAt": "2026-10-04T04:56:41.761Z",
+      "closedAt": "2026-10-04T04:57:12.793Z",
+      "attempts": 1,
+      "notes": [
+        {
+          "at": "2026-10-04T04:57:12.770Z",
+          "text": "Motion evidence from current HEAD and fresh browser QA: portal uses one 560ms saturation/brightness lens arrival and 160ms control feedback, with no continuous portal animation; public uses one 3.6s route trace as the signature loop. prefers-reduced-motion disables the lens arrival and route loop, removes button transforms, switches CSS smooth scrolling to auto, and fragment navigation explicitly selects auto instead of smooth. VPN admin keyboard focus scrolling is always instant while deliberate navigation alone may be smooth outside reduced motion."
+        }
+      ],
+      "gate": {
+        "ok": true,
+        "reasons": [],
+        "summary": "no mechanical gate",
+        "at": "2026-10-04T04:57:12.793Z"
+      },
+      "forced": null
+    },
+    "responsive": {
+      "status": "closed",
+      "openedAt": "2026-10-04T04:57:12.793Z",
+      "closedAt": "2026-10-04T05:32:24.413Z",
+      "attempts": 12,
+      "notes": [
+        {
+          "at": "2026-10-04T04:59:15.961Z",
+          "text": "Responsive evidence from current HEAD: settled reduced-motion captures are .impeccable/review/desktop.png at a real 1440px viewport and .impeccable/review/mobile.png at a real 390px viewport. Fresh supporting matrix includes portal 320/390 light+dark/853/1024, 390 text at 200% for home/profiles/account, public 390/1440/200%, and VPN admin 1280 plus 390 text at 200% for overview/customers/nodes/plans/events. Browser QA asserts no page overflow, visible keyboard focus, 44px targets, Telegram safe-area reserve, and text/control clipping checks."
+        }
+      ],
+      "gate": {
+        "ok": true,
+        "reasons": [],
+        "summary": "desktop 80% (drift)",
+        "score": 0.7966,
+        "sideBySide": "D:/паразитное seo/backorder/project/.worktrees/veltrix-backup-nginx-symlinks/.impeccable/review/diff/desktop/side-by-side.png",
+        "at": "2026-10-04T05:32:24.413Z"
+      },
+      "forced": null
+    },
+    "review": {
+      "status": "closed",
+      "openedAt": "2026-10-04T05:32:24.413Z",
+      "closedAt": "2026-10-04T06:50:01.148Z",
+      "attempts": 0,
+      "notes": [
+        {
+          "at": "2026-10-04T06:07:45.949Z",
+          "text": "Fix-round evidence from current HEAD: real Chromium captures at 1200x900, 1440x900, and 1440x900 with 200% text use a native 1120px two-column grid with no layout zoom, scale, positional transforms, or active-item resizing. Browser QA verifies compact 76px navigation, pairwise non-intersection, link/icon/label containment, no clipping or horizontal overflow, and visible unoccluded keyboard traversal. The fresh portrait-comp versus wide full-page comp-diff is 53.66% contradicted because the 853x1844 portrait topology is intentionally reflowed into a 1440x1104 desktop page; this supersedes the historical 80% report produced by the rejected 3709px zoomed layout. No force or bypass was used; the current authoritative report is .impeccable/review/diff/final/report.json and requires independent visual review as a responsive adaptation."
+        },
+        {
+          "at": "2026-10-04T06:26:20.364Z",
+          "text": "Repeat-review evidence after the wide-layout fix: authoritative portal QA passes at 1200x900, 1440x900, 1440x1200, and 1440x900 with 200% text. It verifies non-intersecting nav links, icon/label containment, viewport clipping, and visible unobscured keyboard focus. The >=1200px UI is a native max-1120 two-column flow with a 76px equal-cell nav; the portrait/tall transform treatment ends at 1199px, and the wide rules contain no zoom, scale, translate, nth-child positioning, or active-item resizing. The current desktop capture is 1440x1208. Fresh portrait-comp versus wide-full-page comp-diff is 55.20% contradicted (structure 67.47%, color 74.33%, detail 11.64%, bands 67.31%); inspected side-by-side and the primary-action, brand-name, and signal-orb crops confirm that the score is dominated by the intentional 853x1844 portrait-to-1440px responsive topology/aspect mismatch, not overlap or clipping. Authoritative report: .impeccable/review/diff/final/report.json. No force or bypass used."
+        },
+        {
+          "at": "2026-10-04T06:36:01.443Z",
+          "text": "Final repeat-review refresh: a browser assertion now rejects a one-word quick action spanning multiple line boxes. It first failed on Инструкция at 1440px with 200% text (2 lines), then passed after the wide-only action geometry was tightened and normal word breaking restored. The authoritative 200% capture shows Инструкция intact on one line, while the multiword copy action reflows on word boundaries. Full portal matrix and 149/149 unit tests pass. Fresh final comp-diff is 55.21% contradicted (structure 67.55%, color 74.34%, detail 11.22%, bands 67.86%) for the same inspected portrait-to-wide topology mismatch; report .impeccable/review/diff/final/report.json. No force or bypass used."
+        },
+        {
+          "at": "2026-10-04T06:42:11.522Z",
+          "text": "Current full browser evidence is complete: public VPN QA passes desktop/mobile/dark/200% text and payment-safety assertions; VPN admin QA passes overview/customers/nodes/plans/events on desktop and 390px at 200%, including dialog and secret/error paths. These reruns use the current production build and synthetic HTTP fixtures only. The temporary local browser launcher shim was removed and is not an artifact. Review remains open for an independent disposition."
         }
       ],
       "gate": null,
       "forced": null
-    },
-    "motion": {
-      "status": "pending",
-      "openedAt": null,
-      "closedAt": null,
-      "attempts": 0,
-      "notes": [],
-      "gate": null,
-      "forced": null
-    },
-    "responsive": {
-      "status": "pending",
-      "openedAt": null,
-      "closedAt": null,
-      "attempts": 0,
-      "notes": [],
-      "gate": null,
-      "forced": null
-    },
-    "review": {
-      "status": "pending",
-      "openedAt": null,
-      "closedAt": null,
-      "attempts": 0,
-      "notes": [],
-      "gate": null,
-      "forced": null
     }
   },
-  "finish": null,
+  "finish": {
+    "disposition": "ship",
+    "at": "2026-10-04T06:50:01.148Z",
+    "phaseAtFinish": "review"
+  },
   "plates": {
     "atmosphere": {
       "status": "ok",

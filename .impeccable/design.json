@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-04T06:02:55.0982009Z",
+  "title": "Design System: Veltrix VPN",
+  "extensions": {
+    "colorMeta": {
+      "pearl": { "role": "neutral", "displayName": "Pearl Blue", "canonical": "#eef4fa" },
+      "ink": { "role": "neutral", "displayName": "Deep Ink", "canonical": "#101c2c" },
+      "blue": { "role": "primary", "displayName": "Signal Blue", "canonical": "#256dff" },
+      "mint": { "role": "secondary", "displayName": "Optical Mint", "canonical": "#72e2c0" },
+      "lilac": { "role": "tertiary", "displayName": "Lens Lilac", "canonical": "#c6b7ff" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Optical Display", "purpose": "Brand, hero and section headings; Moderustic only when locally available." },
+      "body": { "displayName": "System Body", "purpose": "Instructions, data, forms and dense administration." }
+    },
+    "shadows": [
+      { "name": "glass-float", "value": "0 18px 48px rgba(37, 109, 255, 0.13)", "purpose": "Functional glass controls and navigation." },
+      { "name": "action-lift", "value": "0 18px 36px rgba(37, 109, 255, 0.24)", "purpose": "Primary portal action." }
+    ],
+    "motion": [
+      { "name": "lens-arrival", "value": "560ms cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "One-shot status-lens saturation and brightness settling." },
+      { "name": "control-feedback", "value": "160ms ease", "purpose": "Short hover and press feedback; disabled under reduced motion." }
+    ],
+    "breakpoints": [
+      { "name": "narrow", "value": "350px" },
+      { "name": "mobile", "value": "639px" },
+      { "name": "grid", "value": "640px" },
+      { "name": "portrait-comp", "value": "760px" },
+      { "name": "wide", "value": "1200px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "One clear next action on the portal.",
+      "html": "<button class=\"ds-primary\">Открыть профиль <span aria-hidden=\"true\">→</span></button>",
+      "css": ".ds-primary{min-height:64px;padding:12px 24px;border:0;border-radius:999px;background:#246cf8;color:#fff;font:700 20px 'Segoe UI',sans-serif;box-shadow:0 18px 36px rgba(37,109,255,.24);transition:background 160ms ease,transform 160ms ease}.ds-primary:hover{background:#1f5bc9;transform:translateY(-1px)}.ds-primary:focus-visible{outline:3px solid #0b57d0;outline-offset:3px}"
+    },
+    {
+      "name": "Status Chip",
+      "kind": "chip",
+      "description": "Readable subscription or profile state, never color-only.",
+      "html": "<span class=\"ds-status\"><span aria-hidden=\"true\"></span>Активен</span>",
+      "css": ".ds-status{display:inline-flex;align-items:center;gap:9px;padding:7px 13px;border:1px solid rgba(255,255,255,.72);border-radius:999px;background:rgba(220,251,241,.76);color:#0d6a56;font:800 14px 'Segoe UI',sans-serif}.ds-status span{width:10px;height:10px;border-radius:50%;background:currentColor;box-shadow:0 0 0 5px color-mix(in srgb,currentColor 12%,transparent)}"
+    },
+    {
+      "name": "Matte Data Card",
+      "kind": "card",
+      "refersTo": "card-matte",
+      "description": "Subscriptions, profiles, forms and dense data use matte surfaces.",
+      "html": "<article class=\"ds-card\"><h3>Доступ Veltrix</h3><p>Профили: 2 из 3</p></article>",
+      "css": ".ds-card{padding:24px;border:1px solid rgba(16,28,44,.1);border-radius:28px;background:rgba(255,255,255,.88);color:#101c2c;box-shadow:0 18px 42px rgba(31,75,134,.08)}.ds-card h3{margin:0 0 12px;font:700 24px 'Segoe UI',sans-serif}.ds-card p{margin:0;color:#62728c;font:400 16px/1.55 'Segoe UI',sans-serif}"
+    },
+    {
+      "name": "Bottom Navigation",
+      "kind": "nav",
+      "description": "Three equal destinations in a compact 68–80px safe-area-aware bar; the active state never resizes or shifts a cell.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Навигация\"><a class=\"ds-current\" href=\"#home\">Главная</a><a href=\"#profiles\">Профили</a><a href=\"#account\">Аккаунт</a></nav>",
+      "css": ".ds-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:7px;border:1px solid rgba(255,255,255,.58);border-radius:30px;background:rgba(242,248,255,.78);box-shadow:0 18px 48px rgba(37,109,255,.13)}.ds-nav a{display:grid;min-height:54px;place-items:center;border-radius:23px;color:#62728c;font:700 12px 'Segoe UI',sans-serif;text-decoration:none}.ds-nav a:hover{transform:translateY(-1px)}.ds-nav a:focus-visible{outline:3px solid #0b57d0;outline-offset:3px}.ds-nav .ds-current{background:rgba(255,255,255,.78);color:#256dff}"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "description": "Calm matte field for account and administration forms.",
+      "html": "<label class=\"ds-field\">Название профиля<input value=\"iPhone\"></label>",
+      "css": ".ds-field{display:grid;gap:8px;color:#62728c;font:600 14px 'Segoe UI',sans-serif}.ds-field input{min-height:48px;padding:10px 14px;border:1px solid rgba(16,28,44,.1);border-radius:18px;background:rgba(255,255,255,.88);color:#101c2c;font:400 16px 'Segoe UI',sans-serif}.ds-field input:focus-visible{outline:3px solid #0b57d0;outline-offset:3px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Оптический сигнал",
+    "overview": "A calm pearl-blue system that makes VPN readiness and the next action obvious while keeping protocol detail out of the user's way. Functional glass is reserved for navigation and control; dense information stays matte.",
+    "keyCharacteristics": ["Three-petal optical mark", "One clear blue action", "Honest tunnel wording", "Matte dense data"],
+    "rules": [
+      { "name": "One Signal", "body": "Use saturated blue for the primary action or selected state, not as decorative table fill.", "section": "colors" },
+      { "name": "Functional Glass", "body": "Use glass for navigation and controls; keep data surfaces matte.", "section": "elevation" },
+      { "name": "Native Wide Reflow", "body": "At 1200px and above use the 1120px two-column grid; never scale layout with zoom or transforms.", "section": "layout" }
+    ],
+    "dos": ["Lead with status and one next action.", "Preserve safe areas, visible focus and reduced motion.", "Keep wide navigation cells equal and contained at 200% text.", "Keep one-word action labels intact while multiword labels reflow at spaces.", "Update raster provenance and hashes when assets change."],
+    "donts": ["Do not claim an active or protected tunnel without measured state.", "Do not show purchase actions before payments exist.", "Do not expose secrets in UI captures or logs."]
+  }
+}

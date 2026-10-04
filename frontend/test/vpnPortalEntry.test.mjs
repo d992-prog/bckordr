@@ -51,6 +51,30 @@ test("mobile cabinet header and buttons can shrink without horizontal overflow",
   );
 });
 
+test("wide cabinet uses a native two-column layout and compact navigation", async () => {
+  const css = await readFile(cssUrl, "utf8");
+
+  assert.match(
+    css,
+    /@media \(min-width:\s*1200px\)\s*\{[\s\S]*?--portal-nav-height:\s*76px;/,
+  );
+  assert.match(css, /@media \(min-width:\s*760px\) and \(max-width:\s*1199px\) and \(min-height:\s*1200px\)/);
+  assert.match(
+    css,
+    /@media \(min-width:\s*1200px\)\s*\{[\s\S]*?\.veltrix-portal \.portal-home\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1\.75fr\)\s+minmax\(400px,\s*1fr\);/,
+  );
+  assert.match(
+    css,
+    /@media \(min-width:\s*1200px\)\s*\{[\s\S]*?\.veltrix-portal \.portal-nav\s*\{[^}]*width:\s*min\(720px,\s*calc\(100vw - 64px\)\);/,
+  );
+  const wideRules = css.slice(css.indexOf("@media (min-width: 1200px)"), css.indexOf("@media (prefers-color-scheme: dark)"));
+  assert.doesNotMatch(wideRules, /\bzoom\s*:/);
+  assert.doesNotMatch(wideRules, /scale\s*\(/);
+  assert.doesNotMatch(wideRules, /translate(?:X|Y)?\s*\(/);
+  assert.doesNotMatch(wideRules, /nth-child/);
+  assert.doesNotMatch(wideRules, /84px|font-size:\s*38px/);
+});
+
 test("portal brand styles have one CSS ownership path", async () => {
   const [css, portal] = await Promise.all([
     readFile(cssUrl, "utf8"),

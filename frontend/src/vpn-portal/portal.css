@@ -974,7 +974,7 @@ body {
   }
 }
 
-@media (min-width: 760px) and (min-height: 1200px) {
+@media (min-width: 760px) and (max-width: 1199px) and (min-height: 1200px) {
   .veltrix-portal {
     --portal-nav-height: 80px;
     --portal-nav-bottom-offset: calc(var(--portal-safe-bottom) + 143px);
@@ -1133,6 +1133,100 @@ body {
     border-radius: 50%;
     background: currentColor;
     content: "";
+  }
+}
+
+@media (min-width: 1200px) {
+  .veltrix-portal {
+    --portal-nav-height: 76px;
+    --portal-nav-bottom-offset: calc(var(--portal-safe-bottom) + 20px);
+    --portal-nav-breathing-room: 128px;
+  }
+  .veltrix-portal .portal-shell {
+    padding-inline: max(32px, var(--portal-safe-left)) max(32px, var(--portal-safe-right));
+  }
+  .veltrix-portal .portal-header,
+  .veltrix-portal .portal-content {
+    width: min(100%, 1120px);
+  }
+  .veltrix-portal .portal-home {
+    display: grid;
+    grid-template-columns: minmax(0, 1.75fr) minmax(400px, 1fr);
+    gap: 28px;
+    align-items: start;
+    padding-top: 24px;
+  }
+  .veltrix-portal .portal-status-lens {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .veltrix-portal .portal-status-lens--ready {
+    display: grid;
+    min-height: 460px;
+    grid-template-columns: minmax(240px, 40%) minmax(0, 1fr);
+    grid-template-rows: minmax(32px, 1fr) auto auto auto minmax(32px, 1fr);
+    column-gap: 20px;
+    row-gap: 12px;
+    padding: 24px 32px;
+  }
+  .veltrix-portal .portal-status-lens--ready .portal-status-lens__badge,
+  .veltrix-portal .portal-status-lens--ready h1,
+  .veltrix-portal .portal-status-lens--ready p {
+    position: static;
+    grid-column: 2;
+  }
+  .veltrix-portal .portal-status-lens--ready .portal-status-lens__badge {
+    grid-row: 2;
+    justify-self: start;
+  }
+  .veltrix-portal .portal-status-lens--ready h1 {
+    grid-row: 3;
+    white-space: normal;
+  }
+  .veltrix-portal .portal-status-lens--ready p { grid-row: 4; }
+  .veltrix-portal .portal-primary {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .veltrix-portal .portal-actions {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    margin: 0;
+  }
+  .veltrix-portal .portal-actions .button {
+    padding-inline: 54px 44px;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+  .veltrix-portal .portal-actions .button::before {
+    left: 18px;
+    width: 24px;
+    height: 24px;
+  }
+  .veltrix-portal .portal-actions .button::after { right: 18px; }
+  .veltrix-portal .portal-access {
+    grid-column: 1 / -1;
+    margin-top: 0;
+  }
+  .veltrix-portal .portal-nav {
+    inset-inline: max(32px, var(--portal-safe-left)) max(32px, var(--portal-safe-right));
+    width: min(720px, calc(100vw - 64px));
+    margin-inline: auto;
+    padding: 7px;
+    transform: none;
+  }
+  .veltrix-portal .portal-nav a {
+    min-height: 62px;
+    gap: 3px;
+    font-size: 12px;
+  }
+  .veltrix-portal .portal-nav svg {
+    width: 26px;
+    height: 26px;
+  }
+  .veltrix-portal .portal-nav a[aria-current="page"] {
+    width: auto;
+    justify-self: stretch;
   }
 }
 

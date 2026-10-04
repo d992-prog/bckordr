@@ -573,6 +573,7 @@ async function assertNavSafeAreaAndReserve(page, expectedSafeBottom = 0) {
     const navBox = nav.getBoundingClientRect();
     const lastBox = lastContent.getBoundingClientRect();
     const result = {
+      viewportWidth: innerWidth,
       navHeight: navBox.height,
       navTop: navBox.top,
       navBottomGap: innerHeight - navBox.bottom,
@@ -586,7 +587,10 @@ async function assertNavSafeAreaAndReserve(page, expectedSafeBottom = 0) {
     return result;
   });
 
-  assert.ok(geometry.navHeight >= 68 && geometry.navHeight <= 80, `navigation height is ${geometry.navHeight}px`);
+  assert.ok(
+    geometry.navHeight >= 68 && geometry.navHeight <= 80,
+    `navigation height is ${geometry.navHeight}px at ${geometry.viewportWidth}px wide`,
+  );
   assert.ok(geometry.safeBottom >= expectedSafeBottom, `resolved safe bottom is ${geometry.safeBottom}px`);
   assert.ok(
     geometry.navBottomGap >= geometry.safeBottom + 12,
@@ -599,6 +603,112 @@ async function assertNavSafeAreaAndReserve(page, expectedSafeBottom = 0) {
   assert.ok(
     geometry.lastContentBottom <= geometry.navTop - 16,
     `last content remains behind navigation: ${JSON.stringify(geometry)}`,
+  );
+}
+
+async function assertWideNavigationGeometry(page, label) {
+  const result = await page.locator(".portal-nav").evaluate((navigation) => {
+    const rect = (element) => {
+      const box = element.getBoundingClientRect();
+      return { top: box.top, right: box.right, bottom: box.bottom, left: box.left };
+    };
+    const contains = (outer, inner) => inner.top >= outer.top - 1
+      && inner.right <= outer.right + 1
+      && inner.bottom <= outer.bottom + 1
+      && inner.left >= outer.left - 1;
+    const intersects = (left, right) => Math.min(left.right, right.right) - Math.max(left.left, right.left) > 1
+      && Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 1;
+    const navBox = rect(navigation);
+    const links = [...navigation.querySelectorAll("a")].map((link) => {
+      const linkBox = rect(link);
+      const icon = link.querySelector("svg");
+      const labelElement = link.querySelector("span");
+      return {
+        name: link.textContent?.trim() || "",
+        box: linkBox,
+        containedByNavigation: contains(navBox, linkBox),
+        iconContained: icon ? contains(linkBox, rect(icon)) : false,
+        labelContained: labelElement ? contains(linkBox, rect(labelElement)) : false,
+        clipped: link.scrollWidth > link.clientWidth + 1 || link.scrollHeight > link.clientHeight + 1,
+      };
+    });
+    const intersections = [];
+    for (let leftIndex = 0; leftIndex < links.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < links.length; rightIndex += 1) {
+        if (intersects(links[leftIndex].box, links[rightIndex].box)) {
+          intersections.push(`${links[leftIndex].name} <> ${links[rightIndex].name}`);
+        }
+      }
+    }
+    return {
+      navBox,
+      navClipped: navigation.scrollWidth > navigation.clientWidth + 1
+        || navigation.scrollHeight > navigation.clientHeight + 1,
+      links,
+      intersections,
+      viewport: { width: innerWidth, height: innerHeight },
+    };
+  });
+
+  assert.equal(result.navBox.left >= -1 && result.navBox.right <= result.viewport.width + 1, true, `${label}: navigation exits viewport`);
+  assert.equal(result.navClipped, false, `${label}: navigation clips its contents`);
+  assert.deepEqual(result.intersections, [], `${label}: navigation links intersect: ${result.intersections.join(" | ")}`);
+  assert.equal(result.links.every(({ containedByNavigation }) => containedByNavigation), true, `${label}: link exits navigation: ${JSON.stringify(result.links)}`);
+  assert.equal(result.links.every(({ iconContained }) => iconContained), true, `${label}: icon exits link: ${JSON.stringify(result.links)}`);
+  assert.equal(result.links.every(({ labelContained }) => labelContained), true, `${label}: label exits link: ${JSON.stringify(result.links)}`);
+  assert.equal(result.links.every(({ clipped }) => !clipped), true, `${label}: link clips its icon or label: ${JSON.stringify(result.links)}`);
+}
+
+async function assertWideLayoutUsesNativeFlow(page, label) {
+  const result = await page.evaluate(() => {
+    const transformed = [
+      ".portal-header .vx-brand",
+      ".portal-header .button--ghost",
+      ".portal-status-lens__badge",
+      ".portal-status-lens h1",
+      ".portal-access .subscription-card .status",
+      ".portal-access .subscription-card .facts div:nth-child(2) dd",
+      '.portal-nav a[aria-current="page"]',
+    ].map((selector) => {
+      const element = document.querySelector(selector);
+      return { selector, transform: element ? getComputedStyle(element).transform : "missing" };
+    });
+    const reorderedFact = document.querySelector(".portal-access .subscription-card .facts div:nth-child(2)");
+    const content = document.querySelector(".portal-content");
+    const actionLineCounts = [...document.querySelectorAll(".portal-actions .button")].map((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      return {
+        label: element.textContent?.trim() || "",
+        lines: new Set([...range.getClientRects()].map(({ top }) => Math.round(top))).size,
+      };
+    });
+    return {
+      transformed,
+      factOrder: reorderedFact ? getComputedStyle(reorderedFact).order : "missing",
+      factGridColumn: reorderedFact ? getComputedStyle(reorderedFact).gridColumnStart : "missing",
+      contentZoom: content ? getComputedStyle(content).zoom : "missing",
+      actionLineCounts,
+    };
+  });
+
+  assert.deepEqual(
+    result.transformed.filter(({ transform }) => transform !== "none"),
+    [],
+    `${label}: wide layout uses positional transforms: ${JSON.stringify(result.transformed)}`,
+  );
+  assert.equal(result.factOrder, "0", `${label}: a data fact is positionally reordered`);
+  assert.equal(result.factGridColumn, "auto", `${label}: a data fact is forced across the grid`);
+  assert.equal(result.contentZoom, "1", `${label}: content uses layout zoom ${result.contentZoom}`);
+  assert.equal(
+    result.actionLineCounts.every(({ lines }) => lines <= 2),
+    true,
+    `${label}: a quick action wraps excessively: ${JSON.stringify(result.actionLineCounts)}`,
+  );
+  assert.equal(
+    result.actionLineCounts.every(({ label: actionLabel, lines }) => /\s/u.test(actionLabel) || lines === 1),
+    true,
+    `${label}: a one-word quick action splits mid-word: ${JSON.stringify(result.actionLineCounts)}`,
   );
 }
 
@@ -670,7 +780,7 @@ async function assertPortalVisualContract(page, viewportWidth) {
     };
   });
 
-  const expectedContentWidth = viewportWidth >= 760 ? 810.5 : 720.5;
+  const expectedContentWidth = viewportWidth >= 1200 ? 1120.5 : viewportWidth >= 760 ? 810.5 : 720.5;
   assert.ok(
     contract.contentWidth <= expectedContentWidth,
     `portal content is too wide: ${contract.contentWidth}`,
@@ -1914,6 +2024,9 @@ async function captureResponsiveMatrix(browser, origin) {
     { name: "portal-320-light", viewport: { width: 320, height: 700 }, colorScheme: "light" },
     { name: "portal-853-light", viewport: { width: 853, height: 1844 }, colorScheme: "light" },
     { name: "portal-1024-light", viewport: { width: 1024, height: 900 }, colorScheme: "light" },
+    { name: "portal-1200-light", viewport: { width: 1200, height: 900 }, colorScheme: "light" },
+    { name: "portal-1440-light", viewport: { width: 1440, height: 900 }, colorScheme: "light" },
+    { name: "portal-1440-tall-light", viewport: { width: 1440, height: 1200 }, colorScheme: "light" },
   ];
 
   for (const scenario of scenarios) {
@@ -1927,13 +2040,46 @@ async function captureResponsiveMatrix(browser, origin) {
     await assertAccessibleSubscriptionLayout(page);
     await assertPrimaryActionContrast(page);
     await assertNavSafeAreaAndReserve(page);
+    if (scenario.viewport.width >= 1200) {
+      await assertWideNavigationGeometry(page, scenario.name);
+      await assertWideLayoutUsesNativeFlow(page, scenario.name);
+    }
     await assertVisibleInteractiveAccessibility(page, scenario.name, ".portal-nav");
+    await page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
     await page.screenshot({
       path: path.join(outputRoot, `${scenario.name}.png`),
       fullPage: true,
     });
+    if (scenario.name === "portal-390-light") {
+      await page.screenshot({ path: path.join(outputRoot, "mobile.png"), fullPage: true });
+    }
+    if (scenario.name === "portal-1440-light") {
+      await page.screenshot({ path: path.join(outputRoot, "desktop.png"), fullPage: true });
+    }
     await context.close();
   }
+
+  const wideScaled = await newPortalPage(browser, {
+    viewport: { width: 1440, height: 900 },
+    colorScheme: "light",
+    reducedMotion: "reduce",
+  });
+  await installFixture(wideScaled.page);
+  await wideScaled.page.goto(`${origin}/cabinet/#home`);
+  await wideScaled.page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
+  await assertTwoHundredPercentTextReflow(
+    wideScaled.page,
+    "portal-home-1440-text-200",
+    ".portal-nav",
+  );
+  await assertWideNavigationGeometry(wideScaled.page, "portal-home-1440-text-200");
+  await assertWideLayoutUsesNativeFlow(wideScaled.page, "portal-home-1440-text-200");
+  await wideScaled.page.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+  await wideScaled.page.screenshot({
+    path: path.join(outputRoot, "portal-home-1440-text-200.png"),
+    fullPage: true,
+  });
+  await wideScaled.context.close();
 
   const { context, page } = await newPortalPage(browser, {
     viewport: { width: 390, height: 844 },
