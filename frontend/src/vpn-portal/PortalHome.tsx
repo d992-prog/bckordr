@@ -39,6 +39,7 @@ const STATUS_BADGES = {
 } as const;
 
 type CopyMessage = { kind: "success" | "error"; text: string };
+type PreparedConnection = { profileId: number; uri: string };
 
 function AccessSummary({
   busy,
@@ -110,8 +111,10 @@ export function PortalHome(props: PortalHomeProps) {
     [props.profiles, props.subscriptions, props.trial],
   );
   const [copyBusy, setCopyBusy] = useState(false);
+  const [copyPreparation, setCopyPreparation] = useState<"idle" | "preparing" | "ready" | "error">("idle");
   const [copyMessage, setCopyMessage] = useState<CopyMessage | null>(null);
   const copyEpoch = useRef(0);
+  const preparedConnection = useRef<PreparedConnection | null>(null);
   const awaitingFirstLoad = props.busy
     && props.subscriptions.length === 0
     && props.profiles.length === 0
@@ -122,33 +125,70 @@ export function PortalHome(props: PortalHomeProps) {
     && props.profiles.length === 0
     && props.trial === null;
 
-  useEffect(() => {
-    copyEpoch.current += 1;
-    setCopyBusy(false);
-    setCopyMessage(null);
-  }, [view.profileId]);
-
-  useEffect(() => () => {
-    copyEpoch.current += 1;
-  }, []);
-
-  async function copyProfile(profileId: number | null): Promise<void> {
-    if (profileId === null || copyBusy) {
-      return;
-    }
+  async function prepareProfile(profileId: number): Promise<void> {
     const generation = props.sessionGeneration.current();
     const epoch = ++copyEpoch.current;
     const isCurrent = () => (
       props.sessionGeneration.isCurrent(generation) && copyEpoch.current === epoch
     );
-    setCopyBusy(true);
+    preparedConnection.current = null;
+    setCopyPreparation("preparing");
     setCopyMessage(null);
     try {
       const uri = await loadConnectionUri(profileId);
       if (!isCurrent()) {
         return;
       }
-      await copyConnectionUri(uri);
+      preparedConnection.current = { profileId, uri };
+      setCopyPreparation("ready");
+    } catch (error) {
+      if (!isCurrent()) {
+        return;
+      }
+      if (error instanceof PortalError && error.status === 401) {
+        props.onUnauthorized();
+        return;
+      }
+      setCopyPreparation("error");
+      setCopyMessage({ kind: "error", text: "Не удалось подготовить ссылку. Попробуйте ещё раз" });
+    }
+  }
+
+  useEffect(() => {
+    copyEpoch.current += 1;
+    preparedConnection.current = null;
+    setCopyBusy(false);
+    setCopyPreparation(view.profileId === null ? "idle" : "preparing");
+    setCopyMessage(null);
+    if (view.profileId !== null) {
+      void prepareProfile(view.profileId);
+    }
+    return () => {
+      copyEpoch.current += 1;
+      preparedConnection.current = null;
+    };
+    // Loading before the tap keeps iOS clipboard access inside the user gesture.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view.profileId]);
+
+  async function copyProfile(profileId: number | null): Promise<void> {
+    if (profileId === null || copyBusy) {
+      return;
+    }
+    const prepared = preparedConnection.current;
+    if (prepared?.profileId !== profileId) {
+      void prepareProfile(profileId);
+      return;
+    }
+    const generation = props.sessionGeneration.current();
+    const epoch = copyEpoch.current;
+    const isCurrent = () => (
+      props.sessionGeneration.isCurrent(generation) && copyEpoch.current === epoch
+    );
+    setCopyBusy(true);
+    setCopyMessage(null);
+    try {
+      await copyConnectionUri(prepared.uri);
       if (isCurrent()) {
         setCopyMessage({ kind: "success", text: "Ссылка скопирована" });
       }
@@ -205,10 +245,16 @@ export function PortalHome(props: PortalHomeProps) {
             <h2 id="quick-actions-title">Быстрые действия</h2>
             <button
               className="button button--primary"
-              disabled={view.profileId === null || copyBusy}
+              disabled={view.profileId === null || copyBusy || copyPreparation === "preparing"}
               onClick={() => void copyProfile(view.profileId)}
             >
-              {copyBusy ? "Копируем…" : "Скопировать ссылку"}
+              {copyPreparation === "preparing"
+                ? "Готовим ссылку…"
+                : copyBusy
+                  ? "Копируем…"
+                  : copyPreparation === "error"
+                    ? "Повторить подготовку"
+                    : "Скопировать ссылку"}
             </button>
             <a className="button button--ghost" href="#connect">Инструкция</a>
             {copyMessage && (
