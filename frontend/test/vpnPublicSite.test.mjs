@@ -101,8 +101,8 @@ test("public site contains honest product, trial, support, privacy, and terms co
   assert.match(account, /href="\/vpn\/#terms"/);
   assert.match(portal, /bootstrapResult\.config\?\.support_text/);
   assert.match(portal, /iPhone[\s\S]*Happ/);
-  assert.match(portal, /Windows[\s\S]*Hiddify/);
-  assert.doesNotMatch(portal, /["']Android["']|["']macOS["']/);
+  assert.match(portal, /Android[\s\S]*Happ/);
+  assert.match(portal, /Windows[\s\S]*Hiddify[\s\S]*macOS[\s\S]*Hiddify[\s\S]*Linux[\s\S]*Hiddify/);
 });
 
 test("trial plan keeps trial copy when the bot link is unavailable", async () => {

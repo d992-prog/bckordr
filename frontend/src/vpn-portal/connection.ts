@@ -10,8 +10,30 @@ export async function loadConnectionUri(profileId: number): Promise<string> {
 }
 
 export async function copyConnectionUri(uri: string): Promise<void> {
-  if (!navigator.clipboard?.writeText) {
-    throw new Error("clipboard unavailable");
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(uri);
+      return;
+    } catch {
+      // Restricted WebViews can expose the API while rejecting every write.
+    }
   }
-  await navigator.clipboard.writeText(uri);
+
+  let field: HTMLTextAreaElement | undefined;
+  try {
+    field = document.createElement("textarea");
+    field.value = uri;
+    field.readOnly = true;
+    field.style.position = "fixed";
+    field.style.left = "-9999px";
+    document.body.append(field);
+    field.select();
+    if (!document.execCommand("copy")) {
+      throw new Error("copy rejected");
+    }
+  } catch {
+    throw new Error("clipboard unavailable");
+  } finally {
+    field?.remove();
+  }
 }
