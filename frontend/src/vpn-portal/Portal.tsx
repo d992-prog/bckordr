@@ -102,12 +102,40 @@ interface ProfileOperation {
   renamePending: boolean;
 }
 
-const VERIFIED_CLIENTS = [
-  { platform: "iPhone", app: "Happ" },
-  { platform: "Windows", app: "Hiddify" },
+const VPN_CLIENTS = [
+  {
+    platform: "iPhone",
+    app: "Happ",
+    downloadUrl: "https://apps.apple.com/us/app/happ-proxy-utility/id6504287215?l=ru",
+    downloadLabel: "Скачать Happ в App Store",
+  },
+  {
+    platform: "Android",
+    app: "Happ",
+    downloadUrl: "https://play.google.com/store/apps/details?id=com.happproxy",
+    downloadLabel: "Скачать Happ в Google Play",
+  },
+  {
+    platform: "Windows",
+    app: "Hiddify",
+    downloadUrl: "https://github.com/hiddify/hiddify-app/releases/#release-v4.1.1",
+    downloadLabel: "Скачать Hiddify",
+  },
+  {
+    platform: "macOS",
+    app: "Hiddify",
+    downloadUrl: "https://github.com/hiddify/hiddify-app/releases/#release-v4.1.1",
+    downloadLabel: "Скачать Hiddify",
+  },
+  {
+    platform: "Linux",
+    app: "Hiddify",
+    downloadUrl: "https://github.com/hiddify/hiddify-app/releases/#release-v4.1.1",
+    downloadLabel: "Скачать Hiddify",
+  },
 ] as const;
 
-type VerifiedPlatform = (typeof VERIFIED_CLIENTS)[number]["platform"];
+type VpnPlatform = (typeof VPN_CLIENTS)[number]["platform"];
 
 function ProfilesSection(props: ProfilesSectionProps) {
   return (
@@ -147,17 +175,17 @@ function ConnectionSection({
   platform,
   onPlatformChange,
 }: {
-  platform: VerifiedPlatform;
-  onPlatformChange: (platform: VerifiedPlatform) => void;
+  platform: VpnPlatform;
+  onPlatformChange: (platform: VpnPlatform) => void;
 }) {
-  const client = VERIFIED_CLIENTS.find((item) => item.platform === platform) ?? VERIFIED_CLIENTS[0];
+  const client = VPN_CLIENTS.find((item) => item.platform === platform) ?? VPN_CLIENTS[0];
 
   return (
     <section id="connect" className="portal-section">
       <div className="section-heading"><p className="eyebrow">Инструкция</p><h2>Как подключиться</h2></div>
       <div className="card connect-card">
         <div className="platforms" role="group" aria-label="Выберите платформу">
-          {VERIFIED_CLIENTS.map((item) => (
+          {VPN_CLIENTS.map((item) => (
             <button
               type="button"
               key={item.platform}
@@ -169,7 +197,15 @@ function ConnectionSection({
         </div>
         <h3>{platform}</h3>
         <ol className="steps">
-          <li>Установите приложение {client.app}.</li>
+          <li>
+            Установите приложение {client.app}.
+            <a
+              className="button button--ghost client-download"
+              href={client.downloadUrl}
+              target="_blank"
+              rel="noreferrer"
+            >{client.downloadLabel}</a>
+          </li>
           <li>В разделе <a href="#profiles">«Профили»</a> откройте и скопируйте ссылку.</li>
           <li>В {client.app} выберите импорт по ссылке и вставьте её.</li>
           <li>Выберите импортированный профиль и включите подключение.</li>
@@ -195,7 +231,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const [trialPollCount, setTrialPollCount] = useState(0);
   const [dataBusy, setDataBusy] = useState(false);
   const [dataError, setDataError] = useState("");
-  const [platform, setPlatform] = useState<VerifiedPlatform>("iPhone");
+  const [platform, setPlatform] = useState<VpnPlatform>("iPhone");
   const [activeSection, setActiveSection] = useState<PortalSection>(() => portalSectionFromHash(window.location.hash));
   const [activeAnchor, setActiveAnchor] = useState(() => window.location.hash.replace(/^#\/?/, "").split("?", 1)[0]);
   const [profileOperations, setProfileOperations] = useState<Record<number, ProfileOperation>>({});

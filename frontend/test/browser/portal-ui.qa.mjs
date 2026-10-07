@@ -133,7 +133,14 @@ async function newPortalPage(browser, options = {}) {
       sessionStorage.setItem("portal-qa-seeded", "yes");
     }
     if (removeClipboard) {
+      window.__portalLegacyClipboardWrites = [];
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+      document.execCommand = (command) => {
+        if (command !== "copy") return false;
+        const fields = document.querySelectorAll("textarea");
+        window.__portalLegacyClipboardWrites.push(fields[fields.length - 1]?.value || "");
+        return true;
+      };
     }
     if (captureClipboard) {
       window.__portalClipboardWrites = [];
@@ -901,9 +908,11 @@ async function verifyFullPortal(browser, origin) {
   await assertNoHorizontalOverflow(page);
 
   await page.getByRole("button", { name: "Скопировать ссылку" }).click();
-  const homeCopyError = page.getByRole("alert").filter({ hasText: "Не удалось скопировать автоматически." });
-  await homeCopyError.waitFor();
-  assert.equal(await homeCopyError.count(), 1, "home copy failure must have one assertive announcement");
+  await page.getByRole("status").filter({ hasText: "Ссылка скопирована" }).waitFor();
+  assert.deepEqual(
+    await page.evaluate(() => window.__portalLegacyClipboardWrites),
+    ["vless://full-secret-1@example.test:443?security=tls&very=long#iPhone"],
+  );
   await assertSecretAbsent(
     page,
     diagnostics,
@@ -915,12 +924,31 @@ async function verifyFullPortal(browser, origin) {
   const clientPlatforms = page.getByRole("group", { name: "Выберите платформу" });
   assert.deepEqual(
     await clientPlatforms.getByRole("button").allTextContents(),
-    ["iPhone", "Windows"],
+    ["iPhone", "Android", "Windows", "macOS", "Linux"],
   );
-  await page.getByText("Установите приложение Happ.", { exact: true }).waitFor();
+  await page.getByRole("link", { name: "Скачать Happ в App Store" }).waitFor();
+  assert.equal(
+    await page.getByRole("link", { name: "Скачать Happ в App Store" }).getAttribute("href"),
+    "https://apps.apple.com/us/app/happ-proxy-utility/id6504287215?l=ru",
+  );
+  await clientPlatforms.getByRole("button", { name: "Android", exact: true }).click();
+  assert.equal(
+    await page.getByRole("link", { name: "Скачать Happ в Google Play" }).getAttribute("href"),
+    "https://play.google.com/store/apps/details?id=com.happproxy",
+  );
   await clientPlatforms.getByRole("button", { name: "Windows", exact: true }).click();
-  await page.getByText("Установите приложение Hiddify.", { exact: true }).waitFor();
-  assert.equal(await page.getByText("Установите приложение Happ.", { exact: true }).count(), 0);
+  const hiddifyDownload = page.getByRole("link", { name: "Скачать Hiddify" });
+  assert.equal(
+    await hiddifyDownload.getAttribute("href"),
+    "https://github.com/hiddify/hiddify-app/releases/#release-v4.1.1",
+  );
+  for (const platform of ["macOS", "Linux"]) {
+    await clientPlatforms.getByRole("button", { name: platform, exact: true }).click();
+    assert.equal(
+      await page.getByRole("link", { name: "Скачать Hiddify" }).getAttribute("href"),
+      "https://github.com/hiddify/hiddify-app/releases/#release-v4.1.1",
+    );
+  }
   assert.equal(await page.locator("main .portal-section").count(), 2);
   assert.equal(await page.locator('.portal-nav a[aria-current="page"][href="#profiles"]').count(), 1);
   await page.locator('.portal-nav a[href="#account"]').click();
@@ -950,9 +978,14 @@ async function verifyFullPortal(browser, origin) {
   await firstProfile.getByRole("button", { name: "Скрыть QR-код" }).click();
   assert.equal(await firstProfile.locator(".qr-code").count(), 0);
   await firstProfile.getByRole("button", { name: "Скопировать" }).click();
-  const profileCopyError = firstProfile.getByRole("alert").filter({ hasText: "Не удалось скопировать автоматически." });
-  await profileCopyError.waitFor();
-  assert.equal(await profileCopyError.count(), 1, "profile copy failure must have one assertive announcement");
+  await firstProfile.getByRole("status").filter({ hasText: "Ссылка скопирована" }).waitFor();
+  assert.deepEqual(
+    await page.evaluate(() => window.__portalLegacyClipboardWrites),
+    [
+      "vless://full-secret-1@example.test:443?security=tls&very=long#iPhone",
+      "vless://full-secret-2@example.test:443?security=tls&very=long#iPhone",
+    ],
+  );
 
   await firstProfile.getByRole("button", { name: "Переименовать" }).click();
   await firstProfile.getByLabel("Название профиля").fill("Личный iPhone");

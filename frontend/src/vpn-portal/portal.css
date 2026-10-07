@@ -639,6 +639,11 @@ body {
   color: var(--vx-blue);
   font-weight: 700;
 }
+.veltrix-portal .steps .client-download {
+  display: flex;
+  width: fit-content;
+  margin-top: 10px;
+}
 .veltrix-portal .support-text {
   white-space: pre-wrap;
   line-height: 1.65;
@@ -861,7 +866,7 @@ body {
   .veltrix-portal .profile-grid,
   .veltrix-portal .portal-section .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .veltrix-portal .portal-access .card-grid { grid-template-columns: minmax(0, 1fr); }
-  .veltrix-portal .platforms { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .veltrix-portal .platforms { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 
 @media (min-width: 760px) {
