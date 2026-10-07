@@ -10,6 +10,25 @@ export async function loadConnectionUri(profileId: number): Promise<string> {
 }
 
 export async function copyConnectionUri(uri: string): Promise<void> {
+  let field: HTMLTextAreaElement | undefined;
+  try {
+    field = document.createElement("textarea");
+    field.value = uri;
+    field.readOnly = true;
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.append(field);
+    field.focus();
+    field.setSelectionRange(0, field.value.length);
+    if (document.execCommand("copy")) {
+      return;
+    }
+  } catch {
+    // Some WebViews omit the legacy command but still expose Clipboard API.
+  } finally {
+    field?.remove();
+  }
+
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(uri);
@@ -19,21 +38,5 @@ export async function copyConnectionUri(uri: string): Promise<void> {
     }
   }
 
-  let field: HTMLTextAreaElement | undefined;
-  try {
-    field = document.createElement("textarea");
-    field.value = uri;
-    field.readOnly = true;
-    field.style.position = "fixed";
-    field.style.left = "-9999px";
-    document.body.append(field);
-    field.select();
-    if (!document.execCommand("copy")) {
-      throw new Error("copy rejected");
-    }
-  } catch {
-    throw new Error("clipboard unavailable");
-  } finally {
-    field?.remove();
-  }
+  throw new Error("clipboard unavailable");
 }

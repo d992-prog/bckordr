@@ -123,7 +123,7 @@ async function newPortalPage(browser, options = {}) {
     contentType: "text/javascript",
     body: `window.Telegram={WebApp:{initData:${sdkInitData},platform:${JSON.stringify(platform)},ready(){},expand(){}}};${safeInsets ? `for(const [name,value] of Object.entries(${JSON.stringify(safeInsets)})){document.documentElement.style.setProperty(name,value+"px");}` : ""}`,
   }));
-  await page.addInitScript(({ seedCache, cacheData, removeClipboard, captureClipboard, delayClipboard }) => {
+  await page.addInitScript(({ seedCache, cacheData, removeClipboard, captureClipboard, delayClipboard, strictGestureCopy }) => {
     if (seedCache && sessionStorage.getItem("portal-qa-seeded") !== "yes") {
       sessionStorage.setItem("__telegram__initParams", JSON.stringify({
         tgWebAppData: cacheData,
@@ -137,13 +137,14 @@ async function newPortalPage(browser, options = {}) {
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
       document.execCommand = (command) => {
         if (command !== "copy") return false;
-        const fields = document.querySelectorAll("textarea");
+        const fields = document.querySelectorAll("input, textarea");
         window.__portalLegacyClipboardWrites.push(fields[fields.length - 1]?.value || "");
         return true;
       };
     }
     if (captureClipboard) {
       window.__portalClipboardWrites = [];
+      document.execCommand = () => false;
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
         value: {
@@ -158,12 +159,28 @@ async function newPortalPage(browser, options = {}) {
         },
       });
     }
+    if (strictGestureCopy) {
+      window.__portalLegacyClipboardWrites = [];
+      window.__portalCopyGestureActive = false;
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+      document.addEventListener("click", () => {
+        window.__portalCopyGestureActive = true;
+      }, true);
+      document.addEventListener("click", () => { window.__portalCopyGestureActive = false; });
+      document.execCommand = (command) => {
+        if (command !== "copy" || !window.__portalCopyGestureActive) return false;
+        const fields = document.querySelectorAll("input, textarea");
+        window.__portalLegacyClipboardWrites.push(fields[fields.length - 1]?.value || "");
+        return true;
+      };
+    }
   }, {
     seedCache: options.seedCache ?? true,
     cacheData: initData || "cached-secret",
     removeClipboard: options.removeClipboard ?? false,
     captureClipboard: options.captureClipboard ?? false,
     delayClipboard: options.delayClipboard ?? false,
+    strictGestureCopy: options.strictGestureCopy ?? false,
   });
   return { context, page, diagnostics };
 }
@@ -1343,6 +1360,31 @@ async function verifyMiniAppStates(browser, origin) {
   }
 }
 
+async function verifyIOSGestureBoundCopy(browser, origin) {
+  const { context, page, diagnostics } = await newPortalPage(browser, {
+    platform: "ios",
+    strictGestureCopy: true,
+  });
+  await installApi(page, async (route, pathname) => {
+    if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+    if (pathname.endsWith("/me")) return responseJson(route, me);
+    if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
+    if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+    if (pathname.endsWith("/connection")) return responseJson(route, { uri: "vless://ios-gesture-secret" });
+    return responseJson(route, {}, 404);
+  });
+  await page.goto(`${origin}/cabinet/`);
+  await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
+  await page.getByRole("button", { name: "Скопировать ссылку", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "Ссылка скопирована" }).waitFor();
+  assert.deepEqual(
+    await page.evaluate(() => window.__portalLegacyClipboardWrites),
+    ["vless://ios-gesture-secret"],
+  );
+  await assertSecretAbsent(page, diagnostics, "vless://ios-gesture-secret");
+  await context.close();
+}
+
 async function verifySessionInvalidation(browser, origin) {
   {
     const { context, page, diagnostics } = await newPortalPage(browser, { captureClipboard: true });
@@ -1385,8 +1427,7 @@ async function verifySessionInvalidation(browser, origin) {
     });
     await page.goto(`${origin}/cabinet/`);
     await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
-    await page.getByRole("button", { name: "Скопировать ссылку" }).click();
-    await page.getByRole("button", { name: "Копируем…" }).waitFor();
+    await page.getByRole("button", { name: "Готовим ссылку…" }).waitFor();
     await page.locator('.portal-nav a[href="#account"]').click();
     await page.getByRole("button", { name: "Выйти", exact: true }).click();
     await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
@@ -1410,7 +1451,6 @@ async function verifySessionInvalidation(browser, origin) {
     });
     await page.goto(`${origin}/cabinet/`);
     await page.getByRole("heading", { name: "VPN‑профиль готов" }).waitFor();
-    await page.getByRole("button", { name: "Скопировать ссылку" }).click();
     await page.getByRole("heading", { name: "Сессия завершена" }).waitFor();
     assert.deepEqual(await page.evaluate(() => window.__portalClipboardWrites), []);
     await assertSecretAbsent(page, diagnostics, "vless://");
@@ -1429,8 +1469,7 @@ async function verifySessionInvalidation(browser, origin) {
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/`);
-    await page.getByRole("button", { name: "Скопировать ссылку" }).click();
-    await page.getByRole("button", { name: "Копируем…" }).waitFor();
+    await page.getByRole("button", { name: "Готовим ссылку…" }).waitFor();
     await page.locator('.portal-nav a[href="#account"]').click();
     await page.getByRole("heading", { name: "Аккаунт" }).waitFor();
     assert.ok(pendingConnection);
@@ -1473,12 +1512,18 @@ async function verifySessionInvalidation(browser, origin) {
 
   {
     const { context, page } = await newPortalPage(browser);
+    let connectionCalls = 0;
     await installApi(page, async (route, pathname) => {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
       if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
-      if (pathname.endsWith("/connection")) return responseJson(route, {}, 401);
+      if (pathname.endsWith("/connection")) {
+        connectionCalls += 1;
+        return connectionCalls === 1
+          ? responseJson(route, { uri: "vless://home-prefetch" })
+          : responseJson(route, {}, 401);
+      }
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/`);
@@ -2411,6 +2456,7 @@ try {
   await verifyLegacyPlansRoute(browser, server.origin);
   await verifyPublicTrialFlow(browser, server.origin);
   await verifyMiniAppStates(browser, server.origin);
+  await verifyIOSGestureBoundCopy(browser, server.origin);
   await verifySessionInvalidation(browser, server.origin);
   await verifyProfileRequestRaces(browser, server.origin);
   await verifyParallelLoadUnauthorized(browser, server.origin);
