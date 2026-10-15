@@ -3522,9 +3522,8 @@ async def preflight_vpn_node_onboarding(
     except VpnNodeTrustError as error:
         _raise_vpn_node_trust_error(error)
     view = await get_vpn_node_onboarding_view(db, worker.id)
-    state = view.state
-    if worker.ssh_host_key_fingerprint != probe.fingerprint:
-        state = "needs_trust"
+    needs_trust = worker.ssh_host_key_fingerprint != probe.fingerprint
+    state = "needs_trust" if needs_trust else view.state
     return _vpn_node_onboarding_response(
         VpnNodeOnboardingView(
             worker_id=view.worker_id,
@@ -3532,7 +3531,7 @@ async def preflight_vpn_node_onboarding(
             fingerprint=probe.fingerprint,
             job_id=view.job_id,
             endpoint_id=view.endpoint_id,
-            error_code=view.error_code,
+            error_code=None if needs_trust else view.error_code,
         )
     )
 
@@ -3544,9 +3543,11 @@ async def preflight_vpn_node_onboarding(
 async def trust_vpn_node_onboarding(
     worker_id: int,
     payload: VpnNodeTrustRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> VpnNodeOnboardingResponse:
+    _require_same_origin(request)
     worker = _require_vpn_onboarding_worker(await lock_vpn_worker(db, worker_id))
     active_job = await db.scalar(
         select(WorkerMaintenanceJob.id).where(
@@ -3593,9 +3594,11 @@ async def trust_vpn_node_onboarding(
 async def start_vpn_node_onboarding(
     worker_id: int,
     background_tasks: BackgroundTasks,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> VpnNodeOnboardingResponse:
+    _require_same_origin(request)
     worker = _require_vpn_onboarding_worker(await lock_vpn_worker(db, worker_id))
     if not worker.ssh_host_key or not worker.ssh_host_key_fingerprint:
         raise HTTPException(
@@ -3626,7 +3629,8 @@ async def start_vpn_node_onboarding(
             status_code=status.HTTP_409_CONFLICT,
             detail="vpn_onboarding_worker_busy",
         )
-    if not onboarding_jobs:
+    job = onboarding_jobs[0] if onboarding_jobs else None
+    if job is None:
         view = await get_vpn_node_onboarding_view(db, worker.id)
         if view.state in {"awaiting_test", "ready"}:
             return _vpn_node_onboarding_response(view)
@@ -3645,6 +3649,9 @@ async def start_vpn_node_onboarding(
             details=f"worker_id={worker.id} job_id={job.id}",
         )
         await db.commit()
+    else:
+        await db.commit()
+    if job.status == "queued":
         background_tasks.add_task(run_worker_maintenance_job, job.id)
     return _vpn_node_onboarding_response(
         await get_vpn_node_onboarding_view(db, worker.id)
@@ -3674,9 +3681,11 @@ async def get_vpn_node_onboarding_status(
 async def get_vpn_node_onboarding_test_profile(
     worker_id: int,
     response: Response,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> VpnNodeTestProfileResponse:
+    _require_same_origin(request)
     settings = get_settings()
     try:
         config_uri = await create_vpn_node_test_profile(
@@ -3706,9 +3715,11 @@ async def get_vpn_node_onboarding_test_profile(
 async def confirm_vpn_node_onboarding(
     worker_id: int,
     payload: VpnNodeConfirmRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> VpnNodeOnboardingResponse:
+    _require_same_origin(request)
     del payload
     settings = get_settings()
     try:

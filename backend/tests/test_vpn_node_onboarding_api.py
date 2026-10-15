@@ -32,6 +32,7 @@ from app.services.vpn_node_trust import VpnNodeTrustError, VpnNodeTrustProbe
 
 FINGERPRINT = "SHA256:" + "A" * 43
 HOST_KEY = "ssh-ed25519 " + "A" * 44
+SAME_ORIGIN_HEADERS = {"Origin": "http://testserver"}
 
 
 def _worker(**changes) -> WorkerNode:
@@ -79,6 +80,7 @@ async def api_env():
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
         base_url="http://testserver",
+        headers=SAME_ORIGIN_HEADERS,
     ) as client:
         yield client, session_factory, app
     await engine.dispose()
@@ -123,12 +125,89 @@ def test_onboarding_schemas_are_narrow_and_reject_invalid_confirmation():
     }
     for payload in (
         {"fingerprint": "SHA256:short"},
+        {"fingerprint": "SHA256:" + "A" * 42 + "B"},
         {"fingerprint": FINGERPRINT, "ssh_password": "must-not-be-accepted"},
     ):
         with pytest.raises(ValidationError):
             VpnNodeTrustRequest(**payload)
-    with pytest.raises(ValidationError):
-        VpnNodeConfirmRequest(confirmed=False)
+    for confirmed in (1, "true", False, None):
+        with pytest.raises(ValidationError):
+            VpnNodeConfirmRequest(confirmed=confirmed)
+    assert VpnNodeConfirmRequest(confirmed=True).confirmed is True
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    (
+        ("trust", {"fingerprint": FINGERPRINT}),
+        ("start", None),
+        ("test-profile", None),
+        ("confirm", {"confirmed": True}),
+    ),
+)
+@pytest.mark.parametrize(
+    "headers",
+    (
+        {},
+        {"Origin": "https://foreign.example"},
+        {"Origin": "http://testserver.evil"},
+    ),
+)
+@pytest.mark.asyncio
+async def test_mutations_require_exact_origin_before_any_side_effect(
+    api_env, monkeypatch, path, body, headers
+):
+    client, session_factory, _app = api_env
+    worker_id = await _add_worker(
+        session_factory,
+        ssh_host_key=HOST_KEY,
+        ssh_host_key_fingerprint=FINGERPRINT,
+    )
+    calls = []
+
+    async def fake_trust(*_args, **_kwargs):
+        calls.append("trust")
+        return VpnNodeTrustProbe(
+            known_hosts_line=HOST_KEY,
+            fingerprint=FINGERPRINT,
+            architecture="x86_64",
+            xui_installed=True,
+            occupied_ports=(),
+        )
+
+    async def fake_runner(*_args, **_kwargs):
+        calls.append("start")
+
+    async def fake_profile(*_args, **_kwargs):
+        calls.append("test-profile")
+        return "vless://temporary"
+
+    async def fake_confirm(*_args, **_kwargs):
+        calls.append("confirm")
+        return SimpleNamespace(id=4)
+
+    monkeypatch.setattr(control, "trust_vpn_node", fake_trust)
+    monkeypatch.setattr(control, "run_worker_maintenance_job", fake_runner)
+    monkeypatch.setattr(control, "create_vpn_node_test_profile", fake_profile)
+    monkeypatch.setattr(control, "confirm_vpn_node_test_profile", fake_confirm)
+    monkeypatch.setattr(control, "get_settings", _settings)
+    saved_origin = client.headers.pop("origin")
+    try:
+        response = await client.post(
+            f"/control/workers/{worker_id}/vpn-onboarding/{path}",
+            json=body,
+            headers=headers,
+        )
+    finally:
+        client.headers["Origin"] = saved_origin
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Same-origin request required"}
+    assert response.headers["cache-control"] == "no-store"
+    assert calls == []
+    async with session_factory() as session:
+        assert await session.scalar(select(WorkerMaintenanceJob.id)) is None
+        assert await session.scalar(select(AdminAuditLog.id)) is None
 
 
 @pytest.mark.asyncio
@@ -193,6 +272,40 @@ async def test_preflight_is_read_only_and_returns_only_public_identity(api_env, 
         assert worker.ssh_host_key is None
         assert worker.ssh_host_key_fingerprint is None
         assert await session.scalar(select(AdminAuditLog.id)) is None
+
+
+@pytest.mark.asyncio
+async def test_preflight_needs_trust_clears_stale_failure(api_env, monkeypatch):
+    client, session_factory, _app = api_env
+    worker_id = await _add_worker(session_factory)
+    async with session_factory() as session:
+        job = WorkerMaintenanceJob(
+            worker_id=worker_id,
+            action="vpn_onboard",
+            status="failed",
+            error_message="vpn_onboarding_port_conflict",
+        )
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+
+    async def fake_probe(_worker):
+        return VpnNodeTrustProbe(
+            known_hosts_line=HOST_KEY,
+            fingerprint=FINGERPRINT,
+            architecture="x86_64",
+            xui_installed=False,
+            occupied_ports=(),
+        )
+
+    monkeypatch.setattr(control, "probe_vpn_node_trust", fake_probe)
+    response = await client.post(
+        f"/control/workers/{worker_id}/vpn-onboarding/preflight"
+    )
+    assert response.status_code == 200
+    assert response.json()["state"] == "needs_trust"
+    assert response.json()["job_id"] == job_id
+    assert response.json()["error_code"] is None
 
 
 @pytest.mark.parametrize(
@@ -305,6 +418,24 @@ async def test_invalid_fingerprint_is_422_and_transport_errors_are_safe_503(
 
 
 @pytest.mark.asyncio
+async def test_noncanonical_fingerprint_is_422_before_trust(api_env, monkeypatch):
+    client, session_factory, _app = api_env
+    worker_id = await _add_worker(session_factory)
+    calls = []
+
+    async def forbidden_trust(*_args, **_kwargs):
+        calls.append(True)
+
+    monkeypatch.setattr(control, "trust_vpn_node", forbidden_trust)
+    response = await client.post(
+        f"/control/workers/{worker_id}/vpn-onboarding/trust",
+        json={"fingerprint": "SHA256:" + "A" * 42 + "B"},
+    )
+    assert response.status_code == 422
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_start_is_idempotent_and_dispatches_one_background_job(api_env, monkeypatch):
     client, session_factory, _app = api_env
     worker_id = await _add_worker(
@@ -324,7 +455,7 @@ async def test_start_is_idempotent_and_dispatches_one_background_job(api_env, mo
     assert first.status_code == second.status_code == 202
     assert first.json() == second.json()
     assert first.json()["state"] == "queued"
-    assert dispatched == [first.json()["job_id"]]
+    assert dispatched == [first.json()["job_id"], first.json()["job_id"]]
     async with session_factory() as session:
         jobs = list((await session.scalars(select(WorkerMaintenanceJob))).all())
         audits = list((await session.scalars(select(AdminAuditLog))).all())
@@ -332,6 +463,72 @@ async def test_start_is_idempotent_and_dispatches_one_background_job(api_env, mo
         assert [(audit.actor_user_id, audit.action) for audit in audits] == [
             (73, "vpn_node_onboarding_start")
         ]
+
+
+@pytest.mark.asyncio
+async def test_start_recovers_a_preexisting_queued_job_without_new_row_or_audit(
+    api_env, monkeypatch
+):
+    client, session_factory, _app = api_env
+    worker_id = await _add_worker(
+        session_factory,
+        ssh_host_key=HOST_KEY,
+        ssh_host_key_fingerprint=FINGERPRINT,
+    )
+    async with session_factory() as session:
+        job = WorkerMaintenanceJob(
+            worker_id=worker_id,
+            action="vpn_onboard",
+            status="queued",
+        )
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+    dispatched = []
+
+    async def fake_runner(value):
+        dispatched.append(value)
+
+    monkeypatch.setattr(control, "run_worker_maintenance_job", fake_runner)
+    first = await client.post(f"/control/workers/{worker_id}/vpn-onboarding/start")
+    second = await client.post(f"/control/workers/{worker_id}/vpn-onboarding/start")
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["job_id"] == second.json()["job_id"] == job_id
+    assert dispatched == [job_id, job_id]
+    async with session_factory() as session:
+        assert len(list((await session.scalars(select(WorkerMaintenanceJob))).all())) == 1
+        assert await session.scalar(select(AdminAuditLog.id)) is None
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_dispatch_a_running_job(api_env, monkeypatch):
+    client, session_factory, _app = api_env
+    worker_id = await _add_worker(
+        session_factory,
+        ssh_host_key=HOST_KEY,
+        ssh_host_key_fingerprint=FINGERPRINT,
+    )
+    async with session_factory() as session:
+        job = WorkerMaintenanceJob(
+            worker_id=worker_id,
+            action="vpn_onboard",
+            status="running",
+        )
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+    dispatched = []
+
+    async def fake_runner(value):
+        dispatched.append(value)
+
+    monkeypatch.setattr(control, "run_worker_maintenance_job", fake_runner)
+    response = await client.post(f"/control/workers/{worker_id}/vpn-onboarding/start")
+    assert response.status_code == 202
+    assert response.json()["job_id"] == job_id
+    assert response.json()["state"] == "running"
+    assert dispatched == []
 
 
 @pytest.mark.asyncio
@@ -479,6 +676,31 @@ async def test_test_profile_is_no_store_and_confirm_uses_authenticated_admin(
             "vpn_node_onboarding_test_profile",
             "vpn_node_onboarding_confirm",
         ]
+
+
+@pytest.mark.parametrize("confirmed", (1, "true", False, None))
+@pytest.mark.asyncio
+async def test_confirm_requires_literal_json_true_before_service(
+    api_env, monkeypatch, confirmed
+):
+    client, session_factory, _app = api_env
+    worker_id = await _add_worker(
+        session_factory,
+        ssh_host_key=HOST_KEY,
+        ssh_host_key_fingerprint=FINGERPRINT,
+    )
+    calls = []
+
+    async def forbidden_confirm(*_args, **_kwargs):
+        calls.append(True)
+
+    monkeypatch.setattr(control, "confirm_vpn_node_test_profile", forbidden_confirm)
+    response = await client.post(
+        f"/control/workers/{worker_id}/vpn-onboarding/confirm",
+        json={"confirmed": confirmed},
+    )
+    assert response.status_code == 422
+    assert calls == []
 
 
 @pytest.mark.asyncio
