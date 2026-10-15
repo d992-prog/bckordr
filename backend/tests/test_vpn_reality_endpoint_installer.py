@@ -961,7 +961,13 @@ def test_default_node_execution_requires_root_and_constructs_token_only_panel(mo
             super().__init__([_exact_row(module)])
             seen.update(panel_url=panel_url, api_token=api_token)
 
-    monkeypatch.setattr(module, "_read_private_file", lambda path, *, limit: b"token-only" if path == module.NODE_TOKEN_PATH else b"{}")
+    monkeypatch.setattr(
+        module,
+        "_read_private_file",
+        lambda path, *, limit: b"token-only\n"
+        if path == module.NODE_TOKEN_PATH
+        else b"{}",
+    )
     monkeypatch.setattr(module, "_node_config", lambda _raw: ("http://panel.example/base/", Path("C:/synthetic/panel.db")))
     monkeypatch.setattr(module, "_validate_private_regular_file", lambda _path: None)
     monkeypatch.setattr(module, "EndpointAdminPanelSession", Panel)
@@ -971,3 +977,36 @@ def test_default_node_execution_requires_root_and_constructs_token_only_panel(mo
 
     assert receipt.state == "observed"
     assert seen == {"panel_url": "http://panel.example/base/", "api_token": "token-only"}
+
+
+def test_default_node_execution_accepts_only_maximum_sized_token_line(monkeypatch) -> None:
+    module = _module()
+    request = module.parse_install_request(_request(action="inspect"))
+    token = b"a" * module.MAX_TOKEN_BYTES
+    seen = {}
+
+    class Panel(FakePanel):
+        def __init__(self, panel_url, *, api_token):
+            super().__init__([_exact_row(module)])
+            seen.update(panel_url=panel_url, api_token=api_token)
+
+    def read_private_file(path, *, limit):
+        value = token + b"\n" if path == module.NODE_TOKEN_PATH else b"{}"
+        if len(value) > limit:
+            raise module.EndpointInstallError("vpn_endpoint_install_environment_invalid")
+        return value
+
+    monkeypatch.setattr(module, "_read_private_file", read_private_file)
+    monkeypatch.setattr(module, "_node_config", lambda _raw: ("http://panel.example/base/", Path("C:/synthetic/panel.db")))
+    monkeypatch.setattr(module, "_validate_private_regular_file", lambda _path: None)
+    monkeypatch.setattr(module, "EndpointAdminPanelSession", Panel)
+    monkeypatch.setattr(module, "_local_inbound_ids", lambda _path: (27,))
+
+    receipt = module._execute_node_request(request, effective_uid=lambda: 0)
+
+    assert receipt.state == "observed"
+    assert seen["api_token"] == token.decode()
+
+    token += b"a"
+    with pytest.raises(module.EndpointInstallError, match="^vpn_endpoint_install_environment_invalid$"):
+        module._execute_node_request(request, effective_uid=lambda: 0)
