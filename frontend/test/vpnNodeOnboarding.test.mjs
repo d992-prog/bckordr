@@ -4,12 +4,15 @@ import { readFile } from "node:fs/promises";
 
 import { api } from "../src/api.ts";
 import {
+  createVpnNodeOnboardingActionGuard,
   createVpnNodeOnboardingRequestGate,
   copyVpnNodeTestProfile,
   isVpnNodeFingerprintConfirmed,
   onboardingErrorMessage,
   onboardingPresentation,
   reconcileVpnNodeTestProfileUri,
+  shouldContinueVpnNodeOnboardingPoll,
+  shouldRenderVpnNodeOnboardingSection,
   vpnNodeOnboardingSetupAction,
 } from "../src/vpnNodeOnboarding.ts";
 
@@ -54,7 +57,7 @@ test("VPN node onboarding maps every state to the exact operator copy", () => {
   ]);
 });
 
-test("onboarding eligibility mirrors the backend worker gate", () => {
+test("onboarding prerequisites encode one safe patch or non-mutating guidance", () => {
   const worker = {
     status: "ready",
     is_enabled: true,
@@ -64,11 +67,58 @@ test("onboarding eligibility mirrors the backend worker gate", () => {
   };
 
   assert.equal(vpnNodeOnboardingSetupAction(worker), null);
-  assert.equal(vpnNodeOnboardingSetupAction({ ...worker, status: "offline" }), "enable_vpn");
-  assert.equal(vpnNodeOnboardingSetupAction({ ...worker, is_enabled: false }), "enable_vpn");
-  assert.equal(vpnNodeOnboardingSetupAction({ ...worker, vpn_enabled: false }), "enable_vpn");
-  assert.equal(vpnNodeOnboardingSetupAction({ ...worker, vpn_role: "none" }), "enable_vpn");
-  assert.equal(vpnNodeOnboardingSetupAction({ ...worker, ssh_access_configured: false }), "configure_ssh");
+  assert.deepEqual(vpnNodeOnboardingSetupAction({ ...worker, status: "offline" }), {
+    kind: "wait_for_worker",
+  });
+  assert.deepEqual(vpnNodeOnboardingSetupAction({ ...worker, is_enabled: false }), {
+    kind: "open_worker",
+  });
+  assert.deepEqual(vpnNodeOnboardingSetupAction({ ...worker, vpn_enabled: false }), {
+    kind: "patch_worker",
+    patch: { vpn_enabled: true },
+  });
+  assert.deepEqual(vpnNodeOnboardingSetupAction({ ...worker, vpn_role: "none" }), {
+    kind: "patch_worker",
+    patch: { vpn_role: "vpn_node" },
+  });
+  assert.deepEqual(vpnNodeOnboardingSetupAction({ ...worker, ssh_access_configured: false }), {
+    kind: "configure_ssh",
+  });
+  assert.deepEqual(vpnNodeOnboardingSetupAction({
+    ...worker,
+    vpn_enabled: false,
+    vpn_role: "drop_worker_vpn",
+  }), {
+    kind: "patch_worker",
+    patch: { vpn_enabled: true },
+  });
+  assert.deepEqual(vpnNodeOnboardingSetupAction({
+    ...worker,
+    status: "offline",
+    vpn_enabled: false,
+    vpn_role: "none",
+  }), {
+    kind: "wait_for_worker",
+  });
+});
+
+test("onboarding action guard rejects a double submit until the first Promise settles", async () => {
+  const guard = createVpnNodeOnboardingActionGuard();
+  let release;
+  let calls = 0;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const first = guard.run(async () => {
+    calls += 1;
+    await pending;
+  });
+  const duplicate = await guard.run(async () => { calls += 1; });
+
+  assert.equal(duplicate, false);
+  assert.equal(calls, 1);
+  release();
+  assert.equal(await first, true);
+  assert.equal(await guard.run(async () => { calls += 1; }), true);
+  assert.equal(calls, 2);
 });
 
 test("request generations reject stale onboarding responses independently per worker", () => {
@@ -86,6 +136,16 @@ test("request generations reject stale onboarding responses independently per wo
   assert.equal(gate.isCurrent(8, otherWorker), false);
 });
 
+test("a refresh overlapping a poll cannot terminate fast polling", () => {
+  const gate = createVpnNodeOnboardingRequestGate();
+  const pollGeneration = gate.begin(7);
+  gate.begin(7);
+
+  assert.equal(gate.isCurrent(7, pollGeneration), false);
+  assert.equal(shouldContinueVpnNodeOnboardingPoll({ stale: true, failed: false, running: false }), true);
+  assert.equal(shouldContinueVpnNodeOnboardingPoll({ stale: false, failed: false, running: false }), false);
+});
+
 test("trust confirmation belongs only to the fingerprint that was checked", () => {
   assert.equal(isVpnNodeFingerprintConfirmed("SHA256:first", "SHA256:first"), true);
   assert.equal(isVpnNodeFingerprintConfirmed("SHA256:first", "SHA256:changed"), false);
@@ -100,6 +160,8 @@ test("temporary profile survives only while onboarding awaits a real-device test
   );
   assert.equal(reconcileVpnNodeTestProfileUri("vless://temporary", "ready"), null);
   assert.equal(reconcileVpnNodeTestProfileUri("vless://temporary", "failed"), null);
+  assert.equal(shouldRenderVpnNodeOnboardingSection("nodes"), true);
+  assert.equal(shouldRenderVpnNodeOnboardingSection("overview"), false);
 });
 
 test("VPN node onboarding API uses exact paths, methods, and bodies", async () => {
@@ -232,6 +294,7 @@ test("onboarding panel exposes safe progressive actions and accessible feedback"
   assert.match(source, /type="checkbox"/);
   assert.match(source, /fingerprint/);
   assert.match(source, /confirmedFingerprint/);
+  assert.match(source, /createVpnNodeOnboardingActionGuard/);
   assert.match(source, /disabled=\{[^}]*isProgressing/);
   assert.match(source, /onRetry/);
   assert.match(source, /api\.getVpnNodeTestProfile/);
@@ -251,11 +314,17 @@ test("App loads and polls onboarding only for visible VPN workers", async () => 
   assert.match(source, /vpnNodeOnboardingSetupAction/);
   assert.match(source, /vpnNodeOnboardingRefreshGeneration/);
   assert.match(source, /createVpnNodeOnboardingRequestGate/);
+  assert.match(source, /shouldContinueVpnNodeOnboardingPoll/);
+  assert.match(source, /shouldRenderVpnNodeOnboardingSection\(vpnAdminSection\) \? \(/);
   assert.match(source, /api\.getVpnNodeOnboarding/);
   assert.match(source, /state === "queued" \|\| status\.state === "running"/);
   assert.match(source, /window\.setTimeout/);
   assert.match(source, /window\.clearTimeout/);
   assert.equal((source.match(/<VpnNodeOnboardingPanel/g) ?? []).length, 2);
+  const prerequisiteMutation = source.match(
+    /async function updateVpnNodePrerequisite[\s\S]*?\n  }/,
+  )?.[0] ?? "";
+  assert.doesNotMatch(prerequisiteMutation, /status: "ready"|is_enabled: true|vpn_role: "drop_worker_vpn"/);
 });
 
 test("onboarding remains matte, keyboard-visible, and narrow-screen safe", async () => {

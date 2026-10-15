@@ -16,20 +16,58 @@ export type VpnNodeOnboardingWorker = {
   ssh_access_configured: boolean;
 };
 
-export type VpnNodeOnboardingSetupAction = "enable_vpn" | "configure_ssh";
+export type VpnNodeOnboardingSetupAction =
+  | { kind: "wait_for_worker" }
+  | { kind: "open_worker" }
+  | { kind: "patch_worker"; patch: { vpn_enabled: true } | { vpn_role: "vpn_node" } }
+  | { kind: "configure_ssh" };
 
 export function vpnNodeOnboardingSetupAction(
   worker: VpnNodeOnboardingWorker,
 ): VpnNodeOnboardingSetupAction | null {
-  if (
-    worker.status !== "ready"
-    || !worker.is_enabled
-    || !worker.vpn_enabled
-    || worker.vpn_role === "none"
-  ) {
-    return "enable_vpn";
+  if (worker.status !== "ready") {
+    return { kind: "wait_for_worker" };
   }
-  return worker.ssh_access_configured ? null : "configure_ssh";
+  if (!worker.is_enabled) {
+    return { kind: "open_worker" };
+  }
+  if (!worker.vpn_enabled) {
+    return { kind: "patch_worker", patch: { vpn_enabled: true } };
+  }
+  if (worker.vpn_role === "none") {
+    return { kind: "patch_worker", patch: { vpn_role: "vpn_node" } };
+  }
+  return worker.ssh_access_configured ? null : { kind: "configure_ssh" };
+}
+
+export function createVpnNodeOnboardingActionGuard() {
+  let busy = false;
+  return {
+    async run(action: () => Promise<void>): Promise<boolean> {
+      if (busy) {
+        return false;
+      }
+      busy = true;
+      try {
+        await action();
+        return true;
+      } finally {
+        busy = false;
+      }
+    },
+  };
+}
+
+export function shouldContinueVpnNodeOnboardingPoll(state: {
+  stale: boolean;
+  failed: boolean;
+  running: boolean;
+}): boolean {
+  return state.stale || state.failed || state.running;
+}
+
+export function shouldRenderVpnNodeOnboardingSection(section: string): boolean {
+  return section === "nodes";
 }
 
 export function createVpnNodeOnboardingRequestGate() {

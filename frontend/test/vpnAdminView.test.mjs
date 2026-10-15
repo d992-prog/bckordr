@@ -71,7 +71,12 @@ test("VPN workspace owns canonical history navigation without render-time window
   assert.match(source, /<VpnAdminNavigation activeSection=\{vpnAdminSection\} \/>/);
   for (const section of ["overview", "customers", "nodes", "plans", "events"]) {
     assert.match(source, new RegExp(`data-vpn-admin-section="${section}"`));
-    assert.match(source, new RegExp(`hidden=\\{vpnAdminSection !== "${section}"\\}`));
+    if (section === "nodes") {
+      assert.match(source, /shouldRenderVpnNodeOnboardingSection\(vpnAdminSection\) \? \(/);
+      assert.doesNotMatch(source, /data-vpn-admin-section="nodes"\s+hidden=/);
+    } else {
+      assert.match(source, new RegExp(`hidden=\\{vpnAdminSection !== "${section}"\\}`));
+    }
   }
   for (const component of ["VpnCustomerWorkspace", "VpnEndpointCapacityPanel", "VpnReleaseReadinessPanel"]) {
     assert.equal((source.match(new RegExp(`<${component}`, "g")) ?? []).length, 1);

@@ -59,6 +59,8 @@ import { replaceVpnEndpointCapacity } from "./vpnEndpointCapacity";
 import { VpnNodeOnboardingPanel } from "./VpnNodeOnboardingPanel";
 import {
   createVpnNodeOnboardingRequestGate,
+  shouldContinueVpnNodeOnboardingPoll,
+  shouldRenderVpnNodeOnboardingSection,
   vpnNodeOnboardingSetupAction,
 } from "./vpnNodeOnboarding";
 import { VpnReleaseReadinessPanel } from "./VpnReleaseReadinessPanel";
@@ -1445,9 +1447,11 @@ export default function App() {
         }
         let failed = false;
         let stillRunning = false;
+        let stale = false;
         results.forEach((result, index) => {
           const { workerId, generation } = requests[index];
           if (!vpnNodeOnboardingRequestGateRef.current.isCurrent(workerId, generation)) {
+            stale = true;
             return;
           }
           if (result.status === "fulfilled") {
@@ -1464,7 +1468,7 @@ export default function App() {
           }
         });
         delay = failed ? Math.min(delay * 2, 15000) : 1500;
-        if (failed || stillRunning) {
+        if (shouldContinueVpnNodeOnboardingPoll({ stale, failed, running: stillRunning })) {
           poll();
         }
       }, delay);
@@ -2872,19 +2876,22 @@ export default function App() {
     }
   }
 
-  async function enableWorkerVpnNode(worker: WorkerNode) {
+  async function updateVpnNodePrerequisite(
+    worker: WorkerNode,
+    patch: { vpn_enabled: true } | { vpn_role: "vpn_node" },
+  ) {
     try {
-      await api.updateWorker(worker.id, {
-        status: "ready",
-        is_enabled: true,
-        vpn_role: "drop_worker_vpn",
-        vpn_enabled: true,
-        vpn_public_host: worker.vpn_public_host ?? worker.ip_address,
-      });
+      await api.updateWorker(worker.id, patch);
       await loadAll();
-      setToast({ type: "success", text: `VPN‑нода включена для ${worker.name}` });
+      setToast({
+        type: "success",
+        text: "vpn_enabled" in patch
+          ? `VPN включён для ${worker.name}`
+          : `Роль VPN назначена для ${worker.name}`,
+      });
     } catch (error) {
-      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка включения VPN‑ноды" });
+      setToast({ type: "error", text: error instanceof Error ? error.message : "Ошибка настройки VPN‑ноды" });
+      throw error;
     }
   }
 
@@ -4597,21 +4604,17 @@ export default function App() {
                   </div>
                   <div className="worker-action-group vpn-action-group">
                     <span>VPN</span>
-                    {!isVpnNode ? (
-                      <div className="actions">
-                        <button type="button" className="ghost" onClick={() => void enableWorkerVpnNode(worker)}>Включить VPN‑ноду</button>
-                      </div>
-                    ) : (
-                      <>
-                        <VpnNodeOnboardingPanel
-                          worker={worker}
-                          status={vpnNodeOnboardingByWorker[worker.id] ?? null}
-                          loadError={vpnNodeOnboardingErrors[worker.id] ?? null}
-                          onStatusChange={updateVpnNodeOnboardingStatus}
-                          onRetry={() => reloadVpnNodeOnboarding(worker.id)}
-                          onEnableVpnNode={() => void enableWorkerVpnNode(worker)}
-                          onConfigureSsh={() => openWorkerSshEditor(worker)}
-                        />
+                    <VpnNodeOnboardingPanel
+                      worker={worker}
+                      status={vpnNodeOnboardingByWorker[worker.id] ?? null}
+                      loadError={vpnNodeOnboardingErrors[worker.id] ?? null}
+                      onStatusChange={updateVpnNodeOnboardingStatus}
+                      onRetry={() => reloadVpnNodeOnboarding(worker.id)}
+                      onPatchWorker={(patch) => updateVpnNodePrerequisite(worker, patch)}
+                      onOpenWorker={async () => openWorkerSshEditor(worker)}
+                      onConfigureSsh={async () => openWorkerSshEditor(worker)}
+                    />
+                    {isVpnNode ? (
                         <details className="vpn-node-diagnostics">
                           <summary>Диагностика</summary>
                           <div className="actions">
@@ -4623,9 +4626,7 @@ export default function App() {
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={vpnConfigurationDisabled}>Рестарт VPN</button>
                           </div>
                         </details>
-                      </>
-                    )}
-                    {!isVpnNode ? <small>Сначала включи VPN‑ноду, затем появятся установка и обслуживание 3x-UI.</small> : null}
+                    ) : null}
                   </div>
                   <div className="worker-action-group">
                     <span>Карточка</span>
@@ -4936,11 +4937,8 @@ export default function App() {
         </div>
         </section>
 
-        <section
-          className="stack"
-          data-vpn-admin-section="nodes"
-          hidden={vpnAdminSection !== "nodes"}
-        >
+        {shouldRenderVpnNodeOnboardingSection(vpnAdminSection) ? (
+        <section className="stack" data-vpn-admin-section="nodes">
         <div className="card full-span">
           <div className="card-head">
             <div>
@@ -5023,8 +5021,9 @@ export default function App() {
                           loadError={vpnNodeOnboardingErrors[worker.id] ?? null}
                           onStatusChange={updateVpnNodeOnboardingStatus}
                           onRetry={() => reloadVpnNodeOnboarding(worker.id)}
-                          onEnableVpnNode={() => void enableWorkerVpnNode(worker)}
-                          onConfigureSsh={() => openWorkerSshEditor(worker)}
+                          onPatchWorker={(patch) => updateVpnNodePrerequisite(worker, patch)}
+                          onOpenWorker={async () => openWorkerSshEditor(worker)}
+                          onConfigureSsh={async () => openWorkerSshEditor(worker)}
                         />
                         <details className="vpn-node-diagnostics">
                           <summary>Диагностика</summary>
@@ -5054,6 +5053,7 @@ export default function App() {
           {vpnNodes.length === 0 ? <p className="empty">VPN‑ноды пока не включены. Открой воркер, задай роль VPN и включи VPN.</p> : null}
         </div>
         </section>
+        ) : null}
 
         <section
           className="stack"

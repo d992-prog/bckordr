@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api, type VpnNodeOnboarding } from "./api";
 import {
   copyVpnNodeTestProfile,
+  createVpnNodeOnboardingActionGuard,
   isVpnNodeFingerprintConfirmed,
   onboardingErrorMessage,
   onboardingPresentation,
@@ -17,8 +18,9 @@ type Props = {
   loadError?: string | null;
   onStatusChange: (status: VpnNodeOnboarding) => void;
   onRetry: () => Promise<void>;
-  onEnableVpnNode: () => void;
-  onConfigureSsh: () => void;
+  onPatchWorker: (patch: { vpn_enabled: true } | { vpn_role: "vpn_node" }) => Promise<void>;
+  onOpenWorker: () => Promise<void>;
+  onConfigureSsh: () => Promise<void>;
 };
 
 export function VpnNodeOnboardingPanel({
@@ -27,9 +29,11 @@ export function VpnNodeOnboardingPanel({
   loadError = null,
   onStatusChange,
   onRetry,
-  onEnableVpnNode,
+  onPatchWorker,
+  onOpenWorker,
   onConfigureSsh,
 }: Props) {
+  const actionGuardRef = useRef(createVpnNodeOnboardingActionGuard());
   const [status, setStatus] = useState(loadedStatus);
   const [busy, setBusy] = useState(false);
   const [confirmedFingerprint, setConfirmedFingerprint] = useState<string | null>(null);
@@ -61,36 +65,45 @@ export function VpnNodeOnboardingPanel({
     onStatusChange(next);
   };
 
+  const runExclusive = async (action: () => Promise<void>) => {
+    await actionGuardRef.current.run(async () => {
+      setBusy(true);
+      try {
+        await action();
+      } finally {
+        setBusy(false);
+      }
+    });
+  };
+
   const run = async (action: () => Promise<VpnNodeOnboarding>) => {
-    setBusy(true);
-    setError(null);
-    setMessage(null);
-    try {
-      publishStatus(await action());
-    } catch (caught) {
-      setError(onboardingErrorMessage(caught instanceof Error ? caught.message : null));
-    } finally {
-      setBusy(false);
-    }
+    await runExclusive(async () => {
+      setError(null);
+      setMessage(null);
+      try {
+        publishStatus(await action());
+      } catch (caught) {
+        setError(onboardingErrorMessage(caught instanceof Error ? caught.message : null));
+      }
+    });
   };
 
   const loadTestProfile = async () => {
-    setBusy(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const profile = await api.getVpnNodeTestProfile(worker.id);
-      setTestProfileUri(profile.config_uri);
-      setMessage(
-        await copyVpnNodeTestProfile(profile.config_uri)
-          ? "Временный профиль скопирован. Проверьте подключение в клиенте."
-          : "Временный профиль готов. Скопируйте его из поля ниже.",
-      );
-    } catch (caught) {
-      setError(onboardingErrorMessage(caught instanceof Error ? caught.message : null));
-    } finally {
-      setBusy(false);
-    }
+    await runExclusive(async () => {
+      setError(null);
+      setMessage(null);
+      try {
+        const profile = await api.getVpnNodeTestProfile(worker.id);
+        setTestProfileUri(profile.config_uri);
+        setMessage(
+          await copyVpnNodeTestProfile(profile.config_uri)
+            ? "Временный профиль скопирован. Проверьте подключение в клиенте."
+            : "Временный профиль готов. Скопируйте его из поля ниже.",
+        );
+      } catch (caught) {
+        setError(onboardingErrorMessage(caught instanceof Error ? caught.message : null));
+      }
+    });
   };
 
   const copyTestProfile = async () => {
@@ -110,33 +123,60 @@ export function VpnNodeOnboardingPanel({
   };
 
   const retryLoad = async () => {
-    setBusy(true);
-    setError(null);
-    setMessage(null);
-    try {
-      await onRetry();
-    } catch {
-      // App owns the bounded loading error for this worker.
-    } finally {
-      setBusy(false);
-    }
+    await runExclusive(async () => {
+      setError(null);
+      setMessage(null);
+      try {
+        await onRetry();
+      } catch {
+        // App owns the bounded loading error for this worker.
+      }
+    });
   };
 
   if (setupAction !== null) {
-    const needsSsh = setupAction === "configure_ssh";
+    const setupCopy = setupAction.kind === "wait_for_worker"
+      ? ["Сервер ещё не готов", "Дождитесь восстановления воркера и обновите данные.", null]
+      : setupAction.kind === "open_worker"
+        ? ["Воркер выключен", "Проверьте настройки воркера перед включением.", "Открыть воркер"]
+        : setupAction.kind === "configure_ssh"
+          ? ["Нужен SSH‑доступ", "Заполните SSH, чтобы продолжить безопасную настройку.", "Заполнить SSH"]
+          : "vpn_enabled" in setupAction.patch
+            ? ["VPN на сервере выключен", "Включите VPN без изменения роли воркера.", "Включить VPN-ноду"]
+            : ["Роль VPN не назначена", "Назначьте серверу роль VPN без изменения остальных настроек.", "Назначить роль VPN"];
+    const runSetupAction = async () => {
+      await runExclusive(async () => {
+        setError(null);
+        try {
+          if (setupAction.kind === "patch_worker") {
+            await onPatchWorker(setupAction.patch);
+          } else if (setupAction.kind === "open_worker") {
+            await onOpenWorker();
+          } else if (setupAction.kind === "configure_ssh") {
+            await onConfigureSsh();
+          }
+        } catch (caught) {
+          setError(onboardingErrorMessage(caught instanceof Error ? caught.message : null));
+        }
+      });
+    };
     return (
       <section className="vpn-node-onboarding is-setup" aria-label="Настройка VPN‑ноды">
         <div className="vpn-node-onboarding-copy" role="status">
-          <strong>{needsSsh ? "Нужен SSH‑доступ" : "VPN‑нода не включена"}</strong>
-          <p>{needsSsh ? "Заполните SSH, чтобы продолжить безопасную настройку." : "Включите сервер и роль VPN для начала настройки."}</p>
+          <strong>{setupCopy[0]}</strong>
+          <p>{setupCopy[1]}</p>
         </div>
-        <button
-          type="button"
-          className="vpn-node-onboarding-primary"
-          onClick={needsSsh ? onConfigureSsh : onEnableVpnNode}
-        >
-          {needsSsh ? "Заполнить SSH" : "Включить VPN-ноду"}
-        </button>
+        {setupCopy[2] ? (
+          <button
+            type="button"
+            className="vpn-node-onboarding-primary"
+            onClick={() => void runSetupAction()}
+            disabled={busy}
+          >
+            {busy ? "Подождите…" : setupCopy[2]}
+          </button>
+        ) : null}
+        {error ? <p role="alert" className="vpn-node-onboarding-error">{error}</p> : null}
       </section>
     );
   }
