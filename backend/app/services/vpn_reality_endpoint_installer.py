@@ -1118,9 +1118,14 @@ def _execute_node_request(
             _read_private_file(config_path, limit=MAX_CONFIG_BYTES)
         )
         _validate_private_regular_file(database_path)
-        token = _read_private_file(token_path, limit=MAX_TOKEN_BYTES).decode(
-            "ascii", errors="strict"
-        )
+        token_raw = _read_private_file(token_path, limit=MAX_TOKEN_BYTES + 1)
+        if (
+            not token_raw.endswith(b"\n")
+            or b"\n" in token_raw[:-1]
+            or b"\r" in token_raw
+        ):
+            _fail("vpn_endpoint_install_environment_invalid")
+        token = token_raw[:-1].decode("ascii", errors="strict")
 
         def panel_factory() -> EndpointAdminPanelSession:
             return EndpointAdminPanelSession(panel_url, api_token=token)
