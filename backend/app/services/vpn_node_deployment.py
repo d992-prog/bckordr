@@ -288,15 +288,17 @@ def _config(raw: bytes) -> Path:
             or panel.fragment
         ):
             _fail()
-        database = Path(value["database_path"])
-        remote_database = PurePosixPath(value["database_path"])
+        database_path = value["database_path"]
+        remote_database = PurePosixPath(database_path)
         if (
-            not (database.is_absolute() or remote_database.is_absolute())
-            or ".." in database.parts
+            not remote_database.is_absolute()
+            or database_path.startswith("//")
+            or "\\" in database_path
             or ".." in remote_database.parts
+            or remote_database.as_posix() != database_path
         ):
             _fail()
-        return database
+        return Path(remote_database.as_posix())
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
         _fail()
 
