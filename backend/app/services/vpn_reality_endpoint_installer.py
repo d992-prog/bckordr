@@ -852,6 +852,25 @@ def _attached_clients(
     return [client for client in clients if inbound_id in (client.get("inboundIds") or [])]
 
 
+def _acceptance_identity_exists(
+    request: EndpointInstallRequest,
+    rows: list[dict[str, Any]],
+    clients: list[dict[str, Any]],
+) -> bool:
+    assert request.acceptance_uuid is not None and request.acceptance_email is not None
+    return any(
+        client.get("id") == str(request.acceptance_uuid)
+        or client.get("email") == request.acceptance_email
+        for candidate in rows
+        for client in candidate["settings"]["clients"]
+        if isinstance(client, dict)
+    ) or any(
+        client.get("uuid") == str(request.acceptance_uuid)
+        or client.get("email") == request.acceptance_email
+        for client in clients
+    )
+
+
 def _require_receipt_identity(
     request: EndpointInstallRequest, row: dict[str, Any], public_key: str
 ) -> None:
@@ -863,12 +882,14 @@ def _require_receipt_identity(
 def _acceptance_matches(
     request: EndpointInstallRequest,
     row: dict[str, Any],
+    rows: list[dict[str, Any]],
     clients: list[dict[str, Any]],
 ) -> bool:
     assert request.acceptance_uuid is not None and request.acceptance_email is not None
     embedded = [
-        client
-        for client in row["settings"]["clients"]
+        (candidate["id"], client)
+        for candidate in rows
+        for client in candidate["settings"]["clients"]
         if isinstance(client, dict)
         and (client.get("id") == str(request.acceptance_uuid) or client.get("email") == request.acceptance_email)
     ]
@@ -880,10 +901,11 @@ def _acceptance_matches(
     return (
         len(embedded) == 1
         and len(global_rows) == 1
-        and embedded[0].get("id") == str(request.acceptance_uuid)
-        and embedded[0].get("email") == request.acceptance_email
-        and embedded[0].get("enable") is True
-        and embedded[0].get("flow") == FLOW
+        and embedded[0][0] == row["id"]
+        and embedded[0][1].get("id") == str(request.acceptance_uuid)
+        and embedded[0][1].get("email") == request.acceptance_email
+        and embedded[0][1].get("enable") is True
+        and embedded[0][1].get("flow") == FLOW
         and global_rows[0].get("uuid") == str(request.acceptance_uuid)
         and global_rows[0].get("email") == request.acceptance_email
         and global_rows[0].get("enable") is True
@@ -942,9 +964,14 @@ def _wait_for_acceptance_state(
             rows, clients = _snapshot(panel, database_path)
             row, public_key = _matching_endpoint(rows, request)
             if row is not None and public_key is not None:
-                if present and _acceptance_matches(request, row, clients):
+                if present and _acceptance_matches(request, row, rows, clients):
                     return row, public_key
-                if not present and not row["settings"]["clients"] and not _attached_clients(row, clients):
+                if (
+                    not present
+                    and not row["settings"]["clients"]
+                    and not _attached_clients(row, clients)
+                    and not _acceptance_identity_exists(request, rows, clients)
+                ):
                     return row, public_key
         except EndpointInstallError as error:
             if error.code not in {
@@ -1011,17 +1038,13 @@ def execute_endpoint_action(
                     _fail("vpn_endpoint_install_postcondition_failed")
                 return _endpoint_receipt(request, row, public_key, "removed")
             assert request.acceptance_uuid is not None and request.acceptance_email is not None
-            matches = _acceptance_matches(request, row, clients)
+            matches = _acceptance_matches(request, row, rows, clients)
             if request.action == "add_acceptance_client":
                 if matches:
                     return _endpoint_receipt(request, row, public_key, "acceptance_client_present")
                 if row["settings"]["clients"] or _attached_clients(row, clients):
                     _fail("vpn_endpoint_install_clients_present")
-                if any(
-                    client.get("uuid") == str(request.acceptance_uuid)
-                    or client.get("email") == request.acceptance_email
-                    for client in clients
-                ):
+                if _acceptance_identity_exists(request, rows, clients):
                     _fail("vpn_endpoint_install_identity_mismatch")
                 panel.request(
                     "POST",
@@ -1037,15 +1060,10 @@ def execute_endpoint_action(
                 )
                 return _endpoint_receipt(request, row, public_key, "acceptance_client_present")
             attached_clients = _attached_clients(row, clients)
-            global_identity_exists = any(
-                client.get("uuid") == str(request.acceptance_uuid)
-                or client.get("email") == request.acceptance_email
-                for client in clients
-            )
             if (
                 not row["settings"]["clients"]
                 and not attached_clients
-                and not global_identity_exists
+                and not _acceptance_identity_exists(request, rows, clients)
             ):
                 return _endpoint_receipt(
                     request, row, public_key, "acceptance_client_removed"

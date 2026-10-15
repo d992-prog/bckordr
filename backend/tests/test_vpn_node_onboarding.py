@@ -1449,7 +1449,7 @@ async def test_test_profile_sanitizes_unexpected_remote_errors(
 
 
 @pytest.mark.asyncio
-async def test_first_test_profile_never_adds_without_an_exact_inspection(
+async def test_test_profile_transport_ambiguity_reconciles_without_a_marker(
     sessions, tmp_path, monkeypatch
 ) -> None:
     from app.services import vpn_node_onboarding as onboarding
@@ -1476,7 +1476,115 @@ async def test_first_test_profile_never_adds_without_an_exact_inspection(
             )
         assert caught.value.code == "vpn_onboarding_reconciliation_required"
         assert (await session.get(VpnEndpoint, endpoint_id)).status == "staged"
-    assert actions == ["inspect"]
+    assert actions == ["inspect", "add_acceptance_client"]
+
+
+@pytest.mark.asyncio
+async def test_test_profile_recovers_after_remote_add_and_lost_marker_commit(
+    sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    worker_id, endpoint_id, observed = await _staged_acceptance_endpoint(sessions)
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    actions = []
+    client_count = 0
+
+    async def execute(_snapshot, request, *, controlled_worker_id):
+        nonlocal client_count
+        assert controlled_worker_id == worker_id
+        actions.append(request.action)
+        if request.action == "inspect":
+            if client_count:
+                raise EndpointInstallerDeploymentError(mutation_uncertain=False)
+            return observed
+        assert request.action == "add_acceptance_client"
+        if client_count == 0:
+            client_count = 1
+        return make_endpoint_receipt(
+            state="acceptance_client_present",
+            worker_id=observed.worker_id,
+            inbound_id=observed.inbound_id,
+            public_host=observed.public_host,
+            server_name=observed.server_name,
+            public_key=observed.public_key,
+            short_id=observed.short_id,
+        )
+
+    monkeypatch.setattr(onboarding, "execute_endpoint_installer_over_ssh", execute)
+    known_hosts = Path(tmp_path / "known_hosts")
+    async with sessions() as session:
+        first_uri = await onboarding.create_vpn_node_test_profile(
+            session,
+            worker_id,
+            secret=ACCEPTANCE_SECRET,
+            known_hosts_path=known_hosts,
+        )
+        await session.rollback()
+
+    async with sessions() as session:
+        assert await session.scalar(
+            select(AppSetting).where(
+                AppSetting.key
+                == f"vpn_node_acceptance_profile_v1:{worker_id}:{observed.inbound_id}"
+            )
+        ) is None
+        recovered_uri = await onboarding.create_vpn_node_test_profile(
+            session,
+            worker_id,
+            secret=ACCEPTANCE_SECRET,
+            known_hosts_path=known_hosts,
+        )
+        await session.commit()
+        marker = await session.scalar(
+            select(AppSetting).where(
+                AppSetting.key
+                == f"vpn_node_acceptance_profile_v1:{worker_id}:{observed.inbound_id}"
+            )
+        )
+
+    assert first_uri == recovered_uri
+    assert client_count == 1
+    assert actions == [
+        "inspect",
+        "add_acceptance_client",
+        "inspect",
+        "add_acceptance_client",
+    ]
+    assert marker is not None
+    assert marker.value == f"{endpoint_id}:{observed.receipt_digest}"
+
+
+@pytest.mark.asyncio
+async def test_test_profile_foreign_client_reconciles_without_duplication(
+    sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    worker_id, endpoint_id, _observed = await _staged_acceptance_endpoint(sessions)
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    actions = []
+    foreign_client_count = 1
+
+    async def foreign(_snapshot, request, *, controlled_worker_id):
+        assert controlled_worker_id == worker_id
+        actions.append(request.action)
+        raise EndpointInstallerDeploymentError(mutation_uncertain=False)
+
+    monkeypatch.setattr(onboarding, "execute_endpoint_installer_over_ssh", foreign)
+    async with sessions() as session:
+        with pytest.raises(onboarding.VpnNodeOnboardingError) as caught:
+            await onboarding.create_vpn_node_test_profile(
+                session,
+                worker_id,
+                secret=ACCEPTANCE_SECRET,
+                known_hosts_path=Path(tmp_path / "known_hosts"),
+            )
+        assert caught.value.code == "vpn_onboarding_reconciliation_required"
+        assert (await session.get(VpnEndpoint, endpoint_id)).status == "staged"
+        assert list((await session.scalars(select(AppSetting))).all()) == []
+    assert actions == ["inspect", "add_acceptance_client"]
+    assert foreign_client_count == 1
 
 
 @pytest.mark.asyncio
@@ -1590,6 +1698,117 @@ async def test_confirm_cleans_promotes_health_checks_and_hashes_only_admin_attes
     assert confirmed_again.id == endpoint_id
     assert requests == []
     assert health_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence_case",
+    [
+        "missing",
+        "malformed",
+        "wrong_ids",
+        "wrong_receipt_digest",
+        "wrong_release",
+        "wrong_time",
+        "wrong_evidence_digest",
+        "noncanonical",
+        "extra_field",
+        "duplicate_key",
+        "nonfinite",
+        "verified_time_mismatch",
+    ],
+)
+async def test_confirm_rejects_noncanonical_or_mismatched_stored_evidence(
+    sessions, tmp_path, monkeypatch, evidence_case
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    worker_id, endpoint_id, observed = await _staged_acceptance_endpoint(sessions)
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    evidence_key = (
+        f"{VPN_ENDPOINT_ACCEPTANCE_KEY}:{worker_id}:{observed.inbound_id}"
+    )
+    payload = {
+        "version": 1,
+        "worker_id": worker_id,
+        "inbound_id": observed.inbound_id,
+        "receipt_digest": observed.receipt_digest,
+        "release_id": ACCEPTANCE_RELEASE,
+        "evidence_digest": "d" * 64,
+        "checked_at": "2026-10-15T18:30:00Z",
+    }
+    async with sessions() as session:
+        endpoint = await session.get(VpnEndpoint, endpoint_id)
+        worker = await session.get(WorkerNode, worker_id)
+        assert endpoint is not None and worker is not None
+        endpoint.status = "ready"
+        endpoint.verified_at = ACCEPTANCE_NOW
+        endpoint.external_verified_at = ACCEPTANCE_NOW
+        endpoint.external_config_fingerprint = onboarding.public_endpoint_fingerprint(
+            onboarding._target(endpoint)
+        )
+        worker.vpn_runtime_status = "ready"
+        if evidence_case == "verified_time_mismatch":
+            endpoint.verified_at = ACCEPTANCE_NOW + timedelta(seconds=1)
+        if evidence_case == "wrong_ids":
+            payload["worker_id"] = worker_id + 1
+            payload["inbound_id"] = observed.inbound_id + 1
+        elif evidence_case == "wrong_receipt_digest":
+            payload["receipt_digest"] = "c" * 64
+        elif evidence_case == "wrong_release":
+            payload["release_id"] = "c" * 64
+        elif evidence_case == "wrong_time":
+            payload["checked_at"] = "2026-10-15T18:30:01Z"
+        elif evidence_case == "wrong_evidence_digest":
+            payload["evidence_digest"] = "D" * 64
+        elif evidence_case == "extra_field":
+            payload["extra"] = True
+        raw = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        )
+        if evidence_case == "malformed":
+            raw = "{"
+        elif evidence_case == "noncanonical":
+            raw = json.dumps(payload)
+        elif evidence_case == "duplicate_key":
+            raw = raw.replace(
+                '{"checked_at":',
+                '{"checked_at":"2026-10-15T18:30:00Z","checked_at":',
+                1,
+            )
+        elif evidence_case == "nonfinite":
+            raw = raw.replace('"evidence_digest":"' + "d" * 64 + '"', '"evidence_digest":NaN')
+        session.add(
+            AppSetting(
+                key=onboarding.VPN_FRIEND_BETA_RELEASE_READY_KEY,
+                value=ACCEPTANCE_RELEASE,
+            )
+        )
+        if evidence_case != "missing":
+            session.add(AppSetting(key=evidence_key, value=raw))
+        await session.commit()
+
+    remote_calls = []
+
+    async def unexpected(*_args, **_kwargs):
+        remote_calls.append("called")
+        raise AssertionError("corrupt evidence must reconcile before remote mutation")
+
+    monkeypatch.setattr(onboarding, "execute_endpoint_installer_over_ssh", unexpected)
+    monkeypatch.setattr(onboarding, "execute_vpn_node_health_over_ssh", unexpected)
+    async with sessions() as session:
+        with pytest.raises(onboarding.VpnNodeOnboardingError) as caught:
+            await onboarding.confirm_vpn_node_test_profile(
+                session,
+                worker_id,
+                admin_id=9,
+                release_id=ACCEPTANCE_RELEASE,
+                secret=ACCEPTANCE_SECRET,
+                known_hosts_path=Path(tmp_path / "known_hosts"),
+            )
+        assert caught.value.code == "vpn_onboarding_reconciliation_required"
+        assert (await session.get(VpnEndpoint, endpoint_id)).status == "ready"
+    assert remote_calls == []
 
 
 @pytest.mark.asyncio

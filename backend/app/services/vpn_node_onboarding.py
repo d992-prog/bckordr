@@ -102,6 +102,17 @@ SAFE_ONBOARDING_ERRORS = frozenset(
 
 _PANEL_URL = "http://127.0.0.1:2053/panel/"
 _ACCEPTANCE_PROFILE_KEY = "vpn_node_acceptance_profile_v1"
+_ACCEPTANCE_EVIDENCE_KEYS = frozenset(
+    {
+        "version",
+        "worker_id",
+        "inbound_id",
+        "receipt_digest",
+        "release_id",
+        "evidence_digest",
+        "checked_at",
+    }
+)
 
 
 class VpnNodeOnboardingError(RuntimeError):
@@ -468,8 +479,8 @@ async def create_vpn_node_test_profile(
             controlled_worker_id=worker.id,
         )
     except EndpointInstallerDeploymentError:
-        if marker is None:
-            _fail("vpn_onboarding_reconciliation_required")
+        # shortcut: inspect errors are untyped; the exact idempotent add is the
+        # authoritative recovery proof until the node protocol exposes safe codes.
         inspected = None
     except Exception:  # noqa: BLE001 - remote details must not cross the boundary
         _fail("vpn_onboarding_failed")
@@ -519,6 +530,36 @@ def _attestation_digest(
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _strict_acceptance_evidence(raw: str) -> dict[str, object] | None:
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate key")
+            value[key] = item
+        return value
+
+    def reject_constant(_value: str) -> None:
+        raise ValueError("non-finite number")
+
+    if type(raw) is not str:
+        return None
+    try:
+        value = json.loads(
+            raw,
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    if type(value) is not dict or set(value) != _ACCEPTANCE_EVIDENCE_KEYS:
+        return None
+    canonical = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    return value if canonical == raw else None
+
+
 async def _already_confirmed(
     session: AsyncSession,
     worker: WorkerNode,
@@ -550,10 +591,33 @@ async def _already_confirmed(
         ).all()
     }
     release = settings.get(VPN_FRIEND_BETA_RELEASE_READY_KEY)
+    evidence_setting = settings.get(evidence_key)
+    if (
+        release is None
+        or release.value != release_id
+        or evidence_setting is None
+    ):
+        return False
+    evidence = _strict_acceptance_evidence(evidence_setting.value)
+    if evidence is None:
+        return False
+    checked_at = _as_utc(endpoint.external_verified_at)
+    if _as_utc(endpoint.verified_at) != checked_at:
+        return False
+    expected_checked_at = checked_at.isoformat().replace("+00:00", "Z")
+    receipt = _endpoint_receipt(endpoint, "observed")
     return (
-        release is not None
-        and release.value == release_id
-        and evidence_key in settings
+        type(evidence["version"]) is int
+        and evidence["version"] == 1
+        and type(evidence["worker_id"]) is int
+        and evidence["worker_id"] == endpoint.worker_id
+        and type(evidence["inbound_id"]) is int
+        and evidence["inbound_id"] == endpoint.inbound_id
+        and evidence["receipt_digest"] == receipt.receipt_digest
+        and evidence["release_id"] == release_id
+        and type(evidence["evidence_digest"]) is str
+        and re.fullmatch(r"[0-9a-f]{64}", evidence["evidence_digest"]) is not None
+        and evidence["checked_at"] == expected_checked_at
     )
 
 
