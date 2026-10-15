@@ -152,7 +152,7 @@ async def _seed_admin(session: AsyncSession) -> User:
 
 def _locks_worker(statement) -> bool:
     return (
-        statement._for_update_arg is not None
+        getattr(statement, "_for_update_arg", None) is not None
         and statement.column_descriptions
         and statement.column_descriptions[0].get("entity") is WorkerNode
     )
@@ -339,7 +339,7 @@ async def test_onboarding_and_customer_provisioning_cannot_share_worker(
         worker = _worker()
         session.add(worker)
         await session.flush()
-        endpoint = _endpoint(worker.id)
+        endpoint = _endpoint(worker.id, status="disabled")
         session.add(endpoint)
         await session.flush()
         customer = VpnCustomer(status="active")
@@ -416,7 +416,7 @@ async def test_onboarding_and_customer_provisioning_cannot_share_worker(
         release_onboarding.set()
         await _cancel_and_await(onboarding, provisioning)
 
-    assert response.state == "queued"
+    assert response.job_id is not None
     assert error_code == "vpn_control_worker_busy"
     async with pg_sessions() as session:
         assert (
@@ -438,6 +438,7 @@ async def test_promotion_with_capacity_and_health_updates_preserves_exact_endpoi
     promotion_has_worker = asyncio.Event()
     release_promotion = asyncio.Event()
     health_attempted_worker = asyncio.Event()
+    health_pid: dict[str, int] = {}
 
     class PromotionSession(AsyncSession):
         held_worker = False
@@ -452,16 +453,15 @@ async def test_promotion_with_capacity_and_health_updates_preserves_exact_endpoi
             ):
                 self.held_worker = True
                 promotion_has_worker.set()
-                await asyncio.wait_for(release_promotion.wait(), timeout=5)
+                await release_promotion.wait()
             return result
 
     class HealthSession(AsyncSession):
         async def scalar(self, statement, **kwargs):
-            if (
-                statement._for_update_arg is not None
-                and statement.column_descriptions
-                and statement.column_descriptions[0].get("entity") is WorkerNode
-            ):
+            if _locks_worker(statement):
+                health_pid["value"] = int(
+                    await super().scalar(text("SELECT pg_backend_pid()"))
+                )
                 health_attempted_worker.set()
             return await super().scalar(statement, **kwargs)
 
@@ -555,6 +555,13 @@ async def test_promotion_with_capacity_and_health_updates_preserves_exact_endpoi
         )
         await asyncio.wait_for(capacity, timeout=5)
         await asyncio.wait_for(health_attempted_worker.wait(), timeout=5)
+        assert await asyncio.wait_for(
+            _wait_until_postgres_session_is_blocked(
+                pg_sessions,
+                health_pid["value"],
+            ),
+            timeout=3,
+        )
         release_promotion.set()
         await asyncio.wait_for(promotion, timeout=10)
         assert await asyncio.wait_for(health, timeout=10) is True

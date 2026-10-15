@@ -344,7 +344,7 @@ async def test_trust_reprobes_pins_public_identity_and_audits(api_env, monkeypat
         captured.update(
             worker_id=worker.id,
             fingerprint=expected_fingerprint,
-            known_hosts_path=str(kwargs["known_hosts_path"]),
+            known_hosts_path=kwargs["known_hosts_path"].as_posix(),
         )
         return VpnNodeTrustProbe(
             known_hosts_line=HOST_KEY,
@@ -367,7 +367,7 @@ async def test_trust_reprobes_pins_public_identity_and_audits(api_env, monkeypat
     assert captured == {
         "worker_id": worker_id,
         "fingerprint": FINGERPRINT,
-        "known_hosts_path": "C:\\veltrix\\known_hosts",
+        "known_hosts_path": "C:/veltrix/known_hosts",
     }
     async with session_factory() as session:
         worker = await session.get(WorkerNode, worker_id)
