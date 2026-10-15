@@ -16,7 +16,7 @@ import sys
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from app.services.vpn_node_bundle import IMPORT_PROBE_SENTINEL
@@ -289,7 +289,12 @@ def _config(raw: bytes) -> Path:
         ):
             _fail()
         database = Path(value["database_path"])
-        if not database.is_absolute() or ".." in database.parts:
+        remote_database = PurePosixPath(value["database_path"])
+        if (
+            not (database.is_absolute() or remote_database.is_absolute())
+            or ".." in database.parts
+            or ".." in remote_database.parts
+        ):
             _fail()
         return database
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):

@@ -87,6 +87,16 @@ def _config(database: Path) -> bytes:
     ).encode("ascii")
 
 
+def test_remote_posix_database_path_is_validated_independently_of_control_os() -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    raw = (
+        b'{"version":1,"panel_url":"http://127.0.0.1:2053/panel/",'
+        b'"database_path":"/etc/x-ui/x-ui.db"}'
+    )
+
+    assert str(deployment._config(raw)).replace("\\", "/") == "/etc/x-ui/x-ui.db"
+
+
 def test_fresh_install_is_atomic_and_preserves_token(tmp_path: Path) -> None:
     deployment = importlib.import_module("app.services.vpn_node_deployment")
     layout = _layout(tmp_path)
