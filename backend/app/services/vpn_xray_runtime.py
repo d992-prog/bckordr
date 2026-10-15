@@ -68,6 +68,8 @@ def _email(value: object) -> bool:
 
 def observe_xray_client(
     *, port: int, client_uuid: UUID, client_email: str, flow: str,
+    runtime_tags: tuple[str, ...] | None = None,
+    target_tag: str | None = None,
     executable_path: Path = Path("/usr/local/x-ui/bin/xray-linux-amd64"),
     config_path: Path = Path("/usr/local/x-ui/bin/config.json"),
     timeout_seconds: float = 8.0,
@@ -78,11 +80,27 @@ def observe_xray_client(
         and isinstance(flow, str) and flow in ("", "xtls-rprx-vision")
         and type(timeout_seconds) in (int, float)
         and 0 < timeout_seconds <= 30 and math.isfinite(timeout_seconds)
-        and all(isinstance(p, Path) and p.is_absolute() for p in (executable_path, config_path)),
+        and all(isinstance(p, Path) and p.is_absolute() for p in (executable_path, config_path))
+        and (
+            runtime_tags is None
+            and target_tag is None
+            or isinstance(runtime_tags, tuple)
+            and bool(runtime_tags)
+            and len(runtime_tags) == len(set(runtime_tags))
+            and all(
+                isinstance(tag, str)
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tag)
+                for tag in runtime_tags
+            )
+            and target_tag in runtime_tags
+        ),
         _INVALID,
     )
     try:
-        return _observe(port, client_uuid, client_email, flow, executable_path, config_path, timeout_seconds)
+        return _observe(
+            port, client_uuid, client_email, flow, executable_path, config_path,
+            timeout_seconds, runtime_tags, target_tag,
+        )
     except XrayRuntimeError as exc:
         code = exc.code
     except Exception:  # noqa: BLE001 - collapse the public observation boundary
@@ -387,7 +405,9 @@ def _run(arguments: list[str], deadline: float) -> bytes:
 
 
 def _observe(port: int, uid: UUID, email: str, flow: str,
-             executable: Path, config: Path, timeout: float) -> XrayRuntimeObservation:
+             executable: Path, config: Path, timeout: float,
+             runtime_tags: tuple[str, ...] | None,
+             target_tag: str | None) -> XrayRuntimeObservation:
     deadline = time.monotonic() + timeout
     _require_linux()
     executable_identity = _trusted_file(executable, deadline)
@@ -398,7 +418,10 @@ def _observe(port: int, uid: UUID, email: str, flow: str,
     raw = _read(config, deadline)
     _remaining(deadline)
     digest = hashlib.sha256(raw).digest()
-    api_port, tags, target = _configuration(_json_object(raw), port, uid, email, flow)
+    api_port, tags, target = _configuration(
+        _json_object(raw), port, uid, email, flow,
+        runtime_tags=runtime_tags, target_tag=target_tag,
+    )
     namespace = _network_namespace(process, deadline)
     listener = _listener(process, api_port, deadline)
     version = _run([str(executable), "version"], deadline)
@@ -471,11 +494,15 @@ def _clients(rows: object, tag: str, target: str, expected_uuid: UUID,
     return matched
 
 
-def _configuration(value: dict, port: int, uid: UUID, email: str, flow: str) -> tuple[int, list[str], str]:
+def _configuration(
+    value: dict, port: int, uid: UUID, email: str, flow: str, *,
+    runtime_tags: tuple[str, ...] | None = None,
+    target_tag: str | None = None,
+) -> tuple[int, list[str], str]:
     api, inbounds = value.get("api"), value.get("inbounds")
     _require(isinstance(api, dict) and isinstance(inbounds, list))
     _require(isinstance(api.get("services"), list) and "HandlerService" in api["services"])
-    seen, api_rows, vless, targets = set(), [], [], []
+    seen, api_rows, vless, tags, targets = set(), [], [], [], []
     for inbound in inbounds:
         _require(isinstance(inbound, dict))
         tag = inbound.get("tag")
@@ -487,16 +514,29 @@ def _configuration(value: dict, port: int, uid: UUID, email: str, flow: str) -> 
         if inbound.get("protocol") == "vless":
             _require(_port(inbound.get("port")))
             vless.append(inbound)
+            tags.append(tag)
             if inbound["port"] == port:
                 targets.append(tag)
-    _require(len(api_rows) == 1 and len(targets) == 1)
-    api_row, target = api_rows[0], targets[0]
+    _require(len(api_rows) == 1)
+    if runtime_tags is None:
+        _require(target_tag is None and len(targets) == 1)
+        target = targets[0]
+    else:
+        _require(
+            target_tag in runtime_tags
+            and set(tags) <= set(runtime_tags)
+            and (not tags or targets == [target_tag])
+        )
+        assert isinstance(target_tag, str)
+        tags = list(runtime_tags)
+        target = target_tag
+    api_row = api_rows[0]
     _require(api_row.get("listen") == "127.0.0.1" and _port(api_row.get("port")))
     for inbound in vless:
         settings = inbound.get("settings")
         _require(isinstance(settings, dict))
         _clients(settings.get("clients"), inbound["tag"], target, uid, email, flow, typed=False)
-    return api_row["port"], [row["tag"] for row in vless], target
+    return api_row["port"], tags, target
 
 
 def _runtime_users(value: dict, tag: str, target: str, uid: UUID, email: str, flow: str) -> bool:

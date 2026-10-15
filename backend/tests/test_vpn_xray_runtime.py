@@ -88,6 +88,11 @@ def test_observation_has_only_nonsecret_fields(runtime):
     {"timeout_seconds": float("inf")}, {"timeout_seconds": "8"},
     {"executable_path": Path("relative")}, {"config_path": Path("relative")},
     {"executable_path": "/usr/bin/xray"},
+    {"runtime_tags": (), "target_tag": None},
+    {"runtime_tags": ("bad/tag",), "target_tag": "bad/tag"},
+    {"runtime_tags": ("duplicate", "duplicate"), "target_tag": "duplicate"},
+    {"runtime_tags": ("expected",), "target_tag": "other"},
+    {"target_tag": "expected"},
 ])
 def test_invalid_input_precedes_all_io(runtime, monkeypatch, changes):
     def forbidden(*args, **kwargs):
@@ -146,6 +151,22 @@ def test_exact_config_and_typed_runtime_shape(runtime):
     assert runtime._runtime_users(
         {"users": [account()]}, "public", "public", CLIENT, EMAIL, FLOW
     )
+
+
+def test_dynamic_tags_do_not_bypass_static_target_port_validation(runtime):
+    value = config()
+    value["inbounds"][1]["port"] = 8443
+
+    with pytest.raises(runtime.XrayRuntimeError):
+        runtime._configuration(
+            value,
+            443,
+            CLIENT,
+            EMAIL,
+            FLOW,
+            runtime_tags=("public", "other"),
+            target_tag="public",
+        )
 
 
 @pytest.mark.parametrize("payload", [{}, {"users": []}])
@@ -329,6 +350,63 @@ def test_observe_pins_process_and_reads_every_configured_vless_inbound(runtime, 
 def test_observe_empty_users(runtime, node):
     node["responses"][1] = b"{}"
     assert runtime.observe_xray_client(**inputs()).state == "not_observed"
+
+
+def test_dynamic_3xui_inbound_is_observed_through_its_panel_tag(runtime, node):
+    dynamic = config()
+    dynamic["inbounds"] = [
+        {
+            "tag": "api",
+            "listen": "127.0.0.1",
+            "port": 62789,
+            "protocol": "tunnel",
+            "settings": {"rewriteAddress": "127.0.0.1"},
+        }
+    ]
+    node["data"][node["cfg"]] = json.dumps(dynamic).encode()
+    node["responses"][1:] = [b"{}"]
+
+    observed = runtime.observe_xray_client(
+        **inputs(
+            runtime_tags=("veltrix-reality-443",),
+            target_tag="veltrix-reality-443",
+        )
+    )
+
+    assert observed.state == "not_observed"
+    assert node["calls"][1][0][-1] == "-tag=veltrix-reality-443"
+
+
+def test_dynamic_3xui_observation_checks_every_panel_vless_tag(runtime, node):
+    dynamic = config()
+    dynamic["inbounds"] = [
+        {
+            "tag": "api",
+            "listen": "127.0.0.1",
+            "port": 62789,
+            "protocol": "tunnel",
+            "settings": {"rewriteAddress": "127.0.0.1"},
+        }
+    ]
+    node["data"][node["cfg"]] = json.dumps(dynamic).encode()
+    node["responses"][1:] = [
+        b"{}",
+        json.dumps({"users": [account()]}).encode(),
+    ]
+
+    with pytest.raises(runtime.XrayRuntimeError) as caught:
+        runtime.observe_xray_client(
+            **inputs(
+                runtime_tags=("veltrix-reality-443", "other-runtime-inbound"),
+                target_tag="veltrix-reality-443",
+            )
+        )
+
+    assert caught.value.code == "vpn_xray_runtime_conflict"
+    assert [call[0][-1] for call in node["calls"][1:]] == [
+        "-tag=veltrix-reality-443",
+        "-tag=other-runtime-inbound",
+    ]
 
 
 def test_current_3xui_binary_version_is_supported(runtime, node):

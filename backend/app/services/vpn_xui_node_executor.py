@@ -37,7 +37,6 @@ from app.services.vpn_xui_node_observation import (
     _transport,
 )
 
-
 _NUMBERS = {
     "id",
     "keepAlive",
@@ -156,7 +155,7 @@ def _wire(record: dict) -> dict:
 
 def _snapshot(
     panel: NodePanelSession, request: VpnNodeRequest, database: Path
-) -> tuple[dict[int, dict], dict | None, dict[int, str]]:
+) -> tuple[dict[int, dict], dict | None, dict[int, str], tuple[str, ...], str]:
     before = _local_inbound_ids(database)
     if _runtime(panel.request("GET", "panel/api/server/status")) != "running":
         raise XrayRuntimeError("vpn_xray_runtime_unavailable") from None
@@ -225,6 +224,22 @@ def _snapshot(
         }
     )
     target_inbound = next(row for row in rows if row["id"] == request.target.inbound_id)
+    runtime_tags = tuple(
+        row.get("tag")
+        for row in sorted(rows, key=lambda value: value["id"])
+        if row["protocol"] == "vless"
+    )
+    _require(
+        bool(runtime_tags)
+        and len(runtime_tags) == len(set(runtime_tags))
+        and all(
+            isinstance(tag, str)
+            and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tag)
+            for tag in runtime_tags
+        )
+    )
+    target_tag = target_inbound.get("tag")
+    _require(target_tag in runtime_tags)
     _require(target_inbound.get("trafficReset") == "never")
     selected = records.get(identity.record_id)
     flow = None
@@ -290,7 +305,7 @@ def _snapshot(
             ensure_ascii=True,
             allow_nan=False,
         )
-    return records, selected, inbound_policy
+    return records, selected, inbound_policy, runtime_tags, target_tag
 
 
 def _counter(database: Path, email: str) -> tuple | None:
@@ -356,7 +371,9 @@ def execute_node_client_operation(
 
     def perform(mark_mutating: Callable[[], None]) -> None:
         with panel_factory() as panel:
-            records, current, inbound_policy = _snapshot(panel, request, database_path)
+            records, current, inbound_policy, runtime_tags, target_tag = _snapshot(
+                panel, request, database_path
+            )
             counter = _counter(database_path, request.client_email)
 
             def runtime(timeout: float = 8.0) -> XrayRuntimeObservation:
@@ -365,6 +382,8 @@ def execute_node_client_operation(
                     client_uuid=request.client_uuid,
                     client_email=request.client_email,
                     flow=request.target.flow or "",
+                    runtime_tags=runtime_tags,
+                    target_tag=target_tag,
                     timeout_seconds=timeout,
                 )
                 _require(
@@ -463,11 +482,18 @@ def execute_node_client_operation(
                     )
 
             def verify() -> None:
-                latest, selected, latest_inbound_policy = _snapshot(
-                    panel, request, database_path
-                )
+                (
+                    latest,
+                    selected,
+                    latest_inbound_policy,
+                    latest_tags,
+                    latest_target_tag,
+                ) = _snapshot(panel, request, database_path)
                 _require(selected is not None)
                 _require(latest_inbound_policy == inbound_policy)
+                _require(
+                    latest_tags == runtime_tags and latest_target_tag == target_tag
+                )
                 ignored = (
                     {"updatedAt"} if current else {"id", "updatedAt", "inboundIds"}
                 )
