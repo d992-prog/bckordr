@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+from sqlalchemy import String, Text, inspect
+
 from app.db import models
 from app.db.migrations import MIGRATIONS
 from app.schemas.control import (
@@ -8,7 +10,6 @@ from app.schemas.control import (
     WorkerNodeResponse,
     WorkerNodeUpdateRequest,
 )
-from sqlalchemy import String, Text, inspect
 
 HOST_KEY_MIGRATIONS = (
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_host_key TEXT NULL",
