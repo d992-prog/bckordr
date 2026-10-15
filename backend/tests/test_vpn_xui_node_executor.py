@@ -158,6 +158,7 @@ def node(tmp_path):
             rows.append(
                 dict(
                     id=number,
+                    tag=f"inbound-{number}",
                     protocol="vless",
                     enable=True,
                     port=port,
@@ -433,6 +434,27 @@ def test_3x_ui_default_spider_path_allows_new_client(executor, node):
         connection.execute("DELETE FROM client_traffics")
 
     assert run(executor, node, allow_create=True).state == "observed"
+
+
+def test_runtime_observation_uses_the_selected_panel_inbound_tag(executor, node):
+    original = node["reader"]
+    calls = []
+
+    def tagged_reader(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+
+    node["reader"] = tagged_reader
+    node["inbounds_override"] = lambda rows: rows[0].update(
+        tag="veltrix-reality-443"
+    )
+
+    assert run(executor, node).state == "observed"
+    assert calls and all(
+        call["target_tag"] == "veltrix-reality-443"
+        and call["runtime_tags"] == ("veltrix-reality-443", "inbound-7")
+        for call in calls
+    )
 
 
 def test_readonly_noop_and_digest_owned_by_executor(executor, node):

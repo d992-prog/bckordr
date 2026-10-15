@@ -691,6 +691,7 @@ def integrated_node(tmp_path):
                 obj = [
                     {
                         "id": 3,
+                        "tag": "veltrix-reality-443",
                         "protocol": "vless",
                         "enable": True,
                         "port": 443,
