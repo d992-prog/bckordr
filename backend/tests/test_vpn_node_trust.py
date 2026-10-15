@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import asyncssh
 import pytest
+
 from app.services import vpn_node_trust
 from app.services.vpn_node_transport import MAX_PRIVATE_KEY_BYTES
 from app.services.vpn_node_trust import (
