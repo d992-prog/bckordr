@@ -544,6 +544,34 @@ class VpnNodeEligibilityResponse(BaseModel):
     blocked_reasons: list[str]
 
 
+class VpnNodeTrustRequest(BaseModel):
+    fingerprint: str = Field(
+        pattern=r"^SHA256:[A-Za-z0-9+/]{43}$",
+        max_length=50,
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class VpnNodeOnboardingResponse(BaseModel):
+    worker_id: int
+    state: str
+    fingerprint: str | None
+    job_id: int | None
+    endpoint_id: int | None
+    error_code: str | None
+
+
+class VpnNodeTestProfileResponse(BaseModel):
+    config_uri: str
+
+
+class VpnNodeConfirmRequest(BaseModel):
+    confirmed: Literal[True]
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class VpnEndpointCapacityUpdateRequest(BaseModel):
     max_active_profiles: int | None = Field(default=None, ge=1, le=100_000)
     capacity_warning_percent: int = Field(default=80, ge=1, le=100)
