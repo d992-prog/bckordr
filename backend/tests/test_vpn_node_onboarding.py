@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -20,11 +21,14 @@ from app.services.vpn_node_onboarding import (
     get_vpn_node_onboarding_view,
     run_vpn_node_onboarding_job,
 )
+from app.services.vpn_node_transport import VpnNodeTransportError
 from app.services.vpn_policy import select_public_vpn_endpoint
 from app.services.vpn_reality_endpoint_deployment import (
     EndpointInstallerDeploymentError,
 )
 from app.services.vpn_reality_endpoint_installer import make_endpoint_receipt
+
+pytest_plugins = ("test_vpn_endpoint_migrations",)
 
 
 @pytest_asyncio.fixture
@@ -41,6 +45,17 @@ async def sessions():
         yield factory
     finally:
         await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def postgres_sessions(postgres_schema):
+    async with postgres_schema.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    yield async_sessionmaker(
+        postgres_schema.engine,
+        expire_on_commit=False,
+        class_=AsyncSession,
+    )
 
 
 def _worker(**overrides) -> WorkerNode:
@@ -275,6 +290,64 @@ async def test_view_prioritizes_endpoint_then_current_or_failed_job(sessions) ->
         await session.commit()
         assert (await get_vpn_node_onboarding_view(session, worker.id)).state == "ready"
 
+        job.status = "running"
+        await session.commit()
+        assert (await get_vpn_node_onboarding_view(session, worker.id)).state == "running"
+
+
+@pytest.mark.asyncio
+async def test_view_chooses_staged_endpoint_or_failed_retry_by_recency(sessions) -> None:
+    base = datetime(2026, 10, 15, 12, tzinfo=UTC)
+    async with sessions() as session:
+        worker = _worker(
+            ssh_host_key=HOST_KEY,
+            ssh_host_key_fingerprint=HOST_FINGERPRINT,
+        )
+        session.add(worker)
+        await session.flush()
+        endpoint = VpnEndpoint(
+            worker_id=worker.id,
+            inbound_id=9,
+            public_host="192.0.2.16",
+            port=443,
+            protocol="vless",
+            transport="tcp",
+            security="reality",
+            server_name="gateway.icloud.com",
+            public_key="A" * 43,
+            short_id="aabbccddeeff0011",
+            fingerprint="chrome",
+            flow="xtls-rprx-vision",
+            status="staged",
+            health_checked_at=base,
+            created_at=base,
+            updated_at=base,
+        )
+        failed = WorkerMaintenanceJob(
+            worker_id=worker.id,
+            action="vpn_onboard",
+            status="failed",
+            error_message="vpn_onboarding_port_conflict",
+            created_at=base + timedelta(minutes=1),
+            updated_at=base + timedelta(minutes=1),
+        )
+        session.add_all([endpoint, failed])
+        await session.commit()
+
+        newer_failure = await get_vpn_node_onboarding_view(session, worker.id)
+        assert (newer_failure.state, newer_failure.error_code) == (
+            "failed",
+            "vpn_onboarding_port_conflict",
+        )
+
+        endpoint.updated_at = base + timedelta(minutes=2)
+        await session.commit()
+        newer_endpoint = await get_vpn_node_onboarding_view(session, worker.id)
+        assert (newer_endpoint.state, newer_endpoint.error_code) == (
+            "awaiting_test",
+            None,
+        )
+
 
 @pytest.mark.asyncio
 async def test_onboarding_stages_healthy_endpoint_in_exact_order(
@@ -432,6 +505,151 @@ async def test_exact_repeat_reuses_endpoint_short_id_and_preserves_custom_capaci
 
 
 @pytest.mark.asyncio
+async def test_exact_rerun_preserves_ready_endpoint_without_remote_calls(
+    sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    first_job, worker_id = await _job(sessions)
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    stages = _successful_stages(worker_id)
+    await _run_with_stages(sessions, first_job, stages)
+
+    async with sessions() as session:
+        endpoint = await session.scalar(
+            select(VpnEndpoint).where(VpnEndpoint.worker_id == worker_id)
+        )
+        worker = await session.get(WorkerNode, worker_id)
+        assert endpoint is not None and worker is not None
+        endpoint.status = "ready"
+        endpoint.verified_at = datetime.now(UTC)
+        worker.vpn_runtime_status = "ready"
+        rerun = WorkerMaintenanceJob(
+            worker_id=worker_id,
+            action="vpn_onboard",
+            status="queued",
+        )
+        session.add(rerun)
+        await session.commit()
+        rerun_id = rerun.id
+        assert await select_public_vpn_endpoint(
+            session,
+            now=datetime.now(UTC),
+            health_max_age_seconds=300,
+        ) is not None
+
+    stages[0].clear()
+    await _run_with_stages(sessions, rerun_id, stages)
+
+    assert stages[0] == []
+    async with sessions() as session:
+        endpoint = await session.scalar(
+            select(VpnEndpoint).where(VpnEndpoint.worker_id == worker_id)
+        )
+        worker = await session.get(WorkerNode, worker_id)
+        rerun = await session.get(WorkerMaintenanceJob, rerun_id)
+        assert endpoint is not None and endpoint.status == "ready"
+        assert worker is not None and worker.vpn_runtime_status == "ready"
+        assert rerun is not None and rerun.status == "succeeded"
+        assert await select_public_vpn_endpoint(
+            session,
+            now=datetime.now(UTC),
+            health_max_age_seconds=300,
+        ) is not None
+
+
+@pytest.mark.asyncio
+async def test_same_job_refreshes_stale_identity_after_worker_serialization(
+    sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    job_id, worker_id = await _job(sessions)
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    stages = _successful_stages(worker_id)
+    stale_session = sessions()
+    cached = await stale_session.get(WorkerMaintenanceJob, job_id)
+    assert cached is not None and cached.status == "queued"
+    async with sessions() as writer:
+        completed = await writer.get(WorkerMaintenanceJob, job_id)
+        assert completed is not None
+        completed.status = "succeeded"
+        completed.finished_at = datetime.now(UTC)
+        await writer.commit()
+
+    await _run_with_stages(
+        lambda: stale_session,
+        job_id,
+        stages,
+    )
+
+    assert stages[0] == []
+    async with sessions() as session:
+        completed = await session.get(WorkerMaintenanceJob, job_id)
+        assert completed is not None and completed.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_same_job_concurrent_postgres_runner_executes_remote_pipeline_once(
+    postgres_sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    job_id, worker_id = await _job(postgres_sessions)
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    stages = _successful_stages(worker_id)
+    calls, original_bootstrap = stages[0], stages[1]
+    started = asyncio.Event()
+    second_lock_attempted = asyncio.Event()
+    release = asyncio.Event()
+    original_lock = onboarding.lock_vpn_worker
+    lock_attempts = 0
+
+    async def observed_lock(*args, **kwargs):
+        nonlocal lock_attempts
+        lock_attempts += 1
+        if lock_attempts == 2:
+            second_lock_attempted.set()
+        return await original_lock(*args, **kwargs)
+
+    monkeypatch.setattr(onboarding, "lock_vpn_worker", observed_lock)
+
+    async def blocking_bootstrap(*args, **kwargs):
+        result = await original_bootstrap(*args, **kwargs)
+        started.set()
+        await release.wait()
+        return result
+
+    first = asyncio.create_task(
+        _run_with_stages(
+            postgres_sessions,
+            job_id,
+            stages,
+            bootstrap=blocking_bootstrap,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=5)
+    second = asyncio.create_task(
+        _run_with_stages(postgres_sessions, job_id, stages)
+    )
+    await asyncio.wait_for(second_lock_attempted.wait(), timeout=5)
+    assert calls == ["bootstrap"]
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=20)
+
+    assert calls == [
+        "bootstrap",
+        "deploy_node",
+        "install_endpoint_helper",
+        "ensure",
+        "health",
+    ]
+    async with postgres_sessions() as session:
+        job = await session.get(WorkerMaintenanceJob, job_id)
+        assert job is not None and job.status == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_endpoint_uncertainty_inspects_before_resuming(
     sessions, tmp_path, monkeypatch
 ) -> None:
@@ -493,6 +711,30 @@ async def test_bootstrap_failures_persist_only_safe_codes(
         assert job is not None and job.error_message == persisted_code
         assert job.log is None
         assert worker is not None and worker.vpn_last_error == persisted_code
+
+
+@pytest.mark.asyncio
+async def test_read_only_health_transport_failure_uses_health_error(
+    sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    job_id, worker_id = await _job(sessions)
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    stages = _successful_stages(worker_id)
+
+    async def fail_health(*_args, **_kwargs):
+        raise VpnNodeTransportError("preflight")
+
+    await _run_with_stages(sessions, job_id, stages, health=fail_health)
+
+    async with sessions() as session:
+        job = await session.get(WorkerMaintenanceJob, job_id)
+        worker = await session.get(WorkerNode, worker_id)
+        assert job is not None
+        assert job.error_message == "vpn_onboarding_health_failed"
+        assert worker is not None
+        assert worker.vpn_last_error == "vpn_onboarding_health_failed"
 
 
 @pytest.mark.asyncio

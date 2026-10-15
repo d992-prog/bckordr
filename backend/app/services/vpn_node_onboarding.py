@@ -51,7 +51,13 @@ from app.services.vpn_reality_endpoint_deployment import (
     install_endpoint_installer_over_ssh,
 )
 from app.services.vpn_reality_endpoint_installer import (
+    FINGERPRINT,
+    FLOW,
+    PORT,
+    PROTOCOL,
     REALITY_SERVER_NAME,
+    SECURITY,
+    TRANSPORT,
     EndpointInstallRequest,
 )
 from app.services.vpn_reality_endpoint_registration import (
@@ -112,26 +118,62 @@ async def get_vpn_node_onboarding_view(
     endpoint = await session.scalar(
         select(VpnEndpoint)
         .where(VpnEndpoint.worker_id == worker_id)
-        .order_by(VpnEndpoint.id.desc())
+        .order_by(VpnEndpoint.updated_at.desc(), VpnEndpoint.id.desc())
+        .execution_options(populate_existing=True)
         .limit(1)
     )
-    job = await session.scalar(
+    active_job = await session.scalar(
+        select(WorkerMaintenanceJob)
+        .where(
+            WorkerMaintenanceJob.worker_id == worker_id,
+            WorkerMaintenanceJob.action == "vpn_onboard",
+            WorkerMaintenanceJob.status.in_(("queued", "running")),
+        )
+        .order_by(
+            WorkerMaintenanceJob.updated_at.desc(),
+            WorkerMaintenanceJob.id.desc(),
+        )
+        .execution_options(populate_existing=True)
+        .limit(1)
+    )
+    job = active_job or await session.scalar(
         select(WorkerMaintenanceJob)
         .where(
             WorkerMaintenanceJob.worker_id == worker_id,
             WorkerMaintenanceJob.action == "vpn_onboard",
         )
-        .order_by(WorkerMaintenanceJob.id.desc())
+        .order_by(
+            WorkerMaintenanceJob.updated_at.desc(),
+            WorkerMaintenanceJob.id.desc(),
+        )
+        .execution_options(populate_existing=True)
         .limit(1)
     )
-    if endpoint is not None and endpoint.status == "ready":
-        state = "ready"
-    elif job is not None and job.status in {"queued", "running"}:
+    error_source = None
+    if active_job is not None:
         state = job.status
+    elif endpoint is not None and endpoint.status == "ready":
+        state = "ready"
     elif endpoint is not None and endpoint.status == "staged":
-        state = "failed" if endpoint.last_error_code else "awaiting_test"
+        endpoint_updated = endpoint.updated_at
+        job_updated = job.updated_at if job is not None else None
+        if (
+            job is not None
+            and job.status == "failed"
+            and job_updated is not None
+            and (
+                endpoint_updated is None
+                or _as_utc(job_updated) > _as_utc(endpoint_updated)
+            )
+        ):
+            state = "failed"
+            error_source = job.error_message
+        else:
+            state = "failed" if endpoint.last_error_code else "awaiting_test"
+            error_source = endpoint.last_error_code
     elif job is not None and job.status == "failed":
         state = "failed"
+        error_source = job.error_message
     elif not worker.ssh_access_configured:
         state = "needs_preflight"
     elif not worker.ssh_host_key or not worker.ssh_host_key_fingerprint:
@@ -140,9 +182,11 @@ async def get_vpn_node_onboarding_view(
         state = "ready_to_start"
     error = None
     if state == "failed":
-        candidate = endpoint.last_error_code if endpoint is not None else None
-        candidate = candidate or (job.error_message if job is not None else None)
-        error = candidate if candidate in SAFE_ONBOARDING_ERRORS else "vpn_onboarding_health_failed"
+        error = (
+            error_source
+            if error_source in SAFE_ONBOARDING_ERRORS
+            else "vpn_onboarding_health_failed"
+        )
     return VpnNodeOnboardingView(
         worker_id=worker_id,
         state=state,
@@ -151,6 +195,10 @@ async def get_vpn_node_onboarding_view(
         endpoint_id=endpoint.id if endpoint is not None else None,
         error_code=error,
     )
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _fail(code: str) -> None:
@@ -240,25 +288,22 @@ async def run_vpn_node_onboarding_job(
     """Stage one exact protected endpoint; retries re-observe every remote stage."""
     try:
         async with session_factory() as session:
-            job = await session.get(WorkerMaintenanceJob, job_id)
-            if job is None or job.action != "vpn_onboard" or job.status == "succeeded":
+            job_hint = await session.get(WorkerMaintenanceJob, job_id)
+            if job_hint is None or job_hint.action != "vpn_onboard":
                 return
-            worker = await session.get(WorkerNode, job.worker_id)
+            worker = await lock_vpn_worker(session, job_hint.worker_id)
             if worker is None:
                 _fail("vpn_onboarding_worker_unavailable")
-            job.status = "running"
-            job.error_message = None
-            job.log = None
-            job.started_at = job.started_at or utcnow()
-            job.updated_at = utcnow()
-            worker.vpn_runtime_status = "onboarding"
-            worker.vpn_last_error = None
-            await session.commit()
-
-            worker = await lock_vpn_worker(session, job.worker_id)
+            job = await session.scalar(
+                select(WorkerMaintenanceJob)
+                .where(WorkerMaintenanceJob.id == job_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+            if job is None or job.action != "vpn_onboard" or job.status == "succeeded":
+                return
             if (
-                worker is None
-                or worker.archived_at is not None
+                worker.archived_at is not None
                 or worker.status != "ready"
                 or worker.is_enabled is not True
                 or worker.vpn_enabled is not True
@@ -268,6 +313,44 @@ async def run_vpn_node_onboarding_job(
                 or not worker.ssh_host_key_fingerprint
             ):
                 _fail("vpn_onboarding_worker_unavailable")
+
+            settings = get_settings()
+            public_host = worker.vpn_public_host or worker.ssh_host or worker.ip_address
+            if not public_host:
+                _fail("vpn_onboarding_worker_unavailable")
+            short_id = _short_id(settings.session_secret_key, worker.id, public_host)
+            ready_endpoint = await session.scalar(
+                select(VpnEndpoint)
+                .where(
+                    VpnEndpoint.worker_id == worker.id,
+                    VpnEndpoint.public_host == public_host,
+                    VpnEndpoint.port == PORT,
+                    VpnEndpoint.protocol == PROTOCOL,
+                    VpnEndpoint.transport == TRANSPORT,
+                    VpnEndpoint.security == SECURITY,
+                    VpnEndpoint.server_name == REALITY_SERVER_NAME,
+                    VpnEndpoint.short_id == short_id,
+                    VpnEndpoint.fingerprint == FINGERPRINT,
+                    VpnEndpoint.flow == FLOW,
+                    VpnEndpoint.status == "ready",
+                    VpnEndpoint.verified_at.is_not(None),
+                    VpnEndpoint.last_error_code.is_(None),
+                )
+                .order_by(VpnEndpoint.id.asc())
+                .execution_options(populate_existing=True)
+                .limit(1)
+            )
+            if ready_endpoint is not None:
+                completed_at = utcnow()
+                job.status = "succeeded"
+                job.log = "vpn_onboarding_ready"
+                job.error_message = None
+                job.started_at = job.started_at or completed_at
+                job.finished_at = completed_at
+                job.updated_at = completed_at
+                await session.commit()
+                return
+
             other_job = await session.scalar(
                 select(WorkerMaintenanceJob.id).where(
                     WorkerMaintenanceJob.worker_id == worker.id,
@@ -282,7 +365,13 @@ async def run_vpn_node_onboarding_job(
             ):
                 _fail("vpn_onboarding_worker_busy")
 
-            settings = get_settings()
+            job.status = "running"
+            job.error_message = None
+            job.log = None
+            job.started_at = job.started_at or utcnow()
+            job.updated_at = utcnow()
+            worker.vpn_runtime_status = "onboarding"
+            worker.vpn_last_error = None
             known_hosts_path = Path(settings.vpn_control_known_hosts_path)
             if not known_hosts_path.is_absolute():
                 _fail("vpn_onboarding_failed")
@@ -293,10 +382,6 @@ async def run_vpn_node_onboarding_job(
             if not _pin_matches(snapshot, worker):
                 _fail("vpn_onboarding_host_key_changed")
 
-            public_host = worker.vpn_public_host or worker.ssh_host or worker.ip_address
-            if not public_host:
-                _fail("vpn_onboarding_worker_unavailable")
-            short_id = _short_id(settings.session_secret_key, worker.id, public_host)
             source_root = Path(__file__).resolve().parents[2]
             with TemporaryDirectory(prefix="veltrix-vpn-onboard-") as temporary:
                 directory = Path(temporary)
@@ -386,22 +471,26 @@ async def run_vpn_node_onboarding_job(
                     receipt,
                     controlled_worker_id=worker.id,
                 )
+                endpoint_was_ready = endpoint.status == "ready"
                 if endpoint.max_active_profiles is None:
                     endpoint.max_active_profiles = 20
                 checked_at = datetime.now(UTC)
                 checked_at_ms = int(checked_at.timestamp() * 1000)
-                health = await health_transport(
-                    snapshot,
-                    VpnNodeHealthRequest(
-                        worker_id=worker.id,
-                        target=_target(endpoint),
-                        checked_at_ms=checked_at_ms,
-                    ),
-                    now_ms=checked_at_ms,
-                )
+                try:
+                    health = await health_transport(
+                        snapshot,
+                        VpnNodeHealthRequest(
+                            worker_id=worker.id,
+                            target=_target(endpoint),
+                            checked_at_ms=checked_at_ms,
+                        ),
+                        now_ms=checked_at_ms,
+                    )
+                except VpnNodeTransportError:
+                    _fail("vpn_onboarding_health_failed")
                 if health.state != "healthy":
                     _fail(health.error_code or "vpn_onboarding_health_failed")
-                endpoint.status = "staged"
+                endpoint.status = "ready" if endpoint_was_ready else "staged"
                 endpoint.health_checked_at = checked_at
                 endpoint.last_error_code = None
                 worker.vpn_inbound_id = endpoint.inbound_id
@@ -411,11 +500,17 @@ async def run_vpn_node_onboarding_job(
                 worker.vpn_inbound_transport = endpoint.transport
                 worker.vpn_inbound_security = endpoint.security
                 worker.vpn_listener_status = "listening"
-                worker.vpn_runtime_status = "awaiting_test"
+                worker.vpn_runtime_status = (
+                    "ready" if endpoint_was_ready else "awaiting_test"
+                )
                 worker.vpn_last_checked_at = checked_at
                 worker.vpn_last_error = None
                 job.status = "succeeded"
-                job.log = "vpn_onboarding_awaiting_test"
+                job.log = (
+                    "vpn_onboarding_ready"
+                    if endpoint_was_ready
+                    else "vpn_onboarding_awaiting_test"
+                )
                 job.error_message = None
                 job.finished_at = utcnow()
                 job.updated_at = utcnow()
