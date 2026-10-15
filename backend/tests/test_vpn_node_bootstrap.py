@@ -28,6 +28,7 @@ from app.services.vpn_node_bootstrap import (
 )
 from app.services.vpn_node_entrypoint import _node_config as parse_node_config
 from app.services.vpn_node_transport import VpnNodeTransportSnapshot
+from app.services.vpn_xui_node_http import NodePanelError
 from app.services.worker_maintenance import (
     XUI_INSTALL_COMMIT,
     XUI_INSTALL_SHA256,
@@ -959,6 +960,88 @@ def test_preinstalled_xui_is_stopped_for_backup_and_token_then_restarted(
         "ready",
         "status",
     ]
+
+
+def test_bootstrap_waits_for_panel_listener_after_service_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    _private_file(layout.xui_binaries[0])
+    _database(layout.databases[0])
+    attempts = 0
+    sleeps: list[float] = []
+
+    def run(command, **_kwargs):
+        service = _service_result(command)
+        if service is not None:
+            return service
+        _assert_unique_token_command(command, layout.xui_binaries[0])
+        _record_token(layout.databases[0], command[-1])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            b"apiToken: synthetic-bootstrap-token-0123456789\n",
+            b"",
+        )
+
+    def panel(panel_url: str, *, api_token: str):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise NodePanelError("vpn_xui_request_failed")
+        return _Panel(panel_url, api_token=api_token)
+
+    monkeypatch.setattr(vpn_node_bootstrap, "_sleep", sleeps.append)
+
+    receipt = _prepare_vpn_node(
+        layout,
+        worker_id=16,
+        panel_url="http://127.0.0.1:2053/panel/",
+        install_command=_build_vpn_install_command(),
+        xui_version=XUI_VERSION,
+        architecture="amd64",
+        **_lifecycle_commands(),
+        port_occupied=lambda _port: False,
+        runner=run,
+        panel_session_factory=panel,
+        owner_uid=os.getuid() if hasattr(os, "getuid") else 0,
+        require_posix=False,
+    )
+
+    assert receipt.state == "prepared"
+    assert attempts == 3
+    assert sleeps == [0.25, 0.25]
+
+
+def test_panel_readiness_uses_one_ten_second_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 0.0
+    timeouts: list[float] = []
+
+    def monotonic() -> float:
+        return now
+
+    def panel(_panel_url: str, *, api_token: str, timeout_seconds: float):
+        nonlocal now
+        assert api_token == "synthetic-token"
+        timeouts.append(timeout_seconds)
+        now += timeout_seconds
+        raise NodePanelError("vpn_xui_request_failed")
+
+    monkeypatch.setattr(vpn_node_bootstrap, "_monotonic", monotonic)
+    monkeypatch.setattr(vpn_node_bootstrap, "_default_panel_session", panel)
+
+    with pytest.raises(NodePanelError, match="vpn_xui_request_failed"):
+        vpn_node_bootstrap._wait_for_panel_session(
+            "http://127.0.0.1:2053/panel/",
+            "synthetic-token",
+            None,
+        )
+
+    assert now == 10.0
+    assert timeouts == [10.0]
 
 
 def test_start_failure_restops_xui_and_leaves_reconciliation_marker(

@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -47,6 +48,8 @@ MAX_REMOTE_OUTPUT_BYTES = 4096
 MAX_LOCAL_OUTPUT_BYTES = 64 * 1024
 MAX_XUI_BINARY_BYTES = 128 * 1024 * 1024
 BOOTSTRAP_TIMEOUT = 900.0
+_monotonic = time.monotonic
+_sleep = time.sleep
 XUI_START_COMMAND = (
     "systemctl enable --now x-ui.service || systemctl enable --now x-ui || "
     "systemctl enable --now 3x-ui.service"
@@ -849,10 +852,48 @@ def _linux_port_occupied(port: int) -> bool:
         _fail("vpn_node_bootstrap_environment_invalid")
 
 
-def _default_panel_session(panel_url: str, *, api_token: str):
+def _default_panel_session(
+    panel_url: str,
+    *,
+    api_token: str,
+    timeout_seconds: float,
+):
     from app.services.vpn_xui_node_http import NodePanelSession
 
-    return NodePanelSession(panel_url, api_token=api_token)
+    return NodePanelSession(
+        panel_url,
+        api_token=api_token,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _wait_for_panel_session(panel_url: str, token: str, panel_session_factory) -> None:
+    from app.services.vpn_xui_node_http import NodePanelError
+
+    deadline = _monotonic() + 10.0
+    while True:
+        remaining = deadline - _monotonic()
+        if remaining <= 0:
+            raise NodePanelError("vpn_xui_request_failed")
+        try:
+            panel = (
+                _default_panel_session(
+                    panel_url,
+                    api_token=token,
+                    timeout_seconds=remaining,
+                )
+                if panel_session_factory is None
+                else panel_session_factory(panel_url, api_token=token)
+            )
+            with panel:
+                return
+        except NodePanelError as error:
+            if error.code != "vpn_xui_request_failed":
+                raise
+            remaining = deadline - _monotonic()
+            if remaining <= 0:
+                raise
+            _sleep(min(0.25, remaining))
 
 
 def _prepare_vpn_node(
@@ -868,7 +909,7 @@ def _prepare_vpn_node(
     ready_command: str | None = None,
     port_occupied=_linux_port_occupied,
     runner=None,
-    panel_session_factory=_default_panel_session,
+    panel_session_factory=None,
     owner_uid: int = 0,
     require_posix: bool = True,
     pre_install_commands: tuple[str, ...] = (),
@@ -973,8 +1014,7 @@ def _prepare_vpn_node(
                 _fail("vpn_node_bootstrap_foreign_state")
             _verify_xui_version(binary, xui_version, runner)
             token = token_raw[:-1].decode("ascii")
-            with panel_session_factory(panel_url, api_token=token):
-                pass
+            _wait_for_panel_session(panel_url, token, panel_session_factory)
             return VpnNodeBootstrapReceipt(
                 "already_prepared", panel_url, str(database), xui_version
             )
@@ -1119,8 +1159,7 @@ def _prepare_vpn_node(
                 )
                 if result.returncode != 0:
                     _fail("vpn_node_bootstrap_mutation_uncertain")
-            with panel_session_factory(panel_url, api_token=token):
-                pass
+            _wait_for_panel_session(panel_url, token, panel_session_factory)
             _atomic_private(layout.token, token_raw + b"\n")
             _atomic_private(
                 layout.config,
