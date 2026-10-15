@@ -1391,8 +1391,6 @@ def install_node_release(
             owner_uid=owner_uid,
             require_posix=require_posix,
         )
-    if layout.previous.exists() or layout.previous.is_symlink():
-        _fail()
     old_active = None
     if layout.active.exists() or layout.active.is_symlink():
         _private_regular(
@@ -1422,6 +1420,22 @@ def install_node_release(
             owner_uid,
             enforce_metadata=require_posix,
         )
+    previous_present = layout.previous.exists() or layout.previous.is_symlink()
+    if (
+        old_active == bundle
+        and config_preexisting
+        and journal_identity is not None
+    ):
+        if previous_present:
+            _private_regular(
+                layout.previous,
+                owner_uid,
+                bounded=MAX_BUNDLE_BYTES,
+                enforce_metadata=require_posix,
+            )
+        return "installed"
+    if previous_present:
+        _fail()
 
     candidate = layout.active.parent / f".candidate-{uuid4().hex}.pyz"
     marker = json.dumps(
