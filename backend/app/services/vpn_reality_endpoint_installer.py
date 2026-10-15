@@ -1036,7 +1036,16 @@ def execute_endpoint_action(
                     panel, database_path, request, present=True
                 )
                 return _endpoint_receipt(request, row, public_key, "acceptance_client_present")
-            if not matches or len(row["settings"]["clients"]) != 1 or len(_attached_clients(row, clients)) != 1:
+            attached_clients = _attached_clients(row, clients)
+            if not row["settings"]["clients"] and not attached_clients:
+                return _endpoint_receipt(
+                    request, row, public_key, "acceptance_client_removed"
+                )
+            if (
+                not matches
+                or len(row["settings"]["clients"]) != 1
+                or len(attached_clients) != 1
+            ):
                 _fail("vpn_endpoint_install_identity_mismatch")
             route_email = quote(request.acceptance_email, safe="")
             panel.request("POST", f"panel/api/clients/del/{route_email}", body={}, mutation=True)

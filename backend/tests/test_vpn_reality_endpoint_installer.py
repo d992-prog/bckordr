@@ -512,10 +512,19 @@ def test_disposable_acceptance_client_add_and_exact_cleanup_never_echo_identity(
         module.parse_install_request(_request(action="remove_acceptance_client", **common)),
         database_path=Path("C:/synthetic/panel.db"), panel_factory=lambda: panel,
     )
+    removed_again = module.execute_endpoint_action(
+        module.parse_install_request(_request(action="remove_acceptance_client", **common)),
+        database_path=Path("C:/synthetic/panel.db"), panel_factory=lambda: panel,
+    )
 
     assert added.state == "acceptance_client_present"
-    assert removed.state == "acceptance_client_removed"
-    assert added.receipt_digest == removed.receipt_digest == endpoint.receipt_digest
+    assert removed.state == removed_again.state == "acceptance_client_removed"
+    assert (
+        added.receipt_digest
+        == removed.receipt_digest
+        == removed_again.receipt_digest
+        == endpoint.receipt_digest
+    )
     public_output = module.encode_install_receipt(added) + module.encode_install_receipt(removed)
     assert CLIENT_UUID.encode() not in public_output
     assert CLIENT_EMAIL.encode() not in public_output
@@ -531,6 +540,92 @@ def test_disposable_acceptance_client_add_and_exact_cleanup_never_echo_identity(
     assert add_body["client"]["trafficResetDay"] == 1
     assert panel.rows[0]["settings"]["clients"] == []
     assert panel.clients == []
+    assert [route for _, route, _, mutation in panel.events if mutation] == [
+        "panel/api/clients/add",
+        "panel/api/clients/del/acceptance-20260923%40example.test",
+    ]
+
+
+def test_exact_acceptance_cleanup_is_idempotent_for_a_fully_clean_endpoint(
+    monkeypatch,
+) -> None:
+    module = _module()
+    panel = FakePanel([_exact_row(module)])
+    _mock_complete_inventory(module, monkeypatch, panel)
+    endpoint = module.make_endpoint_receipt(
+        state="observed", worker_id=15, inbound_id=27,
+        public_host="vpn.example.test", server_name="gateway.icloud.com",
+        public_key=PUBLIC_KEY, short_id="0123456789abcdef",
+    )
+
+    receipt = module.execute_endpoint_action(
+        module.parse_install_request(
+            _request(
+                action="remove_acceptance_client",
+                inbound_id=27,
+                receipt_digest=endpoint.receipt_digest,
+                acceptance_uuid=CLIENT_UUID,
+                acceptance_email=CLIENT_EMAIL,
+            )
+        ),
+        database_path=Path("C:/synthetic/panel.db"),
+        panel_factory=lambda: panel,
+    )
+
+    assert receipt.state == "acceptance_client_removed"
+    assert receipt.receipt_digest == endpoint.receipt_digest
+    assert all(not mutation for _, _, _, mutation in panel.events)
+
+
+@pytest.mark.parametrize("client_state", ["foreign", "partial"])
+def test_exact_acceptance_cleanup_rejects_foreign_or_partial_clients(
+    monkeypatch, client_state
+) -> None:
+    module = _module()
+    embedded = {
+        "id": CLIENT_UUID if client_state == "partial" else "other-client",
+        "email": CLIENT_EMAIL if client_state == "partial" else "other@local",
+        "enable": True,
+        "flow": "xtls-rprx-vision",
+    }
+    attached = []
+    if client_state == "foreign":
+        attached.append(
+            {
+                "id": 91,
+                "uuid": "33333333-3333-4333-8333-333333333333",
+                "email": "other@local",
+                "enable": True,
+                "inboundIds": [27],
+            }
+        )
+    panel = FakePanel([_exact_row(module, clients=[embedded])], attached)
+    _mock_complete_inventory(module, monkeypatch, panel)
+    endpoint = module.make_endpoint_receipt(
+        state="observed", worker_id=15, inbound_id=27,
+        public_host="vpn.example.test", server_name="gateway.icloud.com",
+        public_key=PUBLIC_KEY, short_id="0123456789abcdef",
+    )
+    request = module.parse_install_request(
+        _request(
+            action="remove_acceptance_client",
+            inbound_id=27,
+            receipt_digest=endpoint.receipt_digest,
+            acceptance_uuid=CLIENT_UUID,
+            acceptance_email=CLIENT_EMAIL,
+        )
+    )
+
+    with pytest.raises(
+        module.EndpointInstallError, match="^vpn_endpoint_install_identity_mismatch$"
+    ):
+        module.execute_endpoint_action(
+            request,
+            database_path=Path("C:/synthetic/panel.db"),
+            panel_factory=lambda: panel,
+        )
+
+    assert all(not mutation for _, _, _, mutation in panel.events)
 
 
 def test_acceptance_client_waits_for_eventually_consistent_panel_inventory(monkeypatch) -> None:
