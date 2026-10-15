@@ -13,7 +13,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import BackgroundTasks, FastAPI
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
 
@@ -142,10 +142,56 @@ async def _seed_admin(session: AsyncSession) -> User:
     return admin
 
 
+def _locks_worker(statement) -> bool:
+    return (
+        statement._for_update_arg is not None
+        and statement.column_descriptions
+        and statement.column_descriptions[0].get("entity") is WorkerNode
+    )
+
+
+async def _wait_until_postgres_session_is_blocked(pg_sessions, pid: int) -> bool:
+    async with pg_sessions() as observer:
+        while True:
+            blocked = await observer.scalar(
+                text("SELECT cardinality(pg_blocking_pids(:pid)) > 0"),
+                {"pid": pid},
+            )
+            if blocked:
+                return True
+            await asyncio.sleep(0.01)
+
+
 @pytest.mark.asyncio
 async def test_concurrent_start_requests_create_one_active_job(
-    pg_sessions, monkeypatch
+    pg_sessions, postgres_schema, monkeypatch
 ) -> None:
+    first_locked = asyncio.Event()
+    second_attempted = asyncio.Event()
+    release_first = asyncio.Event()
+    second_pid: dict[str, int] = {}
+
+    class StartSession(AsyncSession):
+        held_worker = False
+
+        async def scalar(self, statement, **kwargs):
+            if not self.held_worker and _locks_worker(statement):
+                self.held_worker = True
+                pid = int(await super().scalar(text("SELECT pg_backend_pid()")))
+                if self.info["role"] == "first":
+                    result = await super().scalar(statement, **kwargs)
+                    first_locked.set()
+                    await asyncio.wait_for(release_first.wait(), timeout=5)
+                    return result
+                second_pid["value"] = pid
+                second_attempted.set()
+            return await super().scalar(statement, **kwargs)
+
+    start_sessions = async_sessionmaker(
+        postgres_schema.engine,
+        expire_on_commit=False,
+        class_=StartSession,
+    )
     async with pg_sessions() as session:
         admin = await _seed_admin(session)
         worker = _worker()
@@ -155,9 +201,10 @@ async def test_concurrent_start_requests_create_one_active_job(
 
     app = FastAPI()
     app.include_router(control_router)
+    roles = iter(("first", "second"))
 
     async def override_get_db():
-        async with pg_sessions() as session:
+        async with start_sessions(info={"role": next(roles)}) as session:
             yield session
 
     async def override_admin():
@@ -175,12 +222,28 @@ async def test_concurrent_start_requests_create_one_active_job(
         base_url="http://testserver",
         headers={"Origin": "http://testserver"},
     ) as client:
+        first_request = asyncio.create_task(
+            client.post(f"/control/workers/{worker_id}/vpn-onboarding/start")
+        )
+        await asyncio.wait_for(first_locked.wait(), timeout=5)
+        second_request = asyncio.create_task(
+            client.post(f"/control/workers/{worker_id}/vpn-onboarding/start")
+        )
+        await asyncio.wait_for(second_attempted.wait(), timeout=5)
+        try:
+            assert await asyncio.wait_for(
+                _wait_until_postgres_session_is_blocked(
+                    pg_sessions,
+                    second_pid["value"],
+                ),
+                timeout=3,
+            )
+            assert not first_request.done()
+            assert not second_request.done()
+        finally:
+            release_first.set()
         first, second = await asyncio.wait_for(
-            asyncio.gather(
-                client.post(f"/control/workers/{worker_id}/vpn-onboarding/start"),
-                client.post(f"/control/workers/{worker_id}/vpn-onboarding/start"),
-            ),
-            timeout=10,
+            asyncio.gather(first_request, second_request), timeout=10
         )
 
     assert first.status_code == second.status_code == 202
@@ -215,28 +278,42 @@ async def test_onboarding_and_customer_provisioning_cannot_share_worker(
     postgres_schema,
 ) -> None:
     worker_locked = asyncio.Event()
+    provisioning_attempted = asyncio.Event()
     release_onboarding = asyncio.Event()
+    provisioning_pid: dict[str, int] = {}
 
     class OnboardingSession(AsyncSession):
         held_worker = False
 
         async def scalar(self, statement, **kwargs):
             result = await super().scalar(statement, **kwargs)
-            if (
-                not self.held_worker
-                and statement._for_update_arg is not None
-                and statement.column_descriptions
-                and statement.column_descriptions[0].get("entity") is WorkerNode
-            ):
+            if not self.held_worker and _locks_worker(statement):
                 self.held_worker = True
                 worker_locked.set()
                 await asyncio.wait_for(release_onboarding.wait(), timeout=5)
             return result
 
+    class ProvisioningSession(AsyncSession):
+        attempted_worker = False
+
+        async def scalar(self, statement, **kwargs):
+            if not self.attempted_worker and _locks_worker(statement):
+                self.attempted_worker = True
+                provisioning_pid["value"] = int(
+                    await super().scalar(text("SELECT pg_backend_pid()"))
+                )
+                provisioning_attempted.set()
+            return await super().scalar(statement, **kwargs)
+
     onboarding_sessions = async_sessionmaker(
         postgres_schema.engine,
         expire_on_commit=False,
         class_=OnboardingSession,
+    )
+    provisioning_sessions = async_sessionmaker(
+        postgres_schema.engine,
+        expire_on_commit=False,
+        class_=ProvisioningSession,
     )
     async with pg_sessions() as session:
         admin = await _seed_admin(session)
@@ -284,8 +361,7 @@ async def test_onboarding_and_customer_provisioning_cannot_share_worker(
             )
 
     async def provision_customer() -> str:
-        await asyncio.wait_for(worker_locked.wait(), timeout=5)
-        async with pg_sessions() as session:
+        async with provisioning_sessions() as session:
             try:
                 await stage_vpn_control_operation(
                     session,
@@ -299,10 +375,21 @@ async def test_onboarding_and_customer_provisioning_cannot_share_worker(
             raise AssertionError("customer provisioning shared an onboarding worker")
 
     onboarding = asyncio.create_task(start_onboarding())
-    provisioning = asyncio.create_task(provision_customer())
     await asyncio.wait_for(worker_locked.wait(), timeout=5)
-    await asyncio.sleep(0)
-    release_onboarding.set()
+    provisioning = asyncio.create_task(provision_customer())
+    await asyncio.wait_for(provisioning_attempted.wait(), timeout=5)
+    try:
+        assert await asyncio.wait_for(
+            _wait_until_postgres_session_is_blocked(
+                pg_sessions,
+                provisioning_pid["value"],
+            ),
+            timeout=3,
+        )
+        assert not onboarding.done()
+        assert not provisioning.done()
+    finally:
+        release_onboarding.set()
     response, error_code = await asyncio.wait_for(
         asyncio.gather(onboarding, provisioning), timeout=10
     )
