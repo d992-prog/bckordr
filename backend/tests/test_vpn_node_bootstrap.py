@@ -227,7 +227,8 @@ def _layout(tmp_path: Path) -> BootstrapLayout:
     auth = state / "control-auth"
     binary = tmp_path / "usr" / "local" / "x-ui" / "x-ui"
     database = tmp_path / "etc" / "x-ui" / "x-ui.db"
-    for directory in (state, auth, binary.parent, database.parent):
+    release_parent = tmp_path / "opt"
+    for directory in (state, auth, binary.parent, database.parent, release_parent):
         directory.mkdir(parents=True, exist_ok=True)
         directory.chmod(0o700)
     return BootstrapLayout(
@@ -238,6 +239,8 @@ def _layout(tmp_path: Path) -> BootstrapLayout:
         provenance=auth / "bootstrap-state.json",
         marker=auth / "bootstrap-reconciliation.json",
         backup=state / "backups" / "x-ui-before-api-token.db",
+        release_root=release_parent / "veltrix-vpn",
+        release_current=release_parent / "veltrix-vpn" / "current",
         xui_binaries=(binary,),
         databases=(database,),
     )
@@ -359,6 +362,33 @@ def test_exact_existing_token_and_config_are_idempotent(tmp_path: Path) -> None:
     assert seen == [("http://127.0.0.1:2053/panel/", token)]
 
 
+def test_existing_xui_bootstrap_creates_missing_release_directories(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    assert not layout.release_root.exists()
+    assert not layout.release_current.exists()
+    _prepared(layout)
+
+    _prepare_vpn_node(
+        layout,
+        worker_id=16,
+        panel_url="http://127.0.0.1:2053/panel/",
+        install_command=_build_vpn_install_command(),
+        xui_version=XUI_VERSION,
+        architecture="amd64",
+        **_lifecycle_commands(),
+        port_occupied=lambda _port: True,
+        runner=_service_result,
+        panel_session_factory=_Panel,
+        owner_uid=os.getuid() if hasattr(os, "getuid") else 0,
+        require_posix=False,
+    )
+
+    assert layout.release_root.is_dir()
+    assert layout.release_current.is_dir()
+
+
 @pytest.mark.parametrize(
     ("fault", "code"),
     [
@@ -456,6 +486,8 @@ def test_missing_xui_rejects_unsafe_install_parent_before_install(
         provenance=base.provenance,
         marker=base.marker,
         backup=base.backup,
+        release_root=base.release_root,
+        release_current=base.release_current,
         xui_binaries=(unsafe_parent / "x-ui",),
         databases=base.databases,
     )
@@ -497,6 +529,8 @@ def test_missing_xui_runs_the_current_pinned_install_command(tmp_path: Path) -> 
             if service is not None:
                 return service
             assert command == _build_vpn_install_command()
+            assert layout.release_root.is_dir()
+            assert layout.release_current.is_dir()
             _private_file(layout.xui_binaries[0])
             _database(layout.databases[0])
             return subprocess.CompletedProcess(command, 0, b"3x-ui installed\n", b"")
@@ -536,6 +570,68 @@ def test_missing_xui_runs_the_current_pinned_install_command(tmp_path: Path) -> 
         if isinstance(command, list) and "-tokenName" in command
     )
     assert XUI_VERSION in _build_vpn_install_command()
+
+    root_before = layout.release_root.stat()
+    current_before = layout.release_current.stat()
+    repeated = _prepare_vpn_node(
+        layout,
+        worker_id=16,
+        panel_url="http://127.0.0.1:2053/panel/",
+        install_command=_build_vpn_install_command(),
+        xui_version=XUI_VERSION,
+        architecture="amd64",
+        **_lifecycle_commands(),
+        port_occupied=lambda _port: True,
+        runner=run,
+        panel_session_factory=_Panel,
+        owner_uid=os.getuid() if hasattr(os, "getuid") else 0,
+        require_posix=False,
+    )
+    assert repeated.state == "already_prepared"
+    assert layout.release_root.stat().st_ino == root_before.st_ino
+    assert layout.release_current.stat().st_ino == current_before.st_ino
+
+
+def test_missing_xui_rejects_unsafe_release_parent_before_install(
+    tmp_path: Path,
+) -> None:
+    base = _layout(tmp_path)
+    unsafe_parent = tmp_path / "unsafe-release-parent"
+    unsafe_parent.write_bytes(b"foreign")
+    layout = BootstrapLayout(
+        state_root=base.state_root,
+        auth_directory=base.auth_directory,
+        token=base.token,
+        config=base.config,
+        provenance=base.provenance,
+        marker=base.marker,
+        backup=base.backup,
+        release_root=unsafe_parent / "veltrix-vpn",
+        release_current=unsafe_parent / "veltrix-vpn" / "current",
+        xui_binaries=base.xui_binaries,
+        databases=base.databases,
+    )
+    calls: list[object] = []
+
+    with pytest.raises(
+        VpnNodeBootstrapError, match="vpn_node_bootstrap_environment_invalid"
+    ):
+        _prepare_vpn_node(
+            layout,
+            worker_id=16,
+            panel_url="http://127.0.0.1:2053/panel/",
+            install_command=_build_vpn_install_command(),
+            xui_version=XUI_VERSION,
+            architecture="amd64",
+            **_lifecycle_commands(),
+            port_occupied=lambda _port: False,
+            runner=lambda command, **_kwargs: calls.append(command),
+            panel_session_factory=_Panel,
+            owner_uid=os.getuid() if hasattr(os, "getuid") else 0,
+            require_posix=False,
+        )
+
+    assert calls == []
 
 
 @pytest.mark.parametrize(

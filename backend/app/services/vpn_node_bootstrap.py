@@ -297,6 +297,8 @@ class BootstrapLayout:
     provenance: Path
     marker: Path
     backup: Path
+    release_root: Path
+    release_current: Path
     xui_binaries: tuple[Path, ...]
     databases: tuple[Path, ...]
 
@@ -309,6 +311,8 @@ DEFAULT_LAYOUT = BootstrapLayout(
     provenance=Path("/var/lib/veltrix-vpn/control-auth/bootstrap-state.json"),
     marker=Path("/var/lib/veltrix-vpn/control-auth/bootstrap-reconciliation.json"),
     backup=Path("/var/lib/veltrix-vpn/backups/x-ui-before-api-token.db"),
+    release_root=Path("/opt/veltrix-vpn"),
+    release_current=Path("/opt/veltrix-vpn/current"),
     xui_binaries=(Path("/usr/local/x-ui/x-ui"), Path("/etc/x-ui/x-ui")),
     databases=(
         Path("/etc/x-ui/x-ui.db"),
@@ -604,6 +608,27 @@ def _secure_existing_ancestors(
         raise
     except OSError:
         _fail("vpn_node_bootstrap_environment_invalid")
+
+
+def _prepare_release_directories(
+    layout: BootstrapLayout, owner_uid: int, *, require_posix: bool
+) -> None:
+    if (
+        not layout.release_root.is_absolute()
+        or layout.release_current.parent != layout.release_root
+    ):
+        _fail("vpn_node_bootstrap_environment_invalid")
+    for directory in (layout.release_root, layout.release_current):
+        _secure_existing_ancestors(
+            directory, owner_uid, require_posix=require_posix
+        )
+        _secure_directory(
+            directory,
+            owner_uid,
+            create=True,
+            require_posix=require_posix,
+        )
+        _sync_directory(directory.parent)
 
 
 def _atomic_private(path: Path, raw: bytes) -> None:
@@ -1013,6 +1038,9 @@ def _prepare_vpn_node(
             ):
                 _fail("vpn_node_bootstrap_foreign_state")
             _verify_xui_version(binary, xui_version, runner)
+            _prepare_release_directories(
+                layout, owner_uid, require_posix=require_posix
+            )
             token = token_raw[:-1].decode("ascii")
             _wait_for_panel_session(panel_url, token, panel_session_factory)
             return VpnNodeBootstrapReceipt(
@@ -1037,6 +1065,7 @@ def _prepare_vpn_node(
             _fail("vpn_node_bootstrap_environment_invalid")
         if (binary is None) != (database is None):
             _fail("vpn_node_bootstrap_environment_invalid")
+        _prepare_release_directories(layout, owner_uid, require_posix=require_posix)
         if binary is None:
             for command in pre_install_commands:
                 result = _invoke_command(
