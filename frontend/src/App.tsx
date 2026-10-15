@@ -28,6 +28,7 @@ import {
   VpnLifecycleStatus,
   VpnNodeEvent,
   VpnNodeEligibility,
+  VpnNodeOnboarding,
   VpnOverview,
   VpnPlan,
   VpnReleaseReadiness,
@@ -55,6 +56,7 @@ import { VpnCustomerWorkspace } from "./VpnCustomerWorkspacePanel";
 import { shouldApplyLoadGeneration } from "./vpnCustomerWorkspace";
 import { VpnEndpointCapacityPanel } from "./VpnEndpointCapacityPanel";
 import { replaceVpnEndpointCapacity } from "./vpnEndpointCapacity";
+import { VpnNodeOnboardingPanel } from "./VpnNodeOnboardingPanel";
 import { VpnReleaseReadinessPanel } from "./VpnReleaseReadinessPanel";
 import {
   createVpnReleaseRequestGate,
@@ -1095,6 +1097,8 @@ export default function App() {
   const [vpnNodeEvents, setVpnNodeEvents] = useState<VpnNodeEvent[]>([]);
   const [vpnLifecycleStatus, setVpnLifecycleStatus] = useState<VpnLifecycleStatus | null>(null);
   const [vpnNodeEligibility, setVpnNodeEligibility] = useState<Record<number, VpnNodeEligibility>>({});
+  const [vpnNodeOnboardingByWorker, setVpnNodeOnboardingByWorker] = useState<Record<number, VpnNodeOnboarding>>({});
+  const [vpnNodeOnboardingErrors, setVpnNodeOnboardingErrors] = useState<Record<number, string>>({});
   const [vpnTelegramUpdates, setVpnTelegramUpdates] = useState<VpnTelegramUpdate[]>([]);
   const [vpnNodeDeletion, setVpnNodeDeletion] = useState<WorkerNode | null>(null);
   const [vpnNodeDeletionBusy, setVpnNodeDeletionBusy] = useState(false);
@@ -1213,6 +1217,25 @@ export default function App() {
   const workerTotalPages = Math.max(1, Math.ceil(filteredWorkers.length / workerPageSize));
   const workerCurrentPage = Math.min(workerPage, workerTotalPages);
   const visibleWorkers = filteredWorkers.slice((workerCurrentPage - 1) * workerPageSize, workerCurrentPage * workerPageSize);
+  const visibleVpnOnboardingWorkers = useMemo(() => {
+    if (tab === "workers") {
+      return visibleWorkers.filter((worker) => worker.vpn_enabled || worker.vpn_role !== "none");
+    }
+    if (tab === "vpn" && vpnAdminSection === "nodes") {
+      return vpnNodes;
+    }
+    return [];
+  }, [tab, visibleWorkers, vpnAdminSection, vpnNodes]);
+  const visibleVpnOnboardingWorkerIds = visibleVpnOnboardingWorkers.map((worker) => worker.id);
+  const visibleVpnOnboardingWorkerKey = visibleVpnOnboardingWorkerIds.join(",");
+  const pollingVpnOnboardingWorkerIds = visibleVpnOnboardingWorkerIds.filter((workerId) => {
+    const status = vpnNodeOnboardingByWorker[workerId];
+    if (!status) {
+      return false;
+    }
+    return status.state === "queued" || status.state === "running";
+  });
+  const pollingVpnOnboardingWorkerKey = pollingVpnOnboardingWorkerIds.join(",");
   const filteredMaintenanceJobs = useMemo(() => {
     return workerMaintenanceJobs.filter((job) => {
       if (maintenanceActionFilter !== "all" && job.action !== maintenanceActionFilter) {
@@ -1379,6 +1402,76 @@ export default function App() {
   }, [session?.user.id]);
 
   useEffect(() => {
+    if (!session || !visibleVpnOnboardingWorkerKey) {
+      return;
+    }
+    let cancelled = false;
+    const workerIds = visibleVpnOnboardingWorkerKey.split(",").map(Number);
+    void Promise.allSettled(workerIds.map(async (workerId) => {
+      try {
+        const status = await api.getVpnNodeOnboarding(workerId);
+        if (!cancelled) {
+          updateVpnNodeOnboardingStatus(status);
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setVpnNodeOnboardingErrors((current) => ({
+            ...current,
+            [workerId]: caught instanceof Error ? caught.message : "",
+          }));
+        }
+      }
+    }));
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.user.id, visibleVpnOnboardingWorkerKey]);
+
+  useEffect(() => {
+    if (!session || !pollingVpnOnboardingWorkerKey) {
+      return;
+    }
+    let cancelled = false;
+    let delay = 1500;
+    let timer = 0;
+    const workerIds = pollingVpnOnboardingWorkerKey.split(",").map(Number);
+
+    const poll = () => {
+      timer = window.setTimeout(async () => {
+        const results = await Promise.allSettled(workerIds.map((workerId) => api.getVpnNodeOnboarding(workerId)));
+        if (cancelled) {
+          return;
+        }
+        const failed = results.some((result) => result.status === "rejected");
+        results.forEach((result, index) => {
+          const workerId = workerIds[index];
+          if (result.status === "fulfilled") {
+            updateVpnNodeOnboardingStatus(result.value);
+          } else {
+            setVpnNodeOnboardingErrors((current) => ({
+              ...current,
+              [workerId]: result.reason instanceof Error ? result.reason.message : "",
+            }));
+          }
+        });
+        delay = failed ? Math.min(delay * 2, 15000) : 1500;
+        if (failed || results.some((result) => (
+          result.status === "fulfilled"
+          && (result.value.state === "queued" || result.value.state === "running")
+        ))) {
+          poll();
+        }
+      }, delay);
+    };
+
+    poll();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [session?.user.id, pollingVpnOnboardingWorkerKey]);
+
+  useEffect(() => {
     if (!selectedStrategyId && strategies.length > 0) {
       setSelectedStrategyId(strategies[0].id);
     }
@@ -1462,9 +1555,23 @@ export default function App() {
     setVpnReadinessUiGeneration((generation) => generation + 1);
   }
 
+  function updateVpnNodeOnboardingStatus(status: VpnNodeOnboarding) {
+    setVpnNodeOnboardingByWorker((current) => ({ ...current, [status.worker_id]: status }));
+    setVpnNodeOnboardingErrors((current) => {
+      if (!(status.worker_id in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[status.worker_id];
+      return next;
+    });
+  }
+
   function replaceAdminSession(nextSession: SessionResponse | null) {
     if ((session?.user.id ?? null) !== (nextSession?.user.id ?? null)) {
       resetVpnReadinessState();
+      setVpnNodeOnboardingByWorker({});
+      setVpnNodeOnboardingErrors({});
     }
     setSession(nextSession);
   }
@@ -4453,22 +4560,32 @@ export default function App() {
                   </div>
                   <div className="worker-action-group vpn-action-group">
                     <span>VPN</span>
-                    <div className="actions">
-                      {!isVpnNode ? (
+                    {!isVpnNode ? (
+                      <div className="actions">
                         <button type="button" className="ghost" onClick={() => void enableWorkerVpnNode(worker)}>Включить VPN‑ноду</button>
-                      ) : (
-                        <>
+                      </div>
+                    ) : (
+                      <>
+                        <VpnNodeOnboardingPanel
+                          workerId={worker.id}
+                          status={vpnNodeOnboardingByWorker[worker.id] ?? null}
+                          loadError={vpnNodeOnboardingErrors[worker.id] ?? null}
+                          onStatusChange={updateVpnNodeOnboardingStatus}
+                        />
+                        <details className="vpn-node-diagnostics">
+                          <summary>Диагностика</summary>
+                          <div className="actions">
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")} disabled={!worker.ssh_access_configured}>Проверить VPN</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "VPN установлен" : vpnInstallInProgress ? "VPN устанавливается" : "Установить VPN"}</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_autoconfig")} disabled={vpnConfigurationDisabled}>Автонастроить VPN</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={vpnConfigurationDisabled || Boolean(worker.vpn_inbound_id)}>Создать входящее подключение</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={vpnConfigurationDisabled}>Обновить VPN</button>
                           <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={vpnConfigurationDisabled}>Рестарт VPN</button>
-                        </>
-                      )}
-                    </div>
+                          </div>
+                        </details>
+                      </>
+                    )}
                     {!isVpnNode ? <small>Сначала включи VPN‑ноду, затем появятся установка и обслуживание 3x-UI.</small> : null}
-                    {isVpnNode && !vpnInstalled ? <small>Сначала нажми «Установить VPN». После успешной установки станут доступны автонастройка и создание входящего подключения.</small> : null}
                   </div>
                   <div className="worker-action-group">
                     <span>Карточка</span>
@@ -4860,21 +4977,30 @@ export default function App() {
                       </td>
                       <td data-label="Проверено">{formatDateTime(worker.vpn_last_checked_at)}</td>
                       <td data-label="Действия">
-                        <div className="actions">
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")}>Проверить</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "Установлен" : vpnInstallInProgress ? "Установка" : "Установить"}</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_autoconfig")} disabled={vpnConfigurationDisabled}>Автонастроить</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={vpnConfigurationDisabled || Boolean(worker.vpn_inbound_id)}>Создать входящее подключение</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={vpnConfigurationDisabled}>Обновить</button>
-                          <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={vpnConfigurationDisabled}>Рестарт</button>
-                          <button
-                            type="button"
-                            className="danger vpn-node-delete-trigger"
-                            onClick={(event) => openVpnNodeDeletion(worker, event.currentTarget)}
-                          >
-                            Удалить ноду
-                          </button>
-                        </div>
+                        <VpnNodeOnboardingPanel
+                          workerId={worker.id}
+                          status={vpnNodeOnboardingByWorker[worker.id] ?? null}
+                          loadError={vpnNodeOnboardingErrors[worker.id] ?? null}
+                          onStatusChange={updateVpnNodeOnboardingStatus}
+                        />
+                        <details className="vpn-node-diagnostics">
+                          <summary>Диагностика</summary>
+                          <div className="actions">
+                            <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_check")}>Проверить</button>
+                            <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_install")} disabled={vpnInstallDisabled}>{vpnInstalled ? "Установлен" : vpnInstallInProgress ? "Установка" : "Установить"}</button>
+                            <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_autoconfig")} disabled={vpnConfigurationDisabled}>Автонастроить</button>
+                            <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_create_inbound")} disabled={vpnConfigurationDisabled || Boolean(worker.vpn_inbound_id)}>Создать входящее подключение</button>
+                            <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_update")} disabled={vpnConfigurationDisabled}>Обновить</button>
+                            <button type="button" className="ghost" onClick={() => void startWorkerMaintenance(worker, "vpn_restart")} disabled={vpnConfigurationDisabled}>Рестарт</button>
+                          </div>
+                        </details>
+                        <button
+                          type="button"
+                          className="danger vpn-node-delete-trigger"
+                          onClick={(event) => openVpnNodeDeletion(worker, event.currentTarget)}
+                        >
+                          Удалить ноду
+                        </button>
                       </td>
                     </tr>
                   );

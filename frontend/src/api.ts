@@ -450,6 +450,27 @@ export type WorkerMaintenanceBulkResponse = {
   skipped_worker_ids: number[];
 };
 
+export type VpnNodeOnboarding = {
+  worker_id: number;
+  state:
+    | "needs_preflight"
+    | "needs_trust"
+    | "ready_to_start"
+    | "queued"
+    | "running"
+    | "awaiting_test"
+    | "ready"
+    | "failed";
+  fingerprint: string | null;
+  job_id: number | null;
+  endpoint_id: number | null;
+  error_code: string | null;
+};
+
+export type VpnNodeTestProfile = {
+  config_uri: string;
+};
+
 export type VpnOverview = {
   enabled_nodes: number;
   ready_nodes: number;
@@ -1044,6 +1065,27 @@ export const api = {
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-autoconfig`, { method: "POST" }),
   createWorkerVpnInbound: (id: number) =>
     request<WorkerMaintenanceJob>(`/control/workers/${id}/maintenance/vpn-create-inbound`, { method: "POST" }),
+  getVpnNodeOnboarding: (id: number) =>
+    request<VpnNodeOnboarding>(`/control/workers/${id}/vpn-onboarding`),
+  preflightVpnNode: (id: number) =>
+    request<VpnNodeOnboarding>(`/control/workers/${id}/vpn-onboarding/preflight`, { method: "POST" }),
+  trustVpnNode: (id: number, payload: { fingerprint: string }) =>
+    request<VpnNodeOnboarding>(`/control/workers/${id}/vpn-onboarding/trust`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  startVpnNodeOnboarding: (id: number) =>
+    request<VpnNodeOnboarding>(`/control/workers/${id}/vpn-onboarding/start`, { method: "POST" }),
+  getVpnNodeTestProfile: (id: number) =>
+    request<VpnNodeTestProfile>(`/control/workers/${id}/vpn-onboarding/test-profile`, {
+      method: "POST",
+      cache: "no-store",
+    }),
+  confirmVpnNodeOnboarding: (id: number, payload: { confirmed: true }) =>
+    request<VpnNodeOnboarding>(`/control/workers/${id}/vpn-onboarding/confirm`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   updateAllWorkerServers: () =>
     request<WorkerMaintenanceBulkResponse>("/control/workers/maintenance/update-all", { method: "POST" }),
   updateAllVpnNodes: () =>
