@@ -8,6 +8,66 @@ export type VpnNodeOnboardingState =
   | "ready"
   | "failed";
 
+export type VpnNodeOnboardingWorker = {
+  status: string;
+  is_enabled: boolean;
+  vpn_enabled: boolean;
+  vpn_role: string;
+  ssh_access_configured: boolean;
+};
+
+export type VpnNodeOnboardingSetupAction = "enable_vpn" | "configure_ssh";
+
+export function vpnNodeOnboardingSetupAction(
+  worker: VpnNodeOnboardingWorker,
+): VpnNodeOnboardingSetupAction | null {
+  if (
+    worker.status !== "ready"
+    || !worker.is_enabled
+    || !worker.vpn_enabled
+    || worker.vpn_role === "none"
+  ) {
+    return "enable_vpn";
+  }
+  return worker.ssh_access_configured ? null : "configure_ssh";
+}
+
+export function createVpnNodeOnboardingRequestGate() {
+  const generations = new Map<number, number>();
+  return {
+    begin(workerId: number) {
+      const generation = (generations.get(workerId) ?? 0) + 1;
+      generations.set(workerId, generation);
+      return generation;
+    },
+    invalidate(workerId: number) {
+      generations.set(workerId, (generations.get(workerId) ?? 0) + 1);
+    },
+    invalidateAll() {
+      for (const workerId of generations.keys()) {
+        generations.set(workerId, (generations.get(workerId) ?? 0) + 1);
+      }
+    },
+    isCurrent(workerId: number, generation: number) {
+      return generations.get(workerId) === generation;
+    },
+  };
+}
+
+export function isVpnNodeFingerprintConfirmed(
+  confirmedFingerprint: string | null,
+  currentFingerprint: string | null,
+): boolean {
+  return Boolean(currentFingerprint) && confirmedFingerprint === currentFingerprint;
+}
+
+export function reconcileVpnNodeTestProfileUri(
+  uri: string | null,
+  state: VpnNodeOnboardingState,
+): string | null {
+  return state === "awaiting_test" ? uri : null;
+}
+
 const ONBOARDING_PRESENTATIONS = {
   needs_preflight: ["Проверить сервер", "Проверяем только настройки и SSH‑ключ."],
   needs_trust: ["Подтвердить SSH‑ключ", "Сверьте fingerprint в панели хостинга."],
@@ -48,38 +108,39 @@ export async function copyVpnNodeTestProfile(
   value: string,
   options: CopyOptions = {},
 ): Promise<boolean> {
-  const clipboard = options.clipboard === undefined
-    ? (typeof navigator === "undefined" ? null : navigator.clipboard)
-    : options.clipboard;
-  try {
-    if (clipboard?.writeText) {
-      await clipboard.writeText(value);
-      return true;
-    }
-  } catch {
-    // Some iOS webviews expose Clipboard API but reject writes.
-  }
-
   const documentRef = options.documentRef === undefined
     ? (typeof document === "undefined" ? null : document)
     : options.documentRef;
-  if (!documentRef?.body) {
-    return false;
+  if (documentRef?.body) {
+    const field = documentRef.createElement("textarea");
+    field.value = value;
+    field.readOnly = true;
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    documentRef.body.appendChild(field);
+    try {
+      field.focus();
+      field.setSelectionRange(0, value.length);
+      if (documentRef.execCommand("copy")) {
+        return true;
+      }
+    } catch {
+      // Some WebViews omit the legacy command but still expose Clipboard API.
+    } finally {
+      field.remove();
+    }
   }
-  const field = documentRef.createElement("textarea");
-  field.value = value;
-  field.setAttribute("readonly", "");
-  field.style.position = "fixed";
-  field.style.inset = "0 auto auto -9999px";
-  documentRef.body.appendChild(field);
-  try {
-    field.focus();
-    field.select();
-    field.setSelectionRange(0, value.length);
-    return documentRef.execCommand("copy");
-  } catch {
-    return false;
-  } finally {
-    field.remove();
+
+  const clipboard = options.clipboard === undefined
+    ? (typeof navigator === "undefined" ? null : navigator.clipboard)
+    : options.clipboard;
+  if (clipboard?.writeText) {
+    try {
+      await clipboard.writeText(value);
+      return true;
+    } catch {
+      // Restricted WebViews can expose the API while rejecting every write.
+    }
   }
+  return false;
 }

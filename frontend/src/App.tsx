@@ -57,6 +57,10 @@ import { shouldApplyLoadGeneration } from "./vpnCustomerWorkspace";
 import { VpnEndpointCapacityPanel } from "./VpnEndpointCapacityPanel";
 import { replaceVpnEndpointCapacity } from "./vpnEndpointCapacity";
 import { VpnNodeOnboardingPanel } from "./VpnNodeOnboardingPanel";
+import {
+  createVpnNodeOnboardingRequestGate,
+  vpnNodeOnboardingSetupAction,
+} from "./vpnNodeOnboarding";
 import { VpnReleaseReadinessPanel } from "./VpnReleaseReadinessPanel";
 import {
   createVpnReleaseRequestGate,
@@ -1093,12 +1097,14 @@ export default function App() {
   const workerMutationGenerationRef = useRef(0);
   const vpnCapacityMutationGenerationRef = useRef(0);
   const vpnReadinessRequestGateRef = useRef(createVpnReleaseRequestGate());
+  const vpnNodeOnboardingRequestGateRef = useRef(createVpnNodeOnboardingRequestGate());
   const vpnPlanPublicationLockRef = useRef<number | null>(null);
   const [vpnNodeEvents, setVpnNodeEvents] = useState<VpnNodeEvent[]>([]);
   const [vpnLifecycleStatus, setVpnLifecycleStatus] = useState<VpnLifecycleStatus | null>(null);
   const [vpnNodeEligibility, setVpnNodeEligibility] = useState<Record<number, VpnNodeEligibility>>({});
   const [vpnNodeOnboardingByWorker, setVpnNodeOnboardingByWorker] = useState<Record<number, VpnNodeOnboarding>>({});
   const [vpnNodeOnboardingErrors, setVpnNodeOnboardingErrors] = useState<Record<number, string>>({});
+  const [vpnNodeOnboardingRefreshGeneration, setVpnNodeOnboardingRefreshGeneration] = useState(0);
   const [vpnTelegramUpdates, setVpnTelegramUpdates] = useState<VpnTelegramUpdate[]>([]);
   const [vpnNodeDeletion, setVpnNodeDeletion] = useState<WorkerNode | null>(null);
   const [vpnNodeDeletionBusy, setVpnNodeDeletionBusy] = useState(false);
@@ -1219,10 +1225,13 @@ export default function App() {
   const visibleWorkers = filteredWorkers.slice((workerCurrentPage - 1) * workerPageSize, workerCurrentPage * workerPageSize);
   const visibleVpnOnboardingWorkers = useMemo(() => {
     if (tab === "workers") {
-      return visibleWorkers.filter((worker) => worker.vpn_enabled || worker.vpn_role !== "none");
+      return visibleWorkers.filter((worker) => (
+        (worker.vpn_enabled || worker.vpn_role !== "none")
+        && vpnNodeOnboardingSetupAction(worker) === null
+      ));
     }
     if (tab === "vpn" && vpnAdminSection === "nodes") {
-      return vpnNodes;
+      return vpnNodes.filter((worker) => vpnNodeOnboardingSetupAction(worker) === null);
     }
     return [];
   }, [tab, visibleWorkers, vpnAdminSection, vpnNodes]);
@@ -1407,25 +1416,13 @@ export default function App() {
     }
     let cancelled = false;
     const workerIds = visibleVpnOnboardingWorkerKey.split(",").map(Number);
-    void Promise.allSettled(workerIds.map(async (workerId) => {
-      try {
-        const status = await api.getVpnNodeOnboarding(workerId);
-        if (!cancelled) {
-          updateVpnNodeOnboardingStatus(status);
-        }
-      } catch (caught) {
-        if (!cancelled) {
-          setVpnNodeOnboardingErrors((current) => ({
-            ...current,
-            [workerId]: caught instanceof Error ? caught.message : "",
-          }));
-        }
-      }
-    }));
+    void Promise.allSettled(workerIds.map((workerId) => (
+      reloadVpnNodeOnboarding(workerId, () => !cancelled)
+    )));
     return () => {
       cancelled = true;
     };
-  }, [session?.user.id, visibleVpnOnboardingWorkerKey]);
+  }, [session?.user.id, visibleVpnOnboardingWorkerKey, vpnNodeOnboardingRefreshGeneration]);
 
   useEffect(() => {
     if (!session || !pollingVpnOnboardingWorkerKey) {
@@ -1438,16 +1435,28 @@ export default function App() {
 
     const poll = () => {
       timer = window.setTimeout(async () => {
-        const results = await Promise.allSettled(workerIds.map((workerId) => api.getVpnNodeOnboarding(workerId)));
+        const requests = workerIds.map((workerId) => ({
+          workerId,
+          generation: vpnNodeOnboardingRequestGateRef.current.begin(workerId),
+        }));
+        const results = await Promise.allSettled(requests.map(({ workerId }) => api.getVpnNodeOnboarding(workerId)));
         if (cancelled) {
           return;
         }
-        const failed = results.some((result) => result.status === "rejected");
+        let failed = false;
+        let stillRunning = false;
         results.forEach((result, index) => {
-          const workerId = workerIds[index];
+          const { workerId, generation } = requests[index];
+          if (!vpnNodeOnboardingRequestGateRef.current.isCurrent(workerId, generation)) {
+            return;
+          }
           if (result.status === "fulfilled") {
             updateVpnNodeOnboardingStatus(result.value);
+            stillRunning = stillRunning
+              || result.value.state === "queued"
+              || result.value.state === "running";
           } else {
+            failed = true;
             setVpnNodeOnboardingErrors((current) => ({
               ...current,
               [workerId]: result.reason instanceof Error ? result.reason.message : "",
@@ -1455,10 +1464,7 @@ export default function App() {
           }
         });
         delay = failed ? Math.min(delay * 2, 15000) : 1500;
-        if (failed || results.some((result) => (
-          result.status === "fulfilled"
-          && (result.value.state === "queued" || result.value.state === "running")
-        ))) {
+        if (failed || stillRunning) {
           poll();
         }
       }, delay);
@@ -1556,6 +1562,7 @@ export default function App() {
   }
 
   function updateVpnNodeOnboardingStatus(status: VpnNodeOnboarding) {
+    vpnNodeOnboardingRequestGateRef.current.invalidate(status.worker_id);
     setVpnNodeOnboardingByWorker((current) => ({ ...current, [status.worker_id]: status }));
     setVpnNodeOnboardingErrors((current) => {
       if (!(status.worker_id in current)) {
@@ -1567,9 +1574,31 @@ export default function App() {
     });
   }
 
+  async function reloadVpnNodeOnboarding(
+    workerId: number,
+    shouldApply: () => boolean = () => true,
+  ) {
+    const generation = vpnNodeOnboardingRequestGateRef.current.begin(workerId);
+    try {
+      const status = await api.getVpnNodeOnboarding(workerId);
+      if (shouldApply() && vpnNodeOnboardingRequestGateRef.current.isCurrent(workerId, generation)) {
+        updateVpnNodeOnboardingStatus(status);
+      }
+    } catch (caught) {
+      if (shouldApply() && vpnNodeOnboardingRequestGateRef.current.isCurrent(workerId, generation)) {
+        setVpnNodeOnboardingErrors((current) => ({
+          ...current,
+          [workerId]: caught instanceof Error ? caught.message : "",
+        }));
+      }
+      throw caught;
+    }
+  }
+
   function replaceAdminSession(nextSession: SessionResponse | null) {
     if ((session?.user.id ?? null) !== (nextSession?.user.id ?? null)) {
       resetVpnReadinessState();
+      vpnNodeOnboardingRequestGateRef.current.invalidateAll();
       setVpnNodeOnboardingByWorker({});
       setVpnNodeOnboardingErrors({});
     }
@@ -1638,6 +1667,7 @@ export default function App() {
 
   async function loadAll(options?: { silent?: boolean; throwOnError?: boolean }) {
     void refreshVpnReadiness({ silent: options?.silent });
+    setVpnNodeOnboardingRefreshGeneration((generation) => generation + 1);
     const generation = ++loadAllGenerationRef.current;
     const workerMutationGeneration = workerMutationGenerationRef.current;
     const capacityMutationGeneration = vpnCapacityMutationGenerationRef.current;
@@ -2548,6 +2578,11 @@ export default function App() {
     setWorkerForm(makeWorkerForm(worker));
   }
 
+  function openWorkerSshEditor(worker: WorkerNode) {
+    startEditWorker(worker);
+    navigateToTab("workers");
+  }
+
   function resetWorkerForm() {
     setEditingWorkerId(null);
     setWorkerForm(makeWorkerForm());
@@ -2840,6 +2875,8 @@ export default function App() {
   async function enableWorkerVpnNode(worker: WorkerNode) {
     try {
       await api.updateWorker(worker.id, {
+        status: "ready",
+        is_enabled: true,
         vpn_role: "drop_worker_vpn",
         vpn_enabled: true,
         vpn_public_host: worker.vpn_public_host ?? worker.ip_address,
@@ -4567,10 +4604,13 @@ export default function App() {
                     ) : (
                       <>
                         <VpnNodeOnboardingPanel
-                          workerId={worker.id}
+                          worker={worker}
                           status={vpnNodeOnboardingByWorker[worker.id] ?? null}
                           loadError={vpnNodeOnboardingErrors[worker.id] ?? null}
                           onStatusChange={updateVpnNodeOnboardingStatus}
+                          onRetry={() => reloadVpnNodeOnboarding(worker.id)}
+                          onEnableVpnNode={() => void enableWorkerVpnNode(worker)}
+                          onConfigureSsh={() => openWorkerSshEditor(worker)}
                         />
                         <details className="vpn-node-diagnostics">
                           <summary>Диагностика</summary>
@@ -4978,10 +5018,13 @@ export default function App() {
                       <td data-label="Проверено">{formatDateTime(worker.vpn_last_checked_at)}</td>
                       <td data-label="Действия">
                         <VpnNodeOnboardingPanel
-                          workerId={worker.id}
+                          worker={worker}
                           status={vpnNodeOnboardingByWorker[worker.id] ?? null}
                           loadError={vpnNodeOnboardingErrors[worker.id] ?? null}
                           onStatusChange={updateVpnNodeOnboardingStatus}
+                          onRetry={() => reloadVpnNodeOnboarding(worker.id)}
+                          onEnableVpnNode={() => void enableWorkerVpnNode(worker)}
+                          onConfigureSsh={() => openWorkerSshEditor(worker)}
                         />
                         <details className="vpn-node-diagnostics">
                           <summary>Диагностика</summary>

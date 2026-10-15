@@ -2011,6 +2011,10 @@ button:disabled {
   border-color: var(--vpn-admin-border);
 }
 
+.vpn-admin-shell [data-vpn-admin-section="nodes"] .simple-table td[data-label="Действия"] {
+  min-width: 320px;
+}
+
 .vpn-admin-shell.vpn-node-dialog {
   position: fixed;
   inset: 0;
@@ -2389,6 +2393,7 @@ button:disabled {
 
   .vpn-admin-shell [data-vpn-admin-section="nodes"] .simple-table td[data-label="Действия"] {
     grid-column: 1 / -1;
+    min-width: 0;
   }
 
   .vpn-admin-shell [data-vpn-admin-section="nodes"] .simple-table td[data-label="Действия"] .actions {
