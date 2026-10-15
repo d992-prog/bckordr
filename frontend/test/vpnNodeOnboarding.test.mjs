@@ -73,6 +73,13 @@ test("onboarding prerequisites encode one safe patch or non-mutating guidance", 
   assert.deepEqual(vpnNodeOnboardingSetupAction({ ...worker, is_enabled: false }), {
     kind: "open_worker",
   });
+  assert.deepEqual(vpnNodeOnboardingSetupAction({
+    ...worker,
+    status: "disabled",
+    is_enabled: false,
+  }), {
+    kind: "open_worker",
+  });
   assert.deepEqual(vpnNodeOnboardingSetupAction({ ...worker, vpn_enabled: false }), {
     kind: "patch_worker",
     patch: { vpn_enabled: true },

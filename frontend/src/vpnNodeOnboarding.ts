@@ -25,11 +25,11 @@ export type VpnNodeOnboardingSetupAction =
 export function vpnNodeOnboardingSetupAction(
   worker: VpnNodeOnboardingWorker,
 ): VpnNodeOnboardingSetupAction | null {
-  if (worker.status !== "ready") {
-    return { kind: "wait_for_worker" };
-  }
   if (!worker.is_enabled) {
     return { kind: "open_worker" };
+  }
+  if (worker.status !== "ready") {
+    return { kind: "wait_for_worker" };
   }
   if (!worker.vpn_enabled) {
     return { kind: "patch_worker", patch: { vpn_enabled: true } };
