@@ -32,11 +32,31 @@ from app.services.worker_maintenance import (
     XUI_INSTALL_SHA256,
     XUI_VERSION,
     _build_vpn_install_command,
+    _build_vpn_ready_command,
     _build_xray_compatibility_command,
     _build_xray_owner_normalization_command,
+    _build_xui_stop_command,
 )
 
 BACKEND = Path(__file__).resolve().parents[1]
+XUI_START_COMMAND = (
+    "systemctl enable --now x-ui.service || systemctl enable --now x-ui || "
+    "systemctl enable --now 3x-ui.service"
+)
+
+
+def _lifecycle_commands() -> dict[str, str]:
+    return {
+        "stop_command": _build_xui_stop_command(),
+        "start_command": XUI_START_COMMAND,
+        "ready_command": _build_vpn_ready_command(),
+    }
+
+
+def _service_result(command: object):
+    if isinstance(command, str) and command in set(_lifecycle_commands().values()):
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+    return None
 
 
 def test_bootstrap_bundle_is_deterministic_and_imports_in_isolated_python(
@@ -71,6 +91,9 @@ def test_bootstrap_bundle_is_deterministic_and_imports_in_isolated_python(
     with zipfile.ZipFile(first) as archive:
         main = archive.read("__main__.py").decode("ascii")
     assert repr(_build_vpn_install_command()) in main
+    assert repr(_build_xui_stop_command()) in main
+    assert repr(XUI_START_COMMAND) in main
+    assert repr(_build_vpn_ready_command()) in main
     assert repr(_build_xray_owner_normalization_command()) in main
     assert repr(_build_xray_compatibility_command()) in main
     assert XUI_INSTALL_COMMIT in main
@@ -101,6 +124,69 @@ def test_bootstrap_receipt_is_frozen_and_contains_only_public_fields() -> None:
         "panel_url='http://127.0.0.1:2053/panel/', "
         "database_path='/etc/x-ui/x-ui.db', xui_version='v3.8.5')"
     )
+
+
+def test_remote_loader_can_create_only_a_missing_safe_private_root(
+    tmp_path: Path,
+) -> None:
+    namespace = {"os": os, "stat": stat}
+    exec(  # noqa: S102 - execute the exact fixed remote helper source under test
+        vpn_node_bootstrap._REMOTE_ROOT_SOURCE, namespace
+    )
+    prepare = namespace["prepare_private_root"]
+    state_root = tmp_path / "veltrix-vpn"
+    owner_uid = tmp_path.stat().st_uid
+
+    prepare(state_root, owner_uid, False)
+    assert state_root.is_dir()
+    prepare(state_root, owner_uid, False)
+
+    unsafe_parent = tmp_path / "foreign-file"
+    unsafe_parent.write_bytes(b"foreign")
+    with pytest.raises(ValueError):
+        prepare(unsafe_parent / "veltrix-vpn", owner_uid, False)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_node_local_subprocess_output_is_killed_at_the_hard_cap(stream: str) -> None:
+    descriptor = "1" if stream == "stdout" else "2"
+    command = [
+        sys.executable,
+        "-c",
+        f"import os; os.write({descriptor}, b'x' * 131072)",
+    ]
+
+    with pytest.raises(
+        VpnNodeBootstrapError, match="vpn_node_bootstrap_mutation_uncertain"
+    ):
+        vpn_node_bootstrap._run_bounded_subprocess(
+            command,
+            shell=False,
+            timeout=5,
+            failure_code="vpn_node_bootstrap_mutation_uncertain",
+        )
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_remote_child_streaming_reader_kills_output_at_the_hard_cap(
+    stream: str,
+) -> None:
+    namespace = {"subprocess": subprocess}
+    exec(  # noqa: S102 - execute the exact fixed remote helper source under test
+        vpn_node_bootstrap._REMOTE_BOUNDED_SOURCE, namespace
+    )
+    descriptor = "1" if stream == "stdout" else "2"
+
+    with pytest.raises(OverflowError):
+        namespace["run_bounded"](
+            [
+                sys.executable,
+                "-c",
+                f"import os; os.write({descriptor}, b'x' * 8192)",
+            ],
+            5,
+            4096,
+        )
 
 
 @pytest.mark.parametrize(
@@ -198,12 +284,15 @@ def _prepared(layout: BootstrapLayout, *, worker_id: int = 16) -> str:
     token = "synthetic-bootstrap-token-0123456789"
     _private_file(layout.xui_binaries[0])
     _database(layout.databases[0])
+    _private_file(layout.backup, layout.databases[0].read_bytes())
     _private_file(layout.token, (token + "\n").encode())
     _private_file(
         layout.config,
         _node_config_bytes(
             "http://127.0.0.1:2053/panel/",
             layout.databases[0],
+            layout.backup,
+            hashlib.sha256(layout.backup.read_bytes()).hexdigest(),
         ),
     )
     return token
@@ -225,6 +314,7 @@ def test_exact_existing_token_and_config_are_idempotent(tmp_path: Path) -> None:
         install_command=_build_vpn_install_command(),
         xui_version=XUI_VERSION,
         architecture="amd64",
+        **_lifecycle_commands(),
         port_occupied=lambda _port: True,
         runner=lambda *_args, **_kwargs: pytest.fail("must not mutate"),
         panel_session_factory=panel,
@@ -286,6 +376,7 @@ def test_preflight_rejects_unsafe_or_foreign_state_before_mutation(
             install_command=_build_vpn_install_command(),
             xui_version=XUI_VERSION,
             architecture=architecture,
+            **_lifecycle_commands(),
             port_occupied=lambda _port: occupied,
             runner=lambda *_args, **_kwargs: pytest.fail("must fail before mutation"),
             panel_session_factory=_Panel,
@@ -312,6 +403,7 @@ def test_missing_xui_rejects_foreign_backup_before_install(tmp_path: Path) -> No
             install_command=_build_vpn_install_command(),
             xui_version=XUI_VERSION,
             architecture="amd64",
+            **_lifecycle_commands(),
             port_occupied=lambda _port: False,
             runner=lambda *_args, **_kwargs: pytest.fail(
                 "must reject foreign state before installing"
@@ -354,6 +446,7 @@ def test_missing_xui_rejects_unsafe_install_parent_before_install(
             install_command=_build_vpn_install_command(),
             xui_version=XUI_VERSION,
             architecture="amd64",
+            **_lifecycle_commands(),
             port_occupied=lambda _port: False,
             runner=run,
             panel_session_factory=_Panel,
@@ -371,6 +464,9 @@ def test_missing_xui_runs_the_current_pinned_install_command(tmp_path: Path) -> 
     def run(command, **kwargs):
         calls.append(command)
         if isinstance(command, str):
+            service = _service_result(command)
+            if service is not None:
+                return service
             assert command == _build_vpn_install_command()
             _private_file(layout.xui_binaries[0])
             _database(layout.databases[0])
@@ -391,6 +487,7 @@ def test_missing_xui_runs_the_current_pinned_install_command(tmp_path: Path) -> 
         install_command=_build_vpn_install_command(),
         xui_version=XUI_VERSION,
         architecture="amd64",
+        **_lifecycle_commands(),
         port_occupied=lambda _port: False,
         runner=run,
         panel_session_factory=_Panel,
@@ -421,6 +518,9 @@ def test_backup_and_marker_exist_before_exact_token_cli_and_success_is_private(
     monkeypatch.setattr(os, "fsync", fsync)
 
     def run(command, **_kwargs):
+        service = _service_result(command)
+        if service is not None:
+            return service
         calls.append(command)
         assert layout.backup.is_file()
         if os.name == "posix":
@@ -441,6 +541,7 @@ def test_backup_and_marker_exist_before_exact_token_cli_and_success_is_private(
         install_command=_build_vpn_install_command(),
         xui_version=XUI_VERSION,
         architecture="amd64",
+        **_lifecycle_commands(),
         port_occupied=lambda _port: False,
         runner=run,
         panel_session_factory=_Panel,
@@ -457,10 +558,225 @@ def test_backup_and_marker_exist_before_exact_token_cli_and_success_is_private(
         assert stat.S_IMODE(layout.token.stat().st_mode) == 0o600
         assert stat.S_IMODE(layout.config.stat().st_mode) == 0o600
     assert layout.config.read_bytes() == _node_config_bytes(
-        "http://127.0.0.1:2053/panel/", layout.databases[0]
+        "http://127.0.0.1:2053/panel/",
+        layout.databases[0],
+        layout.backup,
+        hashlib.sha256(layout.backup.read_bytes()).hexdigest(),
     )
     assert not layout.marker.exists()
     assert fsyncs
+
+
+def test_completed_bootstrap_replays_as_already_prepared_without_mutation(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    _private_file(layout.xui_binaries[0])
+    _database(layout.databases[0])
+    token_calls = 0
+
+    def create_token(command, **_kwargs):
+        nonlocal token_calls
+        service = _service_result(command)
+        if service is not None:
+            return service
+        token_calls += 1
+        _record_token(layout.databases[0], command[-1])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            b"apiToken: synthetic-bootstrap-token-0123456789\n",
+            b"",
+        )
+
+    common = {
+        "worker_id": 16,
+        "panel_url": "http://127.0.0.1:2053/panel/",
+        "install_command": _build_vpn_install_command(),
+        "xui_version": XUI_VERSION,
+        "architecture": "amd64",
+        **_lifecycle_commands(),
+        "port_occupied": lambda _port: False,
+        "panel_session_factory": _Panel,
+        "owner_uid": os.getuid() if hasattr(os, "getuid") else 0,
+        "require_posix": False,
+    }
+    first = _prepare_vpn_node(layout, runner=create_token, **common)
+    second = _prepare_vpn_node(
+        layout,
+        runner=lambda *_args, **_kwargs: pytest.fail("idempotency must not mutate"),
+        **common,
+    )
+
+    assert first.state == "prepared"
+    assert second.state == "already_prepared"
+    assert token_calls == 1
+
+
+def test_completed_bootstrap_rejects_replaced_backup(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    _private_file(layout.xui_binaries[0])
+    _database(layout.databases[0])
+
+    def create_token(command, **_kwargs):
+        service = _service_result(command)
+        if service is not None:
+            return service
+        _record_token(layout.databases[0], command[-1])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            b"apiToken: synthetic-bootstrap-token-0123456789\n",
+            b"",
+        )
+
+    common = {
+        "worker_id": 16,
+        "panel_url": "http://127.0.0.1:2053/panel/",
+        "install_command": _build_vpn_install_command(),
+        "xui_version": XUI_VERSION,
+        "architecture": "amd64",
+        **_lifecycle_commands(),
+        "port_occupied": lambda _port: False,
+        "panel_session_factory": _Panel,
+        "owner_uid": os.getuid() if hasattr(os, "getuid") else 0,
+        "require_posix": False,
+    }
+    _prepare_vpn_node(layout, runner=create_token, **common)
+    layout.backup.write_bytes(b"foreign-safe-looking-backup")
+
+    with pytest.raises(VpnNodeBootstrapError, match="vpn_node_bootstrap_foreign_state"):
+        _prepare_vpn_node(
+            layout,
+            runner=lambda *_args, **_kwargs: pytest.fail("must not mutate"),
+            **common,
+        )
+
+
+def test_preinstalled_xui_is_stopped_for_backup_and_token_then_restarted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    _private_file(layout.xui_binaries[0])
+    _database(layout.databases[0])
+    running = True
+    events: list[str] = []
+    real_backup = vpn_node_bootstrap._backup_database
+
+    def backup(*args, **kwargs) -> None:
+        assert not running
+        events.append("backup")
+        real_backup(*args, **kwargs)
+
+    monkeypatch.setattr(vpn_node_bootstrap, "_backup_database", backup)
+
+    def run(command, **_kwargs):
+        nonlocal running
+        if command == _build_xui_stop_command():
+            assert layout.marker.exists()
+            running = False
+            events.append("stop")
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        if command == XUI_START_COMMAND:
+            assert not running
+            running = True
+            events.append("start")
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        if command == _build_vpn_ready_command():
+            assert running
+            events.append("ready")
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        _assert_unique_token_command(command, layout.xui_binaries[0])
+        assert not running
+        assert layout.backup.exists()
+        events.append("token")
+        _record_token(layout.databases[0], command[-1])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            b"apiToken: synthetic-bootstrap-token-0123456789\n",
+            b"",
+        )
+
+    def panel(panel_url: str, *, api_token: str):
+        assert running
+        events.append("status")
+        return _Panel(panel_url, api_token=api_token)
+
+    receipt = _prepare_vpn_node(
+        layout,
+        worker_id=16,
+        panel_url="http://127.0.0.1:2053/panel/",
+        install_command=_build_vpn_install_command(),
+        xui_version=XUI_VERSION,
+        architecture="amd64",
+        stop_command=_build_xui_stop_command(),
+        start_command=XUI_START_COMMAND,
+        ready_command=_build_vpn_ready_command(),
+        port_occupied=lambda _port: False,
+        runner=run,
+        panel_session_factory=panel,
+        owner_uid=os.getuid() if hasattr(os, "getuid") else 0,
+        require_posix=False,
+    )
+
+    assert receipt.state == "prepared"
+    assert events == ["stop", "backup", "token", "start", "ready", "status"]
+
+
+def test_start_failure_restops_xui_and_leaves_reconciliation_marker(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    _private_file(layout.xui_binaries[0])
+    _database(layout.databases[0])
+    running = True
+    calls: list[object] = []
+
+    def run(command, **_kwargs):
+        nonlocal running
+        calls.append(command)
+        if command == _build_xui_stop_command():
+            running = False
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        if command == XUI_START_COMMAND:
+            running = True
+            return subprocess.CompletedProcess(command, 1, b"", b"")
+        _assert_unique_token_command(command, layout.xui_binaries[0])
+        assert not running
+        _record_token(layout.databases[0], command[-1])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            b"apiToken: synthetic-bootstrap-token-0123456789\n",
+            b"",
+        )
+
+    with pytest.raises(
+        VpnNodeBootstrapError, match="vpn_node_bootstrap_mutation_uncertain"
+    ) as caught:
+        _prepare_vpn_node(
+            layout,
+            worker_id=16,
+            panel_url="http://127.0.0.1:2053/panel/",
+            install_command=_build_vpn_install_command(),
+            xui_version=XUI_VERSION,
+            architecture="amd64",
+            stop_command=_build_xui_stop_command(),
+            start_command=XUI_START_COMMAND,
+            ready_command=_build_vpn_ready_command(),
+            port_occupied=lambda _port: False,
+            runner=run,
+            panel_session_factory=_Panel,
+            owner_uid=os.getuid() if hasattr(os, "getuid") else 0,
+            require_posix=False,
+        )
+
+    assert caught.value.code == "vpn_node_bootstrap_mutation_uncertain"
+    assert not running
+    assert layout.marker.exists()
+    assert calls[-1] == _build_xui_stop_command()
 
 
 def test_post_cli_rejects_changes_to_existing_token_rows(tmp_path: Path) -> None:
@@ -470,6 +786,9 @@ def test_post_cli_rejects_changes_to_existing_token_rows(tmp_path: Path) -> None
     _record_token(layout.databases[0], "owner-token", row_id=7)
 
     def corrupt(command, **_kwargs):
+        service = _service_result(command)
+        if service is not None:
+            return service
         connection = sqlite3.connect(layout.databases[0])
         try:
             connection.execute("UPDATE api_tokens SET name='changed' WHERE id=7")
@@ -494,6 +813,7 @@ def test_post_cli_rejects_changes_to_existing_token_rows(tmp_path: Path) -> None
             install_command=_build_vpn_install_command(),
             xui_version=XUI_VERSION,
             architecture="amd64",
+            **_lifecycle_commands(),
             port_occupied=lambda _port: False,
             runner=corrupt,
             panel_session_factory=_Panel,
@@ -513,8 +833,11 @@ def test_ambiguous_token_creation_leaves_private_marker_and_blocks_retry(
     _database(layout.databases[0])
     calls = 0
 
-    def ambiguous(*_args, **_kwargs):
+    def ambiguous(command, **_kwargs):
         nonlocal calls
+        service = _service_result(command)
+        if service is not None:
+            return service
         calls += 1
         raise subprocess.TimeoutExpired("secret-command", 10)
 
@@ -524,6 +847,7 @@ def test_ambiguous_token_creation_leaves_private_marker_and_blocks_retry(
         "install_command": _build_vpn_install_command(),
         "xui_version": XUI_VERSION,
         "architecture": "amd64",
+        **_lifecycle_commands(),
         "port_occupied": lambda _port: False,
         "runner": ambiguous,
         "panel_session_factory": _Panel,
@@ -552,6 +876,9 @@ def test_token_output_is_strict_and_never_appears_in_error(tmp_path: Path) -> No
     secret = "synthetic-secret-token-1234567890"
 
     def malformed(command, **_kwargs):
+        service = _service_result(command)
+        if service is not None:
+            return service
         return subprocess.CompletedProcess(command, 0, f"debug {secret}\n".encode(), b"")
 
     with pytest.raises(VpnNodeBootstrapError) as caught:
@@ -562,6 +889,7 @@ def test_token_output_is_strict_and_never_appears_in_error(tmp_path: Path) -> No
             install_command=_build_vpn_install_command(),
             xui_version=XUI_VERSION,
             architecture="amd64",
+            **_lifecycle_commands(),
             port_occupied=lambda _port: False,
             runner=malformed,
             panel_session_factory=_Panel,
@@ -767,6 +1095,9 @@ def test_runtime_main_emits_only_canonical_public_receipt(
         panel_url=receipt.panel_url,
         install_command="fixed-install",
         xui_version=XUI_VERSION,
+        stop_command="fixed-stop",
+        start_command="fixed-start",
+        ready_command="fixed-ready",
     )
 
     output = capsys.readouterr()

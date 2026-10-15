@@ -10,10 +10,12 @@ import json
 import os
 import platform
 import re
+import signal
 import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -42,7 +44,12 @@ _TOKEN_LINE = re.compile(
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_REMOTE_OUTPUT_BYTES = 4096
+MAX_LOCAL_OUTPUT_BYTES = 64 * 1024
 BOOTSTRAP_TIMEOUT = 900.0
+XUI_START_COMMAND = (
+    "systemctl enable --now x-ui.service || systemctl enable --now x-ui || "
+    "systemctl enable --now 3x-ui.service"
+)
 _ERROR_CODES = frozenset(
     {
         "vpn_node_bootstrap_failed",
@@ -54,6 +61,98 @@ _ERROR_CODES = frozenset(
         "vpn_node_bootstrap_reconciliation_required",
     }
 )
+_REMOTE_ROOT_SOURCE = r'''def prepare_private_root(path, owner_uid, require_posix):
+    for ancestor in path.parents:
+        try:
+            info = ancestor.lstat()
+        except FileNotFoundError:
+            continue
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or (require_posix and info.st_uid != owner_uid)
+                or (require_posix and info.st_mode & 0o022)):
+            raise ValueError
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    info = path.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or (require_posix and info.st_uid != owner_uid)
+            or (require_posix and stat.S_IMODE(info.st_mode) != 0o700)):
+        raise ValueError
+'''
+_REMOTE_BOUNDED_SOURCE = r'''def run_bounded(command, timeout, limit):
+    import os
+    import signal
+    import threading
+
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=os.name == "posix",
+    )
+    buffers = [bytearray(), bytearray()]
+    overflow = threading.Event()
+    errors = []
+
+    def terminate():
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except OSError:
+            pass
+
+    def collect(pipe, target):
+        try:
+            while True:
+                remaining = limit - len(target)
+                chunk = pipe.read(min(65536, remaining + 1))
+                if not chunk:
+                    return
+                if len(chunk) > remaining:
+                    overflow.set()
+                    terminate()
+                    return
+                target.extend(chunk)
+        except BaseException as error:
+            errors.append(error)
+            terminate()
+
+    threads = [
+        threading.Thread(target=collect, args=(process.stdout, buffers[0]), daemon=True),
+        threading.Thread(target=collect, args=(process.stderr, buffers[1]), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    timed_out = False
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        terminate()
+        process.wait()
+    except BaseException:
+        terminate()
+        process.wait()
+        raise
+    for thread in threads:
+        thread.join(timeout=1)
+    if any(thread.is_alive() for thread in threads):
+        for pipe in (process.stdout, process.stderr):
+            pipe.close()
+        raise TimeoutError
+    for pipe in (process.stdout, process.stderr):
+        pipe.close()
+    if errors or timed_out:
+        raise TimeoutError
+    if overflow.is_set():
+        raise OverflowError
+    return subprocess.CompletedProcess(command, process.returncode, bytes(buffers[0]), bytes(buffers[1]))
+'''
 _REMOTE_BOOTSTRAP = r'''import hashlib
 import json
 import os
@@ -62,6 +161,7 @@ import re
 import stat
 import subprocess
 import sys
+import threading
 
 MAX_HELPER = 8 * 1024 * 1024
 MAX_OUTPUT = 4096
@@ -78,13 +178,13 @@ ALLOWED_ERRORS = {
     RECONCILE,
 }
 
+''' + _REMOTE_ROOT_SOURCE + _REMOTE_BOUNDED_SOURCE + r'''
+
 def emit(raw, code):
     sys.stdout.buffer.write(raw)
     raise SystemExit(code)
 
 candidate = None
-stdout_path = None
-stderr_path = None
 started = False
 try:
     digest_line = sys.stdin.buffer.readline(66)
@@ -103,14 +203,9 @@ try:
     if os.geteuid() != 0:
         emit(FAILED, 1)
     parent = Path("/var/lib/veltrix-vpn")
-    info = parent.lstat()
-    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
-            or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700):
-        emit(FAILED, 1)
+    prepare_private_root(parent, 0, True)
     candidate = parent / (".bootstrap-" + digest + ".pyz")
-    stdout_path = parent / (".bootstrap-" + digest + ".stdout")
-    stderr_path = parent / (".bootstrap-" + digest + ".stderr")
-    if any(path.exists() or path.is_symlink() for path in (candidate, stdout_path, stderr_path)):
+    if candidate.exists() or candidate.is_symlink():
         emit(RECONCILE, 1)
     descriptor = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
     try:
@@ -128,24 +223,18 @@ try:
         os.fsync(directory)
     finally:
         os.close(directory)
-    with open(stdout_path, "xb", buffering=0) as stdout_file, open(stderr_path, "xb", buffering=0) as stderr_file:
-        os.chmod(stdout_path, 0o600)
-        os.chmod(stderr_path, 0o600)
-        started = True
-        try:
-            result = subprocess.run(
-                ["/usr/bin/python3", "-I", "-S", str(candidate)],
-                stdin=subprocess.DEVNULL,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                timeout=900,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            emit(UNCERTAIN, 1)
-    if stdout_path.stat().st_size > MAX_OUTPUT or stderr_path.stat().st_size:
+    started = True
+    try:
+        result = run_bounded(
+            ["/usr/bin/python3", "-I", "-S", str(candidate)],
+            900,
+            MAX_OUTPUT,
+        )
+    except (TimeoutError, OverflowError):
         emit(UNCERTAIN, 1)
-    output = stdout_path.read_bytes()
+    output = result.stdout
+    if result.stderr:
+        emit(UNCERTAIN, 1)
     if result.returncode == 1 and output in ALLOWED_ERRORS:
         emit(output, 1)
     if result.returncode != 0:
@@ -166,12 +255,11 @@ except SystemExit:
 except BaseException:
     emit(UNCERTAIN if started else FAILED, 1)
 finally:
-    for path in (candidate, stdout_path, stderr_path):
-        if path is not None:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
+    if candidate is not None:
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError:
+            pass
 '''
 FIXED_BOOTSTRAP_COMMAND = (
     "/usr/bin/python3 -I -S -B -c 'import base64;exec(base64.b64decode(\""
@@ -228,6 +316,151 @@ def _fail(code: str = "vpn_node_bootstrap_failed") -> None:
     raise VpnNodeBootstrapError(code) from None
 
 
+def _run_bounded_subprocess(
+    command,
+    *,
+    shell: bool,
+    timeout: float,
+    failure_code: str,
+) -> subprocess.CompletedProcess:
+    process = None
+    try:
+        process = subprocess.Popen(
+            command,
+            shell=shell,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=os.name == "posix",
+        )
+        buffers = [bytearray(), bytearray()]
+        overflow = threading.Event()
+        reader_failed = threading.Event()
+
+        def terminate() -> None:
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except OSError:
+                pass
+
+        def collect(pipe, target: bytearray) -> None:
+            try:
+                while True:
+                    remaining = MAX_LOCAL_OUTPUT_BYTES - len(target)
+                    chunk = pipe.read(min(65536, remaining + 1))
+                    if not chunk:
+                        return
+                    if len(chunk) > remaining:
+                        overflow.set()
+                        terminate()
+                        return
+                    target.extend(chunk)
+            except (OSError, ValueError):
+                reader_failed.set()
+                terminate()
+
+        threads = (
+            threading.Thread(
+                target=collect,
+                args=(process.stdout, buffers[0]),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=collect,
+                args=(process.stderr, buffers[1]),
+                daemon=True,
+            ),
+        )
+        for thread in threads:
+            thread.start()
+        timed_out = False
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            terminate()
+            process.wait()
+        except BaseException:
+            terminate()
+            process.wait()
+            raise
+        for thread in threads:
+            thread.join(timeout=1)
+        if any(thread.is_alive() for thread in threads):
+            for pipe in (process.stdout, process.stderr):
+                pipe.close()
+            _fail(failure_code)
+        for pipe in (process.stdout, process.stderr):
+            pipe.close()
+        if reader_failed.is_set() or overflow.is_set() or timed_out:
+            _fail(failure_code)
+        return subprocess.CompletedProcess(
+            command,
+            process.returncode,
+            bytes(buffers[0]),
+            bytes(buffers[1]),
+        )
+    except VpnNodeBootstrapError:
+        raise
+    except BaseException as error:
+        if process is not None and process.poll() is None:
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+                process.wait(timeout=1)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        _fail(failure_code)
+
+
+def _invoke_command(
+    runner,
+    command,
+    *,
+    shell: bool,
+    timeout: float,
+    failure_code: str,
+) -> subprocess.CompletedProcess:
+    if runner is None:
+        return _run_bounded_subprocess(
+            command,
+            shell=shell,
+            timeout=timeout,
+            failure_code=failure_code,
+        )
+    try:
+        result = runner(
+            command,
+            shell=shell,
+            input=b"",
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        if (
+            type(result.returncode) is not int
+            or type(result.stdout) is not bytes
+            or type(result.stderr) is not bytes
+            or len(result.stdout) > MAX_LOCAL_OUTPUT_BYTES
+            or len(result.stderr) > MAX_LOCAL_OUTPUT_BYTES
+        ):
+            _fail(failure_code)
+        return result
+    except VpnNodeBootstrapError:
+        raise
+    except BaseException as error:
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise
+        _fail(failure_code)
+
+
 def _sync_directory(path: Path) -> None:
     if os.name != "posix":
         return
@@ -269,6 +502,7 @@ def _secure_file(
     mode: int | None,
     limit: int,
     require_posix: bool,
+    read_mode: Literal["content", "digest", "metadata"] = "content",
 ) -> bytes:
     descriptor = None
     try:
@@ -282,6 +516,8 @@ def _secure_file(
                     or ancestor_info.st_mode & 0o022
                 ):
                     _fail("vpn_node_bootstrap_environment_invalid")
+        if read_mode not in {"content", "digest", "metadata"}:
+            _fail("vpn_node_bootstrap_environment_invalid")
         before = path.lstat()
         if (
             not stat.S_ISREG(before.st_mode)
@@ -310,17 +546,26 @@ def _secure_file(
         if identity(opened) != identity(before):
             _fail("vpn_node_bootstrap_environment_invalid")
         raw = bytearray()
-        while True:
-            chunk = os.read(descriptor, min(65536, limit + 1 - len(raw)))
-            if not chunk:
-                break
-            raw.extend(chunk)
-            if len(raw) > limit:
-                _fail("vpn_node_bootstrap_environment_invalid")
+        digest = hashlib.sha256()
+        size = 0
+        if read_mode != "metadata":
+            while True:
+                chunk = os.read(descriptor, min(65536, limit + 1 - size))
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > limit:
+                    _fail("vpn_node_bootstrap_environment_invalid")
+                if read_mode == "content":
+                    raw.extend(chunk)
+                else:
+                    digest.update(chunk)
         after = os.fstat(descriptor)
         linked = path.lstat()
         if identity(after) != identity(before) or identity(linked) != identity(before):
             _fail("vpn_node_bootstrap_environment_invalid")
+        if read_mode == "digest":
+            return digest.hexdigest().encode("ascii")
         return bytes(raw)
     except VpnNodeBootstrapError:
         raise
@@ -389,13 +634,20 @@ def _atomic_private(path: Path, raw: bytes) -> None:
         candidate.unlink(missing_ok=True)
 
 
-def _node_config_bytes(panel_url: str, database_path: Path) -> bytes:
+def _node_config_bytes(
+    panel_url: str,
+    database_path: Path,
+    backup_path: Path,
+    backup_sha256: str,
+) -> bytes:
     return (
         json.dumps(
             {
                 "version": 1,
                 "panel_url": panel_url,
                 "database_path": str(database_path),
+                "backup_path": str(backup_path),
+                "backup_sha256": backup_sha256,
             },
             ensure_ascii=True,
             separators=(",", ":"),
@@ -431,6 +683,7 @@ def _single_existing(paths: tuple[Path, ...], owner_uid: int, *, database: bool,
         mode=0o600 if database else None,
         limit=16 * 1024 * 1024 * 1024 if database else 64 * 1024 * 1024,
         require_posix=require_posix,
+        read_mode="metadata",
     )
     return path
 
@@ -571,8 +824,11 @@ def _prepare_vpn_node(
     install_command: str,
     xui_version: str,
     architecture: str,
+    stop_command: str | None = None,
+    start_command: str | None = None,
+    ready_command: str | None = None,
     port_occupied=_linux_port_occupied,
-    runner=subprocess.run,
+    runner=None,
     panel_session_factory=_default_panel_session,
     owner_uid: int = 0,
     require_posix: bool = True,
@@ -606,8 +862,7 @@ def _prepare_vpn_node(
                 require_posix=require_posix,
             )
             _fail("vpn_node_bootstrap_reconciliation_required")
-        if layout.backup.exists() or layout.backup.is_symlink():
-            _fail("vpn_node_bootstrap_foreign_state")
+        has_backup = layout.backup.exists() or layout.backup.is_symlink()
         if layout.backup.parent.exists() or layout.backup.parent.is_symlink():
             _secure_directory(
                 layout.backup.parent,
@@ -632,8 +887,16 @@ def _prepare_vpn_node(
             layout.xui_binaries, owner_uid, database=False, require_posix=require_posix
         )
         if has_token and has_config:
-            if database is None or binary is None:
+            if database is None or binary is None or not has_backup:
                 _fail("vpn_node_bootstrap_foreign_state")
+            backup_sha256 = _secure_file(
+                layout.backup,
+                owner_uid,
+                mode=0o600,
+                limit=16 * 1024 * 1024 * 1024,
+                require_posix=require_posix,
+                read_mode="digest",
+            ).decode("ascii")
             token_raw = _secure_file(
                 layout.token,
                 owner_uid,
@@ -650,7 +913,12 @@ def _prepare_vpn_node(
             )
             if not token_raw.endswith(b"\n") or not _TOKEN.fullmatch(token_raw[:-1]):
                 _fail("vpn_node_bootstrap_foreign_state")
-            if config_raw != _node_config_bytes(panel_url, database):
+            if config_raw != _node_config_bytes(
+                panel_url,
+                database,
+                layout.backup,
+                backup_sha256,
+            ):
                 _fail("vpn_node_bootstrap_foreign_state")
             token = token_raw[:-1].decode("ascii")
             with panel_session_factory(panel_url, api_token=token):
@@ -659,40 +927,51 @@ def _prepare_vpn_node(
                 "already_prepared", panel_url, str(database), xui_version
             )
 
+        if has_backup:
+            _fail("vpn_node_bootstrap_foreign_state")
+
+        token_name = f"veltrix-automation-{worker_id}-{uuid4().hex}"
+        token_state = None
+        if binary is not None and database is not None:
+            token_state = _database_state(
+                database, token_name, target_must_exist=False
+            )
         if port_occupied(443):
             _fail("vpn_node_bootstrap_port_conflict")
+        if any(
+            type(command) is not str or not command
+            for command in (stop_command, start_command, ready_command)
+        ):
+            _fail("vpn_node_bootstrap_environment_invalid")
         if (binary is None) != (database is None):
             _fail("vpn_node_bootstrap_environment_invalid")
         if binary is None:
             for command in pre_install_commands:
-                result = runner(
+                result = _invoke_command(
+                    runner,
                     command,
                     shell=True,
-                    input=b"",
-                    capture_output=True,
                     timeout=720,
-                    check=False,
+                    failure_code="vpn_node_bootstrap_failed",
                 )
                 if result.returncode != 0 or result.stderr:
                     _fail("vpn_node_bootstrap_failed")
-            result = runner(
+            result = _invoke_command(
+                runner,
                 install_command,
                 shell=True,
-                input=b"",
-                capture_output=True,
                 timeout=720,
-                check=False,
+                failure_code="vpn_node_bootstrap_failed",
             )
             if result.returncode != 0 or result.stderr:
                 _fail("vpn_node_bootstrap_failed")
             for command in post_install_commands:
-                result = runner(
+                result = _invoke_command(
+                    runner,
                     command,
                     shell=True,
-                    input=b"",
-                    capture_output=True,
                     timeout=720,
-                    check=False,
+                    failure_code="vpn_node_bootstrap_failed",
                 )
                 if result.returncode != 0 or result.stderr:
                     _fail("vpn_node_bootstrap_failed")
@@ -706,16 +985,10 @@ def _prepare_vpn_node(
                 _fail("vpn_node_bootstrap_failed")
         assert binary is not None and database is not None
 
-        token_name = f"veltrix-automation-{worker_id}-{uuid4().hex}"
-        token_state = _database_state(
-            database, token_name, target_must_exist=False
-        )
-        _backup_database(
-            database,
-            layout.backup,
-            owner_uid,
-            require_posix=require_posix,
-        )
+        if token_state is None:
+            token_state = _database_state(
+                database, token_name, target_must_exist=False
+            )
         _secure_directory(
             layout.auth_directory,
             owner_uid,
@@ -732,7 +1005,31 @@ def _prepare_vpn_node(
             + b"\n",
         )
         try:
-            result = runner(
+            result = _invoke_command(
+                runner,
+                stop_command,
+                shell=True,
+                timeout=30,
+                failure_code="vpn_node_bootstrap_mutation_uncertain",
+            )
+            if result.returncode != 0 or result.stderr:
+                _fail("vpn_node_bootstrap_mutation_uncertain")
+            _backup_database(
+                database,
+                layout.backup,
+                owner_uid,
+                require_posix=require_posix,
+            )
+            backup_sha256 = _secure_file(
+                layout.backup,
+                owner_uid,
+                mode=0o600,
+                limit=16 * 1024 * 1024 * 1024,
+                require_posix=require_posix,
+                read_mode="digest",
+            ).decode("ascii")
+            result = _invoke_command(
+                runner,
                 [
                     str(binary),
                     "setting",
@@ -740,10 +1037,9 @@ def _prepare_vpn_node(
                     "-tokenName",
                     token_name,
                 ],
-                input=b"",
-                capture_output=True,
+                shell=False,
                 timeout=30,
-                check=False,
+                failure_code="vpn_node_bootstrap_mutation_uncertain",
             )
             matches = (
                 _TOKEN_LINE.findall(result.stdout)
@@ -760,16 +1056,44 @@ def _prepare_vpn_node(
             ) != token_state:
                 _fail("vpn_node_bootstrap_mutation_uncertain")
             token = token_raw.decode("ascii")
+            for command in (start_command, ready_command):
+                result = _invoke_command(
+                    runner,
+                    command,
+                    shell=True,
+                    timeout=30,
+                    failure_code="vpn_node_bootstrap_mutation_uncertain",
+                )
+                if result.returncode != 0 or result.stderr:
+                    _fail("vpn_node_bootstrap_mutation_uncertain")
             with panel_session_factory(panel_url, api_token=token):
                 pass
             _atomic_private(layout.token, token_raw + b"\n")
-            _atomic_private(layout.config, _node_config_bytes(panel_url, database))
+            _atomic_private(
+                layout.config,
+                _node_config_bytes(
+                    panel_url,
+                    database,
+                    layout.backup,
+                    backup_sha256,
+                ),
+            )
             layout.marker.unlink()
             _sync_directory(layout.auth_directory)
-        except VpnNodeBootstrapError:
-            raise
         except BaseException as exc:
+            try:
+                _invoke_command(
+                    runner,
+                    stop_command,
+                    shell=True,
+                    timeout=30,
+                    failure_code="vpn_node_bootstrap_mutation_uncertain",
+                )
+            except VpnNodeBootstrapError:
+                pass
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            if isinstance(exc, VpnNodeBootstrapError):
                 raise
             _fail("vpn_node_bootstrap_mutation_uncertain")
         return VpnNodeBootstrapReceipt("prepared", panel_url, str(database), xui_version)
@@ -795,6 +1119,9 @@ def _main_source(
     panel_url: str,
     install_command: str,
     xui_version: str,
+    stop_command: str,
+    start_command: str,
+    ready_command: str,
     pre_install_commands: tuple[str, ...],
     post_install_commands: tuple[str, ...],
 ) -> bytes:
@@ -811,6 +1138,9 @@ def _main_source(
         f"    panel_url={panel_url!r},\n"
         f"    install_command={install_command!r},\n"
         f"    xui_version={xui_version!r},\n"
+        f"    stop_command={stop_command!r},\n"
+        f"    start_command={start_command!r},\n"
+        f"    ready_command={ready_command!r},\n"
         f"    pre_install_commands={pre_install_commands!r},\n"
         f"    post_install_commands={post_install_commands!r},\n"
         ")\n"
@@ -857,16 +1187,16 @@ def build_vpn_node_bootstrap_bundle(
             panel_url=panel_url,
             install_command=_build_vpn_install_command(),
             xui_version=XUI_VERSION,
+            stop_command=_build_xui_stop_command(),
+            start_command=XUI_START_COMMAND,
+            ready_command=_build_vpn_ready_command(),
             pre_install_commands=(
                 "apt-get update",
                 "apt-get install -y curl socat jq tar",
             ),
             post_install_commands=(
-                _build_xui_stop_command(),
                 _build_xray_owner_normalization_command(),
                 _build_xray_compatibility_command(),
-                "systemctl enable --now x-ui.service || systemctl enable --now x-ui || systemctl enable --now 3x-ui.service",
-                _build_vpn_ready_command(),
             ),
         )
         compile(main, "__main__.py", "exec", dont_inherit=True)
@@ -883,12 +1213,11 @@ def build_vpn_node_bootstrap_bundle(
                 for name, raw in members:
                     archive.writestr(_zip_entry(name), raw)
             os.chmod(temporary, 0o600)
-            probe = subprocess.run(
+            probe = _run_bounded_subprocess(
                 [sys.executable, "-I", "-S", str(temporary), "--import-probe"],
-                input=b"",
-                capture_output=True,
+                shell=False,
                 timeout=10,
-                check=False,
+                failure_code="vpn_node_bootstrap_failed",
             )
             if (
                 probe.returncode != 0
@@ -936,6 +1265,9 @@ def _runtime_main(
     panel_url: str,
     install_command: str,
     xui_version: str,
+    stop_command: str,
+    start_command: str,
+    ready_command: str,
     pre_install_commands: tuple[str, ...] = (),
     post_install_commands: tuple[str, ...] = (),
 ) -> None:
@@ -950,6 +1282,9 @@ def _runtime_main(
             install_command=install_command,
             xui_version=xui_version,
             architecture=architecture,
+            stop_command=stop_command,
+            start_command=start_command,
+            ready_command=ready_command,
             pre_install_commands=pre_install_commands,
             post_install_commands=post_install_commands,
         )
