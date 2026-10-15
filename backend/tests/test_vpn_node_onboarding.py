@@ -210,6 +210,67 @@ async def _run_with_stages(
     )
 
 
+@pytest.mark.asyncio
+async def test_onboarding_uses_preconfigured_panel_port_and_base_path(
+    sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    job_id, worker_id = await _job(
+        sessions,
+        vpn_panel_url="http://192.0.2.44:28989/example-panel/",
+    )
+    stages = _successful_stages(worker_id)
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    panel_urls: list[str] = []
+
+    def build(_source_root, target, *, worker_id, panel_url):
+        panel_urls.append(panel_url)
+        target.write_bytes(b"bootstrap")
+        return hashlib.sha256(b"bootstrap").hexdigest()
+
+    monkeypatch.setattr(onboarding, "build_vpn_node_bootstrap_bundle", build)
+
+    await _run_with_stages(sessions, job_id, stages)
+
+    assert panel_urls == ["http://127.0.0.1:28989/example-panel/"]
+
+
+@pytest.mark.asyncio
+async def test_onboarding_rejects_invalid_panel_url_before_remote_mutation(
+    sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    job_id, worker_id = await _job(
+        sessions,
+        vpn_panel_url="http://192.0.2.44:28989/not valid/",
+    )
+    remote_calls: list[str] = []
+    stages = _successful_stages(worker_id, remote_calls)
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    builder_calls: list[str] = []
+
+    def build(_source_root, target, *, worker_id, panel_url):
+        builder_calls.append(panel_url)
+        target.write_bytes(b"bootstrap")
+        return hashlib.sha256(b"bootstrap").hexdigest()
+
+    monkeypatch.setattr(onboarding, "build_vpn_node_bootstrap_bundle", build)
+
+    await _run_with_stages(sessions, job_id, stages)
+
+    assert builder_calls == []
+    assert remote_calls == []
+    async with sessions() as session:
+        job = await session.get(WorkerMaintenanceJob, job_id)
+        assert job is not None
+        assert (job.status, job.error_message) == (
+            "failed",
+            "vpn_onboarding_failed",
+        )
+
+
 def test_onboarding_view_is_a_safe_frozen_contract() -> None:
     view = VpnNodeOnboardingView(
         worker_id=16,

@@ -84,6 +84,7 @@ from app.services.vpn_reality_endpoint_registration import (
     promote_protected_endpoint,
     stage_protected_endpoint,
 )
+from app.services.vpn_xui_node_http import NodePanelError, validate_panel_url
 
 SAFE_ONBOARDING_ERRORS = frozenset(
     {
@@ -239,6 +240,16 @@ def _fail(code: str) -> None:
         raise error from None
     finally:
         error.__context__ = None
+
+
+def _local_panel_url(panel_url: str | None) -> str:
+    if panel_url is None:
+        return _PANEL_URL
+    try:
+        address = validate_panel_url(panel_url)
+    except NodePanelError:
+        _fail("vpn_onboarding_failed")
+    return f"http://127.0.0.1:{address.port}{address.base_path}"
 
 
 def _short_id(secret: str, worker_id: int, public_host: str) -> str:
@@ -829,6 +840,7 @@ async def run_vpn_node_onboarding_job(
             public_host = worker.vpn_public_host or worker.ssh_host or worker.ip_address
             if not public_host:
                 _fail("vpn_onboarding_worker_unavailable")
+            panel_url = _local_panel_url(worker.vpn_panel_url)
             short_id = _short_id(settings.session_secret_key, worker.id, public_host)
             ready_endpoint = await session.scalar(
                 select(VpnEndpoint)
@@ -901,7 +913,7 @@ async def run_vpn_node_onboarding_job(
                     source_root,
                     bootstrap_path,
                     worker_id=worker.id,
-                    panel_url=_PANEL_URL,
+                    panel_url=panel_url,
                 )
                 try:
                     bootstrap_receipt = await bootstrap(
