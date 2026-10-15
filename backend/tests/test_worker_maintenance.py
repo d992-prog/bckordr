@@ -9,7 +9,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.base import Base
 from app.db.models import WorkerMaintenanceJob, WorkerNode
+from app.services.vpn_policy import VPN_MUTATION_ACTIONS
 from app.services.worker_maintenance import (
+    VPN_MAINTENANCE_ACTIONS,
+    VPN_RUNNING_STATUS_BY_ACTION,
     _build_vpn_create_inbound_command,
     apply_vpn_autoconfig_metadata,
     build_worker_maintenance_commands,
@@ -324,3 +327,114 @@ async def test_vpn_mutation_rechecks_control_reservation_immediately_before_ssh(
         assert job.error_message == "Worker has an active VPN control operation"
     assert reservation_calls == 2
     assert ssh_calls == 0
+
+
+def test_vpn_onboarding_uses_the_existing_mutation_lease_and_running_label() -> None:
+    assert "vpn_onboard" in VPN_MUTATION_ACTIONS
+    assert "vpn_onboard" in VPN_MAINTENANCE_ACTIONS
+    assert VPN_RUNNING_STATUS_BY_ACTION["vpn_onboard"] == "onboarding"
+
+
+@pytest.mark.asyncio
+async def test_generic_maintenance_runner_delegates_onboarding_without_legacy_ssh(
+    maintenance_session_factory,
+    monkeypatch,
+) -> None:
+    async with maintenance_session_factory() as session:
+        worker = WorkerNode(
+            name="onboarding-node",
+            status="ready",
+            is_enabled=True,
+            ssh_host="192.0.2.30",
+            ssh_username="root",
+            ssh_password="secret",
+            vpn_enabled=True,
+            vpn_role="vpn_node",
+        )
+        session.add(worker)
+        await session.flush()
+        job = WorkerMaintenanceJob(worker_id=worker.id, action="vpn_onboard", status="queued")
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+
+    delegated: list[int] = []
+
+    async def delegate(received_job_id: int) -> None:
+        delegated.append(received_job_id)
+
+    async def forbidden_ssh(*_args, **_kwargs):
+        raise AssertionError("legacy SSH must not run onboarding")
+
+    monkeypatch.setattr(
+        "app.services.worker_maintenance.AsyncSessionLocal",
+        maintenance_session_factory,
+    )
+    monkeypatch.setattr(
+        "app.services.vpn_node_onboarding.run_vpn_node_onboarding_job",
+        delegate,
+    )
+    monkeypatch.setattr(
+        "app.services.worker_maintenance.execute_worker_ssh_commands",
+        forbidden_ssh,
+    )
+
+    await run_worker_maintenance_job(job_id)
+
+    assert delegated == [job_id]
+
+
+@pytest.mark.asyncio
+async def test_legacy_vpn_install_finishes_needs_config_not_ready(
+    maintenance_session_factory,
+    monkeypatch,
+) -> None:
+    async with maintenance_session_factory() as session:
+        worker = WorkerNode(
+            name="legacy-install-node",
+            status="ready",
+            is_enabled=True,
+            ssh_host="192.0.2.31",
+            ssh_username="root",
+            ssh_password="secret",
+            vpn_enabled=True,
+            vpn_role="vpn_node",
+        )
+        session.add(worker)
+        await session.flush()
+        job = WorkerMaintenanceJob(worker_id=worker.id, action="vpn_install", status="queued")
+        session.add(job)
+        await session.commit()
+        job_id = job.id
+        worker_id = worker.id
+
+    async def no_workers(_session):
+        return set()
+
+    async def execute(*_args, **_kwargs):
+        return "installed"
+
+    monkeypatch.setattr(
+        "app.services.worker_maintenance.AsyncSessionLocal",
+        maintenance_session_factory,
+    )
+    monkeypatch.setattr(
+        "app.services.worker_maintenance.active_vpn_control_worker_ids",
+        no_workers,
+    )
+    monkeypatch.setattr(
+        "app.services.worker_maintenance.active_attack_worker_ids",
+        no_workers,
+    )
+    monkeypatch.setattr(
+        "app.services.worker_maintenance.execute_worker_ssh_commands",
+        execute,
+    )
+
+    await run_worker_maintenance_job(job_id)
+
+    async with maintenance_session_factory() as session:
+        stored = await session.get(WorkerNode, worker_id)
+        assert stored is not None
+        assert stored.vpn_runtime_status == "needs_config"
+        assert stored.vpn_last_error is None

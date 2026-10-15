@@ -27,6 +27,7 @@ NODE_CAPACITY_STATUSES = (
     "pending_sync", "syncing", "active", "pending_suspend", "suspended", "pending_revoke", "failed",
 )
 VPN_MUTATION_ACTIONS = {
+    "vpn_onboard",
     "vpn_install",
     "vpn_update",
     "vpn_restart",
