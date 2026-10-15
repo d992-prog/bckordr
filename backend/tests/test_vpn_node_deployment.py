@@ -239,6 +239,58 @@ def test_upgrade_keeps_previous_code_and_existing_private_state(tmp_path: Path) 
         )
 
 
+def test_completed_release_retry_is_idempotent_with_previous_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    layout = _layout(tmp_path)
+    _private_file(layout.token, b"existing-service-token\n")
+    database = tmp_path / "x-ui.db"
+    _private_file(database, b"sqlite-placeholder")
+    monkeypatch.setattr(deployment, "_config", lambda _raw: database)
+    config = _config(database)
+    _private_file(layout.config, config)
+    layout.journal.mkdir(mode=0o700)
+    initialize_node_journal(layout.journal)
+    bundle, digest = _bundle(tmp_path)
+    _private_file(layout.active, bundle)
+    _private_file(layout.previous, _old_bundle(tmp_path))
+    preserved = {
+        path: (path.read_bytes(), path.stat())
+        for path in (
+            layout.active,
+            layout.previous,
+            layout.token,
+            layout.config,
+            layout.journal / "gate.sqlite3",
+            layout.journal / "operations.sqlite3",
+        )
+    }
+
+    result = deployment.install_node_release(
+        bundle,
+        expected_sha256=digest,
+        node_config=config,
+        layout=layout,
+        python_executable=Path(sys.executable),
+        owner_uid=layout.token.stat().st_uid,
+        require_posix=False,
+    )
+
+    assert result == "installed"
+    assert not layout.state.exists()
+    for path, (raw, before) in preserved.items():
+        after = path.stat()
+        assert path.read_bytes() == raw
+        assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
+
+
 def test_failure_rolls_back_new_state_and_preserves_old_code(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
