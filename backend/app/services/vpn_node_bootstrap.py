@@ -45,6 +45,7 @@ _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 MAX_BUNDLE_BYTES = 8 * 1024 * 1024
 MAX_REMOTE_OUTPUT_BYTES = 4096
 MAX_LOCAL_OUTPUT_BYTES = 64 * 1024
+MAX_XUI_BINARY_BYTES = 128 * 1024 * 1024
 BOOTSTRAP_TIMEOUT = 900.0
 XUI_START_COMMAND = (
     "systemctl enable --now x-ui.service || systemctl enable --now x-ui || "
@@ -719,7 +720,7 @@ def _single_existing(paths: tuple[Path, ...], owner_uid: int, *, database: bool,
         path,
         owner_uid,
         mode=0o600 if database else None,
-        limit=16 * 1024 * 1024 * 1024 if database else 64 * 1024 * 1024,
+        limit=16 * 1024 * 1024 * 1024 if database else MAX_XUI_BINARY_BYTES,
         require_posix=require_posix,
         read_mode="metadata",
     )

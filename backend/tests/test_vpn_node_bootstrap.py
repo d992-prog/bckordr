@@ -242,6 +242,16 @@ def _layout(tmp_path: Path) -> BootstrapLayout:
     )
 
 
+def test_xui_binary_limit_accepts_official_v385_artifact(tmp_path: Path) -> None:
+    binary = tmp_path / "x-ui"
+    with binary.open("wb") as handle:
+        handle.truncate(73_133_472)
+
+    assert vpn_node_bootstrap._single_existing(
+        (binary,), owner_uid=0, database=False, require_posix=False
+    ) == binary
+
+
 def _database(path: Path, *, inbounds: tuple[int, ...] = ()) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
