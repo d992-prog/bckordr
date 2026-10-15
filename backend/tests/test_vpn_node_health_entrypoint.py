@@ -24,6 +24,7 @@ from app.services.vpn_node_health import (
 )
 
 SECRET = "synthetic-health-token-must-never-escape"
+TOKEN_FILE = SECRET.encode() + b"\n"
 PUBLIC_KEY = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
 
 
@@ -117,6 +118,7 @@ def node(tmp_path, target):
         "mutations": [],
         "listener": True,
         "database": database,
+        "expected_token": SECRET,
     }
 
     class Handler(BaseHTTPRequestHandler):
@@ -131,7 +133,7 @@ def node(tmp_path, target):
             self.wfile.write(encoded)
 
         def do_GET(self):
-            assert self.headers["Authorization"] == "Bearer " + SECRET
+            assert self.headers["Authorization"] == "Bearer " + state["expected_token"]
             state["events"].append(("GET", self.path))
             body = {
                 "/secret-base/panel/api/server/status": state["status"],
@@ -166,7 +168,14 @@ def request_bytes(target: VpnEndpointTarget) -> bytes:
     )
 
 
-def install_trusted_inputs(monkeypatch, entrypoint, node, tmp_path):
+def install_trusted_inputs(
+    monkeypatch,
+    entrypoint,
+    node,
+    tmp_path,
+    *,
+    token_value=None,
+):
     config = tmp_path / "node.json"
     token = tmp_path / "api-token"
     values = {
@@ -178,12 +187,14 @@ def install_trusted_inputs(monkeypatch, entrypoint, node, tmp_path):
             },
             separators=(",", ":"),
         ).encode(),
-        token: SECRET.encode(),
+        token: TOKEN_FILE if token_value is None else token_value,
     }
     checked = []
 
     def read(path, *, limit):
         checked.append((path, limit))
+        if len(values[path]) > limit:
+            raise entrypoint.NodeEntrypointError()
         return values[path]
 
     monkeypatch.setattr(entrypoint, "_read_private_file", read)
@@ -328,9 +339,45 @@ def test_exact_health_receipt_and_read_only_state(
     assert checked == [
         (config, entrypoint.MAX_CONFIG_BYTES),
         (node["database"], "database"),
-        (token, entrypoint.MAX_TOKEN_BYTES),
+        (token, entrypoint.MAX_TOKEN_BYTES + 1),
     ]
     assert SECRET.encode() not in stdout + stderr
+
+
+@pytest.mark.parametrize(
+    ("token_size", "expected"),
+    [
+        (4096, VpnNodeHealthReceipt("healthy", None, "running")),
+        (
+            4097,
+            VpnNodeHealthReceipt("unhealthy", "vpn_node_health_internal", None),
+        ),
+    ],
+)
+def test_token_file_line_length_boundary(
+    monkeypatch, entrypoint, node, target, tmp_path, token_size, expected
+):
+    node["expected_token"] = "a" * token_size
+    config, token, _checked = install_trusted_inputs(
+        monkeypatch,
+        entrypoint,
+        node,
+        tmp_path,
+        token_value=b"a" * token_size + b"\n",
+    )
+
+    code, stdout, stderr = run(
+        entrypoint,
+        request_bytes(target),
+        config=config,
+        token=token,
+    )
+
+    assert (code, stdout, stderr) == (
+        0,
+        serialize_node_health_receipt(expected),
+        b"",
+    )
 
 
 def test_database_and_panel_failures_map_to_closed_receipts(
@@ -519,9 +566,9 @@ def test_valid_request_maps_trusted_input_failures_to_one_static_receipt(
         def invalid_token(path, *, limit):
             if path == token:
                 return (
-                    b"\xff" + SECRET.encode()
+                    b"\xff" + SECRET.encode() + b"\n"
                     if failure == "token_decode"
-                    else f"invalid token {SECRET}".encode()
+                    else f"invalid token {SECRET}\n".encode()
                 )
             return original_read(path, limit=limit)
 
@@ -544,6 +591,43 @@ def test_valid_request_maps_trusted_input_failures_to_one_static_receipt(
     assert SECRET.encode() not in stdout + stderr
     assert str(config).encode() not in stdout + stderr
     assert str(token).encode() not in stdout + stderr
+
+
+@pytest.mark.parametrize(
+    "token_value",
+    [
+        SECRET.encode(),
+        SECRET.encode() + b"\n\n",
+        b"first\nsecond\n",
+        SECRET.encode() + b"\r\n",
+    ],
+)
+def test_token_file_rejects_noncanonical_line_framing(
+    monkeypatch, entrypoint, node, target, tmp_path, token_value
+):
+    config, token, _checked = install_trusted_inputs(
+        monkeypatch,
+        entrypoint,
+        node,
+        tmp_path,
+        token_value=token_value,
+    )
+
+    code, stdout, stderr = run(
+        entrypoint,
+        request_bytes(target),
+        config=config,
+        token=token,
+    )
+
+    assert (code, stdout, stderr) == (
+        0,
+        serialize_node_health_receipt(
+            VpnNodeHealthReceipt("unhealthy", "vpn_node_health_internal", None)
+        ),
+        b"",
+    )
+    assert node["events"] == []
     assert str(node["database"]).encode() not in stdout + stderr
 
 

@@ -120,9 +120,14 @@ def run_node_health_entrypoint(
             _read_private_file(config_path, limit=MAX_CONFIG_BYTES)
         )
         _validate_private_regular_file(database_path)
-        token = _read_private_file(token_path, limit=MAX_TOKEN_BYTES).decode(
-            "ascii", errors="strict"
-        )
+        token_raw = _read_private_file(token_path, limit=MAX_TOKEN_BYTES + 1)
+        if (
+            not token_raw.endswith(b"\n")
+            or b"\n" in token_raw[:-1]
+            or b"\r" in token_raw
+        ):
+            raise NodeEntrypointError from None
+        token = token_raw[:-1].decode("ascii", errors="strict")
         panel_session = NodePanelSession(
             panel_url,
             username=None,
