@@ -16,12 +16,13 @@ from fastapi import BackgroundTasks, FastAPI
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import Request
+from test_vpn_endpoint_migrations import PRE_TASK1_MIGRATIONS
 
 from app.api.deps import require_admin
 from app.api.routes import control
 from app.api.routes.control import router as control_router
 from app.db.base import Base
-from app.db.migrations import run_startup_migrations
+from app.db.migrations import MIGRATIONS
 from app.db.models import (
     AdminAuditLog,
     User,
@@ -55,6 +56,13 @@ HOST_KEY = "192.0.2.44 ssh-ed25519 " + "A" * 44
 PUBLIC_KEY = "A" * 43
 SHORT_ID = "0011223344556677"
 RELEASE_ID = "b" * 64
+ONBOARDING_MIGRATIONS = (
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_host_key TEXT NULL",
+    (
+        "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS "
+        "ssh_host_key_fingerprint VARCHAR(64) NULL"
+    ),
+)
 
 
 @pytest_asyncio.fixture
@@ -162,6 +170,14 @@ async def _wait_until_postgres_session_is_blocked(pg_sessions, pid: int) -> bool
             await asyncio.sleep(0.01)
 
 
+async def _cancel_and_await(*tasks: asyncio.Task | None) -> None:
+    present = [task for task in tasks if task is not None]
+    for task in present:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*present, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 async def test_concurrent_start_requests_create_one_active_job(
     pg_sessions, postgres_schema, monkeypatch
@@ -225,12 +241,13 @@ async def test_concurrent_start_requests_create_one_active_job(
         first_request = asyncio.create_task(
             client.post(f"/control/workers/{worker_id}/vpn-onboarding/start")
         )
-        await asyncio.wait_for(first_locked.wait(), timeout=5)
-        second_request = asyncio.create_task(
-            client.post(f"/control/workers/{worker_id}/vpn-onboarding/start")
-        )
-        await asyncio.wait_for(second_attempted.wait(), timeout=5)
+        second_request = None
         try:
+            await asyncio.wait_for(first_locked.wait(), timeout=5)
+            second_request = asyncio.create_task(
+                client.post(f"/control/workers/{worker_id}/vpn-onboarding/start")
+            )
+            await asyncio.wait_for(second_attempted.wait(), timeout=5)
             assert await asyncio.wait_for(
                 _wait_until_postgres_session_is_blocked(
                     pg_sessions,
@@ -240,11 +257,13 @@ async def test_concurrent_start_requests_create_one_active_job(
             )
             assert not first_request.done()
             assert not second_request.done()
+            release_first.set()
+            first, second = await asyncio.wait_for(
+                asyncio.gather(first_request, second_request), timeout=10
+            )
         finally:
             release_first.set()
-        first, second = await asyncio.wait_for(
-            asyncio.gather(first_request, second_request), timeout=10
-        )
+            await _cancel_and_await(first_request, second_request)
 
     assert first.status_code == second.status_code == 202
     assert first.json()["job_id"] == second.json()["job_id"]
@@ -375,10 +394,11 @@ async def test_onboarding_and_customer_provisioning_cannot_share_worker(
             raise AssertionError("customer provisioning shared an onboarding worker")
 
     onboarding = asyncio.create_task(start_onboarding())
-    await asyncio.wait_for(worker_locked.wait(), timeout=5)
-    provisioning = asyncio.create_task(provision_customer())
-    await asyncio.wait_for(provisioning_attempted.wait(), timeout=5)
+    provisioning = None
     try:
+        await asyncio.wait_for(worker_locked.wait(), timeout=5)
+        provisioning = asyncio.create_task(provision_customer())
+        await asyncio.wait_for(provisioning_attempted.wait(), timeout=5)
         assert await asyncio.wait_for(
             _wait_until_postgres_session_is_blocked(
                 pg_sessions,
@@ -388,11 +408,13 @@ async def test_onboarding_and_customer_provisioning_cannot_share_worker(
         )
         assert not onboarding.done()
         assert not provisioning.done()
+        release_onboarding.set()
+        response, error_code = await asyncio.wait_for(
+            asyncio.gather(onboarding, provisioning), timeout=10
+        )
     finally:
         release_onboarding.set()
-    response, error_code = await asyncio.wait_for(
-        asyncio.gather(onboarding, provisioning), timeout=10
-    )
+        await _cancel_and_await(onboarding, provisioning)
 
     assert response.state == "queued"
     assert error_code == "vpn_control_worker_busy"
@@ -517,22 +539,28 @@ async def test_promotion_with_capacity_and_health_updates_preserves_exact_endpoi
         return VpnNodeHealthReceipt("healthy", None, "running")
 
     promotion = asyncio.create_task(promote())
-    await asyncio.wait_for(promotion_has_worker.wait(), timeout=5)
-    capacity = asyncio.create_task(update_capacity())
-    health = asyncio.create_task(
-        probe_next_vpn_endpoint(
-            health_sessions,
-            Path("C:/veltrix/known_hosts"),
-            snapshot_loader=lambda *_: object(),
-            transport=healthy_transport,
-            now=lambda: HEALTH_NOW,
+    capacity = None
+    health = None
+    try:
+        await asyncio.wait_for(promotion_has_worker.wait(), timeout=5)
+        capacity = asyncio.create_task(update_capacity())
+        health = asyncio.create_task(
+            probe_next_vpn_endpoint(
+                health_sessions,
+                Path("C:/veltrix/known_hosts"),
+                snapshot_loader=lambda *_: object(),
+                transport=healthy_transport,
+                now=lambda: HEALTH_NOW,
+            )
         )
-    )
-    await asyncio.wait_for(capacity, timeout=5)
-    await asyncio.wait_for(health_attempted_worker.wait(), timeout=5)
-    release_promotion.set()
-    await asyncio.wait_for(promotion, timeout=10)
-    assert await asyncio.wait_for(health, timeout=10) is True
+        await asyncio.wait_for(capacity, timeout=5)
+        await asyncio.wait_for(health_attempted_worker.wait(), timeout=5)
+        release_promotion.set()
+        await asyncio.wait_for(promotion, timeout=10)
+        assert await asyncio.wait_for(health, timeout=10) is True
+    finally:
+        release_promotion.set()
+        await _cancel_and_await(promotion, capacity, health)
 
     async with pg_sessions() as session:
         endpoint = await session.get(VpnEndpoint, endpoint_id)
@@ -575,84 +603,257 @@ async def test_promotion_with_capacity_and_health_updates_preserves_exact_endpoi
 
 
 @pytest.mark.asyncio
-async def test_startup_migrations_twice_preserve_worker_and_endpoint_data(
-    pg_sessions,
+async def test_onboarding_migrations_twice_preserve_pre_onboarding_data(
     postgres_schema,
 ) -> None:
-    async with pg_sessions() as session:
-        worker = _worker(
-            name="migration-polish-server",
-            region="pl-waw",
-            vpn_runtime_status="awaiting_test",
-            vpn_inbound_id=27,
-            vpn_inbound_port=443,
-            vpn_inbound_protocol="vless",
-            vpn_inbound_transport="tcp",
-            vpn_inbound_security="reality",
-            vpn_listener_status="listening",
-            vpn_last_checked_at=NOW,
-        )
-        session.add(worker)
-        await session.flush()
-        endpoint = _endpoint(
-            worker.id,
-            health_checked_at=NOW,
-            last_error_code="vpn_node_health_transport_failed",
-            max_active_profiles=41,
-            capacity_warning_percent=67,
-        )
-        session.add(endpoint)
-        await session.commit()
-        worker_id, endpoint_id = worker.id, endpoint.id
+    worker_query = text(
+        """
+        SELECT id, name, region, status, is_enabled, ssh_host, ssh_port,
+               ssh_username, ssh_password, ssh_key_path, vpn_role, vpn_enabled,
+               vpn_runtime_status, vpn_public_host, vpn_inbound_id,
+               vpn_inbound_port, vpn_inbound_protocol, vpn_inbound_transport,
+               vpn_inbound_security, vpn_listener_status, vpn_last_checked_at,
+               vpn_last_error, archived_at, created_at, updated_at
+        FROM worker_nodes WHERE id = 7
+        """
+    )
+    endpoint_query = text(
+        """
+        SELECT id, worker_id, inbound_id, public_host, port, protocol,
+               transport, security, server_name, public_key, short_id,
+               fingerprint, flow, status, verified_at, health_checked_at,
+               external_verified_at, external_config_fingerprint,
+               last_error_code, max_active_profiles, capacity_warning_percent,
+               created_at, updated_at
+        FROM vpn_endpoints WHERE id = 11
+        """
+    )
 
-    async def snapshot() -> tuple[dict[str, object], dict[str, object]]:
-        async with pg_sessions() as session:
-            worker = await session.get(WorkerNode, worker_id)
-            endpoint = await session.get(VpnEndpoint, endpoint_id)
-            assert worker is not None and endpoint is not None
-            return (
-                {
-                    "id": worker.id,
-                    "name": worker.name,
-                    "region": worker.region,
-                    "ssh_host": worker.ssh_host,
-                    "ssh_port": worker.ssh_port,
-                    "ssh_username": worker.ssh_username,
-                    "ssh_host_key": worker.ssh_host_key,
-                    "ssh_host_key_fingerprint": worker.ssh_host_key_fingerprint,
-                    "vpn_runtime_status": worker.vpn_runtime_status,
-                    "vpn_public_host": worker.vpn_public_host,
-                    "vpn_inbound_id": worker.vpn_inbound_id,
-                    "vpn_inbound_port": worker.vpn_inbound_port,
-                    "vpn_inbound_protocol": worker.vpn_inbound_protocol,
-                    "vpn_inbound_transport": worker.vpn_inbound_transport,
-                    "vpn_inbound_security": worker.vpn_inbound_security,
-                    "vpn_listener_status": worker.vpn_listener_status,
-                    "vpn_last_checked_at": worker.vpn_last_checked_at,
-                },
-                {
-                    "id": endpoint.id,
-                    "worker_id": endpoint.worker_id,
-                    "inbound_id": endpoint.inbound_id,
-                    "public_host": endpoint.public_host,
-                    "port": endpoint.port,
-                    "protocol": endpoint.protocol,
-                    "transport": endpoint.transport,
-                    "security": endpoint.security,
-                    "server_name": endpoint.server_name,
-                    "public_key": endpoint.public_key,
-                    "short_id": endpoint.short_id,
-                    "fingerprint": endpoint.fingerprint,
-                    "flow": endpoint.flow,
-                    "status": endpoint.status,
-                    "health_checked_at": endpoint.health_checked_at,
-                    "last_error_code": endpoint.last_error_code,
-                    "max_active_profiles": endpoint.max_active_profiles,
-                    "capacity_warning_percent": endpoint.capacity_warning_percent,
-                },
+    async with postgres_schema.engine.begin() as connection:
+        await connection.execute(
+            text(
+                """
+                CREATE TABLE worker_nodes (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(128) NOT NULL,
+                    region VARCHAR(128) NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'provisioning',
+                    is_enabled BOOLEAN NOT NULL DEFAULT true,
+                    ssh_host VARCHAR(64) NULL,
+                    ssh_port INTEGER NOT NULL DEFAULT 22,
+                    ssh_username VARCHAR(64) NULL,
+                    ssh_password TEXT NULL,
+                    ssh_key_path VARCHAR(255) NULL,
+                    vpn_role VARCHAR(32) NOT NULL DEFAULT 'none',
+                    vpn_enabled BOOLEAN NOT NULL DEFAULT false,
+                    vpn_runtime_status VARCHAR(32) NOT NULL DEFAULT 'not_installed',
+                    vpn_public_host VARCHAR(255) NULL,
+                    vpn_inbound_id INTEGER NULL,
+                    vpn_inbound_port INTEGER NULL,
+                    vpn_inbound_protocol VARCHAR(32) NULL,
+                    vpn_inbound_transport VARCHAR(32) NULL,
+                    vpn_inbound_security VARCHAR(32) NULL,
+                    vpn_listener_status VARCHAR(32) NULL,
+                    vpn_last_checked_at TIMESTAMPTZ NULL,
+                    vpn_last_error TEXT NULL,
+                    archived_at TIMESTAMPTZ NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uq_worker_nodes_name UNIQUE (name)
+                )
+                """
             )
+        )
+        await connection.execute(
+            text(
+                "CREATE INDEX ix_worker_nodes_archived_at ON worker_nodes(archived_at)"
+            )
+        )
+        for statement in PRE_TASK1_MIGRATIONS[:3]:
+            await connection.execute(text(statement))
+        await connection.execute(
+            text(
+                """
+                INSERT INTO worker_nodes (
+                    id, name, region, status, is_enabled, ssh_host, ssh_port,
+                    ssh_username, ssh_password, ssh_key_path, vpn_role,
+                    vpn_enabled, vpn_runtime_status, vpn_public_host,
+                    vpn_inbound_id, vpn_inbound_port, vpn_inbound_protocol,
+                    vpn_inbound_transport, vpn_inbound_security,
+                    vpn_listener_status, vpn_last_checked_at, vpn_last_error,
+                    archived_at, created_at, updated_at
+                ) VALUES (
+                    7, 'migration-polish-server', 'pl-waw', 'ready', true,
+                    '192.0.2.44', 22, 'root', 'old-password', '/root/.ssh/id_ed25519',
+                    'vpn_node', true, 'awaiting_test', '192.0.2.44', 27, 443,
+                    'vless', 'tcp', 'reality', 'listening', :checked_at,
+                    'old-safe-code', NULL, :created_at, :updated_at
+                )
+                """
+            ),
+            {
+                "checked_at": NOW,
+                "created_at": NOW - timedelta(days=2),
+                "updated_at": NOW - timedelta(days=1),
+            },
+        )
+        await connection.execute(
+            text(
+                """
+                INSERT INTO vpn_endpoints (
+                    id, worker_id, inbound_id, public_host, port, protocol,
+                    transport, security, server_name, public_key, short_id,
+                    fingerprint, flow, status, verified_at, health_checked_at,
+                    external_verified_at, external_config_fingerprint,
+                    last_error_code, max_active_profiles,
+                    capacity_warning_percent, created_at, updated_at
+                ) VALUES (
+                    11, 7, 27, '192.0.2.44', 443, 'vless', 'tcp', 'reality',
+                    'gateway.icloud.com', :public_key, :short_id, 'chrome',
+                    'xtls-rprx-vision', 'staged', NULL, :checked_at, NULL, NULL,
+                    'vpn_node_health_transport_failed', 41, 67,
+                    :created_at, :updated_at
+                )
+                """
+            ),
+            {
+                "public_key": PUBLIC_KEY,
+                "short_id": SHORT_ID,
+                "checked_at": NOW,
+                "created_at": NOW - timedelta(days=2),
+                "updated_at": NOW - timedelta(days=1),
+            },
+        )
+        missing_columns = set(
+            await connection.scalars(
+                text(
+                    """
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'worker_nodes'
+                      AND column_name IN ('ssh_host_key', 'ssh_host_key_fingerprint')
+                    """
+                )
+            )
+        )
+        assert missing_columns == set()
+        before_worker = dict((await connection.execute(worker_query)).mappings().one())
+        before_endpoint = dict(
+            (await connection.execute(endpoint_query)).mappings().one()
+        )
+        before_constraints = set(
+            await connection.scalars(
+                text(
+                    """
+                    SELECT conname FROM pg_constraint
+                    WHERE conrelid = 'vpn_endpoints'::regclass
+                    """
+                )
+            )
+        )
+        before_indexes = set(
+            await connection.scalars(
+                text(
+                    """
+                    SELECT indexname FROM pg_indexes
+                    WHERE schemaname = current_schema()
+                      AND tablename = 'vpn_endpoints'
+                    """
+                )
+            )
+        )
 
-    before = await snapshot()
-    await run_startup_migrations(postgres_schema.engine)
-    await run_startup_migrations(postgres_schema.engine)
-    assert await snapshot() == before
+    for _ in range(2):
+        async with postgres_schema.engine.begin() as connection:
+            for statement in MIGRATIONS:
+                if statement in ONBOARDING_MIGRATIONS:
+                    await connection.execute(text(statement))
+
+    async with postgres_schema.engine.connect() as connection:
+        after_worker = dict((await connection.execute(worker_query)).mappings().one())
+        after_endpoint = dict(
+            (await connection.execute(endpoint_query)).mappings().one()
+        )
+        new_columns = {
+            row["column_name"]: (
+                row["is_nullable"],
+                row["data_type"],
+                row["character_maximum_length"],
+            )
+            for row in (
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT column_name, is_nullable, data_type,
+                                   character_maximum_length
+                            FROM information_schema.columns
+                            WHERE table_schema = current_schema()
+                              AND table_name = 'worker_nodes'
+                              AND column_name IN (
+                                  'ssh_host_key', 'ssh_host_key_fingerprint'
+                              )
+                            """
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        }
+        added_values = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT ssh_host_key, ssh_host_key_fingerprint
+                    FROM worker_nodes WHERE id = 7
+                    """
+                )
+            )
+        ).one()
+        after_constraints = set(
+            await connection.scalars(
+                text(
+                    """
+                    SELECT conname FROM pg_constraint
+                    WHERE conrelid = 'vpn_endpoints'::regclass
+                    """
+                )
+            )
+        )
+        after_indexes = set(
+            await connection.scalars(
+                text(
+                    """
+                    SELECT indexname FROM pg_indexes
+                    WHERE schemaname = current_schema()
+                      AND tablename = 'vpn_endpoints'
+                    """
+                )
+            )
+        )
+
+    assert after_worker == before_worker
+    assert after_endpoint == before_endpoint
+    assert new_columns == {
+        "ssh_host_key": ("YES", "text", None),
+        "ssh_host_key_fingerprint": ("YES", "character varying", 64),
+    }
+    assert tuple(added_values) == (None, None)
+    assert after_constraints == before_constraints
+    assert {
+        "uq_vpn_endpoint_worker_inbound",
+        "uq_vpn_endpoint_id_worker",
+        "ck_vpn_endpoint_inbound",
+        "ck_vpn_endpoint_port",
+        "ck_vpn_endpoint_capacity",
+        "ck_vpn_endpoint_capacity_warning",
+        "ck_vpn_endpoint_status",
+        "ck_vpn_endpoint_security",
+        "ck_vpn_endpoint_ready",
+    } <= after_constraints
+    assert after_indexes == before_indexes
+    assert {
+        "ix_vpn_endpoints_worker_id",
+        "ix_vpn_endpoints_status",
+    } <= after_indexes

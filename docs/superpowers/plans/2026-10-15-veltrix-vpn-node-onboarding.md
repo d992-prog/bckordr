@@ -678,7 +678,7 @@ Run with the repository's disposable PostgreSQL test URL:
 
 ```powershell
 Set-Location backend
-$env:POSTGRES_TEST_URL='<closed disposable test database URL>'
+$env:VPN_PORTAL_TEST_PG_URL='<closed disposable test database URL>'
 ./.venv/Scripts/python.exe -m pytest tests/test_vpn_node_onboarding_postgres.py tests/test_vpn_endpoint_migrations.py tests/test_vpn_fleet_health_postgres.py -q
 ```
 
