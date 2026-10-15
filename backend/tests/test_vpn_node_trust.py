@@ -1,7 +1,9 @@
 import asyncio
 import base64
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,6 +23,8 @@ from app.services.vpn_node_trust import (
 
 FINGERPRINT_A = "SHA256:" + base64.b64encode(b"a" * 32).decode().rstrip("=")
 FINGERPRINT_B = "SHA256:" + base64.b64encode(b"b" * 32).decode().rstrip("=")
+PROC_HEADER = "sl local_address rem_address st\n"
+PROC_LISTEN_443 = "0: 00000000:01BB 00000000:0000 0A\n"
 
 
 class BytesReader:
@@ -49,12 +53,16 @@ class Process:
         self.exit_status = exit_status
         self.waited = False
         self.closed = False
+        self.close_waited = False
 
     async def wait(self) -> None:
         self.waited = True
 
     def close(self) -> None:
         self.closed = True
+
+    async def wait_closed(self) -> None:
+        self.close_waited = True
 
 
 class Connection:
@@ -63,6 +71,7 @@ class Connection:
         self.process = process
         self.process_calls: list[tuple[str, dict[str, object]]] = []
         self.aborted = False
+        self.close_waited = False
 
     def get_server_host_key(self):
         return self.host_key
@@ -73,6 +82,9 @@ class Connection:
 
     def abort(self) -> None:
         self.aborted = True
+
+    async def wait_closed(self) -> None:
+        self.close_waited = True
 
 
 def worker(**overrides):
@@ -116,6 +128,78 @@ def payload(
         json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("ascii")
         + b"\n"
     )
+
+
+def run_probe_script(monkeypatch, capsys, files: dict[str, str | OSError]):
+    accessed: list[str] = []
+
+    def open_file(path, *_args, **_kwargs):
+        accessed.append(path)
+        value = files.get(path, FileNotFoundError(path))
+        if isinstance(value, OSError):
+            raise value
+        return io.StringIO(value)
+
+    monkeypatch.setattr("builtins.open", open_file)
+    monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(
+        os, "uname", lambda: SimpleNamespace(machine="x86_64"), raising=False
+    )
+    monkeypatch.setattr(os.path, "isfile", lambda _path: False)
+    exec(  # noqa: S102 - execute the exact fixed remote script under fake files
+        compile(vpn_node_trust._TRUST_PROBE_SCRIPT, "<trust-probe>", "exec"),
+        {},
+    )
+    return capsys.readouterr().out, accessed
+
+
+def probe_script_files(host_key) -> dict[str, str | OSError]:
+    return {
+        "/proc/net/tcp": PROC_HEADER,
+        "/proc/net/tcp6": PROC_HEADER,
+        "/etc/ssh/ssh_host_ed25519_key.pub": public_text(host_key) + "\n",
+    }
+
+
+def test_probe_script_fails_closed_when_ipv4_table_is_unreadable(
+    monkeypatch, capsys
+) -> None:
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    files = probe_script_files(host_key)
+    files["/proc/net/tcp"] = PermissionError("proc-secret")
+
+    with pytest.raises(OSError):
+        run_probe_script(monkeypatch, capsys, files)
+
+
+@pytest.mark.parametrize("disabled", [None, "0\n"])
+def test_probe_script_fails_closed_when_ipv6_table_is_missing_or_unreadable(
+    monkeypatch, capsys, disabled
+) -> None:
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    files = probe_script_files(host_key)
+    files["/proc/net/tcp6"] = FileNotFoundError("proc-secret")
+    if disabled is not None:
+        files["/proc/sys/net/ipv6/conf/all/disable_ipv6"] = disabled
+
+    with pytest.raises(OSError):
+        run_probe_script(monkeypatch, capsys, files)
+
+
+def test_probe_script_skips_missing_ipv6_table_only_when_ipv6_is_disabled(
+    monkeypatch, capsys
+) -> None:
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    files = probe_script_files(host_key)
+    files["/proc/net/tcp"] += PROC_LISTEN_443
+    files["/proc/net/tcp6"] = FileNotFoundError("proc-secret")
+    disabled_path = "/proc/sys/net/ipv6/conf/all/disable_ipv6"
+    files[disabled_path] = "1\n"
+
+    output, accessed = run_probe_script(monkeypatch, capsys, files)
+
+    assert disabled_path in accessed
+    assert json.loads(output)["occupied_ports"] == [443]
 
 
 def connector_for(connection: Connection, calls: list[tuple]) -> object:
@@ -183,6 +267,8 @@ async def test_password_probe_uses_only_strict_unpinned_read_only_connection() -
     assert FIXED_TRUST_COMMAND.startswith("/usr/bin/python3 -I -S -B -c ")
     assert process.waited
     assert connection.aborted
+    assert process.close_waited
+    assert connection.close_waited
 
 
 @pytest.mark.asyncio
@@ -429,6 +515,40 @@ async def test_probe_propagates_cancellation_and_aborts_connection() -> None:
 
     assert caught.value.args == ("caller-cancelled",)
     assert connection.aborted
+    assert process.close_waited
+    assert connection.close_waited
+
+
+@pytest.mark.asyncio
+async def test_probe_bounds_stalled_transport_shutdown(monkeypatch) -> None:
+    process_close_started = asyncio.Event()
+    connection_close_started = asyncio.Event()
+
+    class StalledProcess(Process):
+        async def wait_closed(self) -> None:
+            process_close_started.set()
+            await asyncio.Event().wait()
+
+    class StalledConnection(Connection):
+        async def wait_closed(self) -> None:
+            connection_close_started.set()
+            await asyncio.Event().wait()
+
+    host_key = asyncssh.generate_private_key("ssh-ed25519")
+    process = StalledProcess(payload(host_key))
+    connection = StalledConnection(host_key, process)
+    monkeypatch.setattr(
+        "app.services.vpn_node_transport.TRANSPORT_CLEANUP_TIMEOUT", 0.02
+    )
+
+    result = await asyncio.wait_for(
+        probe_vpn_node_trust(worker(), connector=connector_for(connection, [])),
+        0.2,
+    )
+
+    assert result.architecture == "amd64"
+    assert process_close_started.is_set()
+    assert connection_close_started.is_set()
 
 
 @pytest.mark.asyncio

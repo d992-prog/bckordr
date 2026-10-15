@@ -17,6 +17,7 @@ from app.services.vpn_node_deployment import install_control_known_hosts
 from app.services.vpn_node_transport import (
     MAX_PRIVATE_KEY_BYTES,
     VpnNodeTransportError,
+    _cleanup_health_transport,
     _effective_uid,
     _known_hosts_target,
     _read_private_file,
@@ -54,23 +55,32 @@ _TRUST_PROBE_SCRIPT = """import json
 import os
 
 ports = {443, 8443, 2053}
-occupied = set()
-for path in ("/proc/net/tcp", "/proc/net/tcp6"):
-    try:
-        with open(path, encoding="ascii") as stream:
-            lines = stream.read().splitlines()[1:]
-    except OSError:
-        continue
-    for line in lines:
-        fields = line.split()
-        if len(fields) < 4 or fields[3] != "0A":
-            continue
-        try:
-            port = int(fields[1].rsplit(":", 1)[1], 16)
-        except (IndexError, ValueError):
-            continue
-        if port in ports:
-            occupied.add(port)
+
+def listening_ports(path):
+    result = set()
+    with open(path, encoding="ascii") as stream:
+        next(stream, None)
+        for line in stream:
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != "0A":
+                continue
+            try:
+                port = int(fields[1].rsplit(":", 1)[1], 16)
+            except (IndexError, ValueError):
+                continue
+            if port in ports:
+                result.add(port)
+    return result
+
+occupied = listening_ports("/proc/net/tcp")
+try:
+    occupied.update(listening_ports("/proc/net/tcp6"))
+except OSError:
+    with open(
+        "/proc/sys/net/ipv6/conf/all/disable_ipv6", encoding="ascii"
+    ) as stream:
+        if stream.read().strip() != "1":
+            raise
 
 with open(
     "/etc/ssh/ssh_host_ed25519_key.pub", encoding="ascii", errors="strict"
@@ -341,19 +351,6 @@ def _handshake_public_blob(connection) -> bytes:
         raise _EnvironmentInvalid from exc
 
 
-def _close_transport(connection, process) -> None:
-    if process is not None:
-        try:
-            process.close()
-        except Exception:  # noqa: BLE001,S110 - best-effort bounded cleanup
-            pass
-    if connection is not None:
-        try:
-            connection.abort()
-        except Exception:  # noqa: BLE001,S110 - best-effort bounded cleanup
-            pass
-
-
 async def probe_vpn_node_trust(
     worker, *, connector=asyncssh.connect
 ) -> VpnNodeTrustProbe:
@@ -426,7 +423,7 @@ async def probe_vpn_node_trust(
     except Exception:  # noqa: BLE001 - no raw exception may cross this boundary
         _fail("vpn_node_trust_environment_invalid")
     finally:
-        _close_transport(connection, process)
+        await _cleanup_health_transport(connection, process, None)
 
 
 async def trust_vpn_node(
