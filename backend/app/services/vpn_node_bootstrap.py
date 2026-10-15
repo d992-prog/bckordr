@@ -686,12 +686,16 @@ def _validate_panel_url(panel_url: str) -> None:
 
 def _verify_xui_version(binary: Path, expected: str, runner) -> None:
     try:
-        pinned = expected.encode("ascii", errors="strict")
+        if not expected.startswith("v") or expected.startswith("vv"):
+            _fail("vpn_node_bootstrap_environment_invalid")
+        pinned = expected[1:].encode("ascii", errors="strict")
+        if not pinned:
+            _fail("vpn_node_bootstrap_environment_invalid")
     except UnicodeError:
         _fail("vpn_node_bootstrap_environment_invalid")
     result = _invoke_command(
         runner,
-        [str(binary), "version"],
+        [str(binary), "-v"],
         shell=False,
         timeout=30,
         failure_code="vpn_node_bootstrap_environment_invalid",

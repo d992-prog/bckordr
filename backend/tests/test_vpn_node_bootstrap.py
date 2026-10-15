@@ -44,6 +44,8 @@ XUI_START_COMMAND = (
     "systemctl enable --now x-ui.service || systemctl enable --now x-ui || "
     "systemctl enable --now 3x-ui.service"
 )
+assert XUI_VERSION.startswith("v") and not XUI_VERSION.startswith("vv")
+XUI_CLI_VERSION = XUI_VERSION[1:]
 
 
 def _lifecycle_commands() -> dict[str, str]:
@@ -58,10 +60,10 @@ def _service_result(command: object, **_kwargs):
     if (
         isinstance(command, list)
         and len(command) == 2
-        and command[1] == "version"
+        and command[1] == "-v"
     ):
         return subprocess.CompletedProcess(
-            command, 0, (XUI_VERSION + "\n").encode(), b""
+            command, 0, (XUI_CLI_VERSION + "\n").encode(), b""
         )
     if isinstance(command, str) and command in set(_lifecycle_commands().values()):
         return subprocess.CompletedProcess(command, 0, b"", b"")
@@ -487,8 +489,10 @@ def test_missing_xui_runs_the_current_pinned_install_command(tmp_path: Path) -> 
             _private_file(layout.xui_binaries[0])
             _database(layout.databases[0])
             return subprocess.CompletedProcess(command, 0, b"3x-ui installed\n", b"")
-        if command == [str(layout.xui_binaries[0]), "version"]:
-            return subprocess.CompletedProcess(command, 0, (XUI_VERSION + "\n").encode(), b"")
+        if command == [str(layout.xui_binaries[0]), "-v"]:
+            return subprocess.CompletedProcess(
+                command, 0, (XUI_CLI_VERSION + "\n").encode(), b""
+            )
         _assert_unique_token_command(command, layout.xui_binaries[0])
         _record_token(layout.databases[0], command[-1])
         return subprocess.CompletedProcess(
@@ -515,7 +519,7 @@ def test_missing_xui_runs_the_current_pinned_install_command(tmp_path: Path) -> 
 
     assert receipt.state == "prepared"
     assert calls[0] == _build_vpn_install_command()
-    assert calls.index([str(layout.xui_binaries[0]), "version"]) < next(
+    assert calls.index([str(layout.xui_binaries[0]), "-v"]) < next(
         index
         for index, command in enumerate(calls)
         if isinstance(command, list) and "-tokenName" in command
@@ -525,8 +529,13 @@ def test_missing_xui_runs_the_current_pinned_install_command(tmp_path: Path) -> 
 
 @pytest.mark.parametrize(
     "version_output",
-    [b"v3.8.4\n", b"v3.8.5\nv3.8.5\n"],
-    ids=["mismatch", "ambiguous"],
+    [
+        b"3.8.4\n",
+        b"v3.8.5\n",
+        b"3.8.5 suffix\n",
+        b"3.8.5\n3.8.5\n",
+    ],
+    ids=["mismatch", "prefixed", "suffix", "multiple-lines"],
 )
 def test_preinstalled_xui_invalid_version_fails_before_any_mutation(
     tmp_path: Path,
@@ -539,7 +548,7 @@ def test_preinstalled_xui_invalid_version_fails_before_any_mutation(
 
     def run(command, **_kwargs):
         calls.append(command)
-        assert command == [str(layout.xui_binaries[0]), "version"]
+        assert command == [str(layout.xui_binaries[0]), "-v"]
         return subprocess.CompletedProcess(command, 0, version_output, b"")
 
     with pytest.raises(
@@ -561,9 +570,34 @@ def test_preinstalled_xui_invalid_version_fails_before_any_mutation(
         )
 
     assert caught.value.code == "vpn_node_bootstrap_environment_invalid"
-    assert calls == [[str(layout.xui_binaries[0]), "version"]]
+    assert calls == [[str(layout.xui_binaries[0]), "-v"]]
     assert not layout.marker.exists()
     assert not layout.backup.exists()
+
+
+@pytest.mark.parametrize(
+    "version_output",
+    [
+        XUI_CLI_VERSION.encode(),
+        (XUI_CLI_VERSION + "\n").encode(),
+        (XUI_CLI_VERSION + "\r\n").encode(),
+    ],
+    ids=["exact", "lf", "crlf"],
+)
+def test_xui_version_accepts_only_the_normalized_pinned_cli_value(
+    tmp_path: Path,
+    version_output: bytes,
+) -> None:
+    binary = tmp_path / "x-ui"
+    calls: list[object] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, version_output, b"")
+
+    vpn_node_bootstrap._verify_xui_version(binary, XUI_VERSION, run)
+
+    assert calls == [[str(binary), "-v"]]
 
 
 def test_backup_and_marker_exist_before_exact_token_cli_and_success_is_private(
@@ -852,10 +886,10 @@ def test_preinstalled_xui_is_stopped_for_backup_and_token_then_restarted(
 
     def run(command, **_kwargs):
         nonlocal running
-        if command == [str(layout.xui_binaries[0]), "version"]:
+        if command == [str(layout.xui_binaries[0]), "-v"]:
             events.append("version")
             return subprocess.CompletedProcess(
-                command, 0, (XUI_VERSION + "\n").encode(), b"harmless warning\n"
+                command, 0, (XUI_CLI_VERSION + "\n").encode(), b"harmless warning\n"
             )
         if command == _build_xui_stop_command():
             assert layout.marker.exists()
@@ -929,9 +963,9 @@ def test_start_failure_restops_xui_and_leaves_reconciliation_marker(
     def run(command, **_kwargs):
         nonlocal running
         calls.append(command)
-        if command == [str(layout.xui_binaries[0]), "version"]:
+        if command == [str(layout.xui_binaries[0]), "-v"]:
             return subprocess.CompletedProcess(
-                command, 0, (XUI_VERSION + "\n").encode(), b""
+                command, 0, (XUI_CLI_VERSION + "\n").encode(), b""
             )
         if command == _build_xui_stop_command():
             running = False
