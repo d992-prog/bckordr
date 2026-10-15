@@ -26,6 +26,10 @@ from app.services.vpn_node_transport import (
 )
 
 BACKEND = Path(__file__).resolve().parents[1]
+REQUIRES_REMOTE_POSIX_FILESYSTEM = pytest.mark.skipif(
+    os.name == "nt",
+    reason="remote node installation requires POSIX path resolution",
+)
 
 
 def _private_file(path: Path, raw: bytes) -> None:
@@ -87,6 +91,46 @@ def _config(database: Path) -> bytes:
     ).encode("ascii")
 
 
+def test_remote_posix_database_path_is_validated_independently_of_control_os() -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    raw = (
+        b'{"version":1,"panel_url":"http://127.0.0.1:2053/panel/",'
+        b'"database_path":"/etc/x-ui/x-ui.db"}'
+    )
+
+    assert str(deployment._config(raw)).replace("\\", "/") == "/etc/x-ui/x-ui.db"
+
+
+@pytest.mark.parametrize(
+    "database_path",
+    [
+        r"C:\etc\x-ui\x-ui.db",
+        r"\etc\x-ui\x-ui.db",
+        "C:/etc/x-ui/x-ui.db",
+        "/etc/x-ui/../x-ui.db",
+        "/etc/x-ui/./x-ui.db",
+        "/etc//x-ui/x-ui.db",
+        "/etc/x-ui/x-ui.db/",
+    ],
+)
+def test_remote_database_path_rejects_noncanonical_or_windows_paths(
+    database_path: str,
+) -> None:
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    raw = json.dumps(
+        {
+            "version": 1,
+            "panel_url": "http://127.0.0.1:2053/panel/",
+            "database_path": database_path,
+        },
+        separators=(",", ":"),
+    ).encode("ascii")
+
+    with pytest.raises(deployment.NodeDeploymentError):
+        deployment._config(raw)
+
+
+@REQUIRES_REMOTE_POSIX_FILESYSTEM
 def test_fresh_install_is_atomic_and_preserves_token(tmp_path: Path) -> None:
     deployment = importlib.import_module("app.services.vpn_node_deployment")
     layout = _layout(tmp_path)
@@ -147,6 +191,7 @@ def test_fresh_install_is_atomic_and_preserves_token(tmp_path: Path) -> None:
     )
 
 
+@REQUIRES_REMOTE_POSIX_FILESYSTEM
 def test_upgrade_keeps_previous_code_and_existing_private_state(tmp_path: Path) -> None:
     deployment = importlib.import_module("app.services.vpn_node_deployment")
     layout = _layout(tmp_path)
@@ -798,6 +843,7 @@ def test_control_trust_concurrent_distinct_appends_retain_both(
     }
 
 
+@REQUIRES_REMOTE_POSIX_FILESYSTEM
 def test_deployment_helper_is_deterministic_and_runs_one_shot(tmp_path: Path) -> None:
     deployment = importlib.import_module("app.services.vpn_node_deployment")
     layout = _layout(tmp_path)
@@ -900,6 +946,7 @@ async def test_one_shot_caller_uses_strict_pin_fixed_command_and_bounded_stdin()
     assert helper not in deployment.FIXED_DEPLOY_COMMAND.encode()
 
 
+@REQUIRES_REMOTE_POSIX_FILESYSTEM
 def test_next_invocation_performs_rollback_only_after_abrupt_loss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -995,6 +1042,7 @@ async def test_admin_caller_loads_pin_and_private_helper_before_transport(
     ]
 
 
+@REQUIRES_REMOTE_POSIX_FILESYSTEM
 def test_concurrent_token_change_is_incomplete_and_keeps_recovery_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1246,6 +1294,7 @@ def test_existing_active_must_pass_the_exact_import_probe(tmp_path: Path) -> Non
     assert not layout.state.exists()
 
 
+@REQUIRES_REMOTE_POSIX_FILESYSTEM
 def test_concurrent_existing_config_change_is_incomplete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

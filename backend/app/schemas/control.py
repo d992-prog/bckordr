@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import date, datetime
 from typing import Literal
 
@@ -490,6 +492,7 @@ class WorkerNodeUpdateRequest(BaseModel):
 
 class WorkerNodeResponse(WorkerNodeBase):
     id: int
+    ssh_host_key_fingerprint: str | None = None
     ssh_access_configured: bool = False
     last_seen_at: datetime | None
     last_heartbeat_at: datetime | None
@@ -541,6 +544,54 @@ class VpnNodeEligibilityResponse(BaseModel):
     worker_id: int
     eligible: bool
     blocked_reasons: list[str]
+
+
+class VpnNodeTrustRequest(BaseModel):
+    fingerprint: str = Field(
+        pattern=r"^SHA256:[A-Za-z0-9+/]{43}$",
+        max_length=50,
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("fingerprint")
+    @classmethod
+    def validate_fingerprint(cls, value: str) -> str:
+        suffix = value.removeprefix("SHA256:")
+        try:
+            decoded = base64.b64decode(suffix + "=", validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("fingerprint must be canonical SHA256 base64") from None
+        canonical = base64.b64encode(decoded).decode("ascii").rstrip("=")
+        if len(decoded) != 32 or suffix != canonical:
+            raise ValueError("fingerprint must be canonical SHA256 base64")
+        return value
+
+
+class VpnNodeOnboardingResponse(BaseModel):
+    worker_id: int
+    state: str
+    fingerprint: str | None
+    job_id: int | None
+    endpoint_id: int | None
+    error_code: str | None
+
+
+class VpnNodeTestProfileResponse(BaseModel):
+    config_uri: str
+
+
+class VpnNodeConfirmRequest(BaseModel):
+    confirmed: Literal[True]
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("confirmed", mode="before")
+    @classmethod
+    def validate_confirmed(cls, value: object) -> object:
+        if value is not True:
+            raise ValueError("confirmed must be literal true")
+        return value
 
 
 class VpnEndpointCapacityUpdateRequest(BaseModel):

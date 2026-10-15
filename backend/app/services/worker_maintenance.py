@@ -7,12 +7,20 @@ from app.core.config import get_settings
 from app.db.base import utcnow
 from app.db.models import VpnNodeEvent, WorkerMaintenanceJob, WorkerNode
 from app.db.session import AsyncSessionLocal
-from app.services.app_settings import DiscoveryRuntimeSettings, get_discovery_runtime_settings
-from app.services.vpn_policy import VPN_MUTATION_ACTIONS, active_attack_worker_ids, lock_vpn_worker
+from app.services.app_settings import (
+    DiscoveryRuntimeSettings,
+    get_discovery_runtime_settings,
+)
 from app.services.vpn_control_intents import active_vpn_control_worker_ids
+from app.services.vpn_policy import (
+    VPN_MUTATION_ACTIONS,
+    active_attack_worker_ids,
+    lock_vpn_worker,
+)
 
 VPN_MAINTENANCE_ACTIONS = {
     "vpn_check",
+    "vpn_onboard",
     "vpn_install",
     "vpn_update",
     "vpn_restart",
@@ -21,6 +29,7 @@ VPN_MAINTENANCE_ACTIONS = {
 }
 VPN_RUNNING_STATUS_BY_ACTION = {
     "vpn_check": "checking",
+    "vpn_onboard": "onboarding",
     "vpn_install": "installing",
     "vpn_update": "updating",
     "vpn_restart": "restarting",
@@ -1234,6 +1243,14 @@ def build_worker_maintenance_commands(
 
 async def run_worker_maintenance_job(job_id: int) -> None:
     async with AsyncSessionLocal() as session:
+        delegated_job = await session.get(WorkerMaintenanceJob, job_id)
+        delegate_onboarding = delegated_job is not None and delegated_job.action == "vpn_onboard"
+    if delegate_onboarding:
+        from app.services.vpn_node_onboarding import run_vpn_node_onboarding_job
+
+        await run_vpn_node_onboarding_job(job_id)
+        return
+    async with AsyncSessionLocal() as session:
         job = await session.get(WorkerMaintenanceJob, job_id)
         if job is None:
             return
@@ -1364,6 +1381,19 @@ async def run_worker_maintenance_job(job_id: int) -> None:
                         "inbound_create_error": metadata.get("inbound_create_error"),
                         "db_diagnostic": metadata.get("db_diagnostic"),
                     },
+                )
+            )
+        elif job.action == "vpn_install":
+            worker.vpn_runtime_status = "needs_config"
+            worker.vpn_last_error = None
+            worker.vpn_last_checked_at = utcnow()
+            session.add(
+                VpnNodeEvent(
+                    worker_id=worker.id,
+                    level="info",
+                    event_type=job.action,
+                    message="VPN installation succeeded; configuration is required",
+                    details={"job_id": job.id},
                 )
             )
         elif job.action in VPN_MAINTENANCE_ACTIONS:

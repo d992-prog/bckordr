@@ -29,7 +29,6 @@ from app.services.vpn_node_request import (
     serialize_node_request,
 )
 
-
 CLIENT_UUID = "11111111-2222-4333-8444-555555555555"
 OPERATION_UUID = UUID("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
 NOW = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
@@ -524,6 +523,52 @@ def test_build_control_config_uri_is_exact_percent_encoded_reality_uri_without_f
         "type": ["raw"],
     }
     assert "#" not in uri
+
+
+@pytest.mark.parametrize(
+    ("host", "expected_authority"),
+    [
+        ("täst.example", f"{CLIENT_UUID}@xn--tst-qla.example:443"),
+        ("2001:db8::1", f"{CLIENT_UUID}@[2001:db8::1]:443"),
+    ],
+)
+def test_build_reality_config_uri_validates_and_preserves_exact_ordering(
+    host, expected_authority
+):
+    api = _api()
+    target = api.VpnEndpointTarget(
+        endpoint_id=5,
+        worker_id=2,
+        inbound_id=11,
+        public_host=host,
+        port=443,
+        protocol="vless",
+        transport="raw",
+        security="reality",
+        server_name="cdn.example.test",
+        public_key="abc-DEF_01234567890123456789012345678901234",
+        short_id="abcd",
+        fingerprint="chrome",
+        flow="xtls-rprx-vision",
+    )
+
+    assert api.build_reality_config_uri(target, UUID(CLIENT_UUID)) == (
+        f"vless://{expected_authority}"
+        "?encryption=none&flow=xtls-rprx-vision&security=reality"
+        "&sni=cdn.example.test&fp=chrome"
+        "&pbk=abc-DEF_01234567890123456789012345678901234"
+        "&sid=abcd&type=raw"
+    )
+
+
+def test_build_reality_config_uri_rejects_invalid_target_with_static_error():
+    api = _api()
+
+    with pytest.raises(api.VpnControlIntentError) as caught:
+        api.build_reality_config_uri(_request().target, "not-a-uuid")
+
+    assert caught.value.code == "vpn_control_request_invalid"
+    assert caught.value.__context__ is None
 
 
 def test_build_control_config_uri_rejects_non_reality_request_with_static_error():

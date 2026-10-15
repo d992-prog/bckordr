@@ -31,6 +31,7 @@ from app.db.session import get_db
 from app.schemas.control import (
     VpnAccessKeyDisplayNameUpdateRequest,
     VpnEndpointCapacityUpdateRequest,
+    VpnNodeOnboardingResponse,
 )
 
 
@@ -46,6 +47,17 @@ def test_vpn_access_key_display_name_request_is_name_only_and_safe():
     ):
         with pytest.raises(ValidationError):
             VpnAccessKeyDisplayNameUpdateRequest(**payload)
+
+
+def test_vpn_onboarding_response_has_no_remote_or_secret_fields():
+    assert set(VpnNodeOnboardingResponse.model_fields) == {
+        "worker_id",
+        "state",
+        "fingerprint",
+        "job_id",
+        "endpoint_id",
+        "error_code",
+    }
 
 
 @pytest.mark.parametrize(

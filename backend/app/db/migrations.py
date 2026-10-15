@@ -86,6 +86,8 @@ MIGRATIONS = (
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_username VARCHAR(64) NULL",
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_password TEXT NULL",
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_key_path VARCHAR(255) NULL",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_host_key TEXT NULL",
+    "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_host_key_fingerprint VARCHAR(64) NULL",
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_last_check_status VARCHAR(32) NULL",
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_last_check_message TEXT NULL",
     "ALTER TABLE worker_nodes ADD COLUMN IF NOT EXISTS ssh_last_checked_at TIMESTAMPTZ NULL",

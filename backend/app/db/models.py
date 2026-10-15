@@ -570,6 +570,8 @@ class WorkerNode(Base):
     ssh_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ssh_password: Mapped[str | None] = mapped_column(Text, nullable=True)
     ssh_key_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ssh_host_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ssh_host_key_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ssh_last_check_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ssh_last_check_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     ssh_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

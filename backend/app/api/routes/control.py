@@ -119,8 +119,12 @@ from app.schemas.control import (
     VpnFriendInvitationIssuedResponse,
     VpnFriendInvitationResponse,
     VpnLifecycleStatusResponse,
+    VpnNodeConfirmRequest,
     VpnNodeEventResponse,
     VpnNodeEligibilityResponse,
+    VpnNodeOnboardingResponse,
+    VpnNodeTestProfileResponse,
+    VpnNodeTrustRequest,
     VpnOverviewResponse,
     VpnPlanCreateRequest,
     VpnPlanResponse,
@@ -199,6 +203,21 @@ from app.services.vpn_endpoint_types import (
     public_endpoint_fingerprint,
 )
 from app.services.vpn_mutations import serialize_vpn_mutation, vpn_mutation_lock
+from app.services.vpn_node_health import VPN_NODE_HEALTH_ERROR_CODES
+from app.services.vpn_node_onboarding import (
+    VpnNodeOnboardingError,
+    VpnNodeOnboardingView,
+    confirm_vpn_node_test_profile,
+    create_vpn_node_test_profile,
+    get_vpn_node_onboarding_view,
+)
+from app.services.vpn_node_transport import _effective_gid
+from app.services.vpn_node_trust import (
+    VPN_NODE_TRUST_ERRORS,
+    VpnNodeTrustError,
+    probe_vpn_node_trust,
+    trust_vpn_node,
+)
 from app.services.vpn_profile_names import (
     initial_display_name,
     initialize_customer_names,
@@ -3404,6 +3423,326 @@ async def get_vpn_overview(
         active_customers=active_customers or 0,
         active_subscriptions=active_subscriptions or 0,
         active_keys=active_keys or 0,
+    )
+
+
+def _vpn_node_onboarding_response(
+    view: VpnNodeOnboardingView,
+) -> VpnNodeOnboardingResponse:
+    return VpnNodeOnboardingResponse(
+        worker_id=view.worker_id,
+        state=view.state,
+        fingerprint=view.fingerprint,
+        job_id=view.job_id,
+        endpoint_id=view.endpoint_id,
+        error_code=view.error_code,
+    )
+
+
+def _raise_vpn_node_trust_error(error: VpnNodeTrustError) -> None:
+    safe_code = (
+        error.code
+        if error.code in VPN_NODE_TRUST_ERRORS
+        else "vpn_node_trust_environment_invalid"
+    )
+    raise HTTPException(
+        status_code=(
+            status.HTTP_503_SERVICE_UNAVAILABLE
+            if safe_code
+            in {
+                "vpn_node_trust_connection_failed",
+                "vpn_node_trust_environment_invalid",
+            }
+            else status.HTTP_409_CONFLICT
+        ),
+        detail=safe_code,
+    ) from None
+
+
+def _raise_vpn_node_onboarding_error(error: VpnNodeOnboardingError) -> None:
+    service_failure = error.code in VPN_NODE_HEALTH_ERROR_CODES or error.code in {
+        "vpn_onboarding_health_failed",
+        "vpn_onboarding_failed",
+        "vpn_node_health_transport_failed",
+    }
+    raise HTTPException(
+        status_code=(
+            status.HTTP_503_SERVICE_UNAVAILABLE
+            if service_failure
+            else status.HTTP_409_CONFLICT
+        ),
+        detail=error.code,
+    ) from None
+
+
+def _require_vpn_onboarding_worker(worker: WorkerNode | None) -> WorkerNode:
+    if worker is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="vpn_onboarding_worker_unavailable",
+        )
+    if (
+        worker.archived_at is not None
+        or worker.status != "ready"
+        or worker.is_enabled is not True
+        or worker.vpn_enabled is not True
+        or worker.vpn_role == "none"
+        or not worker.ssh_access_configured
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="vpn_onboarding_worker_unavailable",
+        )
+    return worker
+
+
+async def _vpn_onboarding_worker_is_busy(
+    db: AsyncSession,
+    worker: WorkerNode,
+) -> bool:
+    if worker.id in await active_vpn_control_worker_ids(db):
+        return True
+    eligibility = await evaluate_vpn_node(db, worker)
+    return any("active domain attack" in reason for reason in eligibility.reasons)
+
+
+@router.post(
+    "/workers/{worker_id}/vpn-onboarding/preflight",
+    response_model=VpnNodeOnboardingResponse,
+)
+async def preflight_vpn_node_onboarding(
+    worker_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnNodeOnboardingResponse:
+    del admin
+    worker = _require_vpn_onboarding_worker(await db.get(WorkerNode, worker_id))
+    try:
+        probe = await probe_vpn_node_trust(worker)
+    except VpnNodeTrustError as error:
+        _raise_vpn_node_trust_error(error)
+    view = await get_vpn_node_onboarding_view(db, worker.id)
+    needs_trust = worker.ssh_host_key_fingerprint != probe.fingerprint
+    state = "needs_trust" if needs_trust else view.state
+    return _vpn_node_onboarding_response(
+        VpnNodeOnboardingView(
+            worker_id=view.worker_id,
+            state=state,
+            fingerprint=probe.fingerprint,
+            job_id=view.job_id,
+            endpoint_id=view.endpoint_id,
+            error_code=None if needs_trust else view.error_code,
+        )
+    )
+
+
+@router.post(
+    "/workers/{worker_id}/vpn-onboarding/trust",
+    response_model=VpnNodeOnboardingResponse,
+)
+async def trust_vpn_node_onboarding(
+    worker_id: int,
+    payload: VpnNodeTrustRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnNodeOnboardingResponse:
+    _require_same_origin(request)
+    worker = _require_vpn_onboarding_worker(await lock_vpn_worker(db, worker_id))
+    active_job = await db.scalar(
+        select(WorkerMaintenanceJob.id).where(
+            WorkerMaintenanceJob.worker_id == worker.id,
+            WorkerMaintenanceJob.status.in_(("queued", "running")),
+        )
+    )
+    if active_job is not None or await _vpn_onboarding_worker_is_busy(db, worker):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="vpn_onboarding_worker_busy",
+        )
+    settings = get_settings()
+    try:
+        probe = await trust_vpn_node(
+            worker,
+            payload.fingerprint,
+            known_hosts_path=Path(settings.vpn_control_known_hosts_path),
+            reader_gid=_effective_gid(),
+        )
+    except VpnNodeTrustError as error:
+        _raise_vpn_node_trust_error(error)
+    worker.ssh_host_key = probe.known_hosts_line
+    worker.ssh_host_key_fingerprint = probe.fingerprint
+    worker.updated_at = utcnow()
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_node_onboarding_trust",
+        details=f"worker_id={worker.id}",
+    )
+    await db.commit()
+    return _vpn_node_onboarding_response(
+        await get_vpn_node_onboarding_view(db, worker.id)
+    )
+
+
+@router.post(
+    "/workers/{worker_id}/vpn-onboarding/start",
+    response_model=VpnNodeOnboardingResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_vpn_node_onboarding(
+    worker_id: int,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnNodeOnboardingResponse:
+    _require_same_origin(request)
+    worker = _require_vpn_onboarding_worker(await lock_vpn_worker(db, worker_id))
+    if not worker.ssh_host_key or not worker.ssh_host_key_fingerprint:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="vpn_onboarding_host_key_changed",
+        )
+    if await _vpn_onboarding_worker_is_busy(db, worker):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="vpn_onboarding_worker_busy",
+        )
+    active_jobs = list(
+        (
+            await db.scalars(
+                select(WorkerMaintenanceJob)
+                .where(
+                    WorkerMaintenanceJob.worker_id == worker.id,
+                    WorkerMaintenanceJob.status.in_(("queued", "running")),
+                )
+                .order_by(WorkerMaintenanceJob.id)
+                .with_for_update()
+            )
+        ).all()
+    )
+    onboarding_jobs = [job for job in active_jobs if job.action == "vpn_onboard"]
+    if len(active_jobs) > 1 or (active_jobs and not onboarding_jobs):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="vpn_onboarding_worker_busy",
+        )
+    job = onboarding_jobs[0] if onboarding_jobs else None
+    if job is None:
+        view = await get_vpn_node_onboarding_view(db, worker.id)
+        if view.state in {"awaiting_test", "ready"}:
+            return _vpn_node_onboarding_response(view)
+        job = WorkerMaintenanceJob(
+            worker_id=worker.id,
+            action="vpn_onboard",
+            status="queued",
+        )
+        db.add(job)
+        await db.flush()
+        await add_audit_log(
+            db,
+            actor_user_id=admin.id,
+            target_user_id=None,
+            action="vpn_node_onboarding_start",
+            details=f"worker_id={worker.id} job_id={job.id}",
+        )
+        await db.commit()
+    else:
+        await db.commit()
+    if job.status == "queued":
+        background_tasks.add_task(run_worker_maintenance_job, job.id)
+    return _vpn_node_onboarding_response(
+        await get_vpn_node_onboarding_view(db, worker.id)
+    )
+
+
+@router.get(
+    "/workers/{worker_id}/vpn-onboarding",
+    response_model=VpnNodeOnboardingResponse,
+)
+async def get_vpn_node_onboarding_status(
+    worker_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnNodeOnboardingResponse:
+    del admin
+    worker = _require_vpn_onboarding_worker(await db.get(WorkerNode, worker_id))
+    return _vpn_node_onboarding_response(
+        await get_vpn_node_onboarding_view(db, worker.id)
+    )
+
+
+@router.post(
+    "/workers/{worker_id}/vpn-onboarding/test-profile",
+    response_model=VpnNodeTestProfileResponse,
+)
+async def get_vpn_node_onboarding_test_profile(
+    worker_id: int,
+    response: Response,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnNodeTestProfileResponse:
+    _require_same_origin(request)
+    settings = get_settings()
+    try:
+        config_uri = await create_vpn_node_test_profile(
+            db,
+            worker_id,
+            secret=settings.session_secret_key,
+            known_hosts_path=Path(settings.vpn_control_known_hosts_path),
+        )
+    except VpnNodeOnboardingError as error:
+        _raise_vpn_node_onboarding_error(error)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_node_onboarding_test_profile",
+        details=f"worker_id={worker_id}",
+    )
+    await db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return VpnNodeTestProfileResponse(config_uri=config_uri)
+
+
+@router.post(
+    "/workers/{worker_id}/vpn-onboarding/confirm",
+    response_model=VpnNodeOnboardingResponse,
+)
+async def confirm_vpn_node_onboarding(
+    worker_id: int,
+    payload: VpnNodeConfirmRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+) -> VpnNodeOnboardingResponse:
+    _require_same_origin(request)
+    del payload
+    settings = get_settings()
+    try:
+        endpoint = await confirm_vpn_node_test_profile(
+            db,
+            worker_id,
+            admin_id=admin.id,
+            release_id=settings.vpn_friend_beta_release_id,
+            secret=settings.session_secret_key,
+            known_hosts_path=Path(settings.vpn_control_known_hosts_path),
+        )
+    except VpnNodeOnboardingError as error:
+        _raise_vpn_node_onboarding_error(error)
+    await add_audit_log(
+        db,
+        actor_user_id=admin.id,
+        target_user_id=None,
+        action="vpn_node_onboarding_confirm",
+        details=f"worker_id={worker_id} endpoint_id={endpoint.id}",
+    )
+    await db.commit()
+    return _vpn_node_onboarding_response(
+        await get_vpn_node_onboarding_view(db, worker_id)
     )
 
 
