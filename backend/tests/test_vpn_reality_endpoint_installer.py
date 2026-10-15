@@ -628,6 +628,52 @@ def test_exact_acceptance_cleanup_rejects_foreign_or_partial_clients(
     assert all(not mutation for _, _, _, mutation in panel.events)
 
 
+@pytest.mark.parametrize("matching_field", ["uuid", "email"])
+@pytest.mark.parametrize("inbound_ids", [[], [99]])
+def test_exact_acceptance_cleanup_rejects_matching_global_identity_outside_endpoint(
+    monkeypatch, matching_field, inbound_ids
+) -> None:
+    module = _module()
+    global_client = {
+        "id": 91,
+        "uuid": (
+            CLIENT_UUID
+            if matching_field == "uuid"
+            else "33333333-3333-4333-8333-333333333333"
+        ),
+        "email": CLIENT_EMAIL if matching_field == "email" else "other@local",
+        "enable": True,
+        "inboundIds": inbound_ids,
+    }
+    panel = FakePanel([_exact_row(module)], [global_client])
+    _mock_complete_inventory(module, monkeypatch, panel)
+    endpoint = module.make_endpoint_receipt(
+        state="observed", worker_id=15, inbound_id=27,
+        public_host="vpn.example.test", server_name="gateway.icloud.com",
+        public_key=PUBLIC_KEY, short_id="0123456789abcdef",
+    )
+    request = module.parse_install_request(
+        _request(
+            action="remove_acceptance_client",
+            inbound_id=27,
+            receipt_digest=endpoint.receipt_digest,
+            acceptance_uuid=CLIENT_UUID,
+            acceptance_email=CLIENT_EMAIL,
+        )
+    )
+
+    with pytest.raises(
+        module.EndpointInstallError, match="^vpn_endpoint_install_identity_mismatch$"
+    ):
+        module.execute_endpoint_action(
+            request,
+            database_path=Path("C:/synthetic/panel.db"),
+            panel_factory=lambda: panel,
+        )
+
+    assert all(not mutation for _, _, _, mutation in panel.events)
+
+
 def test_acceptance_client_waits_for_eventually_consistent_panel_inventory(monkeypatch) -> None:
     module = _module()
 

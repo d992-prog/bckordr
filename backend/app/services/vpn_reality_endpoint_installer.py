@@ -1037,7 +1037,16 @@ def execute_endpoint_action(
                 )
                 return _endpoint_receipt(request, row, public_key, "acceptance_client_present")
             attached_clients = _attached_clients(row, clients)
-            if not row["settings"]["clients"] and not attached_clients:
+            global_identity_exists = any(
+                client.get("uuid") == str(request.acceptance_uuid)
+                or client.get("email") == request.acceptance_email
+                for client in clients
+            )
+            if (
+                not row["settings"]["clients"]
+                and not attached_clients
+                and not global_identity_exists
+            ):
                 return _endpoint_receipt(
                     request, row, public_key, "acceptance_client_removed"
                 )
