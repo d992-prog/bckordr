@@ -590,6 +590,45 @@ async def test_same_job_refreshes_stale_identity_after_worker_serialization(
 
 
 @pytest.mark.asyncio
+async def test_failure_persistence_refreshes_stale_succeeded_job_after_worker_lock(
+    sessions,
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    job_id, worker_id = await _job(sessions)
+    stale_session = sessions()
+    cached_job = await stale_session.get(WorkerMaintenanceJob, job_id)
+    cached_worker = await stale_session.get(WorkerNode, worker_id)
+    assert cached_job is not None and cached_job.status == "queued"
+    assert cached_worker is not None
+    async with sessions() as writer:
+        completed = await writer.get(WorkerMaintenanceJob, job_id)
+        ready_worker = await writer.get(WorkerNode, worker_id)
+        assert completed is not None and ready_worker is not None
+        completed.status = "succeeded"
+        completed.error_message = None
+        completed.finished_at = datetime.now(UTC)
+        ready_worker.vpn_runtime_status = "awaiting_test"
+        ready_worker.vpn_last_error = None
+        await writer.commit()
+
+    await onboarding._persist_failure(
+        lambda: stale_session,
+        job_id,
+        "vpn_onboarding_health_failed",
+    )
+
+    async with sessions() as session:
+        completed = await session.get(WorkerMaintenanceJob, job_id)
+        ready_worker = await session.get(WorkerNode, worker_id)
+        assert completed is not None and completed.status == "succeeded"
+        assert completed.error_message is None
+        assert ready_worker is not None
+        assert ready_worker.vpn_runtime_status == "awaiting_test"
+        assert ready_worker.vpn_last_error is None
+
+
+@pytest.mark.asyncio
 async def test_same_job_concurrent_postgres_runner_executes_remote_pipeline_once(
     postgres_sessions, tmp_path, monkeypatch
 ) -> None:
@@ -647,6 +686,75 @@ async def test_same_job_concurrent_postgres_runner_executes_remote_pipeline_once
     async with postgres_sessions() as session:
         job = await session.get(WorkerMaintenanceJob, job_id)
         assert job is not None and job.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_late_postgres_failure_cannot_overwrite_waiting_success(
+    postgres_sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    job_id, worker_id = await _job(postgres_sessions)
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    successful_stages = _successful_stages(worker_id)
+    first_remote_started = asyncio.Event()
+    second_lock_attempted = asyncio.Event()
+    release_first_failure = asyncio.Event()
+    late_persist_started = asyncio.Event()
+    release_late_persist = asyncio.Event()
+    original_lock = onboarding.lock_vpn_worker
+    original_persist = onboarding._persist_failure
+    lock_attempts = 0
+
+    async def observed_lock(*args, **kwargs):
+        nonlocal lock_attempts
+        lock_attempts += 1
+        if lock_attempts == 2:
+            second_lock_attempted.set()
+        return await original_lock(*args, **kwargs)
+
+    async def failing_bootstrap(*_args, **_kwargs):
+        first_remote_started.set()
+        await release_first_failure.wait()
+        raise VpnNodeBootstrapError("vpn_node_bootstrap_port_conflict")
+
+    async def late_persist(*args, **kwargs):
+        late_persist_started.set()
+        await release_late_persist.wait()
+        return await original_persist(*args, **kwargs)
+
+    monkeypatch.setattr(onboarding, "lock_vpn_worker", observed_lock)
+    monkeypatch.setattr(onboarding, "_persist_failure", late_persist)
+    first = asyncio.create_task(
+        _run_with_stages(
+            postgres_sessions,
+            job_id,
+            successful_stages,
+            bootstrap=failing_bootstrap,
+        )
+    )
+    await asyncio.wait_for(first_remote_started.wait(), timeout=5)
+    second = asyncio.create_task(
+        _run_with_stages(postgres_sessions, job_id, successful_stages)
+    )
+    await asyncio.wait_for(second_lock_attempted.wait(), timeout=5)
+    release_first_failure.set()
+    await asyncio.wait_for(late_persist_started.wait(), timeout=5)
+    await asyncio.wait_for(second, timeout=20)
+    release_late_persist.set()
+    await asyncio.wait_for(first, timeout=5)
+
+    async with postgres_sessions() as session:
+        job = await session.get(WorkerMaintenanceJob, job_id)
+        worker = await session.get(WorkerNode, worker_id)
+        endpoint = await session.scalar(
+            select(VpnEndpoint).where(VpnEndpoint.worker_id == worker_id)
+        )
+        assert job is not None and job.status == "succeeded"
+        assert job.error_message is None
+        assert worker is not None and worker.vpn_runtime_status == "awaiting_test"
+        assert worker.vpn_last_error is None
+        assert endpoint is not None and endpoint.status == "staged"
 
 
 @pytest.mark.asyncio

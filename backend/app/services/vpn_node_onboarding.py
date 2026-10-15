@@ -259,19 +259,33 @@ def _bootstrap_error(error: VpnNodeBootstrapError) -> str:
 async def _persist_failure(session_factory, job_id: int, code: str) -> None:
     safe_code = code if code in SAFE_ONBOARDING_ERRORS else "vpn_onboarding_failed"
     async with session_factory() as session:
-        job = await session.get(WorkerMaintenanceJob, job_id)
-        if job is None:
+        worker_id = await session.scalar(
+            select(WorkerMaintenanceJob.worker_id).where(
+                WorkerMaintenanceJob.id == job_id
+            )
+        )
+        if worker_id is None:
             return
-        worker = await session.get(WorkerNode, job.worker_id)
+        worker = await lock_vpn_worker(session, worker_id)
+        if worker is None:
+            return
+        job = await session.scalar(
+            select(WorkerMaintenanceJob)
+            .where(WorkerMaintenanceJob.id == job_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        if job is None or job.action != "vpn_onboard" or job.status == "succeeded":
+            return
+        failed_at = utcnow()
         job.status = "failed"
         job.error_message = safe_code
         job.log = None
-        job.finished_at = utcnow()
-        job.updated_at = utcnow()
-        if worker is not None:
-            worker.vpn_runtime_status = "error"
-            worker.vpn_last_error = safe_code
-            worker.vpn_last_checked_at = utcnow()
+        job.finished_at = failed_at
+        job.updated_at = failed_at
+        worker.vpn_runtime_status = "error"
+        worker.vpn_last_error = safe_code
+        worker.vpn_last_checked_at = failed_at
         await session.commit()
 
 
