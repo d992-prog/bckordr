@@ -76,7 +76,9 @@ def entrypoint():
     return vpn_node_entrypoint
 
 
-def install_trusted_inputs(monkeypatch, entrypoint, tmp_path):
+def install_trusted_inputs(
+    monkeypatch, entrypoint, tmp_path, *, token_value=None
+):
     config = tmp_path / "node.json"
     token = tmp_path / "api-token"
     database = tmp_path / "x-ui.db"
@@ -90,12 +92,14 @@ def install_trusted_inputs(monkeypatch, entrypoint, tmp_path):
             },
             separators=(",", ":"),
         ).encode(),
-        token: SECRET.encode(),
+        token: SECRET.encode() + b"\n" if token_value is None else token_value,
     }
     checked = []
 
     def trusted_read(path, *, limit):
         checked.append((path, limit))
+        if len(values[path]) > limit:
+            raise entrypoint.NodeEntrypointError()
         return values[path]
 
     monkeypatch.setattr(entrypoint, "_read_private_file", trusted_read)
@@ -181,9 +185,79 @@ def test_exact_request_and_receipt(monkeypatch, entrypoint, tmp_path):
         (config, entrypoint.MAX_CONFIG_BYTES),
         (database, "database"),
         (journal, "journal"),
-        (token, entrypoint.MAX_TOKEN_BYTES),
+        (token, entrypoint.MAX_TOKEN_BYTES + 1),
     ]
     assert SECRET.encode() not in stdout + stderr
+
+
+@pytest.mark.parametrize(("token_size", "expected_success"), [(4096, True), (4097, False)])
+def test_token_file_line_length_boundary(
+    monkeypatch, entrypoint, tmp_path, token_size, expected_success
+):
+    config, token, _database, journal, _checked = install_trusted_inputs(
+        monkeypatch,
+        entrypoint,
+        tmp_path,
+        token_value=b"a" * token_size + b"\n",
+    )
+    seen = []
+
+    class Panel:
+        def __init__(self, _panel_url, username=None, password=None, *, api_token=None):
+            assert username is None and password is None
+            seen.append(api_token)
+
+    monkeypatch.setattr(entrypoint, "NodePanelSession", Panel)
+
+    def executor(_request, **kwargs):
+        kwargs["panel_factory"]()
+        return NodeOperationReceipt("observed", None)
+
+    code, stdout, stderr = run(
+        entrypoint,
+        encoded_request(),
+        config=config,
+        token=token,
+        journal=journal,
+        executor=executor,
+    )
+
+    assert code == (0 if expected_success else entrypoint.EXIT_FAILURE)
+    assert stderr == b""
+    assert bool(stdout) is expected_success
+    assert seen == (["a" * token_size] if expected_success else [])
+
+
+@pytest.mark.parametrize(
+    "token_value",
+    [
+        SECRET.encode(),
+        SECRET.encode() + b"\n\n",
+        b"first\nsecond\n",
+        SECRET.encode() + b"\r\n",
+    ],
+)
+def test_token_file_rejects_noncanonical_line_framing(
+    monkeypatch, entrypoint, tmp_path, token_value
+):
+    config, token, _database, journal, _checked = install_trusted_inputs(
+        monkeypatch,
+        entrypoint,
+        tmp_path,
+        token_value=token_value,
+    )
+
+    code, stdout, stderr = run(
+        entrypoint,
+        encoded_request(),
+        config=config,
+        token=token,
+        journal=journal,
+        executor=lambda *_args, **_kwargs: pytest.fail("executor called"),
+    )
+
+    assert code == entrypoint.EXIT_FAILURE
+    assert stdout == stderr == b""
 
 
 def test_read_only_receipt_lookup_never_reads_panel_config_or_token(
@@ -720,7 +794,7 @@ def run_integrated(monkeypatch, entrypoint, integrated_node):
             },
             separators=(",", ":"),
         ).encode(),
-        token: SECRET.encode(),
+        token: SECRET.encode() + b"\n",
     }
     monkeypatch.setattr(
         entrypoint,

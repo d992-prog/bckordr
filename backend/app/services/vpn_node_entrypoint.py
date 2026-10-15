@@ -281,9 +281,14 @@ def run_node_entrypoint(
         )
         _validate_private_regular_file(database_path)
         _validate_journal(journal_directory)
-        token = _read_private_file(token_path, limit=MAX_TOKEN_BYTES).decode(
-            "ascii", errors="strict"
-        )
+        token_raw = _read_private_file(token_path, limit=MAX_TOKEN_BYTES + 1)
+        if (
+            not token_raw.endswith(b"\n")
+            or b"\n" in token_raw[:-1]
+            or b"\r" in token_raw
+        ):
+            _fail()
+        token = token_raw[:-1].decode("ascii", errors="strict")
 
         def panel_factory() -> NodePanelSession:
             return NodePanelSession(
