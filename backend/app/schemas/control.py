@@ -490,6 +490,7 @@ class WorkerNodeUpdateRequest(BaseModel):
 
 class WorkerNodeResponse(WorkerNodeBase):
     id: int
+    ssh_host_key_fingerprint: str | None = None
     ssh_access_configured: bool = False
     last_seen_at: datetime | None
     last_heartbeat_at: datetime | None
