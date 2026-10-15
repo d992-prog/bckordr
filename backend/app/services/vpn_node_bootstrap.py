@@ -290,6 +290,7 @@ class BootstrapLayout:
     auth_directory: Path
     token: Path
     config: Path
+    provenance: Path
     marker: Path
     backup: Path
     xui_binaries: tuple[Path, ...]
@@ -301,6 +302,7 @@ DEFAULT_LAYOUT = BootstrapLayout(
     auth_directory=Path("/var/lib/veltrix-vpn/control-auth"),
     token=Path("/var/lib/veltrix-vpn/control-auth/api-token"),
     config=Path("/var/lib/veltrix-vpn/control-auth/node.json"),
+    provenance=Path("/var/lib/veltrix-vpn/control-auth/bootstrap-state.json"),
     marker=Path("/var/lib/veltrix-vpn/control-auth/bootstrap-reconciliation.json"),
     backup=Path("/var/lib/veltrix-vpn/backups/x-ui-before-api-token.db"),
     xui_binaries=(Path("/usr/local/x-ui/x-ui"), Path("/etc/x-ui/x-ui")),
@@ -637,8 +639,6 @@ def _atomic_private(path: Path, raw: bytes) -> None:
 def _node_config_bytes(
     panel_url: str,
     database_path: Path,
-    backup_path: Path,
-    backup_sha256: str,
 ) -> bytes:
     return (
         json.dumps(
@@ -646,6 +646,20 @@ def _node_config_bytes(
                 "version": 1,
                 "panel_url": panel_url,
                 "database_path": str(database_path),
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("ascii")
+        + b"\n"
+    )
+
+
+def _bootstrap_state_bytes(backup_path: Path, backup_sha256: str) -> bytes:
+    return (
+        json.dumps(
+            {
+                "version": 1,
                 "backup_path": str(backup_path),
                 "backup_sha256": backup_sha256,
             },
@@ -878,7 +892,12 @@ def _prepare_vpn_node(
 
         has_token = layout.token.exists() or layout.token.is_symlink()
         has_config = layout.config.exists() or layout.config.is_symlink()
-        if has_token != has_config:
+        has_provenance = layout.provenance.exists() or layout.provenance.is_symlink()
+        if (
+            layout.provenance.parent != layout.auth_directory
+            or has_token != has_config
+            or has_token != has_provenance
+        ):
             _fail("vpn_node_bootstrap_foreign_state")
         database = _single_existing(
             layout.databases, owner_uid, database=True, require_posix=require_posix
@@ -911,13 +930,20 @@ def _prepare_vpn_node(
                 limit=65536,
                 require_posix=require_posix,
             )
+            provenance_raw = _secure_file(
+                layout.provenance,
+                owner_uid,
+                mode=0o600,
+                limit=4096,
+                require_posix=require_posix,
+            )
             if not token_raw.endswith(b"\n") or not _TOKEN.fullmatch(token_raw[:-1]):
                 _fail("vpn_node_bootstrap_foreign_state")
             if config_raw != _node_config_bytes(
                 panel_url,
                 database,
-                layout.backup,
-                backup_sha256,
+            ) or provenance_raw != _bootstrap_state_bytes(
+                layout.backup, backup_sha256
             ):
                 _fail("vpn_node_bootstrap_foreign_state")
             token = token_raw[:-1].decode("ascii")
@@ -1074,9 +1100,11 @@ def _prepare_vpn_node(
                 _node_config_bytes(
                     panel_url,
                     database,
-                    layout.backup,
-                    backup_sha256,
                 ),
+            )
+            _atomic_private(
+                layout.provenance,
+                _bootstrap_state_bytes(layout.backup, backup_sha256),
             )
             layout.marker.unlink()
             _sync_directory(layout.auth_directory)

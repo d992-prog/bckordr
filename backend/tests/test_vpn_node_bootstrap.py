@@ -26,6 +26,7 @@ from app.services.vpn_node_bootstrap import (
     build_vpn_node_bootstrap_bundle,
     execute_vpn_node_bootstrap,
 )
+from app.services.vpn_node_entrypoint import _node_config as parse_node_config
 from app.services.vpn_node_transport import VpnNodeTransportSnapshot
 from app.services.worker_maintenance import (
     XUI_INSTALL_COMMIT,
@@ -223,6 +224,7 @@ def _layout(tmp_path: Path) -> BootstrapLayout:
         auth_directory=auth,
         token=auth / "api-token",
         config=auth / "node.json",
+        provenance=auth / "bootstrap-state.json",
         marker=auth / "bootstrap-reconciliation.json",
         backup=state / "backups" / "x-ui-before-api-token.db",
         xui_binaries=(binary,),
@@ -291,6 +293,11 @@ def _prepared(layout: BootstrapLayout, *, worker_id: int = 16) -> str:
         _node_config_bytes(
             "http://127.0.0.1:2053/panel/",
             layout.databases[0],
+        ),
+    )
+    _private_file(
+        layout.provenance,
+        vpn_node_bootstrap._bootstrap_state_bytes(
             layout.backup,
             hashlib.sha256(layout.backup.read_bytes()).hexdigest(),
         ),
@@ -425,6 +432,7 @@ def test_missing_xui_rejects_unsafe_install_parent_before_install(
         auth_directory=base.auth_directory,
         token=base.token,
         config=base.config,
+        provenance=base.provenance,
         marker=base.marker,
         backup=base.backup,
         xui_binaries=(unsafe_parent / "x-ui",),
@@ -557,14 +565,17 @@ def test_backup_and_marker_exist_before_exact_token_cli_and_success_is_private(
         assert stat.S_IMODE(layout.auth_directory.stat().st_mode) == 0o700
         assert stat.S_IMODE(layout.token.stat().st_mode) == 0o600
         assert stat.S_IMODE(layout.config.stat().st_mode) == 0o600
+        assert stat.S_IMODE(layout.provenance.stat().st_mode) == 0o600
     assert layout.config.read_bytes() == _node_config_bytes(
         "http://127.0.0.1:2053/panel/",
         layout.databases[0],
+    )
+    assert layout.provenance.read_bytes() == vpn_node_bootstrap._bootstrap_state_bytes(
         layout.backup,
         hashlib.sha256(layout.backup.read_bytes()).hexdigest(),
     )
     assert not layout.marker.exists()
-    assert fsyncs
+    assert len(fsyncs) >= 5
 
 
 def test_completed_bootstrap_replays_as_already_prepared_without_mutation(
@@ -613,6 +624,53 @@ def test_completed_bootstrap_replays_as_already_prepared_without_mutation(
     assert token_calls == 1
 
 
+def test_completed_bootstrap_keeps_node_config_compatible_and_provenance_private(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    _private_file(layout.xui_binaries[0])
+    _database(layout.databases[0])
+
+    def create_token(command, **_kwargs):
+        service = _service_result(command)
+        if service is not None:
+            return service
+        _record_token(layout.databases[0], command[-1])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            b"apiToken: synthetic-bootstrap-token-0123456789\n",
+            b"",
+        )
+
+    _prepare_vpn_node(
+        layout,
+        worker_id=16,
+        panel_url="http://127.0.0.1:2053/panel/",
+        install_command=_build_vpn_install_command(),
+        xui_version=XUI_VERSION,
+        architecture="amd64",
+        **_lifecycle_commands(),
+        port_occupied=lambda _port: False,
+        runner=create_token,
+        panel_session_factory=_Panel,
+        owner_uid=os.getuid() if hasattr(os, "getuid") else 0,
+        require_posix=False,
+    )
+
+    config = layout.config.read_bytes()
+    assert set(json.loads(config)) == {"version", "panel_url", "database_path"}
+    assert parse_node_config(config) == (
+        "http://127.0.0.1:2053/panel/",
+        layout.databases[0],
+    )
+    assert json.loads(layout.provenance.read_bytes()) == {
+        "version": 1,
+        "backup_path": str(layout.backup),
+        "backup_sha256": hashlib.sha256(layout.backup.read_bytes()).hexdigest(),
+    }
+
+
 def test_completed_bootstrap_rejects_replaced_backup(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     _private_file(layout.xui_binaries[0])
@@ -650,6 +708,69 @@ def test_completed_bootstrap_rejects_replaced_backup(tmp_path: Path) -> None:
             layout,
             runner=lambda *_args, **_kwargs: pytest.fail("must not mutate"),
             **common,
+        )
+
+
+@pytest.mark.parametrize(
+    ("fault", "code"),
+    [
+        ("missing", "vpn_node_bootstrap_foreign_state"),
+        ("content", "vpn_node_bootstrap_foreign_state"),
+        ("symlink", "vpn_node_bootstrap_environment_invalid"),
+    ],
+)
+def test_completed_bootstrap_rejects_untrusted_provenance_sidecar(
+    tmp_path: Path,
+    fault: str,
+    code: str,
+) -> None:
+    layout = _layout(tmp_path)
+    _prepared(layout)
+    if fault == "missing":
+        layout.provenance.unlink()
+    elif fault == "content":
+        layout.provenance.write_bytes(b'{}\n')
+    else:
+        layout.provenance.unlink()
+        try:
+            layout.provenance.symlink_to(layout.config)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+
+    with pytest.raises(VpnNodeBootstrapError, match=code) as caught:
+        _prepare_vpn_node(
+            layout,
+            worker_id=16,
+            panel_url="http://127.0.0.1:2053/panel/",
+            install_command=_build_vpn_install_command(),
+            xui_version=XUI_VERSION,
+            architecture="amd64",
+            **_lifecycle_commands(),
+            port_occupied=lambda _port: False,
+            runner=lambda *_args, **_kwargs: pytest.fail("must not mutate"),
+            panel_session_factory=_Panel,
+            owner_uid=os.getuid() if hasattr(os, "getuid") else 0,
+            require_posix=False,
+        )
+
+    assert caught.value.code == code
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode semantics required")
+def test_provenance_sidecar_rejects_non_private_mode(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    _private_file(layout.provenance, b'{}\n')
+    layout.provenance.chmod(0o644)
+
+    with pytest.raises(
+        VpnNodeBootstrapError, match="vpn_node_bootstrap_environment_invalid"
+    ):
+        vpn_node_bootstrap._secure_file(
+            layout.provenance,
+            os.getuid(),
+            mode=0o600,
+            limit=4096,
+            require_posix=True,
         )
 
 
