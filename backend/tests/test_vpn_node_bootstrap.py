@@ -54,7 +54,15 @@ def _lifecycle_commands() -> dict[str, str]:
     }
 
 
-def _service_result(command: object):
+def _service_result(command: object, **_kwargs):
+    if (
+        isinstance(command, list)
+        and len(command) == 2
+        and command[1] == "version"
+    ):
+        return subprocess.CompletedProcess(
+            command, 0, (XUI_VERSION + "\n").encode(), b""
+        )
     if isinstance(command, str) and command in set(_lifecycle_commands().values()):
         return subprocess.CompletedProcess(command, 0, b"", b"")
     return None
@@ -323,7 +331,7 @@ def test_exact_existing_token_and_config_are_idempotent(tmp_path: Path) -> None:
         architecture="amd64",
         **_lifecycle_commands(),
         port_occupied=lambda _port: True,
-        runner=lambda *_args, **_kwargs: pytest.fail("must not mutate"),
+        runner=_service_result,
         panel_session_factory=panel,
         owner_uid=os.getuid() if hasattr(os, "getuid") else 0,
         require_posix=False,
@@ -479,6 +487,8 @@ def test_missing_xui_runs_the_current_pinned_install_command(tmp_path: Path) -> 
             _private_file(layout.xui_binaries[0])
             _database(layout.databases[0])
             return subprocess.CompletedProcess(command, 0, b"3x-ui installed\n", b"")
+        if command == [str(layout.xui_binaries[0]), "version"]:
+            return subprocess.CompletedProcess(command, 0, (XUI_VERSION + "\n").encode(), b"")
         _assert_unique_token_command(command, layout.xui_binaries[0])
         _record_token(layout.databases[0], command[-1])
         return subprocess.CompletedProcess(
@@ -505,7 +515,55 @@ def test_missing_xui_runs_the_current_pinned_install_command(tmp_path: Path) -> 
 
     assert receipt.state == "prepared"
     assert calls[0] == _build_vpn_install_command()
+    assert calls.index([str(layout.xui_binaries[0]), "version"]) < next(
+        index
+        for index, command in enumerate(calls)
+        if isinstance(command, list) and "-tokenName" in command
+    )
     assert XUI_VERSION in _build_vpn_install_command()
+
+
+@pytest.mark.parametrize(
+    "version_output",
+    [b"v3.8.4\n", b"v3.8.5\nv3.8.5\n"],
+    ids=["mismatch", "ambiguous"],
+)
+def test_preinstalled_xui_invalid_version_fails_before_any_mutation(
+    tmp_path: Path,
+    version_output: bytes,
+) -> None:
+    layout = _layout(tmp_path)
+    _private_file(layout.xui_binaries[0])
+    _database(layout.databases[0])
+    calls: list[object] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        assert command == [str(layout.xui_binaries[0]), "version"]
+        return subprocess.CompletedProcess(command, 0, version_output, b"")
+
+    with pytest.raises(
+        VpnNodeBootstrapError, match="vpn_node_bootstrap_environment_invalid"
+    ) as caught:
+        _prepare_vpn_node(
+            layout,
+            worker_id=16,
+            panel_url="http://127.0.0.1:2053/panel/",
+            install_command=_build_vpn_install_command(),
+            xui_version=XUI_VERSION,
+            architecture="amd64",
+            **_lifecycle_commands(),
+            port_occupied=lambda _port: False,
+            runner=run,
+            panel_session_factory=_Panel,
+            owner_uid=os.getuid() if hasattr(os, "getuid") else 0,
+            require_posix=False,
+        )
+
+    assert caught.value.code == "vpn_node_bootstrap_environment_invalid"
+    assert calls == [[str(layout.xui_binaries[0]), "version"]]
+    assert not layout.marker.exists()
+    assert not layout.backup.exists()
 
 
 def test_backup_and_marker_exist_before_exact_token_cli_and_success_is_private(
@@ -615,7 +673,7 @@ def test_completed_bootstrap_replays_as_already_prepared_without_mutation(
     first = _prepare_vpn_node(layout, runner=create_token, **common)
     second = _prepare_vpn_node(
         layout,
-        runner=lambda *_args, **_kwargs: pytest.fail("idempotency must not mutate"),
+        runner=_service_result,
         **common,
     )
 
@@ -794,6 +852,11 @@ def test_preinstalled_xui_is_stopped_for_backup_and_token_then_restarted(
 
     def run(command, **_kwargs):
         nonlocal running
+        if command == [str(layout.xui_binaries[0]), "version"]:
+            events.append("version")
+            return subprocess.CompletedProcess(
+                command, 0, (XUI_VERSION + "\n").encode(), b"harmless warning\n"
+            )
         if command == _build_xui_stop_command():
             assert layout.marker.exists()
             running = False
@@ -803,7 +866,7 @@ def test_preinstalled_xui_is_stopped_for_backup_and_token_then_restarted(
             assert not running
             running = True
             events.append("start")
-            return subprocess.CompletedProcess(command, 0, b"", b"")
+            return subprocess.CompletedProcess(command, 0, b"", b"harmless warning\n")
         if command == _build_vpn_ready_command():
             assert running
             events.append("ready")
@@ -843,7 +906,15 @@ def test_preinstalled_xui_is_stopped_for_backup_and_token_then_restarted(
     )
 
     assert receipt.state == "prepared"
-    assert events == ["stop", "backup", "token", "start", "ready", "status"]
+    assert events == [
+        "version",
+        "stop",
+        "backup",
+        "token",
+        "start",
+        "ready",
+        "status",
+    ]
 
 
 def test_start_failure_restops_xui_and_leaves_reconciliation_marker(
@@ -858,6 +929,10 @@ def test_start_failure_restops_xui_and_leaves_reconciliation_marker(
     def run(command, **_kwargs):
         nonlocal running
         calls.append(command)
+        if command == [str(layout.xui_binaries[0]), "version"]:
+            return subprocess.CompletedProcess(
+                command, 0, (XUI_VERSION + "\n").encode(), b""
+            )
         if command == _build_xui_stop_command():
             running = False
             return subprocess.CompletedProcess(command, 0, b"", b"")
@@ -1089,6 +1164,16 @@ class _Connection:
         return None
 
 
+class _CreateProcessRaisesConnection(_Connection):
+    def __init__(self, error: Exception) -> None:
+        super().__init__(_Process(b""))
+        self.error = error
+
+    async def create_process(self, command: str, **kwargs):
+        self.commands.append((command, kwargs))
+        raise self.error
+
+
 def _snapshot() -> VpnNodeTransportSnapshot:
     host_key = asyncssh.generate_private_key("ssh-ed25519")
     return VpnNodeTransportSnapshot(
@@ -1181,6 +1266,33 @@ async def test_disconnect_after_remote_process_creation_is_uncertain_and_secret_
 
     assert secret not in str(caught.value)
     assert secret not in repr(caught.value)
+    assert connection.aborted
+
+
+@pytest.mark.asyncio
+async def test_create_process_handshake_failure_is_uncertain_and_secret_free() -> None:
+    secret = "synthetic-handshake-secret"
+    connection = _CreateProcessRaisesConnection(OSError(secret))
+
+    async def connector(*_args, **_kwargs):
+        return connection
+
+    bundle = b"reviewed-bootstrap"
+    with pytest.raises(
+        VpnNodeBootstrapError, match="vpn_node_bootstrap_mutation_uncertain"
+    ) as caught:
+        await execute_vpn_node_bootstrap(
+            _snapshot(),
+            bundle,
+            expected_sha256=hashlib.sha256(bundle).hexdigest(),
+            connector=connector,
+        )
+
+    assert secret not in str(caught.value)
+    assert secret not in repr(caught.value)
+    assert connection.commands == [
+        (FIXED_BOOTSTRAP_COMMAND, {"term_type": None, "encoding": None})
+    ]
     assert connection.aborted
 
 

@@ -684,6 +684,26 @@ def _validate_panel_url(panel_url: str) -> None:
         _fail()
 
 
+def _verify_xui_version(binary: Path, expected: str, runner) -> None:
+    try:
+        pinned = expected.encode("ascii", errors="strict")
+    except UnicodeError:
+        _fail("vpn_node_bootstrap_environment_invalid")
+    result = _invoke_command(
+        runner,
+        [str(binary), "version"],
+        shell=False,
+        timeout=30,
+        failure_code="vpn_node_bootstrap_environment_invalid",
+    )
+    if result.returncode != 0 or result.stdout not in {
+        pinned,
+        pinned + b"\n",
+        pinned + b"\r\n",
+    }:
+        _fail("vpn_node_bootstrap_environment_invalid")
+
+
 def _single_existing(paths: tuple[Path, ...], owner_uid: int, *, database: bool, require_posix: bool) -> Path | None:
     present = [path for path in paths if path.exists() or path.is_symlink()]
     if len(present) > 1:
@@ -946,6 +966,7 @@ def _prepare_vpn_node(
                 layout.backup, backup_sha256
             ):
                 _fail("vpn_node_bootstrap_foreign_state")
+            _verify_xui_version(binary, xui_version, runner)
             token = token_raw[:-1].decode("ascii")
             with panel_session_factory(panel_url, api_token=token):
                 pass
@@ -980,7 +1001,7 @@ def _prepare_vpn_node(
                     timeout=720,
                     failure_code="vpn_node_bootstrap_failed",
                 )
-                if result.returncode != 0 or result.stderr:
+                if result.returncode != 0:
                     _fail("vpn_node_bootstrap_failed")
             result = _invoke_command(
                 runner,
@@ -989,7 +1010,7 @@ def _prepare_vpn_node(
                 timeout=720,
                 failure_code="vpn_node_bootstrap_failed",
             )
-            if result.returncode != 0 or result.stderr:
+            if result.returncode != 0:
                 _fail("vpn_node_bootstrap_failed")
             for command in post_install_commands:
                 result = _invoke_command(
@@ -999,7 +1020,7 @@ def _prepare_vpn_node(
                     timeout=720,
                     failure_code="vpn_node_bootstrap_failed",
                 )
-                if result.returncode != 0 or result.stderr:
+                if result.returncode != 0:
                     _fail("vpn_node_bootstrap_failed")
             binary = _single_existing(
                 layout.xui_binaries, owner_uid, database=False, require_posix=require_posix
@@ -1010,6 +1031,7 @@ def _prepare_vpn_node(
             if binary is None or database is None:
                 _fail("vpn_node_bootstrap_failed")
         assert binary is not None and database is not None
+        _verify_xui_version(binary, xui_version, runner)
 
         if token_state is None:
             token_state = _database_state(
@@ -1038,7 +1060,7 @@ def _prepare_vpn_node(
                 timeout=30,
                 failure_code="vpn_node_bootstrap_mutation_uncertain",
             )
-            if result.returncode != 0 or result.stderr:
+            if result.returncode != 0:
                 _fail("vpn_node_bootstrap_mutation_uncertain")
             _backup_database(
                 database,
@@ -1090,7 +1112,7 @@ def _prepare_vpn_node(
                     timeout=30,
                     failure_code="vpn_node_bootstrap_mutation_uncertain",
                 )
-                if result.returncode != 0 or result.stderr:
+                if result.returncode != 0:
                     _fail("vpn_node_bootstrap_mutation_uncertain")
             with panel_session_factory(panel_url, api_token=token):
                 pass
@@ -1418,12 +1440,12 @@ async def execute_vpn_node_bootstrap(
                 **options,
             )
         async with asyncio.timeout(BOOTSTRAP_TIMEOUT):
+            phase = "mutation"
             process = await connection.create_process(
                 FIXED_BOOTSTRAP_COMMAND,
                 term_type=None,
                 encoding=None,
             )
-            phase = "mutation"
             wire = (
                 expected_sha256.encode("ascii")
                 + b"\n"
