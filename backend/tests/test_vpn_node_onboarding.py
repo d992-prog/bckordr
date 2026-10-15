@@ -60,19 +60,24 @@ def _worker(**overrides) -> WorkerNode:
     return WorkerNode(**values)
 
 
-HOST_KEY = (
-    "192.0.2.16 ssh-ed25519 "
+HOST_KEY_BODY = (
     "AAAAC3NzaC1lZDI1NTE5AAAAIGZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZm"
 )
+OTHER_HOST_KEY_BODY = (
+    "AAAAC3NzaC1lZDI1NTE5AAAAIGdnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dn"
+)
+HOST_KEY = f"192.0.2.16 ssh-ed25519 {HOST_KEY_BODY}"
+HOST_FINGERPRINT = "SHA256:cIkYlH9rWM5DF0rEzMmlxdSnzL+MAAHogVaL1uSWll0"
 
 
 async def _job(sessions, **worker_overrides) -> tuple[int, int]:
     async with sessions() as session:
-        worker = _worker(
-            ssh_host_key=HOST_KEY,
-            ssh_host_key_fingerprint="SHA256:" + "A" * 43,
-            **worker_overrides,
-        )
+        values = {
+            "ssh_host_key": HOST_KEY,
+            "ssh_host_key_fingerprint": HOST_FINGERPRINT,
+        }
+        values.update(worker_overrides)
+        worker = _worker(**values)
         session.add(worker)
         await session.flush()
         job = WorkerMaintenanceJob(worker_id=worker.id, action="vpn_onboard", status="queued")
@@ -93,8 +98,20 @@ def _install_receipt(request, *, state="staged", inbound_id=27):
     )
 
 
-def _configure_control(monkeypatch, onboarding, tmp_path, *, known_host=HOST_KEY):
-    snapshot = SimpleNamespace(known_hosts=(known_host + "\n").encode("ascii"))
+def _configure_control(
+    monkeypatch,
+    onboarding,
+    tmp_path,
+    *,
+    known_host=HOST_KEY,
+    host="192.0.2.16",
+    port=22,
+):
+    snapshot = SimpleNamespace(
+        host=host,
+        port=port,
+        known_hosts=(known_host + "\n").encode("ascii"),
+    )
     monkeypatch.setattr(onboarding, "load_transport_snapshot", lambda *_: snapshot)
     monkeypatch.setattr(
         onboarding,
@@ -267,7 +284,11 @@ async def test_onboarding_stages_healthy_endpoint_in_exact_order(
 
     job_id, worker_id = await _job(sessions)
     calls: list[str] = []
-    snapshot = SimpleNamespace(known_hosts=(HOST_KEY + "\n").encode("ascii"))
+    snapshot = SimpleNamespace(
+        host="192.0.2.16",
+        port=22,
+        known_hosts=(HOST_KEY + "\n").encode("ascii"),
+    )
     monkeypatch.setattr(onboarding, "load_transport_snapshot", lambda *_: snapshot)
     monkeypatch.setattr(
         onboarding,
@@ -609,7 +630,7 @@ async def test_changed_pin_stops_before_any_remote_mutation(
         monkeypatch,
         onboarding,
         tmp_path,
-        known_host="192.0.2.16 ssh-ed25519 changed-key",
+        known_host=f"192.0.2.16 ssh-ed25519 {OTHER_HOST_KEY_BODY}",
     )
     stages = _successful_stages(worker_id)
 
@@ -620,6 +641,91 @@ async def test_changed_pin_stops_before_any_remote_mutation(
         job = await session.get(WorkerMaintenanceJob, job_id)
         assert job is not None
         assert job.error_message == "vpn_onboarding_host_key_changed"
+
+
+@pytest.mark.asyncio
+async def test_pin_for_old_host_does_not_authorize_current_host(
+    sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    old_pin = f"192.0.2.15 ssh-ed25519 {HOST_KEY_BODY}"
+    current_pin = f"192.0.2.16 ssh-ed25519 {OTHER_HOST_KEY_BODY}"
+    job_id, worker_id = await _job(
+        sessions,
+        ssh_host_key=old_pin,
+        ssh_host_key_fingerprint=HOST_FINGERPRINT,
+    )
+    _configure_control(
+        monkeypatch,
+        onboarding,
+        tmp_path,
+        known_host=f"{old_pin}\n{current_pin}",
+    )
+    stages = _successful_stages(worker_id)
+
+    await _run_with_stages(sessions, job_id, stages)
+
+    assert stages[0] == []
+    async with sessions() as session:
+        job = await session.get(WorkerMaintenanceJob, job_id)
+        assert job is not None
+        assert job.error_message == "vpn_onboarding_host_key_changed"
+
+
+@pytest.mark.asyncio
+async def test_pin_with_changed_fingerprint_stops_before_remote_mutation(
+    sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    job_id, worker_id = await _job(
+        sessions,
+        ssh_host_key_fingerprint="SHA256:" + "A" * 43,
+    )
+    _configure_control(monkeypatch, onboarding, tmp_path)
+    stages = _successful_stages(worker_id)
+
+    await _run_with_stages(sessions, job_id, stages)
+
+    assert stages[0] == []
+    async with sessions() as session:
+        job = await session.get(WorkerMaintenanceJob, job_id)
+        assert job is not None
+        assert job.error_message == "vpn_onboarding_host_key_changed"
+
+
+@pytest.mark.asyncio
+async def test_nonstandard_port_pin_uses_canonical_known_hosts_target(
+    sessions, tmp_path, monkeypatch
+) -> None:
+    from app.services import vpn_node_onboarding as onboarding
+
+    pinned = f"[192.0.2.16]:2222 ssh-ed25519 {HOST_KEY_BODY}"
+    job_id, worker_id = await _job(
+        sessions,
+        ssh_port=2222,
+        ssh_host_key=pinned,
+        ssh_host_key_fingerprint=HOST_FINGERPRINT,
+    )
+    _configure_control(
+        monkeypatch,
+        onboarding,
+        tmp_path,
+        known_host=pinned,
+        port=2222,
+    )
+    stages = _successful_stages(worker_id)
+
+    await _run_with_stages(sessions, job_id, stages)
+
+    assert stages[0] == [
+        "bootstrap",
+        "deploy_node",
+        "install_endpoint_helper",
+        "ensure",
+        "health",
+    ]
 
 
 @pytest.mark.asyncio

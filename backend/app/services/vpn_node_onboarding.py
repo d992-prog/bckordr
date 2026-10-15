@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 from dataclasses import dataclass
@@ -37,6 +38,8 @@ from app.services.vpn_node_health import (
 )
 from app.services.vpn_node_transport import (
     VpnNodeTransportError,
+    _known_hosts_target,
+    _parse_literal_known_hosts,
     execute_vpn_node_health_over_ssh,
     load_transport_snapshot,
 )
@@ -166,9 +169,15 @@ def _short_id(secret: str, worker_id: int, public_host: str) -> str:
 
 def _pin_matches(snapshot, worker: WorkerNode) -> bool:
     try:
-        expected = worker.ssh_host_key.encode("ascii")
-        return expected in snapshot.known_hosts.splitlines()
-    except (AttributeError, UnicodeError):
+        target = _known_hosts_target(snapshot.host, snapshot.port)
+        entry = _parse_literal_known_hosts(snapshot.known_hosts).get(target)
+        if entry is None or entry.line != worker.ssh_host_key:
+            return False
+        fingerprint = "SHA256:" + base64.b64encode(
+            hashlib.sha256(entry.key).digest()
+        ).decode("ascii").rstrip("=")
+        return hmac.compare_digest(fingerprint, worker.ssh_host_key_fingerprint)
+    except (AttributeError, TypeError, UnicodeError, VpnNodeTransportError):
         return False
 
 
