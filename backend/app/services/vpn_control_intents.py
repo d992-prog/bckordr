@@ -20,7 +20,11 @@ from app.db.models import (
     VpnSubscription,
     WorkerNode,
 )
-from app.services.vpn_endpoint_types import EndpointOperation, VpnEndpointTarget
+from app.services.vpn_endpoint_types import (
+    EndpointOperation,
+    VpnEndpointTarget,
+    is_valid_vpn_endpoint_target,
+)
 from app.services.vpn_node_request import (
     VpnNodeRequest,
     VpnNodeRequestError,
@@ -28,12 +32,11 @@ from app.services.vpn_node_request import (
     parse_node_request,
     serialize_node_request,
 )
-from app.services.vpn_subscription_sync import subscription_key_action
 from app.services.vpn_policy import (
     active_attack_worker_ids,
     active_vpn_maintenance_worker_ids,
 )
-
+from app.services.vpn_subscription_sync import subscription_key_action
 
 _MAX_INTEGER = 2**63 - 1
 _MAX_GENERATION = 2**31 - 1
@@ -200,7 +203,13 @@ def build_control_config_uri(request: VpnNodeRequest) -> str:
         serialize_node_request(request)
     except VpnNodeRequestError:
         _fail("vpn_control_request_invalid")
-    target = request.target
+    return build_reality_config_uri(request.target, request.client_uuid)
+
+
+def build_reality_config_uri(target: VpnEndpointTarget, client_uuid: UUID) -> str:
+    """Build one validated unlabelled VLESS/REALITY URI."""
+    if not is_valid_vpn_endpoint_target(target) or not isinstance(client_uuid, UUID):
+        _fail("vpn_control_request_invalid")
     if target.security != "reality":
         _fail("vpn_control_config_uri_unsupported")
     host = target.public_host.encode("idna").decode("ascii")
@@ -220,7 +229,7 @@ def build_control_config_uri(request: VpnNodeRequest) -> str:
         quote_via=quote,
         safe="",
     )
-    return f"vless://{quote(str(request.client_uuid), safe='')}@{host}:{target.port}?{query}"
+    return f"vless://{quote(str(client_uuid), safe='')}@{host}:{target.port}?{query}"
 
 
 def _locked(statement, *, skip_locked: bool = False):
