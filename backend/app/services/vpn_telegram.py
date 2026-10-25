@@ -5,7 +5,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +23,7 @@ from app.services.vpn_bot_chats import (
     BotRegistryConfigurationError,
     record_private_bot_chat,
 )
+from app.services.vpn_bot_delivery import require_delivered, send_gated_payload
 from app.services.vpn_customer_view import (
     MissingCustomerProfile,
     UnavailableCustomerConnection,
@@ -315,30 +315,22 @@ async def send_telegram_message(
     *,
     cabinet_allowed: bool = False,
 ) -> None:
-    url = f"https://api.telegram.org/bot{settings.vpn_telegram_bot_token}/sendMessage"
-    async with httpx.AsyncClient(timeout=settings.request_timeout) as client:
-        for chunk in split_telegram_text(text):
-            payload = {
-                "chat_id": chat_id,
-                "text": chunk,
-                "reply_markup": telegram_keyboard(settings, chat_id),
-            }
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-        cabinet_keyboard = telegram_cabinet_keyboard(
-            settings,
-            chat_id,
-            cabinet_allowed=cabinet_allowed,
-        )
-        if cabinet_keyboard is not None:
-            # Telegram permits only one reply_markup type per message. Keep the
-            # command keyboard above and add exactly one authenticated launch.
-            response = await client.post(url, json={
-                "chat_id": chat_id,
-                "text": "Подписка, VPN-профили и инструкции по подключению — в личном кабинете.",
-                "reply_markup": cabinet_keyboard,
-            })
-            response.raise_for_status()
+    for chunk in split_telegram_text(text):
+        require_delivered(await send_gated_payload(settings, {
+            "chat_id": chat_id,
+            "text": chunk,
+            "reply_markup": telegram_keyboard(settings, chat_id),
+        }))
+    cabinet_keyboard = telegram_cabinet_keyboard(
+        settings, chat_id, cabinet_allowed=cabinet_allowed,
+    )
+    if cabinet_keyboard is not None:
+        # Telegram permits only one reply_markup type per message.
+        require_delivered(await send_gated_payload(settings, {
+            "chat_id": chat_id,
+            "text": "Подписка, VPN-профили и инструкции по подключению — в личном кабинете.",
+            "reply_markup": cabinet_keyboard,
+        }))
 
 
 def split_telegram_text(text: str, *, limit: int = 4000) -> list[str]:

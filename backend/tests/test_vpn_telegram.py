@@ -12,6 +12,12 @@ from fastapi import FastAPI
 from sqlalchemy import event, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
+from test_vpn_endpoint_migrations import (
+    PostgresSchema,
+)
+from test_vpn_endpoint_migrations import (
+    postgres_schema as postgres_schema,
+)
 
 from app.api.deps import require_admin
 from app.api.routes.control import router as control_router
@@ -33,18 +39,15 @@ from app.db.models import (
     WorkerNode,
 )
 from app.db.session import get_db
+from app.services import vpn_bot_delivery
 from app.services import vpn_telegram as vpn_telegram_service
+from app.services.vpn_bot_delivery import VpnBotDeliveryError
+from app.services.vpn_friend_invitations import digest_invite_token
 from app.services.vpn_telegram import (
     process_telegram_update,
     send_telegram_message,
     telegram_keyboard,
 )
-from app.services.vpn_friend_invitations import digest_invite_token
-from test_vpn_endpoint_migrations import (
-    PostgresSchema,
-    postgres_schema as postgres_schema,
-)
-
 
 VALID_VLESS_URI = (
     "vless://11111111-1111-4111-8111-111111111111@vpn.example:443"
@@ -444,12 +447,20 @@ def bot_api_requests(monkeypatch):
         assert request.url.host == "api.telegram.org"
         assert request.url.path.endswith("/sendMessage")
         requests.append(json.loads(request.content))
-        return httpx.Response(200, json={"ok": True, "result": {"message_id": len(requests)}})
+        try:
+            result_chat_id = int(requests[-1]["chat_id"])
+        except ValueError:
+            result_chat_id = 1
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": len(requests), "chat": {"id": result_chat_id}}})
 
     def client_factory(**kwargs):
         return real_client(transport=httpx.MockTransport(handle), **kwargs)
 
-    monkeypatch.setattr(vpn_telegram_service.httpx, "AsyncClient", client_factory)
+    async def immediate_slot(*_args, **_kwargs):
+        return 0
+
+    monkeypatch.setattr(vpn_bot_delivery.httpx, "AsyncClient", client_factory)
+    monkeypatch.setattr(vpn_bot_delivery, "reserve_bot_send_slot", immediate_slot)
     return requests
 
 
@@ -590,7 +601,11 @@ async def test_bot_never_sends_cabinet_entry_to_disallowed_identity(bot_api_requ
         VPN_PORTAL_ALLOWED_TELEGRAM_IDS="12345",
     )
 
-    await vpn_telegram_service.send_telegram_message(settings, chat_id, "Ответ")
+    if chat_id in {"000", "not-a-chat", "12.5", ""}:
+        with pytest.raises(VpnBotDeliveryError, match="^vpn_bot_delivery_uncertain$"):
+            await vpn_telegram_service.send_telegram_message(settings, chat_id, "Ответ")
+    else:
+        await vpn_telegram_service.send_telegram_message(settings, chat_id, "Ответ")
 
     assert len(bot_api_requests) == 1
     assert "inline_keyboard" not in bot_api_requests[0]["reply_markup"]
@@ -637,12 +652,16 @@ async def test_inline_delivery_failure_does_not_replay_delivered_key(telegram_ap
         requests.append(payload)
         if "inline_keyboard" in payload["reply_markup"]:
             return httpx.Response(503, json={"ok": False})
-        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1, "chat": {"id": 12345}}})
 
     monkeypatch.setattr(
-        vpn_telegram_service.httpx, "AsyncClient",
+        vpn_bot_delivery.httpx, "AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(handle), **kwargs),
     )
+    async def immediate_slot(*_args, **_kwargs):
+        return 0
+
+    monkeypatch.setattr(vpn_bot_delivery, "reserve_bot_send_slot", immediate_slot)
     monkeypatch.setattr(
         vpn_telegram_service,
         "send_telegram_message",

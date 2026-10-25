@@ -5,8 +5,8 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
-from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -18,6 +18,7 @@ from app.db.session import AsyncSessionLocal, engine
 from app.services.bootstrap import ensure_default_zone_strategies, ensure_owner_account
 from app.services.control_runtime import ControlRuntimeOrchestrator
 from app.services.notifier import TelegramNotifier
+from app.services.vpn_bot_delivery import close_bot_delivery_database
 from app.services.vpn_portal_http import (
     PortalHttpMiddleware,
     ScopedControlCorsMiddleware,
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
     finally:
         await portal_http_client.aclose()
         await monitoring.shutdown()
+        await close_bot_delivery_database()
         await engine.dispose()
 
 

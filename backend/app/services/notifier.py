@@ -6,6 +6,7 @@ from datetime import datetime
 import httpx
 
 from app.core.config import Settings
+from app.services.vpn_bot_delivery import require_delivered, send_gated_payload
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,10 @@ class TelegramNotifier:
             "chat_id": chat_id,
             "text": message,
         }
+
+        if token == self.settings.vpn_telegram_bot_token:
+            require_delivered(await send_gated_payload(self.settings, payload))
+            return
 
         async with httpx.AsyncClient(timeout=self.settings.request_timeout) as client:
             response = await client.post(url, json=payload)

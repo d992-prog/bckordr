@@ -12,6 +12,8 @@ _SENSITIVE_EXCEPTION_LOGGERS = (
     "app.api.routes.vpn_portal",
     "app.services.vpn_portal",
     "app.services.vpn_device_subscriptions",
+    "app.services.vpn_bot_delivery",
+    "app.services.vpn_broadcasts",
     "httpcore",
     "httpx",
     "sqlalchemy",
