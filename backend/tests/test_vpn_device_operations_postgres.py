@@ -27,8 +27,9 @@ def test_device_operation_migrations_registered_after_backfill():
     from app.db.migrations import MIGRATIONS
     from app.db.vpn_device_migrations import VPN_DEVICE_MIGRATIONS
     from app.db.vpn_device_operations_migrations import VPN_DEVICE_OPERATIONS_MIGRATIONS
-    assert MIGRATIONS.index(VPN_DEVICE_OPERATIONS_MIGRATIONS[0]) > MIGRATIONS.index(VPN_DEVICE_MIGRATIONS[-1])
-    assert MIGRATIONS[-len(VPN_DEVICE_OPERATIONS_MIGRATIONS):] == VPN_DEVICE_OPERATIONS_MIGRATIONS
+    start = MIGRATIONS.index(VPN_DEVICE_OPERATIONS_MIGRATIONS[0])
+    assert start > MIGRATIONS.index(VPN_DEVICE_MIGRATIONS[-1])
+    assert MIGRATIONS[start:start + len(VPN_DEVICE_OPERATIONS_MIGRATIONS)] == VPN_DEVICE_OPERATIONS_MIGRATIONS
 
 
 async def setup(postgres_schema, monkeypatch):

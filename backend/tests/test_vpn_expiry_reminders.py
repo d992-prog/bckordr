@@ -398,6 +398,44 @@ async def test_renewal_during_cooldown_check_is_seen_before_http(
 
 
 @pytest.mark.asyncio
+async def test_shared_cooldown_started_during_mark_sending_defers_http(
+    session_factory, monkeypatch
+):
+    from app.services.vpn_bot_delivery import extend_bot_cooldown
+
+    await seed(session_factory)
+    original = service()._mark_sending
+    injected = False
+
+    async def competing_delivery(*args):
+        nonlocal injected
+        sending = await original(*args)
+        if sending and not injected:
+            injected = True
+            await extend_bot_cooldown(
+                session_factory, settings().vpn_telegram_bot_token, 60, now=NOW
+            )
+        return sending
+
+    monkeypatch.setattr(service(), "_mark_sending", competing_delivery)
+    calls = []
+    await dispatch(session_factory, calls)
+    assert calls == []
+    async with session_factory() as db:
+        job = await db.scalar(select(models.VpnExpiryReminder))
+        assert job.state == "pending"
+        assert service()._as_utc(job.available_at) >= NOW + timedelta(seconds=61)
+        assert job.error_code == "vpn_bot_rate_limited"
+        assert job.claim_token is job.sending_at is job.lease_until is None
+    await dispatch(session_factory, calls, at=NOW + timedelta(seconds=60))
+    assert calls == []
+    await dispatch(session_factory, calls, at=NOW + timedelta(seconds=62))
+    assert len(calls) == 1
+    async with session_factory() as db:
+        assert (await db.scalar(select(models.VpnExpiryReminder))).state == "sent"
+
+
+@pytest.mark.asyncio
 async def test_old_queued_window_is_skipped_and_expired_subscription_still_gets_current_event(
     session_factory, immediate_gate
 ):

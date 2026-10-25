@@ -419,6 +419,21 @@ async def dispatch_next_expiry_reminder(
     if not sending:
         return True
     deadline, payload = sending
+    delay = await bot_cooldown_remaining(
+        session_factory, settings.vpn_telegram_bot_token, now=_as_utc(now())
+    )
+    if delay:
+        await _finalize(
+            session_factory,
+            claim,
+            TelegramDeliveryResult(
+                "retry",
+                retry_after=max(1, int(delay + 1)),
+                error_code="vpn_bot_rate_limited",
+            ),
+            now,
+        )
+        return True
     if deadline <= _as_utc(now()) + timedelta(seconds=10):
         await _finalize(
             session_factory,
