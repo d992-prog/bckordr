@@ -1,15 +1,19 @@
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import and_, case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
-from app.api.routes.control import _require_same_origin
+from app.api.routes.control import _require_same_origin, _vpn_access_key_response
 from app.db import models as m
 from app.db.base import utcnow
 from app.db.session import get_db
-from app.schemas.vpn_abuse import AbuseIncidentResponse, AcknowledgeAbuseIncidentRequest
+from app.schemas.vpn_abuse import (
+    AbuseDeviceContextResponse,
+    AbuseIncidentResponse,
+    AcknowledgeAbuseIncidentRequest,
+)
 from app.services.vpn_abuse import acknowledge_incident
 
 
@@ -23,6 +27,58 @@ router = APIRouter(
 Database = Annotated[AsyncSession, Depends(get_db)]
 Administrator = Annotated[m.User, Depends(require_admin)]
 IncidentId = Annotated[int, Path(ge=1, le=2**31 - 1)]
+
+
+@router.get("/devices/{device_id}/context", response_model=AbuseDeviceContextResponse)
+async def device_context(
+    device_id: Annotated[int, Path(ge=1, le=2**31 - 1)],
+    customer_id: Annotated[int, Query(ge=1, le=2**31 - 1)],
+    db: Database,
+    admin: Administrator,
+):
+    del admin
+    row = (
+        await db.execute(
+            select(m.VpnDevice, m.VpnSubscription, m.VpnCustomer)
+            .join(
+                m.VpnSubscription, m.VpnSubscription.id == m.VpnDevice.subscription_id
+            )
+            .join(m.VpnCustomer, m.VpnCustomer.id == m.VpnSubscription.customer_id)
+            .where(m.VpnDevice.id == device_id, m.VpnCustomer.id == customer_id)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="vpn_abuse_device_not_found",
+            headers={"Cache-Control": "no-store"},
+        )
+    device, subscription, customer = row
+    non_revoked = and_(
+        m.VpnAccessKey.status != "revoked", m.VpnAccessKey.revoked_at.is_(None)
+    )
+    key = await db.scalar(
+        select(m.VpnAccessKey)
+        .where(
+            m.VpnAccessKey.device_id == device.id,
+            m.VpnAccessKey.subscription_id == subscription.id,
+        )
+        .order_by(
+            case(
+                (and_(non_revoked, m.VpnAccessKey.id == device.preferred_key_id), 0),
+                (non_revoked, 1),
+                else_=2,
+            ),
+            m.VpnAccessKey.id,
+        )
+        .limit(1)
+    )
+    return AbuseDeviceContextResponse(
+        device_id=device.id,
+        customer=customer,
+        subscription=subscription,
+        access_key=_vpn_access_key_response(key) if key is not None else None,
+    )
 
 
 def _query():

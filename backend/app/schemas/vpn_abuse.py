@@ -2,6 +2,19 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.control import (
+    VpnAccessKeyResponse,
+    VpnCustomerResponse,
+    VpnSubscriptionResponse,
+)
+
+
+class AbuseDeviceContextResponse(BaseModel):
+    device_id: int
+    customer: VpnCustomerResponse
+    subscription: VpnSubscriptionResponse
+    access_key: VpnAccessKeyResponse | None
+
 
 class AbuseIncidentResponse(BaseModel):
     id: int

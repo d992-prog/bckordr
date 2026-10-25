@@ -2,7 +2,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from test_vpn_usage_api import env as env  # noqa: PLC0414
 from test_vpn_usage_api import seed
 
@@ -10,6 +10,7 @@ from app.api.deps import get_current_user, require_admin
 from app.db import models as m
 
 URL = "/api/control/vpn/abuse/incidents"
+CONTEXT = "/api/control/vpn/abuse/devices/{}/context"
 FIELDS = {
     "id",
     "device_id",
@@ -192,3 +193,211 @@ async def test_application_error_boundaries_are_bounded_generic_and_no_store(env
                 response.status_code == 401
                 and response.headers["cache-control"] == "no-store"
             )
+
+
+@pytest.mark.asyncio
+async def test_device_context_is_bounded_and_independent_of_global_list_caps(env):
+    from app.schemas.control import (
+        VpnAccessKeyResponse,
+        VpnCustomerResponse,
+        VpnSubscriptionResponse,
+    )
+
+    ids = await seed(env)
+    async with env.sessions() as db, db.begin():
+        await db.execute(insert(m.VpnCustomer), [{"first_name": "Filler"}] * 501)
+        await db.execute(
+            insert(m.VpnSubscription), [{"customer_id": ids.foreign}] * 501
+        )
+        foreign_subscription = await db.scalar(
+            select(m.VpnSubscription.id)
+            .where(m.VpnSubscription.customer_id == ids.foreign)
+            .limit(1)
+        )
+        await db.execute(
+            insert(m.VpnAccessKey), [{"subscription_id": foreign_subscription}] * 1001
+        )
+    for path, missing_id in (
+        ("/api/control/vpn/customers", ids.customer),
+        ("/api/control/vpn/subscriptions", ids.subscription),
+        ("/api/control/vpn/access-keys", ids.keys[0]),
+    ):
+        rows = (await env.client.get(path)).json()
+        assert missing_id not in {row["id"] for row in rows}
+    response = await env.client.get(
+        CONTEXT.format(ids.device), params={"customer_id": ids.customer}
+    )
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    result = response.json()
+    assert set(result) == {"device_id", "customer", "subscription", "access_key"}
+    assert result["device_id"] == ids.device
+    assert result["customer"]["id"] == ids.customer
+    assert result["subscription"]["id"] == ids.subscription
+    assert result["access_key"]["id"] == ids.keys[0]
+    assert result["access_key"]["device_id"] == ids.device
+    assert result["access_key"]["config_uri"] is None, (
+        "reuse safe access-key URI serializer"
+    )
+    for name, schema in (
+        ("customer", VpnCustomerResponse),
+        ("subscription", VpnSubscriptionResponse),
+        ("access_key", VpnAccessKeyResponse),
+    ):
+        assert set(result[name]) == set(schema.model_fields)
+
+
+@pytest.mark.asyncio
+async def test_device_context_prefers_nonrevoked_preferred_then_deterministic_child(
+    env,
+):
+    ids = await seed(env, count=3)
+    path = CONTEXT.format(ids.device)
+    query = {"customer_id": ids.customer}
+    async with env.sessions() as db, db.begin():
+        (await db.get(m.VpnDevice, ids.device)).preferred_key_id = ids.keys[2]
+    assert (await env.client.get(path, params=query)).json()["access_key"][
+        "id"
+    ] == ids.keys[2]
+    async with env.sessions() as db, db.begin():
+        (await db.get(m.VpnAccessKey, ids.keys[2])).status = "revoked"
+    assert (await env.client.get(path, params=query)).json()["access_key"][
+        "id"
+    ] == ids.keys[0]
+    async with env.sessions() as db, db.begin():
+        (await db.get(m.VpnAccessKey, ids.keys[0])).revoked_at = ids.now
+    assert (await env.client.get(path, params=query)).json()["access_key"][
+        "id"
+    ] == ids.keys[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong_device", [False, True])
+async def test_device_context_never_uses_child_of_another_device_or_subscription(
+    env, wrong_device
+):
+    ids = await seed(env)
+    async with env.sessions() as db, db.begin():
+        foreign_subscription = m.VpnSubscription(customer_id=ids.foreign)
+        db.add(foreign_subscription)
+        await db.flush()
+        sibling = m.VpnDevice(subscription_id=ids.subscription, display_name="Other")
+        db.add(sibling)
+        await db.flush()
+        foreign_child = m.VpnAccessKey(
+            subscription_id=ids.subscription
+            if wrong_device
+            else foreign_subscription.id,
+            device_id=sibling.id if wrong_device else ids.device,
+            status="active",
+        )
+        db.add(foreign_child)
+        await db.flush()
+        (await db.get(m.VpnDevice, ids.device)).preferred_key_id = foreign_child.id
+    response = await env.client.get(
+        CONTEXT.format(ids.device), params={"customer_id": ids.customer}
+    )
+    assert response.status_code == 200
+    assert response.json()["access_key"]["id"] == ids.keys[0]
+
+
+@pytest.mark.asyncio
+async def test_device_context_handles_no_children_and_keeps_revocation_sticky(env):
+    ids = await seed(env, count=2)
+    async with env.sessions() as db, db.begin():
+        empty = m.VpnDevice(subscription_id=ids.subscription, display_name="Empty")
+        db.add(empty)
+        device = await db.get(m.VpnDevice, ids.device)
+        device.revoke_requested_at = ids.now
+        device.preferred_key_id = ids.keys[1]
+        device.token_generation = 4
+        for key_id in ids.keys:
+            key = await db.get(m.VpnAccessKey, key_id)
+            key.status = "revoked"
+            key.revoked_at = key.revoke_requested_at = ids.now
+        await db.flush()
+        empty_id = empty.id
+    response = await env.client.get(
+        CONTEXT.format(empty_id), params={"customer_id": ids.customer}
+    )
+    assert response.status_code == 200 and response.json()["access_key"] is None
+    for _ in range(2):
+        response = await env.client.get(
+            CONTEXT.format(ids.device), params={"customer_id": ids.customer}
+        )
+        assert response.status_code == 200
+        assert response.json()["access_key"]["id"] == ids.keys[0]
+        assert response.json()["access_key"]["status"] == "revoked"
+    async with env.sessions() as db:
+        device = await db.get(m.VpnDevice, ids.device)
+        assert device.revoke_requested_at is not None and device.token_generation == 4
+        for key_id in ids.keys:
+            key = await db.get(m.VpnAccessKey, key_id)
+            assert (
+                key.status == "revoked"
+                and key.revoked_at is not None
+                and key.revoke_requested_at is not None
+            )
+        assert await db.scalar(select(m.VpnControlOperation)) is None
+        assert await db.scalar(select(m.AdminAuditLog)) is None
+
+
+@pytest.mark.asyncio
+async def test_device_context_auth_owner_bounds_and_errors_are_private_no_store(env):
+    import httpx
+
+    from app.main import create_app
+
+    ids = await seed(env)
+    app = create_app()
+    app.dependency_overrides.update(env.app.dependency_overrides)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        for device_id, customer_id in (
+            (ids.device, ids.foreign),
+            (ids.device, 2**31 - 1),
+            (2**31 - 1, ids.customer),
+        ):
+            response = await client.get(
+                CONTEXT.format(device_id), params={"customer_id": customer_id}
+            )
+            assert response.status_code == 404
+            assert response.headers["cache-control"] == "no-store"
+            assert response.json() == {"detail": "vpn_abuse_device_not_found"}
+        for device_id, customer_id in (
+            (0, ids.customer),
+            (-1, ids.customer),
+            (2**31, ids.customer),
+            ("private-secret", ids.customer),
+            (ids.device, 0),
+            (ids.device, -1),
+            (ids.device, 2**31),
+            (ids.device, "private-secret"),
+            (ids.device, None),
+        ):
+            query = {} if customer_id is None else {"customer_id": customer_id}
+            response = await client.get(CONTEXT.format(device_id), params=query)
+            assert response.status_code == 422
+            assert response.headers["cache-control"] == "no-store"
+            assert response.json() == {"detail": "vpn_abuse_invalid_request"}
+        app.dependency_overrides.pop(require_admin)
+        response = await client.get(
+            CONTEXT.format(ids.device), params={"customer_id": ids.customer}
+        )
+        assert (
+            response.status_code == 401
+            and response.headers["cache-control"] == "no-store"
+        )
+
+        async def ordinary():
+            return SimpleNamespace(id=2, role="user")
+
+        app.dependency_overrides[get_current_user] = ordinary
+        response = await client.get(
+            CONTEXT.format(ids.device), params={"customer_id": ids.customer}
+        )
+        assert (
+            response.status_code == 403
+            and response.headers["cache-control"] == "no-store"
+        )
