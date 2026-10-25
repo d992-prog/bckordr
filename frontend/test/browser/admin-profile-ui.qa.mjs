@@ -1,4 +1,7 @@
 // Actual admin bundle, synthetic HTTP responses only; no production connection.
+// From frontend: npm run build, then node test/browser/admin-profile-ui.qa.mjs.
+// Race regression only: node test/browser/admin-profile-ui.qa.mjs --profile-create-only.
+// Uses existing PLAYWRIGHT_MODULE_PATH / CHROMIUM_EXECUTABLE_PATH overrides when needed.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
@@ -118,9 +121,21 @@ try {
   let replacementWorkerAvailable = false;
   let releaseWorkerDelete = null;
   let capacitySaveFailure = false;
+  const createRequests = [];
+  const heldCreates = [];
   const handleApiRoute = async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
+    if (request.method() === "POST" && pathname === "/api/control/vpn/access-keys") {
+      const payload = request.postDataJSON();
+      assert.deepEqual(Object.keys(payload).sort(), ["display_name", "protocol", "subscription_id", "worker_id"]);
+      createRequests.push(payload);
+      return new Promise((resolve) => heldCreates.push(async (body, status = 200) => {
+        if (status === 200) keys.push(body);
+        await json(route, body, status);
+        resolve();
+      }));
+    }
     if (request.method() === "DELETE" && pathname === "/api/control/workers/41") {
       workerDeleteCalls += 1;
       if (workerDeleteFailure) return json(route, { detail: "Нода занята. Повторите позже" }, 503);
@@ -199,6 +214,13 @@ try {
     (hash) => window.location.hash === hash,
     expected,
   );
+  const until = async (condition, message) => {
+    const deadline = Date.now() + 10000;
+    while (!condition()) {
+      assert.ok(Date.now() < deadline, message);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
   const contrastRatio = (locator) => locator.evaluate((element) => {
     const readColor = (value) => {
       const canvas = document.createElement("canvas");
@@ -569,6 +591,125 @@ try {
       `${label}: the full URI must stay out of console output`);
   };
 
+  const creationPage = await browser.newPage();
+  creationPage.setDefaultTimeout(10000);
+  creationPage.on("pageerror", (error) => errors.push(error.message));
+  await creationPage.route("**/api/**", handleApiRoute);
+  await creationPage.addInitScript(() => {
+    window.__profileCreateFetches = 0;
+    const originalFetch = window.fetch;
+    window.fetch = (input, init) => {
+      if (String(input).endsWith("/api/control/vpn/access-keys") && init?.method === "POST") {
+        window.__profileCreateFetches += 1;
+      }
+      return originalFetch(input, init);
+    };
+  });
+  const creationSubscription = (id) => creationPage.locator(".vpn-subscription-card")
+    .filter({ hasText: `Подписка #${id} ·` });
+  const openCreationForm = async (id, name) => {
+    const subscription = creationSubscription(id);
+    await subscription.getByRole("button", { name: "Выдать новый профиль", exact: true }).click();
+    const form = subscription.locator("form").filter({
+      has: creationPage.getByRole("heading", { name: `Новый VPN‑профиль для подписки #${id}`, exact: true }),
+    });
+    await form.getByRole("textbox", { name: "Название", exact: true }).fill(name);
+    return form;
+  };
+  const createdProfile = (name) => ({
+    ...fixtureKeys()[0], id: 101, display_name: name, status: "pending_sync", config_uri: null,
+    updated_at: nextVersion(),
+  });
+  try {
+    await creationPage.goto(`${appUrl}#vpn/customers`);
+    const form = await openCreationForm(11, "Сохранённый профиль");
+    const synchronousCalls = await form.evaluate((element) => {
+      element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      return window.__profileCreateFetches;
+    });
+    assert.equal(synchronousCalls, 1, "two synchronous submits must start exactly one create request");
+    await until(() => heldCreates.length === 1, "profile creation request was not held");
+    assert.equal(createRequests.length, 1);
+    assert.equal(await form.getByRole("button", { name: "Выдать профиль", exact: true }).isDisabled(), true);
+    reloadFailure = true;
+    const failedRefresh = creationPage.waitForResponse((response) =>
+      new URL(response.url()).pathname === "/api/control/vpn/access-keys" && response.status() === 503);
+    await heldCreates.shift()(createdProfile("Сохранённый профиль"));
+    await failedRefresh;
+    const acknowledgement = creationPage.locator(".toast").filter({ hasText: "Профиль сохранён" });
+    await acknowledgement.waitFor();
+    assert.match(await acknowledgement.innerText(), /Список не обновился[\s\S]*Обновите страницу/);
+    assert.equal(await form.count(), 0, "acknowledged creation must close its original form even if refresh fails");
+    await creationSubscription(11).getByText("Сохранённый профиль", { exact: true }).waitFor();
+    await creationSubscription(11).getByText("2 из 3", { exact: true }).waitFor();
+    const reopened = await openCreationForm(11, "Следующий профиль");
+    await reopened.getByText("Занято мест для устройств: 2 из 3", { exact: true }).waitFor();
+    assert.equal(await creationSubscription(11).locator(".vpn-key-card").count(), 2,
+      "a failed GET must retain the returned profile and its reserved slot");
+    assert.equal(createRequests.length, 1, "refresh failure must not retry creation");
+
+    for (const outcome of ["success", "failure"]) {
+      for (const destination of ["new-form", "other-customer"]) {
+        keys = fixtureKeys();
+        reloadFailure = false;
+        await creationPage.reload({ waitUntil: "domcontentloaded" });
+        const original = await openCreationForm(11, `Поздний ответ: ${outcome}`);
+        const requestsBefore = createRequests.length;
+        await original.getByRole("button", { name: "Выдать профиль", exact: true }).click();
+        await until(() => heldCreates.length === 1, "delayed creation was not held");
+        assert.equal(createRequests.length, requestsBefore + 1);
+        let currentSubscriptionId = 11;
+        if (destination === "new-form") {
+          await original.getByRole("button", { name: "Отмена", exact: true }).click();
+        } else {
+          await creationPage.locator(".vpn-customer-row").filter({ hasText: "Борис" }).click();
+          currentSubscriptionId = 12;
+        }
+        const draftName = `Новый черновик: ${outcome}, ${destination}`;
+        const current = await openCreationForm(currentSubscriptionId, draftName);
+        const completedRequest = creationPage.waitForResponse((response) =>
+          new URL(response.url()).pathname === "/api/control/vpn/access-keys"
+          && response.request().method() === "POST");
+        if (outcome === "success") {
+          reloadFailure = true;
+          await heldCreates.shift()(createdProfile("Поздний сохранённый профиль"));
+          await creationPage.locator(".toast").filter({ hasText: "Профиль сохранён для подписки #11" }).waitFor();
+        } else {
+          await heldCreates.shift()({ detail: "private_key=synthetic-secret-must-not-leak" }, 422);
+        }
+        await completedRequest;
+        await creationPage.waitForFunction(() => {
+          const submit = document.querySelector(".vpn-key-section .vpn-inline-form button[type=submit]");
+          return submit && !submit.disabled;
+        });
+        assert.equal(await current.getByRole("textbox", { name: "Название", exact: true }).inputValue(), draftName,
+          `${outcome}/${destination}: a late response must preserve the current form and its draft`);
+        assert.equal(await current.getByRole("alert").count(), 0,
+          `${outcome}/${destination}: old feedback must not overwrite a new form`);
+        assert.equal((await creationPage.content()).includes("synthetic-secret-must-not-leak"), false);
+        if (outcome === "success") {
+          const expectedSlots = destination === "new-form" ? 2 : 1;
+          await current.getByText(`Занято мест для устройств: ${expectedSlots} из 3`, { exact: true }).waitFor();
+          if (destination === "other-customer") {
+            assert.equal(await creationPage.getByText("Поздний сохранённый профиль", { exact: true }).count(), 0,
+              "a profile returned for another customer must stay out of the current customer");
+            await creationPage.locator(".vpn-customer-row").filter({ hasText: "Анна" }).click();
+          }
+          await creationSubscription(11).getByText("Поздний сохранённый профиль", { exact: true }).waitFor();
+        }
+        assert.equal(createRequests.length, requestsBefore + 1);
+      }
+    }
+    assert.deepEqual(errors, []);
+    console.log("PASS: profile create duplicate-submit/saved-with-failed-refresh/late-success-and-failure/new-form-and-other-customer, synthetic HTTP only");
+  } finally {
+    await creationPage.close();
+    keys = fixtureKeys();
+    reloadFailure = false;
+  }
+
+  if (!process.argv.includes("--profile-create-only")) {
   await page.goto(appUrl);
   assert.equal(await page.evaluate(() => window.location.hash), "");
   assert.match(await page.getByRole("button", { name: "домены", exact: true }).getAttribute("class"), /active-chip/);
@@ -836,13 +977,6 @@ try {
   await key.getByRole("button", { name: "Скопировать ссылку", exact: true }).click();
   assert.equal(await page.evaluate(() => window.__copies.at(-1)), labelled("Рабочий iPhone"));
 
-  const until = async (condition, message) => {
-    const deadline = Date.now() + 10000;
-    while (!condition()) {
-      assert.ok(Date.now() < deadline, message);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  };
   holdReload = true;
   await page.locator(".toolbar-actions").getByRole("button", { name: "Обновить", exact: true }).click();
   await until(() => heldReloads.length > 0, "older reload not requested");
@@ -1127,6 +1261,7 @@ try {
   assert.equal(workerDeleteCalls - deleteCallsBeforeRace, 1);
   assert.deepEqual(errors, []);
   console.log(`PASS: actual admin bundle accessibility=${JSON.stringify(accessibilityAuditCounts)} rename/cancel/selection/reload-failure/stale-GET/delayed-PATCH/external-rename/revoke/two-key-pending/copy-fallback/error/narrow-profile-bounds, synthetic HTTP only`);
+  }
 } finally {
   await browser?.close();
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
