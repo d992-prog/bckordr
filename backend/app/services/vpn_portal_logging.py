@@ -11,11 +11,13 @@ REDACTED = "[REDACTED]"
 _SENSITIVE_EXCEPTION_LOGGERS = (
     "app.api.routes.vpn_portal",
     "app.services.vpn_portal",
+    "app.services.vpn_device_subscriptions",
     "httpcore",
     "httpx",
     "sqlalchemy",
 )
 _BOT_TOKEN = re.compile(r"(?i)(/bot)[^/\s?]+")
+_SUBSCRIPTION_TOKEN_PATH = re.compile(r"(/vpn-portal/subscription/)[^\s\"'<>]+", re.IGNORECASE)
 _CONNECTION_URI = re.compile(r"(?i)\b(?:vless|vmess|trojan|ss)://[^\s\"'<>]+")
 _BEARER = re.compile(r"(?i)(\bbearer\s+)[^\s,;\"']+")
 _SENSITIVE_HEADER_KEY = re.compile(
@@ -38,6 +40,9 @@ def _safe_access_target(target: str) -> str:
     except (TypeError, ValueError):
         return "/invalid-request-target"
     path = parts.path
+    if _SUBSCRIPTION_TOKEN_PATH.search(path):
+        path = _SUBSCRIPTION_TOKEN_PATH.sub(r"\1redacted", path)
+        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
     if path.startswith("/api/vpn-telegram/webhook/"):
         return urlunsplit((parts.scheme, parts.netloc, "/api/vpn-telegram/webhook/redacted", "", ""))
     if (
@@ -51,6 +56,7 @@ def _safe_access_target(target: str) -> str:
 
 
 def _sanitize_text(value: str) -> str:
+    value = _SUBSCRIPTION_TOKEN_PATH.sub(r"\1redacted", value)
     value = _BOT_TOKEN.sub(r"\1" + REDACTED, value)
     value = _CONNECTION_URI.sub("connection-uri:" + REDACTED, value)
     value = _QUERY_SECRET.sub(r"\1" + REDACTED, value)
@@ -154,6 +160,7 @@ def install_safe_logging() -> None:
         "app.services.vpn_portal_auth",
         "app.services.vpn_portal_http",
         "app.services.vpn_portal_telegram",
+        "app.services.vpn_device_subscriptions",
         "sqlalchemy.engine",
         "uvicorn.access",
     ):
