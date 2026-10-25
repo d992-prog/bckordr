@@ -5,7 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
 from app.db.models import VpnAccessKey, VpnCustomer, VpnSubscription
-from app.services.vpn_policy import DEVICE_SLOT_STATUSES, _as_utc, count_device_slots
+from app.services.vpn_policy import DEVICE_SLOT_STATUSES, _as_utc
+from app.services.vpn_devices import checked_device, stage_device_revoke
 
 
 POLICY_FIELDS = frozenset({"status", "starts_at", "expires_at", "traffic_limit_gb", "max_devices"})
@@ -60,14 +61,17 @@ async def stage_subscription_update(
     if policy_changed and proposed_status in {"active", "trial"}:
         if customer is None or customer.status != "active":
             raise SubscriptionPolicyConflict("VPN customer is not active")
-    if max_devices < subscription.max_devices and max_devices < await count_device_slots(db, subscription.id):
-        raise SubscriptionPolicyConflict("Revoke excess VPN keys before reducing the device limit")
+    remote_policy_changed = any(
+        (_as_utc(getattr(subscription, field)) != _as_utc(value)
+         if field in {"starts_at", "expires_at"} else getattr(subscription, field) != value)
+        for field, value in updates.items() if field in POLICY_FIELDS - {"max_devices"}
+    )
 
     now = utcnow()
     for field, value in updates.items():
         setattr(subscription, field, value)
     subscription.updated_at = now
-    if not policy_changed:
+    if not remote_policy_changed:
         return
     keys = (await db.scalars(
         select(VpnAccessKey).where(
@@ -77,8 +81,14 @@ async def stage_subscription_update(
     )).all()
     action = subscription_key_action(subscription, customer, now)
     for key in keys:
+        if action == "revoke":
+            await stage_device_revoke(db, key, now=now)
+            continue
+        device = await checked_device(db, key)
         # Pending manual revoke is never cancelled by subscription edits.
-        if key.status == "pending_revoke":
+        if key.status == "pending_revoke" or key.revoke_requested_at is not None or (
+            device is not None and device.revoke_requested_at is not None
+        ):
             continue
         key.expires_at = subscription.expires_at
         key.status = f"pending_{action}"

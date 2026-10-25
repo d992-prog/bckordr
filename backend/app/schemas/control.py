@@ -761,6 +761,12 @@ class VpnSubscriptionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class VpnSubscriptionDeviceUsage(BaseModel):
+    subscription_id: int
+    devices_used: int
+    max_devices: int
+
+
 class VpnAccessKeyCreateRequest(BaseModel):
     subscription_id: int
     worker_id: int | None = None
@@ -787,6 +793,7 @@ class VpnAccessKeyCreateRequest(BaseModel):
 class VpnAccessKeyResponse(BaseModel):
     id: int
     subscription_id: int
+    device_id: int | None = None
     worker_id: int | None
     protocol: str
     public_name: str | None

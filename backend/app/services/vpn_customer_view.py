@@ -18,7 +18,8 @@ from app.services.vpn_display import (
     display_uri,
     validate_display_name,
 )
-from app.services.vpn_policy import DEVICE_SLOT_STATUSES
+from app.services.vpn_policy import DEVICE_SLOT_STATUSES, count_device_slots
+from app.services.vpn_devices import lock_key_device_context, rename_device
 
 
 class MissingCustomerProfile(LookupError):
@@ -180,18 +181,9 @@ async def list_customer_subscriptions(
     now: datetime | None = None,
 ) -> list[PortalSubscription]:
     """List only subscriptions owned by the requested customer."""
-    reserved_profiles = (
-        select(func.count(VpnAccessKey.id))
-        .where(
-            VpnAccessKey.subscription_id == VpnSubscription.id,
-            VpnAccessKey.status.in_(DEVICE_SLOT_STATUSES),
-        )
-        .correlate(VpnSubscription)
-        .scalar_subquery()
-    )
     rows = (
-        await db.execute(
-            select(VpnSubscription, reserved_profiles)
+        await db.scalars(
+            select(VpnSubscription)
             .where(VpnSubscription.customer_id == customer_id)
             .execution_options(populate_existing=True)
         )
@@ -204,10 +196,10 @@ async def list_customer_subscriptions(
             starts_at=_as_utc(subscription.starts_at),
             expires_at=_as_utc(subscription.expires_at),
             profile_limit=subscription.max_devices,
-            profiles_used=int(profiles_used),
+            profiles_used=await count_device_slots(db, subscription.id),
             traffic_limit_gb_per_profile=subscription.traffic_limit_gb,
         )
-        for subscription, profiles_used in rows
+        for subscription in rows
     ]
     subscriptions.sort(
         key=lambda item: (
@@ -281,18 +273,17 @@ async def rename_customer_profile(
     now: datetime | None = None,
 ) -> PortalProfile:
     """Rename one owned profile locally; the caller controls the transaction."""
-    row = (
-        await db.execute(
-            _owned_profile_query(customer.id, profile_id).with_for_update(
-                of=VpnAccessKey
-            )
-        )
-    ).first()
+    # Discover ownership before locking, then recheck after the canonical locks.
+    row = (await db.execute(_owned_profile_query(customer.id, profile_id))).first()
     if row is None:
         raise MissingCustomerProfile()
-    access_key, subscription = row
-    access_key.display_name = validate_display_name(display_name)
-    await db.flush()
+    access_key = await lock_key_device_context(db, profile_id)
+    if access_key is None:
+        raise MissingCustomerProfile()
+    subscription = await db.get(VpnSubscription, access_key.subscription_id)
+    if subscription is None or subscription.customer_id != customer.id:
+        raise MissingCustomerProfile()
+    await rename_device(db, access_key, display_name, now=now)
 
     current_customer = await _current_customer(db, customer.id)
     current_time = _current_time(now)

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
 from app.db.models import VpnAccessKey, VpnCustomer, VpnSubscription
+from app.services.vpn_devices import stage_device_revoke
 
 
 ARCHIVABLE_SUBSCRIPTION_STATUSES = ("active", "trial")
@@ -51,6 +52,7 @@ async def stage_vpn_customer_archive(
             await session.scalars(
                 select(VpnSubscription)
                 .where(VpnSubscription.customer_id == customer_id)
+                .order_by(VpnSubscription.id)
                 .with_for_update()
             )
         ).all()
@@ -81,8 +83,7 @@ async def stage_vpn_customer_archive(
             subscription.updated_at = changed_at
             disabled_count += 1
     for access_key in access_keys:
-        access_key.status = "pending_revoke"
-        access_key.updated_at = changed_at
+        await stage_device_revoke(session, access_key, now=changed_at)
 
     return StagedVpnCustomerArchive(
         customer=customer,

@@ -152,6 +152,7 @@ async def _process_provision(
         subscription,
         customer,
         device_slots=slots,
+        enforce_device_limit=False,
         now=current_time,
     )
     if validation_error:

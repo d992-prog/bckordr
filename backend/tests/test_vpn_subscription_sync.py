@@ -89,7 +89,7 @@ async def cycle(env, **kwargs):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("updates", [
     {"expires_at": "2028-01-01T00:00:00Z"}, {"expires_at": None},
-    {"traffic_limit_gb": 30}, {"traffic_limit_gb": None}, {"max_devices": 4},
+    {"traffic_limit_gb": 30}, {"traffic_limit_gb": None},
 ])
 async def test_policy_edit_queues_existing_identity(env, updates):
     response = await env.client.patch("/control/vpn/subscriptions/1", json=updates)
@@ -185,14 +185,15 @@ async def test_expiry_and_future_start_use_reversible_suspension(env):
 
 
 @pytest.mark.asyncio
-async def test_reject_device_reduction_below_retained_keys(env):
+async def test_device_reduction_keeps_existing_keys_and_does_not_sync(env):
     async with env.factory() as db:
         db.add(VpnAccessKey(subscription_id=1, status="suspended"))
         await db.commit()
     response = await env.client.patch("/control/vpn/subscriptions/1", json={"max_devices": 1})
-    assert response.status_code == 409
+    assert response.status_code == 200
     async with env.factory() as db:
-        assert (await db.get(VpnSubscription, 1)).max_devices == 5
+        assert (await db.get(VpnSubscription, 1)).max_devices == 1
+        assert (await db.get(VpnAccessKey, 1)).status == "active"
 
 
 @pytest.mark.asyncio

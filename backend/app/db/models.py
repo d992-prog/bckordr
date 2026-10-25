@@ -840,9 +840,44 @@ class VpnEndpoint(Base):
     )
 
 
+class VpnDevice(Base):
+    __tablename__ = "vpn_devices"
+    __table_args__ = (
+        UniqueConstraint("id", "subscription_id", name="uq_vpn_device_id_subscription"),
+        UniqueConstraint("legacy_profile_id", name="uq_vpn_device_legacy_profile"),
+        CheckConstraint("token_generation >= 0", name="ck_vpn_device_token_generation"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("vpn_subscriptions.id", ondelete="CASCADE"), index=True,
+    )
+    legacy_profile_id: Mapped[int | None] = mapped_column(ForeignKey(
+        "vpn_access_keys.id", use_alter=True, name="fk_vpn_device_legacy_profile", ondelete="RESTRICT",
+    ), nullable=True)
+    display_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    preferred_key_id: Mapped[int | None] = mapped_column(ForeignKey(
+        "vpn_access_keys.id", use_alter=True, name="fk_vpn_device_preferred_key", ondelete="RESTRICT",
+    ), nullable=True)
+    pending_key_id: Mapped[int | None] = mapped_column(ForeignKey(
+        "vpn_access_keys.id", use_alter=True, name="fk_vpn_device_pending_key", ondelete="RESTRICT",
+    ), nullable=True)
+    token_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    revoke_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=func.now(),
+    )
+
+
 class VpnAccessKey(Base):
     __tablename__ = "vpn_access_keys"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["device_id", "subscription_id"], ["vpn_devices.id", "vpn_devices.subscription_id"],
+            name="fk_vpn_access_key_device_subscription", ondelete="RESTRICT",
+        ),
+        UniqueConstraint("device_id", "endpoint_id", name="uq_vpn_access_key_device_endpoint"),
         ForeignKeyConstraint(
             ["endpoint_id", "worker_id"],
             ["vpn_endpoints.id", "vpn_endpoints.worker_id"],
@@ -861,6 +896,7 @@ class VpnAccessKey(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     subscription_id: Mapped[int] = mapped_column(ForeignKey("vpn_subscriptions.id", ondelete="CASCADE"), index=True)
+    device_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     worker_id: Mapped[int | None] = mapped_column(
         ForeignKey("worker_nodes.id", ondelete="SET NULL"),
         nullable=True,

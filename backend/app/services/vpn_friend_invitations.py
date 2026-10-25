@@ -608,6 +608,9 @@ async def disable_friend_invitation(
                 operation,
                 current,
             )
+        from app.services.vpn_devices import stage_device_revoke
+
+        await stage_device_revoke(db, access_key, now=current)
         invitation.revoked_at = current
         await db.execute(
             update(VpnCustomerSession)
@@ -897,6 +900,9 @@ async def redeem_friend_invitation(
             )
             db.add(access_key)
             await db.flush()
+            from app.services.vpn_devices import attach_initial_device
+
+            await attach_initial_device(db, access_key)
             await stage_vpn_control_operation(
                 db,
                 access_key.id,

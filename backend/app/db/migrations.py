@@ -2,6 +2,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
+from app.db.vpn_device_migrations import VPN_DEVICE_MIGRATIONS
 
 
 VPN_PLAN_CATALOG_MIGRATIONS = (
@@ -601,6 +602,9 @@ MIGRATIONS = (
     )
     """,
 )
+
+
+MIGRATIONS += VPN_DEVICE_MIGRATIONS
 
 
 async def run_startup_migrations(engine: AsyncEngine) -> None:

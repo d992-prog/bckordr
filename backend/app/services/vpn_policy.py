@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
@@ -78,6 +78,7 @@ def validate_subscription_access(
     customer: VpnCustomer | None,
     *,
     device_slots: int,
+    enforce_device_limit: bool = True,
     now: datetime | None = None,
 ) -> str | None:
     current_time = _as_utc(now or utcnow())
@@ -93,7 +94,7 @@ def validate_subscription_access(
         return "VPN subscription has not started"
     if expires_at is not None and expires_at <= current_time:
         return "VPN subscription has expired"
-    if device_slots >= subscription.max_devices:
+    if enforce_device_limit and device_slots >= subscription.max_devices:
         return "VPN device limit reached"
     return None
 
@@ -104,13 +105,17 @@ async def count_device_slots(
     *,
     exclude_key_id: int | None = None,
 ) -> int:
-    query = select(func.count(VpnAccessKey.id)).where(
+    query = select(VpnAccessKey.device_id).where(
         VpnAccessKey.subscription_id == subscription_id,
         VpnAccessKey.status.in_(DEVICE_SLOT_STATUSES),
     )
     if exclude_key_id is not None:
         query = query.where(VpnAccessKey.id != exclude_key_id)
-    return int(await session.scalar(query) or 0)
+    groups = query.group_by(
+        VpnAccessKey.device_id,
+        case((VpnAccessKey.device_id.is_(None), VpnAccessKey.id), else_=None),
+    ).subquery()
+    return int(await session.scalar(select(func.count()).select_from(groups)) or 0)
 
 
 async def lock_vpn_subscription(

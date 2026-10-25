@@ -261,8 +261,11 @@ async def activate_public_trial(
         issued_at=current,
         expires_at=subscription.expires_at,
     )
+    from app.services.vpn_devices import attach_initial_device
+
     db.add(key)
     await db.flush()
+    await attach_initial_device(db, key)
     try:
         await stage_vpn_control_operation(db, key.id, "provision", now=current)
     except VpnControlIntentError:

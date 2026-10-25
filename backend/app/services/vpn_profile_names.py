@@ -58,13 +58,16 @@ async def initialize_customer_names(session: AsyncSession, customer_id: int) -> 
             )
         ).all()
     )
-    for ordinal, access_key in enumerate(access_keys, start=1):
+    ordinals: dict[tuple[str, int], int] = {}
+    for access_key in access_keys:
+        identity = ("device", access_key.device_id) if access_key.device_id is not None else ("key", access_key.id)
+        ordinal = ordinals.setdefault(identity, len(ordinals) + 1)
         if access_key.display_name is None:
             access_key.display_name = initial_display_name(
                 access_key.public_name, ordinal
             )
     await session.flush()
-    return len(access_keys) + 1
+    return len(ordinals) + 1
 
 
 async def backfill_profile_names(
