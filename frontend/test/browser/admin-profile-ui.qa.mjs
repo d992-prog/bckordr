@@ -1,6 +1,7 @@
 // Actual admin bundle, synthetic HTTP responses only; no production connection.
 // From frontend: npm run build, then node test/browser/admin-profile-ui.qa.mjs.
 // Race regression only: node test/browser/admin-profile-ui.qa.mjs --profile-create-only.
+// Abuse review only: node test/browser/admin-profile-ui.qa.mjs --abuse-only.
 // Invitation regressions only: node test/browser/admin-profile-ui.qa.mjs --invitations-only.
 // Publication/device usage: node test/browser/admin-profile-ui.qa.mjs --admin-operations-only.
 // Measured traffic: node test/browser/admin-profile-ui.qa.mjs --usage-only.
@@ -611,7 +612,218 @@ try {
       `${label}: the full URI must stay out of console output`);
   };
 
-  if (process.argv.includes("--broadcasts-only")) {
+  if (process.argv.includes("--abuse-only")) {
+    const review = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    review.setDefaultTimeout(10000);
+    const reviewErrors = [];
+    const reviewLogs = [];
+    review.on("pageerror", (error) => reviewErrors.push(error.message));
+    review.on("console", (message) => reviewLogs.push(message.text()));
+    const signal = (id, acknowledged_at = null) => ({ id, device_id: id === 1 ? 9001 : 9101,
+      customer_id: id === 1 ? 9002 : 9102, display_name: `Логический профиль ${id}`, peak_source_count: 4,
+      started_at: "2026-10-25T12:00:00Z", last_observed_at: "2026-10-25T12:04:05Z", acknowledged_at });
+    let signals = Array.from({ length: 101 }, (_, index) => signal(index + 1));
+    const deviceContext = (deviceId) => {
+      const first = deviceId === 9001;
+      const customerId = first ? 9002 : 9102;
+      const subscriptionId = first ? 9003 : 9103;
+      return { device_id: deviceId, customer: { ...customers[0], id: customerId, first_name: first ? "Дальний клиент А" : "Дальний клиент Б" },
+        subscription: { ...subscriptions[0], id: subscriptionId, customer_id: customerId },
+        access_key: { ...fixtureKeys()[0], id: first ? 9004 : 9104, device_id: deviceId, subscription_id: subscriptionId,
+          display_name: first ? "Целевой профиль А" : "Целевой профиль Б" } };
+    };
+    let holdList = false;
+    let failList = false;
+    const heldLists = [];
+    const heldAcks = [];
+    const heldContexts = [];
+    const holdContextIds = new Set();
+    const listQueries = [];
+    const mutations = [];
+    let userId = 1;
+    await review.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.pathname === "/api/auth/logout") { mutations.push(url.pathname); return json(route, { detail: "ok" }); }
+      if (url.pathname === "/api/auth/login" || url.pathname === "/api/auth/me") {
+        return json(route, { has_feature_access: true, user: { id: userId, username: `synthetic-${userId}`, role: "owner", status: "active", language: "ru", ...timestamps } });
+      }
+      if (url.pathname.startsWith("/api/control/vpn/abuse/devices/")) {
+        assert.equal(request.method(), "GET");
+        const deviceId = Number(url.pathname.split("/").at(-2));
+        const context = deviceContext(deviceId);
+        assert.equal(Number(url.searchParams.get("customer_id")), context.customer.id);
+        if (holdContextIds.has(deviceId)) { heldContexts.push({ route, context }); return; }
+        return json(route, context);
+      }
+      if (url.pathname === "/api/control/vpn/abuse/incidents") {
+        assert.equal(request.method(), "GET");
+        assert.equal(url.searchParams.get("limit"), "100");
+        listQueries.push(Object.fromEntries(url.searchParams));
+        const acknowledged = url.searchParams.get("state") === "acknowledged";
+        const body = structuredClone(signals.filter((item) => Boolean(item.acknowledged_at) === acknowledged
+          && item.id > Number(url.searchParams.get("after_id"))).slice(0, 100));
+        if (holdList) { holdList = false; heldLists.push({ route, body }); return; }
+        return failList ? json(route, { detail: "synthetic-private-error" }, 503) : json(route, body);
+      }
+      if (url.pathname.endsWith("/acknowledge")) {
+        assert.equal(request.method(), "POST");
+        assert.deepEqual(request.postDataJSON(), {});
+        mutations.push(url.pathname);
+        heldAcks.push({ route, id: Number(url.pathname.split("/").at(-2)) });
+        return;
+      }
+      if (request.method() !== "GET") throw new Error(`Unexpected abuse mutation: ${request.method()} ${url.pathname}`);
+      return handleApiRoute(route);
+    });
+    const panel = review.locator(".vpn-abuse-panel");
+    const row = (id) => panel.locator("tbody tr").filter({ hasText: new RegExp(`Логический профиль ${id}(?:[^0-9]|$)`) });
+    const refresh = () => panel.getByRole("button", { name: "Обновить список", exact: true }).click();
+    const ack = async (id) => {
+      await row(id).getByRole("button", { name: "Отметить проверенным", exact: true }).click();
+      await until(() => heldAcks.length === 1, "acknowledgement was not held");
+    };
+    const finishAck = async (success = true, commit = success) => {
+      const pending = heldAcks.shift();
+      const saved = { ...signals.find((item) => item.id === pending.id), acknowledged_at: "2026-10-25T12:10:00Z" };
+      if (commit) signals = signals.map((item) => item.id === pending.id ? saved : item);
+      await json(pending.route, success ? saved : { detail: "synthetic-private-error" }, success ? 200 : 503);
+    };
+    const events = () => review.locator('.vpn-admin-nav a[href="#vpn/events"]').click();
+    try {
+      await review.goto(`${appUrl}#vpn/events`);
+      await panel.getByRole("heading", { name: "Подозрение на совместное использование", exact: true }).waitFor();
+      await panel.locator("tbody tr").nth(99).waitFor();
+      await panel.getByText("Это сигнал для проверки, а не число физических устройств. Доступ не блокируется автоматически", { exact: true }).waitFor();
+      assert.match(await row(1).innerText(), /Сетевых источников: 4[\s\S]*максимум за период/);
+      assert.match(await row(1).innerText(), /25\.10\.2026[\s\S]*12:00[\s\S]*UTC[\s\S]*12:04/);
+      await panel.getByRole("button", { name: "Показать ещё сигналы", exact: true }).click();
+      await row(101).waitFor();
+      assert.equal(await panel.locator("tbody tr").count(), 101);
+      assert.deepEqual(listQueries.at(-1), { state: "open", after_id: "100", limit: "100" });
+      holdList = true;
+      await refresh();
+      await until(() => heldLists.length === 1, "pre-ack list was not held");
+      await row(1).getByRole("button", { name: "Отметить проверенным", exact: true }).evaluate((button) => { button.click(); button.click(); });
+      await until(() => heldAcks.length === 1, "double acknowledgement was not held");
+      assert.equal(mutations.filter((url) => url.endsWith("/acknowledge")).length, 1);
+      await finishAck();
+      await panel.getByRole("status").filter({ hasText: "Доступ клиента не изменён" }).waitFor();
+      await json(heldLists[0].route, heldLists.shift().body);
+      assert.equal(await row(1).count(), 0, "old list must not resurrect an acknowledged signal");
+
+      await ack(2);
+      holdList = true;
+      await refresh();
+      await until(() => heldLists.length === 1, "uncertain-ack list was not held");
+      await finishAck(false, true);
+      await panel.getByRole("alert").filter({ hasText: "сохранена ли отметка" }).waitFor();
+      await json(heldLists[0].route, heldLists.shift().body);
+      await review.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await row(2).getByRole("button", { name: "Отметить проверенным", exact: true }).isDisabled(), true);
+      await refresh();
+      await row(2).waitFor({ state: "detached" });
+      assert.equal(await panel.getByRole("alert").count(), 0);
+
+      holdList = true;
+      await refresh();
+      await until(() => heldLists.length === 1, "old filter list was not held");
+      await panel.getByLabel("Статус проверки").selectOption("acknowledged");
+      await row(1).waitFor();
+      await json(heldLists[0].route, heldLists.shift().body);
+      await review.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await panel.locator("tbody tr").count(), 2, "old open response must not replace the acknowledged filter");
+      for (const success of [true, false]) {
+        await panel.getByLabel("Статус проверки").selectOption("open");
+        const id = success ? 3 : 4;
+        await row(id).waitFor();
+        await ack(id);
+        await panel.getByLabel("Статус проверки").selectOption("acknowledged");
+        await row(1).waitFor();
+        await finishAck(success);
+        await review.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        assert.equal(await panel.getByRole("alert").count(), 0, "late ACK feedback must stay out of another filter");
+        assert.equal(await panel.getByRole("status").filter({ hasText: "Сигнал отмечен" }).count(), 0);
+      }
+      signals = [signal(1), signal(2)];
+      await review.locator('.vpn-admin-nav a[href="#vpn/customers"]').click();
+      await review.getByRole("textbox", { name: "Поиск", exact: true }).fill("Борис");
+      await review.getByRole("button", { name: "Архив", exact: true }).click();
+      await events();
+      await row(1).waitFor();
+      holdContextIds.add(9001);
+      await row(1).getByRole("button", { name: "Открыть клиента", exact: true }).click();
+      await until(() => heldContexts.length === 1, "customer context was not held");
+      assert.equal(await review.getByRole("textbox", { name: "Поиск", exact: true }).inputValue(), "");
+      await review.locator(".vpn-customer-row").filter({ hasText: "Борис" }).click();
+      await json(heldContexts[0].route, heldContexts.shift().context);
+      await review.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.match(await review.locator(".vpn-customer-row.active-chip").innerText(), /Борис/);
+      assert.equal(await review.getByText("Целевой профиль А", { exact: true }).count(), 0);
+      holdContextIds.clear();
+      await events();
+      await row(1).getByRole("button", { name: "Открыть клиента", exact: true }).click();
+      const target = review.locator("#vpn-access-key-9004");
+      await target.getByText("Целевой профиль А", { exact: true }).waitFor();
+      await review.waitForFunction(() => document.activeElement?.id === "vpn-access-key-9004");
+      assert.match(await review.locator(".vpn-customer-row.active-chip").innerText(), /Дальний клиент А/);
+      assert.equal(await target.getAttribute("data-vpn-device-id"), "9001");
+      await target.getByRole("button", { name: "Отозвать и сохранить", exact: true }).waitFor();
+      await review.locator(".toolbar-actions").getByRole("button", { name: "Обновить", exact: true }).click();
+      await target.getByText("Целевой профиль А", { exact: true }).waitFor();
+      holdContextIds.add(9001);
+      await events();
+      await row(1).getByRole("button", { name: "Открыть клиента", exact: true }).click();
+      await until(() => heldContexts.length === 1, "older target context was not held");
+      await events();
+      await row(2).getByRole("button", { name: "Открыть клиента", exact: true }).click();
+      await review.locator("#vpn-access-key-9104").getByText("Целевой профиль Б", { exact: true }).waitFor();
+      await json(heldContexts[0].route, heldContexts.shift().context);
+      await review.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.match(await review.locator(".vpn-customer-row.active-chip").innerText(), /Дальний клиент Б/);
+      assert.equal(await review.getByText("Целевой профиль А", { exact: true }).count(), 0);
+      holdContextIds.clear();
+      await events();
+      await row(1).waitFor();
+      for (const width of [1280, 390]) {
+        await review.setViewportSize({ width, height: 1000 });
+        await panel.scrollIntoViewIfNeeded();
+        assert.equal(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, `${width}px abuse panel must fit`);
+        await panel.screenshot({ path: path.join(output, `admin-abuse-${width}.png`), style: ".vpn-admin-nav { visibility: hidden !important; }" });
+      }
+      failList = true;
+      await refresh();
+      await panel.getByRole("alert").waitFor();
+      assert.equal((await panel.innerText()).includes("synthetic-private-error"), false);
+      failList = false;
+      await refresh();
+      await row(1).waitFor();
+      await ack(1);
+      holdList = true;
+      await refresh();
+      await until(() => heldLists.length === 1, "logout list was not held");
+      await review.getByRole("button", { name: "Выйти", exact: true }).click();
+      await review.getByRole("heading", { name: "Вход", exact: true }).waitFor();
+      userId = 2;
+      const login = review.locator("form").filter({ has: review.getByRole("button", { name: "Войти", exact: true }) });
+      await login.getByLabel("Логин", { exact: true }).fill("synthetic-2");
+      await login.getByLabel("Пароль", { exact: true }).fill("synthetic-password");
+      await login.getByRole("button", { name: "Войти", exact: true }).click();
+      await row(1).waitFor();
+      await finishAck();
+      await json(heldLists[0].route, heldLists.shift().body);
+      await review.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await row(1).waitFor();
+      assert.equal(await panel.getByRole("status").filter({ hasText: "Сигнал отмечен" }).count(), 0, "old session ACK must not update the new session");
+      assert.equal((await review.content()).includes("synthetic-private-error"), false);
+      assert.equal(reviewLogs.some((value) => value.includes("synthetic-private-error")), false);
+      assert.deepEqual(mutations.filter((url) => !url.endsWith("/acknowledge") && url !== "/api/auth/logout"), []);
+      assert.deepEqual(reviewErrors, []);
+      console.log("PASS: mounted abuse review cursor/duplicate-ACK/uncertain-refresh/stale-filter/logout/outside-list-target/navigation-races/privacy/desktop-mobile; zero access mutations, synthetic HTTP only");
+    } finally {
+      await review.close();
+    }
+  } else if (process.argv.includes("--broadcasts-only")) {
     const news = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
     news.setDefaultTimeout(10000);
     const newsErrors = [];
@@ -870,6 +1082,62 @@ try {
     assert.equal((await racePage.locator("body").innerText()).includes("Секрет после выхода"), false);
     assert.equal(await racePage.locator(".vpn-broadcast-panel").count(), 0);
     await racePage.close();
+    const recoveryPage = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    recoveryPage.setDefaultTimeout(10000);
+    recoveryPage.on("pageerror", (error) => newsErrors.push(error.message));
+    let recoveredCampaign = null;
+    let failRecoveryList = false;
+    let failRecoveryDetail = false;
+    let uncertainCreates = 0;
+    let uncertainUpdates = 0;
+    await recoveryPage.route("**/api/**", async (route) => {
+      const request = route.request(); const path = new URL(request.url()).pathname;
+      if (!path.startsWith("/api/control/vpn/broadcasts")) return handleApiRoute(route);
+      if (path.endsWith("/config")) return json(route, { ...config, enabled: true, registry_state: "ready" });
+      if (path === "/api/control/vpn/broadcasts" && request.method() === "GET") {
+        if (failRecoveryList) return json(route, { detail: "synthetic list failure" }, 503);
+        return json(route, recoveredCampaign ? [recoveredCampaign] : []);
+      }
+      if (request.method() === "POST") {
+        uncertainCreates += 1;
+        recoveredCampaign = { ...fixtureCampaign(71), body: request.postDataJSON().body };
+        return route.abort("failed");
+      }
+      if (request.method() === "PATCH") {
+        uncertainUpdates += 1;
+        recoveredCampaign = { ...recoveredCampaign, body: request.postDataJSON().body, revision: recoveredCampaign.revision + 1 };
+        failRecoveryDetail = true;
+        return route.abort("failed");
+      }
+      if (failRecoveryDetail) return json(route, { detail: "synthetic detail failure" }, 503);
+      return json(route, recoveredCampaign);
+    });
+    await recoveryPage.goto(`${appUrl}#vpn/broadcasts`);
+    const recoveryPanel = recoveryPage.locator(".vpn-broadcast-panel");
+    const recoverySave = recoveryPanel.getByRole("button", { name: "Сохранить черновик", exact: true });
+    await recoveryPanel.getByLabel("Текст новости", { exact: true }).fill("Сохранённый черновик с потерянным ответом");
+    await recoverySave.click();
+    await recoveryPanel.getByRole("alert").waitFor();
+    assert.equal(await recoverySave.isDisabled(), true, "lost POST response blocks immediate duplicate creation");
+    failRecoveryList = true;
+    await recoveryPanel.getByRole("button", { name: "Обновить настройки и список", exact: true }).click();
+    await recoveryPanel.getByRole("alert").filter({ hasText: "Не удалось загрузить список" }).waitFor();
+    assert.equal(await recoverySave.isDisabled(), true, "failed reconciliation cannot permit a repeat POST");
+    failRecoveryList = false;
+    await recoveryPanel.getByRole("button", { name: "Обновить настройки и список", exact: true }).click();
+    await recoveryPanel.getByLabel("Рассылка", { exact: true }).selectOption("71");
+    await recoveryPage.waitForFunction(() => document.querySelector('textarea[aria-describedby="vpn-news-count"]')?.value === "Сохранённый черновик с потерянным ответом");
+    assert.equal(uncertainCreates, 1);
+    await recoveryPanel.getByLabel("Текст новости", { exact: true }).fill("Сохранённая правка с потерянным ответом");
+    await recoverySave.click();
+    await recoveryPanel.getByRole("alert").filter({ hasText: "Не удалось обновить состояние" }).waitFor();
+    assert.equal(await recoverySave.isDisabled(), true, "failed recovery GET cannot permit a repeat PATCH");
+    assert.equal(await recoveryPanel.getByRole("button", { name: "Предпросмотр", exact: true }).isDisabled(), true);
+    failRecoveryDetail = false;
+    await recoveryPanel.getByRole("button", { name: "Обновить состояние", exact: true }).click();
+    await recoveryPage.waitForFunction(() => [...document.querySelectorAll(".vpn-broadcast-panel button")].find((button) => button.textContent === "Сохранить черновик")?.disabled === false);
+    assert.equal(uncertainUpdates, 1);
+    await recoveryPage.close();
     const setupPage = await browser.newPage({ viewport: { width: 390, height: 1000 } });
     let heldConfig;
     await setupPage.route("**/api/**", (route) => {

@@ -57,6 +57,8 @@ import { shouldApplyLoadGeneration } from "./vpnCustomerWorkspace";
 import { VpnEndpointCapacityPanel } from "./VpnEndpointCapacityPanel";
 import { VpnUsagePanel } from "./VpnUsagePanel";
 import { VpnBroadcastPanel } from "./VpnBroadcastPanel";
+import { VpnAbusePanel } from "./VpnAbusePanel";
+import type { VpnAbuseTransport } from "./vpnAbuse";
 import { replaceVpnEndpointCapacity } from "./vpnEndpointCapacity";
 import { VpnNodeOnboardingPanel } from "./VpnNodeOnboardingPanel";
 import {
@@ -84,6 +86,11 @@ type Tab =
   | "contacts"
   | "attacks"
   | "settings";
+
+const vpnAbuseTransport: VpnAbuseTransport = {
+  listIncidents: api.getVpnAbuseIncidents,
+  acknowledgeIncident: api.acknowledgeVpnAbuseIncident,
+};
 
 const DEFAULT_DOMAIN_FORM = {
   domainsText: "",
@@ -1095,6 +1102,7 @@ export default function App() {
   const [vpnCustomers, setVpnCustomers] = useState<VpnCustomer[]>([]);
   const [vpnSubscriptions, setVpnSubscriptions] = useState<VpnSubscription[]>([]);
   const [vpnAccessKeys, setVpnAccessKeys] = useState<VpnAccessKey[]>([]);
+  const [vpnCustomerSelection, setVpnCustomerSelection] = useState<{ customerId: number; deviceId: number } | null>(null);
   const [vpnFriendInvitations, setVpnFriendInvitations] = useState<VpnFriendInvitation[]>([]);
   const loadAllGenerationRef = useRef(0);
   const lastAppliedLoadGenerationRef = useRef(0);
@@ -1603,6 +1611,7 @@ export default function App() {
 
   function replaceAdminSession(nextSession: SessionResponse | null) {
     if ((session?.user.id ?? null) !== (nextSession?.user.id ?? null)) {
+      setVpnCustomerSelection(null);
       resetVpnReadinessState();
       vpnNodeOnboardingRequestGateRef.current.invalidateAll();
       setVpnNodeOnboardingByWorker({});
@@ -1669,6 +1678,11 @@ export default function App() {
       destination.focus();
       destination.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
     }, 0);
+  }
+
+  function openVpnAbuseCustomer(customerId: number, deviceId: number) {
+    setVpnCustomerSelection({ customerId, deviceId });
+    window.location.hash = "#vpn/customers";
   }
 
   async function loadAll(options?: { silent?: boolean; throwOnError?: boolean }) {
@@ -4930,6 +4944,7 @@ export default function App() {
           </div>
           <VpnCustomerWorkspace
             key={session?.user.id}
+            requestedSelection={vpnCustomerSelection}
             usageEnabled={vpnAdminSection === "customers"}
             customers={vpnCustomers}
             subscriptions={vpnSubscriptions}
@@ -5066,6 +5081,12 @@ export default function App() {
           data-vpn-admin-section="events"
           hidden={vpnAdminSection !== "events"}
         >
+        {vpnAdminSection === "events" ? <VpnAbusePanel
+          key={session?.user.id}
+          contextKey={session?.user.id ?? 0}
+          transport={vpnAbuseTransport}
+          onOpenCustomer={openVpnAbuseCustomer}
+        /> : null}
         <div className="card full-span">
           <h2>Telegram</h2>
           <p className="muted">Последние обращения клиентов к боту Veltrix VPN и результат доставки ответа.</p>

@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
   api,
@@ -28,10 +28,12 @@ import {
   type VpnCustomerOperationalStatus,
 } from "./vpnCustomerWorkspace";
 import { VpnUsagePanel } from "./VpnUsagePanel";
+import { matchesAbuseDeviceContext, type VpnAbuseDeviceContext } from "./vpnAbuse";
 
 type NoticeType = "success" | "error";
 
 type Props = {
+  requestedSelection?: { customerId: number; deviceId: number } | null;
   usageEnabled?: boolean;
   customers: VpnCustomer[];
   subscriptions: VpnSubscription[];
@@ -277,10 +279,11 @@ function mergeFriendInvitations(...pages: VpnFriendInvitation[][]) {
 }
 
 export function VpnCustomerWorkspace({
+  requestedSelection = null,
   usageEnabled = true,
-  customers,
-  subscriptions,
-  accessKeys,
+  customers: loadedCustomers,
+  subscriptions: loadedSubscriptions,
+  accessKeys: loadedAccessKeys,
   friendInvitations,
   plans,
   workers,
@@ -290,6 +293,12 @@ export function VpnCustomerWorkspace({
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<VpnCustomerFilter>("all");
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
+  const [requestedContext, setRequestedContext] = useState<VpnAbuseDeviceContext | null>(null);
+  const [selectionLoading, setSelectionLoading] = useState(false);
+  const [selectionError, setSelectionError] = useState("");
+  const selectionRequestRef = useRef<object | null>(null);
+  const lastSelectionRef = useRef<Props["requestedSelection"]>(null);
+  const selectionFocusRef = useRef<string | null>(null);
   const [customerForm, setCustomerForm] = useState<CustomerForm>(EMPTY_CUSTOMER_FORM);
   const [editingCustomer, setEditingCustomer] = useState(false);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
@@ -333,6 +342,18 @@ export function VpnCustomerWorkspace({
     Map<number, AccessKeyDisplayOverride>
   >(() => new Map());
 
+  const customers = useMemo(() => requestedContext && !loadedCustomers.some((row) => row.id === requestedContext.customer.id)
+    ? [...loadedCustomers, requestedContext.customer] : loadedCustomers, [loadedCustomers, requestedContext]);
+  const subscriptions = useMemo(() => requestedContext && !loadedSubscriptions.some((row) => row.id === requestedContext.subscription.id)
+    ? [...loadedSubscriptions, requestedContext.subscription] : loadedSubscriptions, [loadedSubscriptions, requestedContext]);
+  const accessKeys = useMemo(() => {
+    const key = requestedContext?.access_key;
+    if (!key) return loadedAccessKeys;
+    const loaded = loadedAccessKeys.find((row) => row.id === key.id);
+    if (loaded && Date.parse(loaded.updated_at) >= Date.parse(key.updated_at)) return loadedAccessKeys;
+    return [...loadedAccessKeys.filter((row) => row.id !== key.id), key];
+  }, [loadedAccessKeys, requestedContext]);
+
   const filteredCustomers = useMemo(
     () => filterVpnCustomers(customers, subscriptions, filter, query),
     [customers, subscriptions, filter, query],
@@ -366,7 +387,62 @@ export function VpnCustomerWorkspace({
     [workers],
   );
 
+  useLayoutEffect(() => {
+    if (!usageEnabled || !requestedSelection || lastSelectionRef.current === requestedSelection) return;
+    lastSelectionRef.current = requestedSelection;
+    const pending = {};
+    selectionRequestRef.current = pending;
+    setSelectionLoading(true);
+    setSelectionError("");
+    setFilter("all");
+    setQuery("");
+    setCreatingCustomer(false);
+    setEditingCustomer(false);
+    setCreatingSubscription(false);
+    setEditingSubscriptionId(null);
+    setCreatingKeyForSubscriptionId(null);
+    void api.getVpnAbuseDeviceContext(requestedSelection.deviceId, requestedSelection.customerId)
+      .then((context) => {
+        if (selectionRequestRef.current !== pending) return;
+        if (!matchesAbuseDeviceContext(context, requestedSelection)) throw new Error("device context mismatch");
+        selectionFocusRef.current = context.access_key
+          ? `vpn-access-key-${context.access_key.id}` : `vpn-subscription-${context.subscription.id}`;
+        setRequestedContext(context);
+        setSelectedCustomerId(context.customer.id);
+      })
+      .catch(() => {
+        if (selectionRequestRef.current === pending) setSelectionError("Не удалось открыть клиента и профиль. Повторите переход из сигнала");
+      })
+      .finally(() => {
+        if (selectionRequestRef.current === pending) { selectionRequestRef.current = null; setSelectionLoading(false); }
+      });
+    return () => {
+      if (selectionRequestRef.current === pending) lastSelectionRef.current = null;
+      selectionRequestRef.current = null;
+      selectionFocusRef.current = null;
+      setSelectionLoading(false);
+    };
+  }, [requestedSelection, usageEnabled]);
+
+  useLayoutEffect(() => {
+    if (!selectionFocusRef.current || !usageEnabled) return;
+    const destination = document.getElementById(selectionFocusRef.current);
+    if (destination) {
+      destination.focus({ preventScroll: true });
+      destination.scrollIntoView({ block: "center", behavior: "auto" });
+      selectionFocusRef.current = null;
+    }
+  }, [requestedContext, selectedCustomerId, usageEnabled]);
+
+  function cancelRequestedSelection() {
+    selectionRequestRef.current = null;
+    selectionFocusRef.current = null;
+    setSelectionLoading(false);
+    setSelectionError("");
+  }
+
   useEffect(() => {
+    if (selectionRequestRef.current) return;
     if (
       selectedCustomerId &&
       filteredCustomers.some((customer) => customer.id === selectedCustomerId)
@@ -946,6 +1022,7 @@ export function VpnCustomerWorkspace({
     setBusyAction(`key-provision-${accessKey.id}`);
     try {
       const provisioned = await api.provisionVpnAccessKey(accessKey.id);
+      setRequestedContext((current) => current?.access_key?.id === provisioned.id ? { ...current, access_key: provisioned } : current);
       await reload();
       notify(
         provisioned.status === "active" ? "success" : "error",
@@ -977,6 +1054,7 @@ export function VpnCustomerWorkspace({
     const usageCustomerId = selectedCustomerId;
     try {
       const revoked = await api.revokeVpnAccessKey(accessKey.id);
+      setRequestedContext((current) => current?.access_key?.id === revoked.id ? { ...current, access_key: revoked } : current);
       void refreshSubscriptionDeviceUsage(accessKey.subscription_id, usageCustomerId);
       await reload();
       notify(
@@ -1536,7 +1614,8 @@ export function VpnCustomerWorkspace({
       ? workerMap.get(accessKey.worker_id)?.name ?? `нода #${accessKey.worker_id}`
       : "автовыбор / не назначена";
     return (
-      <article key={accessKey.id} className="vpn-key-card">
+      <article key={accessKey.id} className="vpn-key-card" id={`vpn-access-key-${accessKey.id}`} tabIndex={-1}
+        data-vpn-device-id={accessKey.device_id ?? (accessKey.id === requestedContext?.access_key?.id ? requestedContext.device_id : undefined)}>
         <div className="vpn-workspace-section-head">
           <div>
             {editingAccessKeyId === accessKey.id ? (
@@ -1698,7 +1777,7 @@ export function VpnCustomerWorkspace({
           <span>Поиск</span>
           <input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => { cancelRequestedSelection(); setQuery(event.target.value); }}
             placeholder="Имя, @username или Telegram ID"
           />
         </label>
@@ -1708,7 +1787,7 @@ export function VpnCustomerWorkspace({
               key={item.value}
               type="button"
               className={filter === item.value ? "secondary active-chip" : "ghost"}
-              onClick={() => setFilter(item.value)}
+              onClick={() => { cancelRequestedSelection(); setFilter(item.value); }}
             >
               {item.label}
             </button>
@@ -1724,6 +1803,7 @@ export function VpnCustomerWorkspace({
                 type="button"
                 className={`vpn-customer-row ${selectedCustomerId === customer.id ? "active-chip" : ""}`}
                 onClick={() => {
+                  cancelRequestedSelection();
                   setSelectedCustomerId(customer.id);
                   setCreatingCustomer(false);
                   setEditingCustomer(false);
@@ -1753,6 +1833,8 @@ export function VpnCustomerWorkspace({
       </aside>
 
       <section className="vpn-customer-detail vpn-admin-panel">
+        {selectionLoading && <p role="status">Открываем клиента и логический профиль…</p>}
+        {selectionError && <p role="alert">{selectionError}</p>}
         {renderFriendInvitations()}
         {creatingCustomer ? (
           <form className="form vpn-workspace-section" onSubmit={saveCustomer}>
@@ -1867,7 +1949,7 @@ export function VpnCustomerWorkspace({
                   const usage = subscriptionDeviceUsage[subscription.id];
                   const isUsable = ["active", "trial"].includes(subscription.status);
                   return (
-                    <article key={subscription.id} className="vpn-subscription-card">
+                    <article key={subscription.id} className="vpn-subscription-card" id={`vpn-subscription-${subscription.id}`} tabIndex={-1}>
                       <div className="vpn-workspace-section-head">
                         <div>
                           <strong>
@@ -1961,6 +2043,8 @@ export function VpnCustomerWorkspace({
                           ? renderAccessKeyForm(subscription)
                           : null}
                         <div className="vpn-key-list">
+                          {requestedContext?.subscription.id === subscription.id && requestedContext.access_key === null
+                            ? <p className="muted">У логического профиля #{requestedContext.device_id} нет сохранённых подключений</p> : null}
                           {subscriptionKeys.map(renderAccessKey)}
                           {subscriptionKeys.length === 0 ? (
                             <p className="empty">У этой подписки пока нет VPN‑профилей.</p>

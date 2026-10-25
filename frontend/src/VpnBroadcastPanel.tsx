@@ -35,6 +35,8 @@ export function VpnBroadcastPanel() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [recheckRequired, setRecheckRequired] = useState(false);
+  const recovery = useRef(false);
   const configRequest = useRef<object | null>(null);
   const listRequest = useRef<object | null>(null);
   const detailRequest = useRef<object | null>(null);
@@ -61,6 +63,9 @@ export function VpnBroadcastPanel() {
       cursor.current = rows[rows.length - 1]?.id;
       setHasMore(rows.length === 50);
       setListError("");
+      if (!append && selected.current === null && recovery.current) {
+        recovery.current = false; setRecheckRequired(false);
+      }
     } catch { if (listRequest.current === pending) setListError("Не удалось загрузить список рассылок. Обновите настройки и список."); }
     finally { if (listRequest.current === pending) { listRequest.current = null; setListBusy(false); } }
   }
@@ -70,6 +75,7 @@ export function VpnBroadcastPanel() {
     try {
       const response = await api.getVpnBroadcast(id);
       if (detailRequest.current !== pending || selected.current !== id) return;
+      recovery.current = false; setRecheckRequired(false);
       setDetail(response);
       setPreview((current) => current?.id === response.id && response.state === "draft"
         && current.revision === response.revision && current.body === response.body ? current : null);
@@ -112,7 +118,7 @@ export function VpnBroadcastPanel() {
   const dirty = detail === null || body !== detail.body;
 
   async function act(action: "save" | "preview" | "confirm" | "cancel") {
-    if (actionRequest.current) return;
+    if (actionRequest.current || recovery.current || action !== "cancel" && (reading || readError)) return;
     if (action === "save" && (!draft || !validBody)) return;
     if (action === "preview" && (!detail || detail.state !== "draft" || dirty || config?.registry_state !== "ready")) return;
     if (action === "confirm" && (!confirmOpen || !confirmable || !preview)) return;
@@ -138,6 +144,8 @@ export function VpnBroadcastPanel() {
     } catch (cause) {
       if (actionRequest.current !== pending) return;
       setPreview(null); setConfirmOpen(false); setError(broadcastErrorText(cause));
+      recovery.current = true; setRecheckRequired(true);
+      listRequest.current = null; setListBusy(false);
       actionRequest.current = null; setBusy(false);
       void loadConfig(); if (selected.current !== null) void loadDetail(selected.current, action !== "save");
     } finally { if (actionRequest.current === pending) { actionRequest.current = null; setBusy(false); } }
@@ -145,7 +153,7 @@ export function VpnBroadcastPanel() {
 
   return <section className="card full-span vpn-broadcast-panel">
     <div className="card-head"><div><h2>Новости VPN-бота</h2><p className="muted">Обычный текст без HTML и вложений. Сохранение и предпросмотр ничего не отправляют.</p></div>
-      <button type="button" className="ghost" disabled={listBusy} onClick={() => { void loadConfig(); void loadList(); }}>Обновить настройки и список</button></div>
+      <button type="button" className="ghost" disabled={listBusy || busy} onClick={() => { void loadConfig(); void loadList(); }}>Обновить настройки и список</button></div>
     {config ? <div className="inline-alert info"><p>{config.explanation}</p><p>Получателей в реестре: {displayMetric(config.eligible_recipients)}</p>{!config.enabled && <p>Отправка отключена. Черновики можно сохранять.</p>}</div> : <p role="status">Проверяем настройки рассылок…</p>}
     {configError && <p className="inline-alert error" role="alert">{configError}</p>}
     {listError && <p className="inline-alert error" role="alert">{listError}</p>}
@@ -156,19 +164,20 @@ export function VpnBroadcastPanel() {
     {reading && <p role="status">Обновляем состояние…</p>}
     {readError && <p className="inline-alert error" role="alert">{readError}</p>}
     {detail && <p><strong>#{detail.id}</strong> · <span>{broadcastStateLabel(detail.state)}</span> · Версия {detail.revision}</p>}
-    <div className="form"><label htmlFor="vpn-news-body">Текст новости</label><textarea id="vpn-news-body" rows={8} autoComplete="off" aria-describedby="vpn-news-count" value={body} disabled={!draft || busy || reading && !detail} onChange={(event) => { detailRequest.current = null; setReading(false); setBody(event.target.value); setPreview(null); setConfirmOpen(false); setNotice(""); }} /></div>
+    <div className="form"><label htmlFor="vpn-news-body">Текст новости</label><textarea id="vpn-news-body" rows={8} autoComplete="off" aria-describedby="vpn-news-count" value={body} disabled={!draft || busy || recheckRequired || reading && !detail} onChange={(event) => { detailRequest.current = null; setReading(false); setBody(event.target.value); setPreview(null); setConfirmOpen(false); setNotice(""); }} /></div>
     <p id="vpn-news-count" className="muted">Осталось символов: {4096 - broadcastCharacters(body)}</p>
     {body && !validBody && <p className="inline-alert error" role="alert">Введите текст новости: от 1 до 4096 символов.</p>}
     <div className="actions">
-      <button type="button" disabled={!draft || !validBody || busy || !config || selectedId === null && config.registry_state === "unconfigured"} onClick={() => void act("save")}>Сохранить черновик</button>
-      <button type="button" className="ghost" disabled={!detail || !draft || dirty || busy || reading || config?.registry_state !== "ready"} onClick={() => void act("preview")}>Предпросмотр</button>
-      <button type="button" ref={sendButton} disabled={!confirmable || busy || reading} onClick={() => setConfirmOpen(true)}>Отправить новость</button>
+      <button type="button" disabled={!draft || !validBody || busy || reading || Boolean(readError) || recheckRequired || !config || selectedId === null && config.registry_state === "unconfigured"} onClick={() => void act("save")}>Сохранить черновик</button>
+      <button type="button" className="ghost" disabled={!detail || !draft || dirty || busy || reading || Boolean(readError) || recheckRequired || config?.registry_state !== "ready"} onClick={() => void act("preview")}>Предпросмотр</button>
+      <button type="button" ref={sendButton} disabled={!confirmable || busy || reading || Boolean(readError) || recheckRequired} onClick={() => setConfirmOpen(true)}>Отправить новость</button>
       {selectedId !== null && <button type="button" className="ghost" disabled={busy || reading} onClick={() => void loadDetail(selectedId, !detail || !dirty)}>Обновить состояние</button>}
-      {detail?.state === "running" && <button type="button" className="danger" disabled={busy} onClick={() => void act("cancel")}>Остановить оставшуюся очередь</button>}
+      {detail?.state === "running" && <button type="button" className="danger" disabled={busy || recheckRequired} onClick={() => void act("cancel")}>Остановить оставшуюся очередь</button>}
     </div>
     {draft && dirty && selectedId !== null && <p className="muted">Сохраните изменения перед предпросмотром.</p>}
     {notice && <p role="status">{notice}</p>}
     {error && <p className="inline-alert error" role="alert">{error}</p>}
+    {recheckRequired && <p className="inline-alert info">Результат действия пока неизвестен. {selectedId === null ? "Обновите список и проверьте, не сохранился ли черновик. Найденный черновик можно выбрать в списке." : "Обновите состояние перед следующим действием."}</p>}
     {preview && <div><h3>Предпросмотр</h3><p>Получателей: {displayMetric(preview.preview_recipient_count)}</p><div className="vpn-broadcast-preview" tabIndex={0} aria-label="Точный текст новости">{preview.body}</div></div>}
     {detail && detail.state !== "draft" && <div><h3>Ход рассылки</h3><dl className="vpn-broadcast-counts">{countLabels.map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{displayMetric(detail.counts[key])}</dd></div>)}</dl>
       <p>Остановка затрагивает оставшуюся очередь. Уже начатая отправка может завершиться после остановки; отправленные сообщения не отзываются.</p>

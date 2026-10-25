@@ -2020,6 +2020,7 @@ button:disabled {
   border-color: var(--vpn-admin-border);
 }
 
+.vpn-admin-shell .vpn-abuse-panel,
 .vpn-admin-shell .vpn-usage-panel {
   min-width: 0;
   max-width: 100%;
@@ -2041,9 +2042,11 @@ button:disabled {
 .vpn-admin-shell .vpn-broadcast-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
 .vpn-admin-shell .vpn-broadcast-counts div { min-width: 0; }
 .vpn-admin-shell .vpn-broadcast-counts dd { margin: 6px 0 0; font-weight: 700; }
+.vpn-admin-shell .vpn-abuse-panel .card-head,
 .vpn-admin-shell .vpn-usage-panel .card-head {
   flex-wrap: wrap;
 }
+.vpn-admin-shell .vpn-abuse-panel .actions label,
 .vpn-admin-shell .vpn-usage-panel .actions label {
   display: grid;
   gap: 6px;

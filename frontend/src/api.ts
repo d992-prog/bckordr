@@ -1,3 +1,5 @@
+import type { VpnAbuseDeviceContext, VpnAbuseIncident, VpnAbuseState } from "./vpnAbuse";
+
 export type User = {
   id: number;
   username: string;
@@ -659,6 +661,7 @@ export type VpnSubscription = {
 
 export type VpnAccessKey = {
   id: number;
+  device_id?: number | null;
   subscription_id: number;
   worker_id: number | null;
   protocol: string;
@@ -1187,6 +1190,12 @@ export const api = {
     request<VpnNodeUsage[]>(`/control/vpn/usage/nodes?days=${days}&after_id=${options?.afterId ?? 0}&limit=100`, { cache: "no-store" }),
   getVpnCustomerUsage: (id: number, days: VpnUsageDays = 1) =>
     request<VpnCustomerUsage>(`/control/vpn/customers/${id}/usage?days=${days}`, { cache: "no-store" }),
+  getVpnAbuseIncidents: (state: VpnAbuseState = "open", options?: { afterId?: number; limit?: 100 }) =>
+    request<VpnAbuseIncident[]>(`/control/vpn/abuse/incidents?state=${state}&after_id=${options?.afterId ?? 0}&limit=100`, { cache: "no-store" }),
+  acknowledgeVpnAbuseIncident: (id: number) =>
+    request<VpnAbuseIncident>(`/control/vpn/abuse/incidents/${id}/acknowledge`, { method: "POST", cache: "no-store", body: "{}" }),
+  getVpnAbuseDeviceContext: (deviceId: number, customerId: number) =>
+    request<VpnAbuseDeviceContext>(`/control/vpn/abuse/devices/${deviceId}/context?customer_id=${customerId}`, { cache: "no-store" }),
   getVpnBroadcastConfig: () => request<VpnBroadcastConfig>("/control/vpn/broadcasts/config", { cache: "no-store" }),
   getVpnBroadcasts: (options?: { beforeId?: number }) => request<VpnBroadcastSummary[]>(`/control/vpn/broadcasts?limit=50${options?.beforeId === undefined ? "" : `&before_id=${options.beforeId}`}`, { cache: "no-store" }),
   getVpnBroadcast: (id: number) => request<VpnBroadcastDetail>(`/control/vpn/broadcasts/${id}`, { cache: "no-store" }),
