@@ -214,6 +214,9 @@ async def select_public_vpn_endpoint(
     now: datetime,
     health_max_age_seconds: int,
     worker_id: int | None = None,
+    endpoint_id: int | None = None,
+    require_published: bool = True,
+    reusable_key_id: int | None = None,
     lock: bool = False,
 ) -> VpnEndpointCapacity | None:
     if lock and (session.new or session.dirty or session.deleted):
@@ -229,12 +232,15 @@ async def select_public_vpn_endpoint(
             and (checked_at := _as_utc(worker.vpn_last_checked_at)) is not None
             and healthy_since <= checked_at <= current_time
             and (await evaluate_vpn_node(session, worker)).eligible
+            and worker.id not in await active_vpn_maintenance_worker_ids(session)
         )
 
     async def capacity(
         endpoint: VpnEndpoint,
         worker: WorkerNode | None = None,
     ) -> VpnEndpointCapacity | None:
+        if require_published and not endpoint.is_published:
+            return None
         limit = endpoint.max_active_profiles
         if (
             endpoint.status != "ready"
@@ -262,15 +268,26 @@ async def select_public_vpn_endpoint(
                 VpnAccessKey.status.in_(NODE_CAPACITY_STATUSES),
             )
         ) or 0)
-        if occupied >= limit:
+        reusable = False
+        if reusable_key_id is not None:
+            reusable = await session.scalar(select(VpnAccessKey.id).where(
+                VpnAccessKey.id == reusable_key_id,
+                VpnAccessKey.endpoint_id == endpoint.id,
+                VpnAccessKey.status.in_(NODE_CAPACITY_STATUSES),
+                VpnAccessKey.revoked_at.is_(None),
+                VpnAccessKey.revoke_requested_at.is_(None),
+            )) is not None
+        if occupied >= limit and not reusable:
             return None
         return VpnEndpointCapacity(endpoint, occupied, limit)
 
     endpoint_query = select(VpnEndpoint)
     if worker_id is not None:
         endpoint_query = endpoint_query.where(VpnEndpoint.worker_id == worker_id)
+    if endpoint_id is not None:
+        endpoint_query = endpoint_query.where(VpnEndpoint.id == endpoint_id)
     endpoints = (
-        await session.execute(endpoint_query.order_by(VpnEndpoint.id))
+        await session.execute(endpoint_query.order_by(VpnEndpoint.id).execution_options(populate_existing=True))
     ).scalars().all()
     candidates = [result for endpoint in endpoints if (result := await capacity(endpoint)) is not None]
     candidates.sort(key=lambda result: (result.utilization, result.endpoint.id))

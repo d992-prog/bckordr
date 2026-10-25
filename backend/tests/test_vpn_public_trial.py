@@ -19,6 +19,7 @@ from app.db.models import (
     VpnEndpoint,
     VpnPlan,
     VpnSubscription,
+    WorkerMaintenanceJob,
     WorkerNode,
     WorkerTask,
 )
@@ -92,6 +93,7 @@ def endpoint(node, **changes):
         status="ready",
         verified_at=NOW,
         max_active_profiles=4,
+        is_published=True,
     )
     values.update(changes)
     return VpnEndpoint(**values)
@@ -338,6 +340,7 @@ async def test_lock_recounts_full_first_candidate_and_tries_next(session_factory
         (VpnEndpoint, {"security": "tls"}),
         (VpnEndpoint, {"verified_at": None}),
         (VpnEndpoint, {"max_active_profiles": None}),
+        (VpnEndpoint, {"is_published": False}),
         (WorkerNode, {"vpn_enabled": False}),
         (WorkerNode, {"vpn_last_checked_at": NOW - timedelta(minutes=2)}),
     ],
@@ -391,6 +394,147 @@ async def test_no_candidate_returns_none(session_factory):
         assert await select_public_vpn_endpoint(session, now=NOW, health_max_age_seconds=60) is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock", [False, True])
+async def test_hidden_endpoint_cannot_receive_public_allocation(session_factory, lock):
+    async with session_factory() as db:
+        node = worker("hidden")
+        db.add(node)
+        await db.flush()
+        target = endpoint(node, is_published=False)
+        db.add(target)
+        await db.flush()
+        assert await select_public_vpn_endpoint(db, now=NOW, health_max_age_seconds=120, lock=lock) is None
+        selected = await select_public_vpn_endpoint(
+            db, now=NOW, health_max_age_seconds=120, worker_id=node.id,
+            require_published=False, lock=lock,
+        )
+        assert selected is not None and selected.endpoint.id == target.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock", [False, True])
+async def test_selection_refreshes_publication_from_database(session_factory, lock):
+    async with session_factory() as db:
+        node = worker("changed-publication")
+        db.add(node)
+        await db.flush()
+        target = endpoint(node)
+        db.add(target)
+        await db.flush()
+        await db.execute(update(VpnEndpoint).where(VpnEndpoint.id == target.id).values(
+            is_published=False).execution_options(synchronize_session=False))
+        assert target.is_published is True
+        assert await select_public_vpn_endpoint(db, now=NOW, health_max_age_seconds=120, lock=lock) is None
+
+
+@pytest.mark.asyncio
+async def test_exact_endpoint_selection_never_falls_back_to_another_endpoint(session_factory):
+    async with session_factory() as db:
+        first, second = worker("first"), worker("second")
+        db.add_all([first, second])
+        await db.flush()
+        hidden, visible = endpoint(first, is_published=False), endpoint(second)
+        db.add_all([hidden, visible])
+        await db.flush()
+        for requested in (hidden.id, 999999):
+            assert await select_public_vpn_endpoint(
+                db, now=NOW, health_max_age_seconds=120, endpoint_id=requested, lock=True,
+            ) is None
+        assert await select_public_vpn_endpoint(
+            db, now=NOW, health_max_age_seconds=120, endpoint_id=visible.id,
+            worker_id=first.id, lock=True,
+        ) is None
+        selected = await select_public_vpn_endpoint(
+            db, now=NOW, health_max_age_seconds=120, endpoint_id=visible.id, lock=True,
+        )
+        assert selected is not None and selected.endpoint.id == visible.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock", [False, True])
+@pytest.mark.parametrize("status", NODE_CAPACITY_STATUSES)
+async def test_reserved_credential_reuses_its_existing_capacity(session_factory, status, lock):
+    async with session_factory() as db:
+        node = worker("reuse")
+        db.add(node)
+        await db.flush()
+        target = endpoint(node, max_active_profiles=1)
+        db.add(target)
+        await db.flush()
+        key = await add_key(db, target, status=status)
+        assert await select_public_vpn_endpoint(db, now=NOW, health_max_age_seconds=120, lock=lock) is None
+        selected = await select_public_vpn_endpoint(
+            db, now=NOW, health_max_age_seconds=120, endpoint_id=target.id,
+            reusable_key_id=key.id, lock=lock,
+        )
+        assert selected is not None and selected.occupied_profiles == 1
+        assert key.status == status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["revoked", "revoke_requested", "revoked_at", "other_endpoint", "missing"])
+async def test_invalid_credential_cannot_supply_capacity_credit(session_factory, invalid):
+    async with session_factory() as db:
+        node = worker("no-credit")
+        db.add(node)
+        await db.flush()
+        target = endpoint(node, max_active_profiles=1)
+        other = endpoint(node, inbound_id=2)
+        db.add_all([target, other])
+        await db.flush()
+        await add_key(db, target)
+        key = await add_key(db, other if invalid == "other_endpoint" else target)
+        if invalid == "revoked":
+            key.status = "revoked"
+        elif invalid == "revoke_requested":
+            key.revoke_requested_at = NOW
+        elif invalid == "revoked_at":
+            key.revoked_at = NOW
+        await db.flush()
+        assert await select_public_vpn_endpoint(
+            db, now=NOW, health_max_age_seconds=120, endpoint_id=target.id,
+            reusable_key_id=999999 if invalid == "missing" else key.id, lock=True,
+        ) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["hidden", "stale", "unverified", "insecure", "maintenance", "attack"])
+async def test_reusable_capacity_never_bypasses_endpoint_safety(session_factory, failure):
+    async with session_factory() as db:
+        node = worker("unsafe-reuse")
+        db.add(node)
+        await db.flush()
+        target = endpoint(node, max_active_profiles=1)
+        db.add(target)
+        await db.flush()
+        key = await add_key(db, target)
+        if failure == "hidden":
+            target.is_published = False
+        elif failure == "stale":
+            node.vpn_last_checked_at = NOW - timedelta(minutes=3)
+        elif failure == "unverified":
+            target.verified_at = None
+        elif failure == "insecure":
+            target.security = "none"
+        elif failure == "maintenance":
+            db.add(WorkerMaintenanceJob(worker_id=node.id, action="vpn_update", status="queued"))
+        elif failure == "attack":
+            domain = DropDomain(fqdn="reuse.fr", zone="fr", drop_date=NOW.date())
+            db.add(domain)
+            await db.flush()
+            run = AttackRun(domain_id=domain.id, status="running", planned_start_at=NOW,
+                            planned_end_at=NOW + timedelta(minutes=1))
+            db.add(run)
+            await db.flush()
+            db.add(WorkerTask(attack_run_id=run.id, domain_id=domain.id, worker_id=node.id, status="running"))
+        await db.flush()
+        assert await select_public_vpn_endpoint(
+            db, now=NOW, health_max_age_seconds=120, endpoint_id=target.id,
+            reusable_key_id=key.id, lock=True,
+        ) is None
+
+
 def trial_settings(**overrides):
     values = dict(
         VPN_PUBLIC_TRIAL_ENABLED=True,
@@ -425,7 +569,7 @@ async def trial_counts(db):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [
     "disabled", "dispatch", "marker", "release", "uppercase", "missing_plan",
-    "duration", "devices", "inactive", "transport", "capacity",
+    "duration", "devices", "inactive", "transport", "capacity", "hidden",
 ])
 async def test_trial_readiness_fails_closed_without_rows(session_factory, monkeypatch, failure):
     from app.services import vpn_public_trial as trial
@@ -452,6 +596,8 @@ async def test_trial_readiness_fails_closed_without_rows(session_factory, monkey
             plan.is_active = False
         elif failure == "capacity":
             target.max_active_profiles = None
+        elif failure == "hidden":
+            target.is_published = False
         elif failure == "transport":
             monkeypatch.undo()  # Real strict transport rejects the absent known-hosts file.
         await db.commit()

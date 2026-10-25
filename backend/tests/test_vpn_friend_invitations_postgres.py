@@ -126,6 +126,7 @@ async def postgres_friend_control(
                 flow="xtls-rprx-vision",
                 status="ready",
                 verified_at=NOW - timedelta(minutes=1),
+                is_published=True,
                 max_active_profiles=4,
             )
         )

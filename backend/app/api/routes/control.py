@@ -4277,8 +4277,14 @@ async def create_vpn_access_key(
             now=now,
             health_max_age_seconds=settings.vpn_endpoint_health_max_age_seconds,
             worker_id=payload.worker_id,
+            require_published=payload.worker_id is None,
             lock=True,
         )
+        if endpoint_capacity is None and payload.worker_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No ready VPN endpoint is currently available",
+            )
     endpoint = endpoint_capacity.endpoint if endpoint_capacity is not None else None
     worker = (
         await db.get(WorkerNode, endpoint.worker_id)

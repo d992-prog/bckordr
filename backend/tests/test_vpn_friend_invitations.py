@@ -145,6 +145,7 @@ async def _seed_ready_environment(
                 flow="xtls-rprx-vision",
                 status="ready",
                 verified_at=NOW,
+                is_published=True,
                 max_active_profiles=4,
             )
         )
@@ -1280,13 +1281,19 @@ async def test_redeem_rejects_wrong_user_expired_and_revoked_with_same_error(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("unavailable", ["dispatch", "hidden"])
 async def test_redeem_rechecks_readiness_and_leaves_token_unbound_on_failure(
     ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
+    unavailable: str,
 ) -> None:
     db, settings, _ = ready_session
     issued = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
     token = _token_from_link(issued.link)
-    settings.vpn_control_dispatch_enabled = False
+    if unavailable == "dispatch":
+        settings.vpn_control_dispatch_enabled = False
+    else:
+        (await db.get(VpnEndpoint, 1)).is_published = False
+        await db.commit()
 
     with pytest.raises(FriendInvitationUnavailable) as error:
         await redeem_friend_invitation(

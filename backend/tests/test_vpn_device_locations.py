@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -7,7 +8,7 @@ from fastapi import FastAPI
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
-from test_vpn_public_trial import NOW, HookedSession, add_key, endpoint, worker
+from test_vpn_public_trial import NOW, HookedSession, add_key, worker
 
 from app.api.deps import get_current_user, require_admin
 from app.api.routes.control import router
@@ -16,7 +17,10 @@ from app.db.models import (
     AdminAuditLog,
     VpnAccessKey,
     VpnControlOperation,
+    VpnCustomer,
+    VpnDevice,
     VpnEndpoint,
+    VpnSubscription,
     WorkerNode,
 )
 from app.db.session import get_db
@@ -35,7 +39,10 @@ async def publication():
         node = worker("publication")
         db.add(node)
         await db.flush()
-        target = endpoint(node)
+        target = VpnEndpoint(worker_id=node.id, inbound_id=1, public_host="publication.example", port=443,
+                             security="reality", status="ready", verified_at=NOW, max_active_profiles=4,
+                             server_name="cdn.example", public_key="A" * 43, short_id="aabbccdd",
+                             fingerprint="chrome", flow="xtls-rprx-vision")
         db.add(target)
         await db.flush()
         key = await add_key(db, target)
@@ -163,6 +170,8 @@ async def test_publication_locks_worker_then_refreshes_endpoint_binding(publicat
 
     async def database():
         async with sessions() as db:
+            stale_endpoint = await db.get(VpnEndpoint, target_id)
+            assert stale_endpoint is not None
             original = db.scalar
 
             async def scalar(statement, **kwargs):
@@ -183,3 +192,109 @@ async def test_publication_locks_worker_then_refreshes_endpoint_binding(publicat
     async with sessions() as db:
         assert (await db.get(VpnEndpoint, target_id)).is_published is False
         assert await db.scalar(select(func.count()).select_from(AdminAuditLog)) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_fallback", [False, True])
+async def test_automatic_hidden_only_issuance_does_not_allocate_or_fall_back(publication, monkeypatch, legacy_fallback):
+    app, sessions, target_id, key_id = publication
+    monkeypatch.setattr("app.api.routes.control.utcnow", lambda: NOW)
+    async with sessions() as db:
+        subscription_id = (await db.get(VpnAccessKey, key_id)).subscription_id
+        if legacy_fallback:
+            (await db.get(VpnEndpoint, target_id)).status = "draining"
+            db.add(worker("legacy"))
+            await db.commit()
+    legacy_calls = []
+
+    async def legacy_provision(_db, key, **_kwargs):
+        legacy_calls.append(key.id)
+        return key
+    monkeypatch.setattr("app.api.routes.control.provision_vpn_access_key", legacy_provision)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post("/control/vpn/access-keys", json={"subscription_id": subscription_id})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "No ready VPN endpoint is currently available"
+    assert legacy_calls == []
+    async with sessions() as db:
+        assert await db.scalar(select(func.count()).select_from(VpnAccessKey)) == 1
+        assert await db.scalar(select(func.count()).select_from(VpnDevice)) == 0
+        assert await db.scalar(select(func.count()).select_from(VpnControlOperation)) == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_admin_worker_can_allocate_hidden_endpoint(publication, monkeypatch):
+    app, sessions, target_id, key_id = publication
+    monkeypatch.setattr("app.api.routes.control.utcnow", lambda: NOW)
+    async with sessions() as db:
+        subscription_id = (await db.get(VpnAccessKey, key_id)).subscription_id
+        worker_id = (await db.get(VpnEndpoint, target_id)).worker_id
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post("/control/vpn/access-keys", json={
+            "subscription_id": subscription_id, "worker_id": worker_id})
+    assert response.status_code == 201
+    async with sessions() as db:
+        key = await db.get(VpnAccessKey, response.json()["id"])
+        assert key.endpoint_id == target_id and key.status == "pending_sync"
+        assert (await db.get(VpnEndpoint, target_id)).is_published is False
+        assert await db.scalar(select(func.count()).select_from(VpnControlOperation)) == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_hidden_connection_remains_readable_and_resync_keeps_binding(publication):
+    from app.services.vpn_customer_view import customer_connection
+
+    app, sessions, target_id, key_id = publication
+    identity = "00000000-0000-4000-8000-000000000001"
+    uri = f"vless://{identity}@publication.example:443?type=tcp&security=tls#original"
+    async with sessions() as db:
+        key = await db.get(VpnAccessKey, key_id)
+        key.external_uuid, key.config_uri, key.display_name = identity, uri, "Laptop"
+        await db.commit()
+        subscription = await db.get(VpnSubscription, key.subscription_id)
+        customer = await db.get(VpnCustomer, subscription.customer_id)
+        assert (await customer_connection(db, customer, key_id, now=NOW)).uri.startswith(f"vless://{identity}@")
+        key.status = "failed"
+        await db.commit()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(f"/control/vpn/access-keys/{key_id}/provision")
+    assert response.status_code == 200
+    async with sessions() as db:
+        key = await db.get(VpnAccessKey, key_id)
+        assert (key.external_uuid, key.config_uri, key.endpoint_id) == (identity, uri, target_id)
+        assert key.revoke_requested_at is None and key.revoked_at is None
+        assert (await db.get(VpnEndpoint, target_id)).is_published is False
+
+
+@pytest.mark.asyncio
+async def test_committed_provision_can_finish_after_hiding(publication, monkeypatch):
+    from app.services.vpn_control_intents import (
+        claim_next_vpn_control_operation,
+        finalize_vpn_control_operation,
+    )
+
+    app, sessions, target_id, key_id = publication
+    monkeypatch.setattr("app.api.routes.control.utcnow", lambda: NOW)
+    async with sessions() as db:
+        subscription_id = (await db.get(VpnAccessKey, key_id)).subscription_id
+        (await db.get(VpnEndpoint, target_id)).is_published = True
+        await db.commit()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        created = await client.post("/control/vpn/access-keys", json={"subscription_id": subscription_id})
+        assert created.status_code == 201
+        hidden = await client.patch(f"/control/vpn/endpoints/{target_id}/publication",
+                                    json=PAYLOAD | {"is_published": False}, headers={"Origin": "http://testserver"})
+        assert hidden.status_code == 200
+    token = uuid4()
+    async with sessions() as db:
+        operation = await claim_next_vpn_control_operation(db, claim_token=token, now=NOW)
+        assert operation is not None
+        operation_id = UUID(operation.id)
+        await db.commit()
+    async with sessions() as db:
+        operation = await finalize_vpn_control_operation(
+            db, operation_id, token, receipt_state="observed", error_code=None, now=NOW)
+        assert operation.state == "succeeded"
+        key = await db.get(VpnAccessKey, created.json()["id"])
+        assert key.status == "active" and key.config_uri
+        assert (await db.get(VpnEndpoint, target_id)).is_published is False

@@ -28,6 +28,9 @@ ENDPOINT_COLUMNS = {
     "short_id",
     "fingerprint",
     "flow",
+    "is_published",
+    "public_name",
+    "country_code",
     "status",
     "verified_at",
     "health_checked_at",
@@ -456,6 +459,9 @@ async def test_fresh_schema_has_only_safe_endpoint_columns_and_staged_defaults()
         assert stored.transport == "tcp"
         assert stored.security == "none"
         assert stored.status == "staged"
+        assert stored.is_published is False
+        assert stored.public_name is None
+        assert stored.country_code is None
         assert stored.verified_at is None
         assert stored.health_checked_at is None
         assert stored.created_at is not None

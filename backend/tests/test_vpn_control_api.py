@@ -652,6 +652,7 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
             vpn_runtime_status="ready",
             vpn_public_host="free.example.net",
             vpn_inbound_id=1,
+            vpn_last_checked_at=datetime.now(UTC),
             ssh_host="10.0.0.2",
             ssh_password="secret",
         )
@@ -671,6 +672,13 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
         await session.flush()
         busy_worker_id = busy.id
         free_worker_id = free.id
+        session.add(VpnEndpoint(
+            worker_id=free.id, inbound_id=1, public_host="free.example.net", port=443,
+            security="reality", server_name="cdn.example.net", public_key="A" * 43,
+            short_id="aabbccdd", fingerprint="chrome", flow="xtls-rprx-vision",
+            status="ready", verified_at=datetime.now(UTC), max_active_profiles=4,
+            is_published=True,
+        ))
         domain = DropDomain(fqdn="busy-target.fr", zone="fr", drop_date=datetime.now(UTC).date())
         session.add(domain)
         await session.flush()
@@ -748,7 +756,7 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
         )
         assert automatic.status_code == 201
         assert automatic.json()["worker_id"] == free_worker_id
-        assert automatic.json()["status"] == "active"
+        assert automatic.json()["status"] == "pending_sync"
 
         second_device = await client.post(
             "/control/vpn/access-keys",
@@ -832,7 +840,7 @@ async def test_vpn_access_key_api_enforces_subscription_and_selects_safe_node(mo
         ).json()
         pending_key = await client.post(
             "/control/vpn/access-keys",
-            json={"subscription_id": pending_subscription["id"], "public_name": "waiting"},
+            json={"subscription_id": pending_subscription["id"], "public_name": "waiting", "protocol": "vmess"},
         )
         assert pending_key.status_code == 201
         assert pending_key.json()["worker_id"] is None
