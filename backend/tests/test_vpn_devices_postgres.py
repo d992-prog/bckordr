@@ -9,15 +9,30 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from test_vpn_endpoint_migrations import (
+    postgres_schema as postgres_schema,  # noqa: PLC0414
+)
 
 from app.api.routes import control
 from app.db.base import Base, utcnow
-from app.db.models import User, VpnAccessKey, VpnControlOperation, VpnCustomer, VpnDevice, VpnEndpoint, VpnSubscription, WorkerNode
+from app.db.models import (
+    User,
+    VpnAccessKey,
+    VpnControlOperation,
+    VpnCustomer,
+    VpnDevice,
+    VpnEndpoint,
+    VpnSubscription,
+    WorkerNode,
+)
 from app.schemas.control import VpnAccessKeyCreateRequest
-from app.services.vpn_devices import attach_initial_device, lock_key_device_context, stage_device_revoke
+from app.services.vpn_devices import (
+    attach_initial_device,
+    lock_key_device_context,
+    stage_device_revoke,
+)
 from app.services.vpn_policy import count_device_slots
 from app.services.vpn_subscription_sync import stage_subscription_update
-from test_vpn_endpoint_migrations import postgres_schema
 
 
 async def seed(postgres_schema, *, extra_child=False):
@@ -110,7 +125,8 @@ async def test_revoke_and_renewal_are_serialized_and_permanent_revoke_wins(postg
         holder_pid = await holder.scalar(text("SELECT pg_backend_pid()"))
         waiter_pid = await waiter.scalar(text("SELECT pg_backend_pid()"))
         cached_parent = await waiter.get(VpnDevice, 1)
-        key = await lock_key_device_context(holder, 1)
+        assert cached_parent is not None and cached_parent.token_generation == 0
+        await lock_key_device_context(holder, 1)
         task = asyncio.create_task(act(waiter, "renew" if first_action == "revoke" else "revoke"))
         try:
             await wait_for_blocker(postgres_schema.engine, waiter_pid, holder_pid, task)

@@ -22,6 +22,7 @@ from app.db.models import (
     WorkerNode,
 )
 from app.services.app_settings import _VPN_PUBLIC_RELEASE_READY_KEY
+from app.services.vpn_devices import attach_initial_device, lock_customer_devices
 from app.services.vpn_control_intents import (
     VpnControlIntentError,
     stage_vpn_control_operation,
@@ -229,6 +230,8 @@ async def activate_public_trial(
         .execution_options(populate_existing=True)
     )
     assert customer is not None
+    await db.flush()
+    await lock_customer_devices(db, customer.id)
     existing = await _existing_trial(db, customer, current)
     if existing is not None:
         if existing.state == "used":
@@ -261,8 +264,6 @@ async def activate_public_trial(
         issued_at=current,
         expires_at=subscription.expires_at,
     )
-    from app.services.vpn_devices import attach_initial_device
-
     db.add(key)
     await db.flush()
     await attach_initial_device(db, key)

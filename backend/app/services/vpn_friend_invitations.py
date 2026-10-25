@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.services.vpn_devices import attach_initial_device, lock_customer_devices, stage_device_revoke
 from app.db.models import (
     AppSetting,
     VpnAccessKey,
@@ -608,8 +609,6 @@ async def disable_friend_invitation(
                 operation,
                 current,
             )
-        from app.services.vpn_devices import stage_device_revoke
-
         await stage_device_revoke(db, access_key, now=current)
         invitation.revoked_at = current
         await db.execute(
@@ -845,6 +844,8 @@ async def redeem_friend_invitation(
 
             await _require_friend_release_marker(db, settings)
             customer = await resolve_telegram_customer(db, identity)
+            await db.flush()
+            await lock_customer_devices(db, customer.id)
             if customer.trial_started_at is not None:
                 _rejected()
             # Legacy or damaged friend bindings consume the trial even when
@@ -900,8 +901,6 @@ async def redeem_friend_invitation(
             )
             db.add(access_key)
             await db.flush()
-            from app.services.vpn_devices import attach_initial_device
-
             await attach_initial_device(db, access_key)
             await stage_vpn_control_operation(
                 db,

@@ -3,10 +3,12 @@ import importlib.util
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from test_vpn_endpoint_migrations import (
+    postgres_schema as postgres_schema,  # noqa: PLC0414
+)
 
 from app.db import models
 from app.db.base import Base
-from test_vpn_endpoint_migrations import PostgresSchema, postgres_schema
 
 
 def test_device_migration_is_registered_after_existing_migrations():

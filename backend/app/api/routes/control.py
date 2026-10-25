@@ -3908,10 +3908,13 @@ async def update_vpn_customer(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> VpnCustomerResponse:
-    customer = await db.get(VpnCustomer, customer_id)
+    customer, _, _ = await lock_customer_devices(db, customer_id)
     if customer is None:
         raise HTTPException(status_code=404, detail="VPN customer not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    if updates.get("status") == "archived" and customer.status != "archived":
+        await stage_vpn_customer_archive(db, customer_id)
+    for field, value in updates.items():
         setattr(customer, field, value)
     customer.updated_at = utcnow()
     await add_audit_log(
