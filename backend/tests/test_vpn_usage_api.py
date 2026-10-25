@@ -401,7 +401,7 @@ async def test_latest_good_poll_cannot_hide_gaps_and_queries_do_not_grow_per_nod
     assert node_count <= 6 and customer_count <= 6
     # Five new children are still one logical profile, and no historic interval is fabricated.
     assert customer.json()["upload_bytes"] == 50
-    assert customer.json()["coverage"] in ("partial", "current")
+    assert customer.json()["coverage"] == "partial"
     assert all(
         "LIMIT" not in statement.upper() or "worker_nodes" in statement
         for statement in statements
@@ -592,8 +592,6 @@ def test_after_request_sample_keeps_bytes_but_is_not_complete_current_coverage()
     aggregate = SimpleNamespace(
         upload_bytes=15,
         download_bytes=20,
-        key_count=1,
-        sample_count=1440,
         measured_since=start,
         last_sample_at=now + timedelta(milliseconds=1),
     )
@@ -601,13 +599,61 @@ def test_after_request_sample_keeps_bytes_but_is_not_complete_current_coverage()
         last_sample_at=now,
         unavailable_count=0,
         last_attempt_at=now,
-        key_count=1,
-        baseline_count=1,
-        poll_count=1,
-        missing_period_count=0,
-        partial_count=0,
-        oldest_sample_at=now,
-        oldest_poll_at=now,
     )
-    result = _totals(aggregate, evidence, start=start, now=now)
+    result = _totals(aggregate, evidence, now=now)
     assert result.upload_bytes == 15 and result.coverage == "partial"
+
+
+async def assert_boundary_interval_cannot_hide_internal_reset_gap(env, monkeypatch):
+    from app.api.routes import vpn_usage
+
+    ids = await seed(env)
+    now = ids.now.replace(minute=0, second=0, microsecond=0)
+    start = now - timedelta(days=1)
+    monkeypatch.setattr(vpn_usage, "utcnow", lambda: now)
+    async with env.sessions() as db:
+        key = await db.get(m.VpnAccessKey, ids.keys[0])
+        key.created_at = start - timedelta(days=1)
+        # 1441 possible ending-minute intervals include one before the period;
+        # an internal counter reset loses one, leaving a misleading count of 1440.
+        for index in range(25):
+            bucket = start + timedelta(hours=index)
+            count = 1 if index == 24 else 59 if index == 12 else 60
+            interval = hour(
+                ids.keys[0], ids.workers[0], bucket, up=count, down=count * 2
+            )
+            interval.first_sample_at = bucket - timedelta(minutes=1)
+            interval.last_sample_at = (
+                bucket if index == 24 else bucket + timedelta(minutes=59)
+            )
+            interval.sample_count = count
+            db.add(interval)
+        db.add_all(
+            [sample(ids.keys[0], ids.workers[0], now), poll(ids.workers[0], now)]
+        )
+        await db.commit()
+    node = (await env.client.get(NODES)).json()[0]
+    customer = (await env.client.get(CUSTOMER.format(ids.customer))).json()
+    device = customer["devices"][0]
+    assert (
+        node["upload_bytes"]
+        == customer["upload_bytes"]
+        == device["upload_bytes"]
+        == 1440
+    )
+    assert {
+        "node": node["coverage"],
+        "customer": customer["coverage"],
+        "device": device["coverage"],
+    } == {
+        "node": "partial",
+        "customer": "partial",
+        "device": "partial",
+    }
+
+
+@pytest.mark.asyncio
+async def test_boundary_minute_does_not_compensate_for_internal_reset_gap(
+    env, monkeypatch
+):
+    await assert_boundary_interval_cannot_hide_internal_reset_gap(env, monkeypatch)

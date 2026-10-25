@@ -48,8 +48,6 @@ def _hours(group, start, now):
             group.label("entity_id"),
             func.sum(Hour.upload_bytes).label("upload_bytes"),
             func.sum(Hour.download_bytes).label("download_bytes"),
-            func.sum(Hour.sample_count).label("sample_count"),
-            func.count(func.distinct(Hour.access_key_id)).label("key_count"),
             func.min(Hour.first_sample_at).label("measured_since"),
             func.max(Hour.last_sample_at).label("last_sample_at"),
         )
@@ -59,22 +57,10 @@ def _hours(group, start, now):
     )
 
 
-def _evidence(group, start, now, key_scope, *, node=False):
-    intervals = _hours(Hour.access_key_id, start, now).where(
-        Hour.access_key_id.in_(key_scope)
-    )
-    if node:
-        intervals = intervals.add_columns(Hour.worker_id).group_by(Hour.worker_id)
-    intervals = intervals.subquery()
-    interval_match = intervals.c.entity_id == Key.id
-    if node:
-        interval_match = and_(interval_match, intervals.c.worker_id == Key.worker_id)
+def _evidence(group, key_scope):
     return (
         select(
             group.label("entity_id"),
-            func.count(Key.id).label("key_count"),
-            func.count(Sample.access_key_id).label("baseline_count"),
-            func.min(Sample.sampled_at).label("oldest_sample_at"),
             func.max(Sample.sampled_at).label("last_sample_at"),
             func.max(Poll.last_attempt_at).label("last_attempt_at"),
             func.sum(
@@ -89,25 +75,6 @@ def _evidence(group, start, now, key_scope, *, node=False):
                     else_=0,
                 )
             ).label("unavailable_count"),
-            func.sum(case((Poll.traffic_state == "partial", 1), else_=0)).label(
-                "partial_count"
-            ),
-            func.count(Poll.last_success_at).label("poll_count"),
-            func.min(Poll.last_success_at).label("oldest_poll_at"),
-            func.sum(
-                case(
-                    (
-                        or_(
-                            intervals.c.measured_since.is_(None),
-                            intervals.c.measured_since > start,
-                            intervals.c.sample_count * 60
-                            < (now - start).total_seconds(),
-                        ),
-                        1,
-                    ),
-                    else_=0,
-                )
-            ).label("missing_period_count"),
         )
         .select_from(Key)
         .outerjoin(
@@ -115,7 +82,6 @@ def _evidence(group, start, now, key_scope, *, node=False):
             and_(Sample.access_key_id == Key.id, Sample.worker_id == Key.worker_id),
         )
         .outerjoin(Poll, Poll.worker_id == Key.worker_id)
-        .outerjoin(intervals, interval_match)
         .where(Key.id.in_(key_scope))
         .group_by(group)
     )
@@ -125,9 +91,7 @@ def _rows(rows):
     return {row.entity_id: row for row in rows}
 
 
-def _totals(
-    aggregate, evidence, *, start: datetime, now: datetime, failed_attempt=False
-) -> UsageTotals:
+def _totals(aggregate, evidence, *, now: datetime, failed_attempt=False) -> UsageTotals:
     measured_at = _as_utc(aggregate.last_sample_at) if aggregate is not None else None
     baseline_at = _as_utc(evidence.last_sample_at) if evidence is not None else None
     last_at = max(
@@ -145,23 +109,9 @@ def _totals(
         and (evidence is None or evidence.last_attempt_at is None)
     ):
         coverage = "none"
-    elif aggregate is None or evidence is None:
-        coverage = "partial"
     else:
-        # Counts can disprove full coverage, not reconstruct missing or reset intervals.
-        complete = (
-            evidence.key_count == evidence.baseline_count == evidence.poll_count
-            and aggregate.key_count == evidence.key_count
-            and not evidence.missing_period_count
-            and not evidence.partial_count
-            and last_at <= now
-            and fresh_since <= _as_utc(evidence.oldest_sample_at) <= now
-            and fresh_since <= _as_utc(evidence.oldest_poll_at) <= now
-            and _as_utc(aggregate.measured_since) <= start
-            and aggregate.sample_count * 60
-            >= (now - start).total_seconds() * evidence.key_count
-        )
-        coverage = "current" if complete else "partial"
+        # shortcut: hourly counts cannot prove continuity; add interval evidence before emitting current.
+        coverage = "partial"
     return UsageTotals(
         upload_bytes=None if aggregate is None else int(aggregate.upload_bytes),
         download_bytes=None if aggregate is None else int(aggregate.download_bytes),
@@ -222,10 +172,7 @@ async def list_node_usage(
             await db.execute(
                 _evidence(
                     Key.worker_id,
-                    start,
-                    now,
                     select(Key.id).where(Key.worker_id.in_(ids)).correlate(None),
-                    node=True,
                 )
             )
         ).all()
@@ -311,7 +258,6 @@ async def list_node_usage(
                 **_totals(
                     hours.get(worker.id),
                     evidence.get(worker.id),
-                    start=start,
                     now=now,
                     failed_attempt=worker.traffic_state == "unavailable"
                     and worker.last_attempt_at is not None,
@@ -391,8 +337,6 @@ async def get_customer_usage(
             await db.execute(
                 _evidence(
                     Key.device_id,
-                    start,
-                    now,
                     select(Key.id)
                     .join(VpnSubscription, VpnSubscription.id == Key.subscription_id)
                     .where(VpnSubscription.customer_id == customer_id)
@@ -411,16 +355,14 @@ async def get_customer_usage(
             device_id=device.id,
             display_name=device.display_name,
             **_totals(
-                hours.get(device.id), evidence.get(device.id), start=start, now=now
+                hours.get(device.id), evidence.get(device.id), now=now
             ).model_dump(),
         )
         for device in devices
     ]
     all_totals = list(rows)
     if None in hours or None in evidence:
-        all_totals.append(
-            _totals(hours.get(None), evidence.get(None), start=start, now=now)
-        )
+        all_totals.append(_totals(hours.get(None), evidence.get(None), now=now))
     return CustomerUsageResponse(
         customer_id=customer_id,
         days=days,

@@ -12,6 +12,7 @@ from test_vpn_endpoint_migrations import (
 from test_vpn_usage_api import (
     CUSTOMER,
     NODES,
+    assert_boundary_interval_cannot_hide_internal_reset_gap,
     assert_mutable_current_hour_preserves_known_bytes,
     hour,
     poll,
@@ -62,3 +63,8 @@ async def test_mutable_current_hour_after_request_clock_keeps_known_totals_on_po
     pg_env, monkeypatch
 ):
     await assert_mutable_current_hour_preserves_known_bytes(pg_env, monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_boundary_minute_cannot_hide_reset_gap_on_postgres(pg_env, monkeypatch):
+    await assert_boundary_interval_cannot_hide_internal_reset_gap(pg_env, monkeypatch)
