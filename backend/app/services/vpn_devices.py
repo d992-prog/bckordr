@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.db.base import utcnow
-from app.db.models import VpnAccessKey, VpnCustomer, VpnDevice, VpnSubscription
+from app.db.models import VpnAccessKey, VpnCustomer, VpnDevice, VpnEndpoint, VpnSubscription, WorkerNode
 from app.services.vpn_display import validate_display_name
 from app.services.vpn_node_transport import (
     VpnNodeTransportError,
@@ -34,6 +34,31 @@ async def lock_customer_devices(
         VpnAccessKey.subscription_id.in_([subscription.id for subscription in subscriptions]),
     ).order_by(VpnAccessKey.id)))).all())
     return customer, subscriptions, keys
+
+
+async def lock_device_targets(db: AsyncSession, keys: list[VpnAccessKey], *, endpoint_id: int | None = None) -> None:
+    """Caller holds owner/subscriptions/keys; avoid reversed country-history lock orders."""
+    live = [key for key in keys if key.status != "revoked"]
+    bound = [key for key in live if key.endpoint_id is not None]
+    endpoint_ids = {key.endpoint_id for key in bound}
+    if endpoint_id is not None:
+        endpoint_ids.add(endpoint_id)
+    bindings = dict((await db.execute(select(VpnEndpoint.id, VpnEndpoint.worker_id).where(
+        VpnEndpoint.id.in_(endpoint_ids),
+    ))).all())
+    if set(bindings) != endpoint_ids or any(key.worker_id != bindings[key.endpoint_id] for key in bound):
+        raise ValueError("customer_device_endpoint_unavailable")
+    worker_ids = {key.worker_id for key in live if key.worker_id is not None} | set(bindings.values())
+    for worker_id in sorted(worker_ids):
+        worker = await db.scalar(select(WorkerNode).where(WorkerNode.id == worker_id).with_for_update()
+                                 .execution_options(populate_existing=True))
+        if worker is None and worker_id in bindings.values():
+            raise ValueError("customer_device_endpoint_unavailable")
+    for identity in sorted(endpoint_ids):
+        endpoint = await db.scalar(select(VpnEndpoint).where(VpnEndpoint.id == identity).with_for_update()
+                                   .execution_options(populate_existing=True))
+        if endpoint is None or endpoint.worker_id != bindings[identity]:
+            raise ValueError("customer_device_endpoint_unavailable")
 
 
 async def lock_key_device_context(db: AsyncSession, key_id: int) -> VpnAccessKey | None:

@@ -152,6 +152,8 @@ async def request_device_operation(
                               and key.device_id == device.id and key.credential_generation == generation), None)
             if preferred is None or preferred.endpoint_id is None:
                 raise ValueError("customer_device_endpoint_unavailable")
+            await vpn_devices.lock_device_targets(db, [key for key in keys if key.device_id == device.id],
+                                                  endpoint_id=preferred.endpoint_id)
             endpoint = await _endpoint(db, preferred.endpoint_id, settings, now, reusable_key_id=preferred.id)
             endpoint_id, generation = endpoint.id, generation + 1
         operation = _operation(customer_id, request_id, device, action, "revoking", generation, endpoint_id, identity, now)
@@ -202,6 +204,12 @@ async def _advance(db, operation, customer, subscription, device, keys, settings
     ).execution_options(populate_existing=True))).all())
     if any(control.state == "uncertain" for control in controls):
         operation.stage, operation.public_error, operation.updated_at = "uncertain", "customer_device_verification_required", now
+        await db.flush()
+        return
+    try:
+        await vpn_devices.lock_device_targets(db, children, endpoint_id=operation.endpoint_id)
+    except ValueError:
+        operation.stage, operation.public_error, operation.updated_at = "failed", "customer_device_endpoint_unavailable", now
         await db.flush()
         return
     for key in old:

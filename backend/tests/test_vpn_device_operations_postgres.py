@@ -15,11 +15,11 @@ from test_vpn_public_trial import NOW
 
 from app.api.routes import control
 from app.core.config import Settings
-from app.db.models import VpnAccessKey, VpnCustomer, VpnDevice, VpnDeviceOperation, VpnSubscription
+from app.db.models import VpnAccessKey, VpnControlOperation, VpnCustomer, VpnDevice, VpnDeviceOperation, VpnEndpoint, VpnSubscription, WorkerNode
 from app.schemas.control import VpnAccessKeyCreateRequest
 from app.services.vpn_control_intents import stage_vpn_control_operation
 from app.services.vpn_device_operations import request_device_creation, request_device_operation, resume_device_operations
-from app.services.vpn_devices import lock_owned_device, stage_device_revoke
+from app.services.vpn_devices import attach_initial_device, lock_owned_device, stage_device_revoke
 from app.services.vpn_policy import count_device_slots
 
 
@@ -247,6 +247,80 @@ async def test_delayed_lifecycle_candidate_refreshes_after_independent_replaceme
         fresh = await db.get(VpnAccessKey, device.preferred_key_id)
         assert fresh.status == "active" and fresh.credential_generation == 1
         assert device.revoke_requested_at is None and device.token_generation == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shared_worker", [False, True])
+async def test_opposite_country_replacements_lock_shared_targets_without_deadlock(postgres_schema, monkeypatch, shared_worker):
+    factory, first_ids = await setup(postgres_schema, monkeypatch)
+    async with factory() as db:
+        device = await db.get(VpnDevice, first_ids.device)
+        subscription = await db.get(VpnSubscription, first_ids.subscription)
+        first, second = [await db.get(VpnEndpoint, identity) for identity in first_ids.endpoints[:2]]
+        first.max_active_profiles = second.max_active_profiles = 4
+        if shared_worker:
+            second.worker_id, second.inbound_id = first.worker_id, 2
+        await db.flush()
+        def key(identity, owner_subscription, endpoint, device_id=None):
+            return VpnAccessKey(id=identity, subscription_id=owner_subscription.id, device_id=device_id,
+                                endpoint_id=endpoint.id, worker_id=endpoint.worker_id, status="active",
+                                external_uuid=str(uuid4()), panel_sub_id=uuid4().hex,
+                                verified_client_email=f"vpn-key-{identity}", config_uri="vless://safe-fake@vpn.example:443")
+        db.add(key(12, subscription, second, device.id))
+        device.preferred_key_id = 12
+        other = VpnCustomer(status="active", telegram_user_id="200")
+        db.add(other)
+        await db.flush()
+        other_subscription = VpnSubscription(customer_id=other.id, status="active", max_devices=1,
+                                             expires_at=subscription.expires_at)
+        db.add(other_subscription)
+        await db.flush()
+        other_first = key(21, other_subscription, second)
+        db.add(other_first)
+        await db.flush()
+        other_device = await attach_initial_device(db, other_first)
+        db.add(key(22, other_subscription, first, other_device.id))
+        await db.flush()
+        other_device.preferred_key_id = 22
+        await db.commit()
+        second_ids = SimpleNamespace(owner=other.id, device=other_device.id, settings=first_ids.settings)
+    first_worker_locked, release = asyncio.Event(), asyncio.Event()
+    async with factory() as holder, factory() as waiter:
+        holder_pid, waiter_pid = await holder.scalar(text("SELECT pg_backend_pid()")), await waiter.scalar(text("SELECT pg_backend_pid()"))
+        original = holder.scalar
+        async def gate(statement, **kwargs):
+            result = await original(statement, **kwargs)
+            if (statement._for_update_arg is not None and statement.column_descriptions[0].get("entity") is WorkerNode
+                    and not first_worker_locked.is_set()):
+                first_worker_locked.set()
+                await asyncio.wait_for(release.wait(), 20)
+            return result
+        monkeypatch.setattr(holder, "scalar", gate)
+        async def replacing(db, ids):
+            operation = await replace(db, ids, uuid4())
+            await db.commit()
+            return operation.id
+        winner = asyncio.create_task(replacing(holder, first_ids))
+        contender = None
+        try:
+            await asyncio.wait_for(first_worker_locked.wait(), 10)
+            contender = asyncio.create_task(replacing(waiter, second_ids))
+            await wait_for_blocker(postgres_schema.engine, waiter_pid, holder_pid, contender)
+            release.set()
+            await asyncio.wait_for(asyncio.gather(winner, contender), 20)
+        finally:
+            release.set()
+            for task in (winner, contender):
+                if task is not None and not task.done():
+                    task.cancel()
+            await asyncio.gather(*[task for task in (winner, contender) if task is not None], return_exceptions=True)
+    async with factory() as db:
+        operations = (await db.scalars(select(VpnDeviceOperation))).all()
+        assert len(operations) == 2 and all(operation.stage == "revoking" for operation in operations)
+        assert await db.scalar(select(func.count()).select_from(VpnControlOperation)) == 4
+        for ids in (first_ids, second_ids):
+            device = await db.get(VpnDevice, ids.device)
+            assert device.revoke_requested_at is None and device.token_generation == 1
 
 
 @pytest.mark.asyncio
