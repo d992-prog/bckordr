@@ -712,12 +712,14 @@ export function VpnCustomerWorkspace({
   }
 
   function beginCustomerCreate() {
+    cancelRequestedSelection();
     setCustomerForm(EMPTY_CUSTOMER_FORM);
     setEditingCustomer(false);
     setCreatingCustomer(true);
   }
 
   function beginCustomerEdit(customer: VpnCustomer) {
+    cancelRequestedSelection();
     setCustomerForm(customerFormFromRecord(customer));
     setCreatingCustomer(false);
     setEditingCustomer(true);
@@ -805,12 +807,14 @@ export function VpnCustomerWorkspace({
   }
 
   function beginSubscriptionCreate() {
+    cancelRequestedSelection();
     setSubscriptionForm(EMPTY_SUBSCRIPTION_FORM);
     setEditingSubscriptionId(null);
     setCreatingSubscription(true);
   }
 
   function beginSubscriptionEdit(subscription: VpnSubscription) {
+    cancelRequestedSelection();
     setSubscriptionForm(subscriptionFormFromRecord(subscription));
     setCreatingSubscription(false);
     setEditingSubscriptionId(subscription.id);
@@ -948,6 +952,7 @@ export function VpnCustomerWorkspace({
   }
 
   function beginAccessKeyCreate(subscription: VpnSubscription) {
+    cancelRequestedSelection();
     accessKeyFormVersionRef.current += 1;
     setAccessKeyForm(EMPTY_ACCESS_KEY_FORM);
     setAccessKeyIssueError(null);
@@ -1074,6 +1079,7 @@ export function VpnCustomerWorkspace({
   }
 
   function beginAccessKeyRename(accessKey: VpnAccessKey) {
+    cancelRequestedSelection();
     setEditingAccessKeyId(accessKey.id);
     setAccessKeyName(accessKey.display_name);
   }

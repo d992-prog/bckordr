@@ -640,6 +640,8 @@ try {
     const holdContextIds = new Set();
     const listQueries = [];
     const mutations = [];
+    const customerPatches = [];
+    const subscriptionCreates = [];
     let userId = 1;
     await review.route("**/api/**", async (route) => {
       const request = route.request();
@@ -647,6 +649,17 @@ try {
       if (url.pathname === "/api/auth/logout") { mutations.push(url.pathname); return json(route, { detail: "ok" }); }
       if (url.pathname === "/api/auth/login" || url.pathname === "/api/auth/me") {
         return json(route, { has_feature_access: true, user: { id: userId, username: `synthetic-${userId}`, role: "owner", status: "active", language: "ru", ...timestamps } });
+      }
+      if (request.method() === "PATCH" && /^\/api\/control\/vpn\/customers\/[0-9]+$/.test(url.pathname)) {
+        const id = Number(url.pathname.split("/").at(-1));
+        const payload = request.postDataJSON();
+        customerPatches.push({ id, payload });
+        return json(route, { ...(customers.find((customer) => customer.id === id) ?? deviceContext(9001).customer), ...payload, id });
+      }
+      if (request.method() === "POST" && url.pathname === "/api/control/vpn/subscriptions") {
+        const payload = request.postDataJSON();
+        subscriptionCreates.push(payload);
+        return json(route, { ...subscriptions[0], ...payload, id: 9900 }, 201);
       }
       if (url.pathname.startsWith("/api/control/vpn/abuse/devices/")) {
         assert.equal(request.method(), "GET");
@@ -760,6 +773,40 @@ try {
       await review.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       assert.match(await review.locator(".vpn-customer-row.active-chip").innerText(), /Борис/);
       assert.equal(await review.getByText("Целевой профиль А", { exact: true }).count(), 0);
+      for (const action of ["edit-customer", "create-subscription"]) {
+        await review.locator(".vpn-customer-row").filter({ hasText: "Борис" }).click();
+        await events();
+        await row(1).getByRole("button", { name: "Открыть клиента", exact: true }).click();
+        await until(() => heldContexts.length === 1, `${action}: context A was not held`);
+        if (action === "edit-customer") {
+          await review.locator(".vpn-workspace-stack > .vpn-workspace-section")
+            .filter({ has: review.getByRole("heading", { name: "Борис", exact: true }) })
+            .getByRole("button", { name: "Изменить", exact: true }).click();
+          await review.getByRole("textbox", { name: "Имя", exact: true }).fill("Борис после проверки");
+        } else {
+          await review.getByRole("button", { name: "Новая подписка", exact: true }).click();
+        }
+        await json(heldContexts[0].route, heldContexts.shift().context);
+        await review.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const response = review.waitForResponse((reply) => action === "edit-customer"
+          ? reply.request().method() === "PATCH" && /\/vpn\/customers\/[0-9]+$/.test(new URL(reply.url()).pathname)
+          : reply.request().method() === "POST" && new URL(reply.url()).pathname === "/api/control/vpn/subscriptions");
+        if (action === "edit-customer") {
+          const form = review.locator(".vpn-customer-detail form").filter({ has: review.getByRole("textbox", { name: "Имя", exact: true }) });
+          await form.getByRole("button", { name: "Сохранить", exact: true }).click();
+        } else {
+          const form = review.locator("form").filter({ has: review.getByRole("heading", { name: /^Новая подписка для / }) });
+          await form.getByRole("button", { name: "Сохранить подписку", exact: true }).click();
+        }
+        await response;
+        await review.locator(".toast").filter({ hasText: action === "edit-customer" ? "Данные клиента сохранены" : "VPN подписка добавлена" }).waitFor();
+      }
+      assert.deepEqual({
+        customerPatchTargets: customerPatches.map((patch) => patch.id),
+        subscriptionCustomerTargets: subscriptionCreates.map((payload) => payload.customer_id),
+      }, { customerPatchTargets: [2], subscriptionCustomerTargets: [2] },
+      "manual forms for B must cancel held navigation to A before saving; A must never receive B's fields or subscription");
+      assert.equal(customerPatches[0].payload.first_name, "Борис после проверки");
       holdContextIds.clear();
       await events();
       await row(1).getByRole("button", { name: "Открыть клиента", exact: true }).click();
@@ -819,7 +866,7 @@ try {
       assert.equal(reviewLogs.some((value) => value.includes("synthetic-private-error")), false);
       assert.deepEqual(mutations.filter((url) => !url.endsWith("/acknowledge") && url !== "/api/auth/logout"), []);
       assert.deepEqual(reviewErrors, []);
-      console.log("PASS: mounted abuse review cursor/duplicate-ACK/uncertain-refresh/stale-filter/logout/outside-list-target/navigation-races/privacy/desktop-mobile; zero access mutations, synthetic HTTP only");
+      console.log("PASS: mounted abuse review cursor/duplicate-ACK/uncertain-refresh/stale-filter/logout/outside-list-target/navigation-races/manual-form-targets/privacy/desktop-mobile; zero revoke/suspend/restart calls, synthetic HTTP only");
     } finally {
       await review.close();
     }
