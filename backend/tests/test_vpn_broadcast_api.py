@@ -215,6 +215,40 @@ async def test_invalid_body_is_fixed_error_without_echo(env, payload):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("campaign_id", [0, -1, 2**31, 2**63])
+async def test_campaign_path_and_cursor_fit_database_integer(env, campaign_id):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        for method, suffix, payload in (
+            ("GET", "", None),
+            ("PATCH", "", {"body": "Новость"}),
+            ("POST", "/preview", {}),
+            (
+                "POST",
+                "/confirm",
+                {
+                    "expected_revision": 1,
+                    "expected_recipient_count": 1,
+                    "confirm": True,
+                },
+            ),
+            ("POST", "/cancel", {}),
+        ):
+            response = await client.request(
+                method, BASE + f"/{campaign_id}" + suffix, headers=ORIGIN, json=payload
+            )
+            assert response.status_code == 422
+            assert response.json() == {"detail": "vpn_broadcast_invalid_request"}
+            assert response.headers["cache-control"] == "no-store"
+        response = await client.get(BASE, params={"before_id": campaign_id})
+        assert response.status_code == 422
+        assert response.json() == {"detail": "vpn_broadcast_invalid_request"}
+        assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("confirmation", [False, 1, "true", None])
 async def test_explicit_confirmation_is_strict_true(env, confirmation):
     row = await draft(env)

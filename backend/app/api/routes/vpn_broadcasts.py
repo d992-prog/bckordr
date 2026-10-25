@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +32,7 @@ router = APIRouter(
 )
 Database = Annotated[AsyncSession, Depends(get_db)]
 Administrator = Annotated[User, Depends(require_admin)]
+CampaignId = Annotated[int, Path(ge=1, le=2**31 - 1)]
 
 
 def _error(code: str) -> HTTPException:
@@ -125,7 +126,7 @@ async def config(db: Database, admin: Administrator) -> BroadcastConfigResponse:
 async def list_campaigns(
     db: Database,
     admin: Administrator,
-    before_id: int | None = Query(default=None, ge=1),
+    before_id: int | None = Query(default=None, ge=1, le=2**31 - 1),
     limit: int = Query(default=50, ge=1, le=50),
 ) -> list[dict]:
     del admin
@@ -158,7 +159,7 @@ async def create(
 
 @router.get("/{campaign_id}", response_model=BroadcastDetail)
 async def detail(
-    campaign_id: int, db: Database, admin: Administrator
+    campaign_id: CampaignId, db: Database, admin: Administrator
 ) -> BroadcastDetail:
     del admin
     return await _detail(db, await _get(db, campaign_id))
@@ -166,7 +167,7 @@ async def detail(
 
 @router.patch("/{campaign_id}", response_model=BroadcastDetail)
 async def edit(
-    campaign_id: int,
+    campaign_id: CampaignId,
     payload: BroadcastBodyRequest,
     request: Request,
     db: Database,
@@ -187,7 +188,7 @@ async def edit(
 
 @router.post("/{campaign_id}/preview", response_model=BroadcastDetail)
 async def preview(
-    campaign_id: int,
+    campaign_id: CampaignId,
     payload: BroadcastEmptyRequest,
     request: Request,
     db: Database,
@@ -206,7 +207,7 @@ async def preview(
 
 @router.post("/{campaign_id}/confirm", response_model=BroadcastDetail, status_code=202)
 async def confirm(
-    campaign_id: int,
+    campaign_id: CampaignId,
     payload: BroadcastConfirmRequest,
     request: Request,
     db: Database,
@@ -236,7 +237,7 @@ async def confirm(
 
 @router.post("/{campaign_id}/cancel", response_model=BroadcastDetail)
 async def cancel(
-    campaign_id: int,
+    campaign_id: CampaignId,
     payload: BroadcastEmptyRequest,
     request: Request,
     db: Database,
