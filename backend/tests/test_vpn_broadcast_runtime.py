@@ -13,6 +13,14 @@ from app.services.control_runtime import ControlRuntimeOrchestrator
 from app.services.vpn_bot_chats import REGISTRY_BOT_KEY
 
 
+@pytest.fixture(autouse=True)
+def isolate_news_dispatch_from_usage_retention(monkeypatch):
+    # News-only shutdown tests must not cancel an unrelated SQLite connection opener.
+    monkeypatch.setattr(
+        ControlRuntimeOrchestrator, "_start_vpn_usage", lambda _self, _now: None
+    )
+
+
 def test_news_sender_is_disabled_by_default():
     assert Settings(_env_file=None).vpn_broadcasts_enabled is False
 

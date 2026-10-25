@@ -518,6 +518,7 @@ async def test_onboarding_stages_healthy_endpoint_in_exact_order(
         assert job.log == "vpn_onboarding_awaiting_test"
         assert endpoint is not None
         assert endpoint.status == "staged"
+        assert endpoint.is_published is False
         assert endpoint.max_active_profiles == 20
         assert endpoint.health_checked_at is not None
         assert endpoint.last_error_code is None
@@ -597,7 +598,16 @@ async def test_exact_rerun_preserves_ready_endpoint_without_remote_calls(
         assert endpoint is not None and worker is not None
         endpoint.status = "ready"
         endpoint.verified_at = datetime.now(UTC)
+        endpoint.is_published = True
+        endpoint.public_name = "Fixture node"
+        endpoint.country_code = "PL"
         worker.vpn_runtime_status = "ready"
+        await session.commit()
+        assert await select_public_vpn_endpoint(
+            session,
+            now=datetime.now(UTC),
+            health_max_age_seconds=300,
+        ) is not None
         rerun = WorkerMaintenanceJob(
             worker_id=worker_id,
             action="vpn_onboard",
@@ -610,7 +620,7 @@ async def test_exact_rerun_preserves_ready_endpoint_without_remote_calls(
             session,
             now=datetime.now(UTC),
             health_max_age_seconds=300,
-        ) is not None
+        ) is None
 
     stages[0].clear()
     await _run_with_stages(sessions, rerun_id, stages)
@@ -623,6 +633,7 @@ async def test_exact_rerun_preserves_ready_endpoint_without_remote_calls(
         worker = await session.get(WorkerNode, worker_id)
         rerun = await session.get(WorkerMaintenanceJob, rerun_id)
         assert endpoint is not None and endpoint.status == "ready"
+        assert endpoint.is_published is True
         assert worker is not None and worker.vpn_runtime_status == "ready"
         assert rerun is not None and rerun.status == "succeeded"
         assert await select_public_vpn_endpoint(

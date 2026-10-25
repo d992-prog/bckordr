@@ -21,6 +21,12 @@ NOW = datetime(2026, 10, 25, 12, tzinfo=UTC)
 def fixed_clock(monkeypatch):
     monkeypatch.setattr(runtime_module, "utcnow", lambda: NOW)
 
+    async def isolated_cleanup(*_args, **_kwargs):
+        return 0
+
+    # Collector tests do not need a SQLite connection cancelled while it is opening.
+    monkeypatch.setattr(runtime_module, "cleanup_usage_retention", isolated_cleanup)
+
 
 @pytest_asyncio.fixture
 async def factory(tmp_path):
@@ -91,11 +97,16 @@ def test_usage_is_disabled_by_default_with_only_one_new_setting():
     ],
 )
 async def test_usage_disabled_or_unpinned_still_expires_source_samples(
-    factory, overrides
+    factory, overrides, monkeypatch
 ):
     from test_vpn_usage import seed
 
     from app.db.models import VpnKeySourceSample
+    from app.services.vpn_usage import cleanup_usage_retention
+
+    monkeypatch.setattr(
+        runtime_module, "cleanup_usage_retention", cleanup_usage_retention
+    )
 
     worker_id, _, keys = await seed(factory)
     expired = NOW - timedelta(hours=24, seconds=1)
