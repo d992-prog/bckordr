@@ -1,6 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+test("device usage is read from the authoritative subscription endpoint", async () => {
+  const calls = [];
+  const usage = { subscription_id: 11, devices_used: 2, max_devices: 3 };
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return { ok: true, json: async () => usage };
+  };
+  const { api } = await import("../src/api.ts");
+  assert.deepEqual(await api.getVpnSubscriptionDeviceUsage(11), usage);
+  assert.equal(calls[0].url, "/api/control/vpn/subscriptions/11/device-usage");
+  assert.equal(calls[0].init.credentials, "include");
+  assert.equal(calls[0].init.cache, "no-store");
+  assert.equal(calls[0].init.method ?? "GET", "GET");
+  assert.equal(calls[0].init.body, undefined);
+});
+
 test("archives a VPN customer through the typed control endpoint", async () => {
   let capturedUrl = "";
   let capturedInit = null;

@@ -8,6 +8,7 @@ import {
   type VpnFriendInvitationIssued,
   type VpnPlan,
   type VpnSubscription,
+  type VpnSubscriptionDeviceUsage,
   type WorkerNode,
 } from "./api";
 import {
@@ -15,7 +16,6 @@ import {
   applyAccessKeyDisplay,
   calculateExtendedExpiration,
   classifyVpnCustomer,
-  countReservedVpnDeviceSlots,
   customerStatusOptions,
   filterVpnCustomers,
   nextAccessKeyEditorAfterRename,
@@ -311,6 +311,13 @@ export function VpnCustomerWorkspace({
   >(null);
   const [accessKeyIssueError, setAccessKeyIssueError] = useState<string | null>(null);
   const [createdAccessKeys, setCreatedAccessKeys] = useState<VpnAccessKey[]>([]);
+  const [subscriptionDeviceUsage, setSubscriptionDeviceUsage] = useState<Record<number, VpnSubscriptionDeviceUsage | undefined>>({});
+  const [deviceUsageErrors, setDeviceUsageErrors] = useState<Record<number, boolean>>({});
+  const deviceUsageEpochRef = useRef(0);
+  const deviceUsageRequestsRef = useRef(new Map<number, object>());
+  const deviceUsageContextRef = useRef<{ customerId: number | null; subscriptionIds: Set<number> }>({
+    customerId: null, subscriptionIds: new Set(),
+  });
   const creatingAccessKeyRef = useRef(false);
   const accessKeyFormVersionRef = useRef(0);
   const [expandedKeyIds, setExpandedKeyIds] = useState<Set<number>>(() => new Set());
@@ -340,7 +347,6 @@ export function VpnCustomerWorkspace({
     () => new Set(selectedSubscriptions.map((subscription) => subscription.id)),
     [selectedSubscriptions],
   );
-  // shortcut: counts use the loaded list of up to 1,000 profiles; use server totals when pagination is added.
   const selectedAccessKeys = useMemo(
     () =>
       [...accessKeys, ...createdAccessKeys.filter((created) => !accessKeys.some((key) => key.id === created.id))]
@@ -383,6 +389,40 @@ export function VpnCustomerWorkspace({
     setCreatingKeyForSubscriptionId(null);
     setAccessKeyIssueError(null);
   }, [selectedCustomerId]);
+
+  useEffect(() => {
+    deviceUsageEpochRef.current += 1;
+    deviceUsageContextRef.current = { customerId: selectedCustomerId, subscriptionIds: selectedSubscriptionIds };
+    deviceUsageRequestsRef.current.clear();
+    setSubscriptionDeviceUsage({});
+    setDeviceUsageErrors({});
+    for (const subscription of selectedSubscriptions) {
+      void refreshSubscriptionDeviceUsage(subscription.id, selectedCustomerId);
+    }
+    return () => {
+      deviceUsageEpochRef.current += 1;
+      deviceUsageRequestsRef.current.clear();
+      deviceUsageContextRef.current = { customerId: null, subscriptionIds: new Set() };
+    };
+  }, [selectedCustomerId, selectedSubscriptions]);
+
+  async function refreshSubscriptionDeviceUsage(subscriptionId: number, customerId = selectedCustomerId) {
+    const context = deviceUsageContextRef.current;
+    if (context.customerId !== customerId || !context.subscriptionIds.has(subscriptionId)) return;
+    const epoch = deviceUsageEpochRef.current;
+    const request = {};
+    deviceUsageRequestsRef.current.set(subscriptionId, request);
+    setSubscriptionDeviceUsage((current) => ({ ...current, [subscriptionId]: undefined }));
+    setDeviceUsageErrors((current) => ({ ...current, [subscriptionId]: false }));
+    try {
+      const usage = await api.getVpnSubscriptionDeviceUsage(subscriptionId);
+      if (deviceUsageEpochRef.current !== epoch || deviceUsageRequestsRef.current.get(subscriptionId) !== request) return;
+      setSubscriptionDeviceUsage((current) => ({ ...current, [subscriptionId]: usage }));
+    } catch {
+      if (deviceUsageEpochRef.current !== epoch || deviceUsageRequestsRef.current.get(subscriptionId) !== request) return;
+      setDeviceUsageErrors((current) => ({ ...current, [subscriptionId]: true }));
+    }
+  }
 
   useEffect(() => {
     invitationSessionRef.current = {};
@@ -763,8 +803,13 @@ export function VpnCustomerWorkspace({
     payload: Record<string, unknown>,
     savedMessage: string,
   ) {
+    const usageCustomerId = selectedCustomerId;
     const result = await saveSubscriptionAndRequestSync(
-      () => api.updateVpnSubscription(subscriptionId, payload),
+      async () => {
+        const saved = await api.updateVpnSubscription(subscriptionId, payload);
+        void refreshSubscriptionDeviceUsage(subscriptionId, usageCustomerId);
+        return saved;
+      },
       () => api.runVpnLifecycleMaintenance(),
       reload,
     );
@@ -839,12 +884,15 @@ export function VpnCustomerWorkspace({
     if (!subscription) {
       return;
     }
-    if (countReservedVpnDeviceSlots(selectedAccessKeys, subscription.id) >= subscription.max_devices) {
+    const usage = subscriptionDeviceUsage[subscription.id];
+    if (!usage) return;
+    if (usage.devices_used >= usage.max_devices) {
       setAccessKeyIssueError(vpnProfileIssueError("VPN device limit reached"));
       return;
     }
     creatingAccessKeyRef.current = true;
     const formVersion = accessKeyFormVersionRef.current;
+    const usageCustomerId = selectedCustomerId;
     setAccessKeyIssueError(null);
     setBusyAction(`key-create-${subscription.id}`);
     try {
@@ -857,11 +905,13 @@ export function VpnCustomerWorkspace({
           display_name: accessKeyForm.displayName.trim(),
         });
       } catch (error) {
+        void refreshSubscriptionDeviceUsage(subscription.id, usageCustomerId);
         if (accessKeyFormVersionRef.current === formVersion) {
           setAccessKeyIssueError(vpnProfileIssueError(error));
         }
         return;
       }
+      void refreshSubscriptionDeviceUsage(subscription.id, usageCustomerId);
       setCreatedAccessKeys((current) => [...current, accessKey]);
       if (accessKeyFormVersionRef.current === formVersion) {
         setCreatingKeyForSubscriptionId(null);
@@ -921,8 +971,10 @@ export function VpnCustomerWorkspace({
       return;
     }
     setBusyAction(`key-revoke-${accessKey.id}`);
+    const usageCustomerId = selectedCustomerId;
     try {
       const revoked = await api.revokeVpnAccessKey(accessKey.id);
+      void refreshSubscriptionDeviceUsage(accessKey.subscription_id, usageCustomerId);
       await reload();
       notify(
         revoked.status === "pending_revoke" ? "error" : "success",
@@ -1379,18 +1431,22 @@ export function VpnCustomerWorkspace({
   }
 
   function renderAccessKeyForm(subscription: VpnSubscription) {
-    const usedDeviceSlots = countReservedVpnDeviceSlots(selectedAccessKeys, subscription.id);
-    const deviceLimitReached = usedDeviceSlots >= subscription.max_devices;
+    const usage = subscriptionDeviceUsage[subscription.id];
+    const deviceLimitReached = Boolean(usage && usage.devices_used >= usage.max_devices);
+    const usageError = deviceUsageErrors[subscription.id];
     return (
       <form className="form vpn-inline-form" onSubmit={saveAccessKey}>
         <h4>Новый VPN‑профиль для подписки #{subscription.id}</h4>
-        <p className="muted">Занято мест для устройств: {usedDeviceSlots} из {subscription.max_devices}</p>
-        <p className="muted">
-          Приостановленные профили и профили с ошибкой тоже занимают места. Место освободится после завершения отзыва профиля
-        </p>
-        {accessKeyIssueError || deviceLimitReached ? (
-          <div role="alert">
-            <p>{accessKeyIssueError ?? vpnProfileIssueError("VPN device limit reached")}</p>
+        {usage ? <p className="muted">Занято мест для устройств: {usage.devices_used} из {usage.max_devices}</p> : (
+          <p className="muted" role={usageError ? "alert" : "status"}>
+            {usageError ? "Не удалось проверить занятые места" : "Проверяем занятые места"}
+          </p>
+        )}
+        {usageError ? <button type="button" className="ghost"
+          onClick={() => void refreshSubscriptionDeviceUsage(subscription.id)}>Проверить ещё раз</button> : null}
+        {accessKeyIssueError || deviceLimitReached || !usage ? (
+          <div role={accessKeyIssueError || deviceLimitReached ? "alert" : undefined}>
+            {accessKeyIssueError || deviceLimitReached ? <p>{accessKeyIssueError ?? vpnProfileIssueError("VPN device limit reached")}</p> : null}
             <button type="button" className="ghost" onClick={() => beginSubscriptionEdit(subscription)}>
               Изменить лимит подписки
             </button>
@@ -1450,7 +1506,7 @@ export function VpnCustomerWorkspace({
         <div className="actions">
           <button
             type="submit"
-            disabled={deviceLimitReached || creatingAccessKeyRef.current}
+            disabled={!usage || deviceLimitReached || creatingAccessKeyRef.current}
           >
             Выдать профиль
           </button>
@@ -1804,7 +1860,7 @@ export function VpnCustomerWorkspace({
                     (accessKey) => accessKey.subscription_id === subscription.id,
                   );
                   const subscriptionBusy = busyAction === `subscription-${subscription.id}`;
-                  const usedDeviceSlots = countReservedVpnDeviceSlots(selectedAccessKeys, subscription.id);
+                  const usage = subscriptionDeviceUsage[subscription.id];
                   const isUsable = ["active", "trial"].includes(subscription.status);
                   return (
                     <article key={subscription.id} className="vpn-subscription-card">
@@ -1833,7 +1889,10 @@ export function VpnCustomerWorkspace({
                         </div>
                         <div>
                           <span className="muted">Устройств</span>
-                          <strong>{usedDeviceSlots} из {subscription.max_devices}</strong>
+                          <strong>{usage ? `${usage.devices_used} из ${usage.max_devices}`
+                            : deviceUsageErrors[subscription.id] ? "Не удалось проверить занятые места" : "Проверяем занятые места"}</strong>
+                          {deviceUsageErrors[subscription.id] ? <button type="button" className="ghost"
+                            onClick={() => void refreshSubscriptionDeviceUsage(subscription.id)}>Проверить ещё раз</button> : null}
                         </div>
                         <div>
                           <span className="muted">Заметки</span>

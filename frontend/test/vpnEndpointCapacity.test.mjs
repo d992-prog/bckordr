@@ -51,6 +51,32 @@ test("capacity API uses the exact typed list and update endpoints", async () => 
   );
 });
 
+test("publication has its own admin JSON mutation and preserves endpoint health", async () => {
+  let call;
+  const row = { endpoint_id: 7, status: "unhealthy", is_published: true, public_name: "Германия", country_code: "DE" };
+  globalThis.fetch = async (url, init) => {
+    call = { url: String(url), init };
+    return { ok: true, json: async () => row };
+  };
+  const payload = { is_published: true, public_name: "Германия", country_code: "DE" };
+  assert.deepEqual(await api.updateVpnEndpointPublication(7, payload), row);
+  assert.equal(call.url, "/api/control/vpn/endpoints/7/publication");
+  assert.equal(call.init.method, "PATCH");
+  assert.equal(call.init.credentials, "include");
+  assert.equal(call.init.headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(call.init.body), payload);
+});
+
+test("publication controls are a separate form with visible consequences", async () => {
+  const source = await readFile(new URL("../src/VpnEndpointCapacityPanel.tsx", import.meta.url), "utf8");
+  assert.equal((source.match(/<form /g) ?? []).length, 2);
+  for (const label of ["Название для клиентов", "Код страны", "Показывать клиентам", "Сохранить публикацию",
+    "Скрытие убирает сервер из нового выбора. Выданные подключения продолжат работать"]) {
+    assert.ok(source.includes(label), label);
+  }
+  assert.match(source, /api\.updateVpnEndpointPublication/);
+});
+
 test("capacity validation accepts an unset limit and matches backend integer ranges", () => {
   assert.deepEqual(validateVpnEndpointCapacity("", "80"), {
     max_active_profiles: null,
@@ -107,7 +133,7 @@ test("capacity panel exposes accessible native controls and bounded errors", asy
   assert.match(source, /aria-label=/);
   assert.match(source, /role="alert">\{error\}/);
   assert.match(source, /role="status">\{message\}/);
-  assert.match(source, /disabled=\{saving\}/);
+  assert.match(source, /disabled=\{saving \|\| publishing\}/);
   assert.match(source, /api\.updateVpnEndpointCapacity/);
   assert.match(source, /\.slice\(0, 160\)/);
   assert.doesNotMatch(source, /public_key|short_id|config_uri|external_uuid/);

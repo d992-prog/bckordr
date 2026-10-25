@@ -2,6 +2,7 @@
 // From frontend: npm run build, then node test/browser/admin-profile-ui.qa.mjs.
 // Race regression only: node test/browser/admin-profile-ui.qa.mjs --profile-create-only.
 // Invitation regressions only: node test/browser/admin-profile-ui.qa.mjs --invitations-only.
+// Publication/device usage: node test/browser/admin-profile-ui.qa.mjs --admin-operations-only.
 // Uses existing PLAYWRIGHT_MODULE_PATH / CHROMIUM_EXECUTABLE_PATH overrides when needed.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -34,6 +35,8 @@ const fixtureKeys = () => [11, 12, 13].map((subscription_id, index) => ({
   status: "active", issued_at: stamp, expires_at: null, revoked_at: null,
   last_synced_at: stamp, last_error: null, ...timestamps,
 }));
+const fixtureUsages = () => new Map([11, 12, 13].map((subscription_id) => [subscription_id,
+  { subscription_id, devices_used: 1, max_devices: 3 }]));
 const worker = {
   id: 41, name: "Frankfurt 1", registrar_slug: "gandi",
   assigned_registrar_account_id: null, api_base_url: null, control_token: null,
@@ -68,6 +71,9 @@ const endpointCapacity = {
   occupied_profiles: 2,
   max_active_profiles: 20,
   capacity_warning_percent: 80,
+  is_published: false,
+  public_name: null,
+  country_code: null,
 };
 const json = (route, body, status = 200) => route.fulfill({
   status, contentType: "application/json", body: JSON.stringify(body),
@@ -104,6 +110,7 @@ try {
       value: { writeText: async (value) => { window.__copies.push(value); } } });
   });
   let keys = fixtureKeys();
+  let deviceUsages = fixtureUsages();
   let version = Date.parse(stamp);
   const nextVersion = () => new Date(version += 1000).toISOString();
   let reloadFailure = false;
@@ -132,7 +139,10 @@ try {
       assert.deepEqual(Object.keys(payload).sort(), ["display_name", "protocol", "subscription_id", "worker_id"]);
       createRequests.push(payload);
       return new Promise((resolve) => heldCreates.push(async (body, status = 200) => {
-        if (status === 200) keys.push(body);
+        if (status === 200) {
+          keys.push(body);
+          deviceUsages.get(body.subscription_id).devices_used += 1;
+        }
         await json(route, body, status);
         resolve();
       }));
@@ -184,6 +194,9 @@ try {
     if (pathname === "/api/control/overview") return json(route, { checked_at: stamp, capacity: {} });
     if (pathname === "/api/control/vpn/customers") return json(route, customers);
     if (pathname === "/api/control/vpn/subscriptions") return json(route, subscriptions);
+    if (/\/api\/control\/vpn\/subscriptions\/\d+\/device-usage$/.test(pathname)) {
+      return json(route, deviceUsages.get(Number(pathname.split("/").at(-2))));
+    }
     if (pathname === "/api/control/vpn/access-keys") {
       if (holdReload) {
         const captured = structuredClone(keys);
@@ -592,7 +605,278 @@ try {
       `${label}: the full URI must stay out of console output`);
   };
 
-  if (!process.argv.includes("--profile-create-only")) {
+  if (!process.argv.includes("--profile-create-only") && !process.argv.includes("--invitations-only")) {
+    const operations = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    operations.setDefaultTimeout(10000);
+    operations.on("pageerror", (error) => errors.push(error.message));
+    let capacity = { ...endpointCapacity };
+    let includeCapacity = true;
+    let readinessCalls = 0;
+    let operationSubscriptions = structuredClone(subscriptions);
+    let usage = { subscription_id: 11, devices_used: 2, max_devices: 3 };
+    let usageFailure = false;
+    let holdUsage = false;
+    let failListRefresh = false;
+    const usageCalls = [];
+    const heldUsage = [];
+    const publications = [];
+    const heldPublications = [];
+    let releaseProfile;
+    const cappedKeys = Array.from({ length: 1000 }, (_, index) => ({ ...fixtureKeys()[0], id: 21 + index, config_uri: null }));
+    await operations.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const pathname = url.pathname;
+      if (/\/subscriptions\/\d+\/device-usage$/.test(pathname)) {
+        const id = Number(pathname.split("/").at(-2));
+        usageCalls.push(id);
+        if (holdUsage && id === 11) return new Promise((resolve) => heldUsage.push(async (body) => { await json(route, body); resolve(); }));
+        return usageFailure && id === 11 ? json(route, { detail: "Unavailable" }, 503)
+          : json(route, id === 11 ? usage : { subscription_id: id, devices_used: 1, max_devices: 3 });
+      }
+      if (pathname === "/api/control/vpn/access-keys") {
+        if (request.method() === "GET") return failListRefresh ? json(route, { detail: "Список не обновился" }, 503) : json(route, cappedKeys);
+        return new Promise((resolve) => { releaseProfile = async (status = 200) => {
+          usage = { ...usage, devices_used: 3 };
+          await json(route, status === 200 ? { ...fixtureKeys()[0], id: 2001, display_name: "Новое устройство", status: "pending_sync", config_uri: null }
+            : { detail: "VPN device limit reached" }, status);
+          resolve();
+        }; });
+      }
+      if (pathname === "/api/control/vpn/access-keys/21/revoke") {
+        usage = { ...usage, devices_used: 2 };
+        return json(route, { ...cappedKeys[0], status: "revoked" });
+      }
+      if (request.method() === "PATCH" && pathname === "/api/control/vpn/subscriptions/11") {
+        const payload = request.postDataJSON();
+        usage = { ...usage, max_devices: payload.max_devices ?? usage.max_devices };
+        operationSubscriptions = operationSubscriptions.map((item) => item.id === 11 ? { ...item, ...payload } : item);
+        return json(route, operationSubscriptions[0]);
+      }
+      if (pathname === "/api/control/vpn/lifecycle/run") return json(route, {});
+      if (pathname === "/api/control/vpn/subscriptions") return json(route, operationSubscriptions);
+      if (pathname === "/api/control/vpn/endpoints/capacity") return json(route, includeCapacity ? [capacity] : []);
+      if (pathname === "/api/control/vpn/release-readiness") {
+        readinessCalls += 1;
+        return json(route, { ready: true, checked_at: stamp, release_id: null, checks: [] });
+      }
+      if (request.method() === "PATCH" && pathname.endsWith("/publication")) {
+        publications.push(request.postDataJSON());
+        return new Promise((resolve) => heldPublications.push(async (body, status = 200) => { await json(route, body, status); resolve(); }));
+      }
+      if (request.method() === "PATCH" && pathname.endsWith("/capacity")) {
+        const payload = request.postDataJSON();
+        assert.deepEqual(Object.keys(payload).sort(), ["capacity_warning_percent", "max_active_profiles"]);
+        capacity = { ...capacity, ...payload };
+        return json(route, capacity);
+      }
+      if (pathname === "/api/auth/logout") return json(route, {});
+      if (pathname === "/api/auth/login") return json(route, { has_feature_access: true,
+        user: { id: 99, username: "other-admin", role: "owner", status: "active", language: "ru", ...timestamps } });
+      return handleApiRoute(route);
+    });
+    const subscription = operations.locator(".vpn-subscription-card").filter({ hasText: "Подписка #11 ·" });
+    const refresh = async () => {
+      const response = operations.waitForResponse((response) => new URL(response.url()).pathname === "/api/control/vpn/subscriptions");
+      await operations.locator(".toolbar-actions").getByRole("button", { name: "Обновить", exact: true }).click();
+      await response;
+      await operations.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    };
+    const openProfile = async () => {
+      await subscription.getByRole("button", { name: "Выдать новый профиль", exact: true }).click();
+      return subscription.locator("form").filter({ has: operations.getByRole("heading", { name: "Новый VPN‑профиль для подписки #11", exact: true }) });
+    };
+    try {
+      await operations.goto(`${appUrl}#vpn/customers`);
+      await subscription.getByText("2 из 3", { exact: true }).waitFor();
+      assert.equal(await subscription.locator(".vpn-key-card").count(), 1000);
+      assert.deepEqual(usageCalls, [11], "usage must load only for the selected customer's subscriptions");
+      usageFailure = true;
+      await refresh();
+      await subscription.getByText("Не удалось проверить занятые места", { exact: true }).first().waitFor();
+      let profile = await openProfile();
+      assert.equal(await profile.getByRole("button", { name: "Выдать профиль", exact: true }).isDisabled(), true);
+      assert.equal(await profile.getByRole("button", { name: "Изменить лимит подписки", exact: true }).isEnabled(), true);
+      usageFailure = false;
+      await profile.getByRole("button", { name: "Проверить ещё раз", exact: true }).click();
+      await profile.getByText("Занято мест для устройств: 2 из 3", { exact: true }).waitFor();
+      assert.equal(await profile.getByRole("button", { name: "Выдать профиль", exact: true }).isEnabled(), true);
+      holdUsage = true;
+      await refresh();
+      await until(() => heldUsage.length > 0, "old customer usage was not held");
+      await operations.locator(".vpn-customer-row").filter({ hasText: "Борис" }).click();
+      await operations.locator(".vpn-subscription-card").first().getByText("1 из 3", { exact: true }).waitFor();
+      holdUsage = false;
+      while (heldUsage.length) await heldUsage.shift()({ ...usage, devices_used: 3 });
+      assert.equal(await operations.getByText("3 из 3", { exact: true }).count(), 0, "old customer responses must be ignored");
+      await operations.locator(".vpn-customer-row").filter({ hasText: "Анна" }).click();
+      await subscription.getByText("2 из 3", { exact: true }).waitFor();
+      profile = await openProfile();
+      await profile.getByRole("textbox", { name: "Название", exact: true }).fill("Новое устройство");
+      const callsBeforeCreate = usageCalls.length;
+      await profile.getByRole("button", { name: "Выдать профиль", exact: true }).click();
+      await until(() => Boolean(releaseProfile), "device create was not held");
+      await refresh();
+      await profile.getByText("Занято мест для устройств: 2 из 3", { exact: true }).waitFor();
+      failListRefresh = true;
+      await releaseProfile();
+      await subscription.getByText("3 из 3", { exact: true }).waitFor();
+      assert.ok(usageCalls.length > callsBeforeCreate, "saved creation must refresh authoritative usage even if list refresh fails");
+      await subscription.getByText("Новое устройство", { exact: true }).waitFor();
+      profile = await openProfile();
+      assert.equal(await profile.getByRole("button", { name: "Выдать профиль", exact: true }).isDisabled(), true);
+      await profile.getByRole("button", { name: "Отмена", exact: true }).click();
+      failListRefresh = false;
+      const beforeRevoke = usageCalls.length;
+      operations.once("dialog", (dialog) => dialog.accept());
+      await subscription.locator(".vpn-key-card").first().getByRole("button", { name: "Отозвать и сохранить", exact: true }).click();
+      await subscription.getByText("2 из 3", { exact: true }).waitFor();
+      assert.ok(usageCalls.length > beforeRevoke, "revoke must refresh usage");
+      await subscription.getByRole("button", { name: "Изменить", exact: true }).click();
+      const edit = subscription.locator("form").filter({ has: operations.getByRole("heading", { name: "Изменить подписку #11", exact: true }) });
+      await edit.getByLabel("Устройств", { exact: true }).fill("4");
+      await edit.getByRole("button", { name: "Сохранить подписку", exact: true }).click();
+      await subscription.getByText("2 из 4", { exact: true }).waitFor();
+      const beforeExtend = usageCalls.length;
+      operations.once("dialog", (dialog) => dialog.accept());
+      await subscription.getByRole("button", { name: "+7 дней", exact: true }).click();
+      await until(() => usageCalls.length > beforeExtend, "extending a subscription must refresh usage");
+      await subscription.getByText("2 из 4", { exact: true }).waitFor();
+      usage = { ...usage, max_devices: 3 };
+      await refresh();
+      profile = await openProfile();
+      await profile.getByRole("textbox", { name: "Название", exact: true }).fill("Конкурирующая выдача");
+      releaseProfile = null;
+      await profile.getByRole("button", { name: "Выдать профиль", exact: true }).click();
+      await until(() => Boolean(releaseProfile), "racing create was not held");
+      await releaseProfile(409);
+      await profile.getByText("Занято мест для устройств: 3 из 3", { exact: true }).waitFor();
+      assert.equal(await profile.getByRole("button", { name: "Выдать профиль", exact: true }).isDisabled(), true,
+        "a backend conflict remains authoritative and refreshes usage");
+
+      await operations.locator(".vpn-admin-nav").getByRole("link", { name: "Обзор", exact: true }).click();
+      const card = operations.locator(".vpn-capacity-card");
+      const publication = card.locator("form").filter({ has: operations.getByRole("button", { name: "Сохранить публикацию", exact: true }) });
+      for (const name of ["", "Сервер\u200B"]) {
+        await publication.getByLabel("Название для клиентов", { exact: true }).fill(name);
+        await publication.getByLabel("Код страны", { exact: true }).fill("DE");
+        await publication.evaluate((element) => element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+        await publication.getByRole("alert").waitFor();
+        assert.equal(publications.length, 0, "empty and invisible names must not be submitted");
+      }
+      await publication.getByLabel("Название для клиентов", { exact: true }).fill("Германия");
+      await publication.getByLabel("Код страны", { exact: true }).fill("ДЕ");
+      await publication.evaluate((element) => element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+      await publication.getByRole("alert").waitFor();
+      assert.equal(publications.length, 0, "country code must be two ASCII letters");
+      await publication.getByLabel("Код страны", { exact: true }).fill("de");
+      await publication.getByLabel("Показывать клиентам", { exact: true }).check();
+      await publication.evaluate((element) => {
+        element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      });
+      await until(() => heldPublications.length === 1, "publication was not held");
+      assert.deepEqual(publications, [{ is_published: true, public_name: "Германия", country_code: "DE" }]);
+      capacity = { ...capacity, ...publications[0] };
+      await heldPublications.shift()(capacity);
+      await publication.getByRole("status").waitFor();
+      assert.equal(await card.locator(".status").textContent(), "ready", "publication must not alter health");
+      await publication.getByLabel("Название для клиентов", { exact: true }).fill("Черновик названия");
+      await card.getByRole("spinbutton", { name: /Лимит профилей/ }).fill("30");
+      await card.getByRole("button", { name: "Сохранить лимиты", exact: true }).click();
+      await card.getByText("Лимиты сохранены.", { exact: true }).waitFor();
+      assert.equal(publications.length, 1, "saving capacity must not publish");
+      assert.equal(await publication.getByLabel("Название для клиентов", { exact: true }).inputValue(), "Черновик названия",
+        "saving capacity must preserve the separate publication draft");
+      await publication.getByLabel("Название для клиентов", { exact: true }).fill("Старый запрос");
+      await publication.getByRole("button", { name: "Сохранить публикацию", exact: true }).click();
+      await until(() => heldPublications.length === 1, "stale publication was not held");
+      capacity = { ...capacity, worker_id: 42, public_name: "Новый сервер", country_code: "NL", status: "unhealthy" };
+      await refresh();
+      await heldPublications.shift()({ ...capacity, worker_id: 41, public_name: "Старый запрос", country_code: "DE", status: "ready" });
+      await operations.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await publication.getByLabel("Название для клиентов", { exact: true }).inputValue(), "Новый сервер", "old row responses must not replace fresh metadata");
+      assert.equal(await card.locator(".status").textContent(), "unhealthy");
+      await card.getByText("Точка подключения #7 · VPN‑нода #42", { exact: true }).waitFor();
+      await publication.getByRole("button", { name: "Сохранить публикацию", exact: true }).click();
+      await until(() => heldPublications.length === 1, "removed-row publication was not held");
+      includeCapacity = false;
+      await refresh();
+      const readinessBeforeRemovedReply = readinessCalls;
+      await heldPublications.shift()(capacity);
+      await operations.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await card.count(), 0, "a removed endpoint must not return after an old publication reply");
+      assert.equal(readinessCalls, readinessBeforeRemovedReply, "removed rows must not call the old onUpdated");
+      includeCapacity = true;
+      await refresh();
+      await publication.getByRole("button", { name: "Сохранить публикацию", exact: true }).click();
+      await until(() => heldPublications.length === 1, "old-session publication was not held");
+      await operations.getByRole("button", { name: "Выйти", exact: true }).click();
+      capacity = { ...capacity, public_name: "Сервер новой сессии" };
+      const login = operations.locator(".auth-panel").filter({ has: operations.getByRole("heading", { name: "Вход", exact: true }) });
+      await login.getByRole("textbox", { name: "Логин", exact: true }).fill("other-admin");
+      await login.getByLabel("Пароль", { exact: true }).fill("fixture-password");
+      await login.getByRole("button", { name: "Войти", exact: true }).click();
+      await publication.getByLabel("Название для клиентов", { exact: true }).waitFor();
+      await heldPublications.shift()({ ...capacity, public_name: "Ответ старой сессии" });
+      await operations.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await publication.getByLabel("Название для клиентов", { exact: true }).inputValue(), "Сервер новой сессии");
+      assert.equal(await operations.locator(".toast").innerText(), "Вход выполнен");
+      await publication.getByLabel("Показывать клиентам", { exact: true }).uncheck();
+      await publication.getByRole("button", { name: "Сохранить публикацию", exact: true }).click();
+      await until(() => heldPublications.length === 1, "hide failure was not held");
+      await heldPublications.shift()({ detail: "Не удалось сохранить публикацию" }, 503);
+      await publication.getByRole("alert").waitFor();
+      assert.equal(await publication.getByLabel("Показывать клиентам", { exact: true }).isChecked(), false,
+        "publication errors must preserve the draft for retry");
+      await publication.getByRole("button", { name: "Сохранить публикацию", exact: true }).click();
+      await until(() => heldPublications.length === 1, "hide retry was not held");
+      capacity = { ...capacity, is_published: false };
+      await heldPublications.shift()(capacity);
+      await publication.getByRole("status").waitFor();
+      assert.equal(await publication.getByLabel("Показывать клиентам", { exact: true }).isChecked(), false);
+      assert.equal(await card.locator(".status").textContent(), "unhealthy", "hiding must not alter health");
+      await publication.getByLabel("Код страны", { exact: true }).focus();
+      await operations.keyboard.press("Tab");
+      assert.equal(await publication.getByLabel("Показывать клиентам", { exact: true }).evaluate((element) =>
+        element === document.activeElement && element.matches(":focus-visible")), true);
+      assert.ok(await publication.getByLabel("Показывать клиентам", { exact: true }).evaluate((element) =>
+        element.closest("label").getBoundingClientRect().height >= 44), "publication checkbox needs a usable touch target");
+      const inspectPanel = async (target, prefix) => {
+      for (const width of [1280, 390]) {
+        await operations.setViewportSize({ width, height: 1000 });
+        assert.equal(await target.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true);
+        await target.screenshot({ path: path.join(output, `${prefix}-${width}.png`), style: ".vpn-admin-nav { visibility:hidden !important; }" });
+        await target.evaluate((root) => {
+          const sizes = [root, ...root.querySelectorAll("*")].map((element) => ({ element,
+            font: parseFloat(getComputedStyle(element).fontSize), line: parseFloat(getComputedStyle(element).lineHeight) }));
+          sizes.forEach(({ element, font, line }) => {
+            element.style.setProperty("font-size", `${font * 2}px`, "important");
+            if (Number.isFinite(line)) element.style.setProperty("line-height", `${line * 2}px`, "important");
+          });
+        });
+        assert.equal(await target.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, `${width}px ${prefix} must reflow at 200% text`);
+        const status = target.locator(".status");
+        if (await status.count()) assert.equal(await status.evaluate((element) => {
+          const range = document.createRange(); range.selectNodeContents(element); return range.getClientRects().length;
+        }), 1, "the endpoint status must stay readable as one word");
+        await target.screenshot({ path: path.join(output, `${prefix}-${width}-text-200.png`), style: ".vpn-admin-nav { visibility:hidden !important; }" });
+        await target.evaluate((root) => [root, ...root.querySelectorAll("*")].forEach((element) => {
+          element.style.removeProperty("font-size"); element.style.removeProperty("line-height");
+        }));
+      }
+      };
+      await inspectPanel(card, "admin-publication");
+      await operations.locator(".vpn-admin-nav").getByRole("link", { name: "Клиенты", exact: true }).click();
+      await subscription.getByText("3 из 3", { exact: true }).waitFor();
+      profile = await openProfile();
+      await inspectPanel(profile, "admin-device-usage");
+      assert.deepEqual(errors, []);
+      console.log("PASS: authoritative logical-device usage with 1000-key cap, failure/retry/customer epochs/create/revoke/edit; separate publication validation/duplicate/stale/health/capacity; synthetic HTTP only");
+    } finally { await operations.close(); }
+  }
+
+  if (!process.argv.includes("--profile-create-only") && !process.argv.includes("--admin-operations-only")) {
     const invitationPage = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
     invitationPage.setDefaultTimeout(10000);
     invitationPage.on("pageerror", (error) => errors.push(error.message));
@@ -872,7 +1156,7 @@ try {
     }
   }
 
-  if (!process.argv.includes("--invitations-only")) {
+  if (!process.argv.includes("--invitations-only") && !process.argv.includes("--admin-operations-only")) {
   const creationPage = await browser.newPage();
   creationPage.setDefaultTimeout(10000);
   creationPage.on("pageerror", (error) => errors.push(error.message));
@@ -934,6 +1218,7 @@ try {
     for (const outcome of ["success", "failure"]) {
       for (const destination of ["new-form", "other-customer"]) {
         keys = fixtureKeys();
+        deviceUsages = fixtureUsages();
         reloadFailure = false;
         await creationPage.reload({ waitUntil: "domcontentloaded" });
         const original = await openCreationForm(11, `Поздний ответ: ${outcome}`);
@@ -988,11 +1273,12 @@ try {
   } finally {
     await creationPage.close();
     keys = fixtureKeys();
+    deviceUsages = fixtureUsages();
     reloadFailure = false;
   }
   }
 
-  if (!process.argv.includes("--profile-create-only") && !process.argv.includes("--invitations-only")) {
+  if (!process.argv.includes("--profile-create-only") && !process.argv.includes("--invitations-only") && !process.argv.includes("--admin-operations-only")) {
   await page.goto(appUrl);
   assert.equal(await page.evaluate(() => window.location.hash), "");
   assert.match(await page.getByRole("button", { name: "домены", exact: true }).getAttribute("class"), /active-chip/);

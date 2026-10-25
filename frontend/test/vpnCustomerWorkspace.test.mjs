@@ -198,15 +198,18 @@ test("profile issuance errors use bounded Russian recovery copy and never echo b
 test("profile issue form shows occupied slots and a local recovery action without raising the limit", async () => {
   const source = await readFile(new URL("../src/VpnCustomerWorkspacePanel.tsx", import.meta.url), "utf8");
   const form = source.match(/function renderAccessKeyForm\([\s\S]*?\r?\n  function renderAccessKey\(/)?.[0] ?? "";
-  assert.match(source, /const usedDeviceSlots = countReservedVpnDeviceSlots\(selectedAccessKeys, subscription\.id\)/);
-  assert.match(source, /\{usedDeviceSlots\} из \{subscription\.max_devices\}/);
-  assert.match(form, /role="alert"/);
+  assert.doesNotMatch(source, /countReservedVpnDeviceSlots\(selectedAccessKeys/);
+  assert.match(source, /api\.getVpnSubscriptionDeviceUsage\(subscriptionId\)/);
+  assert.match(source, /\{usage\.devices_used\} из \{usage\.max_devices\}/);
+  assert.match(form, /role=\{accessKeyIssueError \|\| deviceLimitReached \? "alert" : undefined\}/);
   assert.match(form, /accessKeyIssueError/);
-  assert.match(form, /usedDeviceSlots >= subscription\.max_devices/);
+  assert.match(form, /usage\.devices_used >= usage\.max_devices/);
   assert.match(form, /disabled=\{[^}]*deviceLimitReached/);
   assert.match(form, /onClick=\{\(\) => beginSubscriptionEdit\(subscription\)\}/);
   assert.match(form, /Изменить лимит подписки/);
-  assert.match(form, /Приостановленные профили и профили с ошибкой тоже занимают места/);
+  assert.match(form, /Проверяем занятые места/);
+  assert.match(form, /Не удалось проверить занятые места/);
+  assert.match(form, /Проверить ещё раз/);
   const begin = source.match(/function beginAccessKeyCreate\([\s\S]*?\r?\n  async function saveAccessKey/)?.[0] ?? "";
   assert.doesNotMatch(begin, /max_devices|updateVpnSubscription/);
   const openButton = source.match(/onClick=\{\(\) => beginAccessKeyCreate\(subscription\)\}[\s\S]*?>[\s\S]*?Выдать новый профиль/)?.[0];
@@ -218,7 +221,8 @@ test("profile creation guards duplicate calls and separates a saved profile from
   const save = source.match(/async function saveAccessKey\([\s\S]*?\r?\n  async function retryAccessKeyProvision/)?.[0] ?? "";
   assert.match(save, /creatingAccessKeyRef\.current/);
   assert.ok(save.indexOf("creatingAccessKeyRef.current = true") < save.indexOf("await api.createVpnAccessKey"));
-  assert.match(save, /countReservedVpnDeviceSlots\(selectedAccessKeys, subscription\.id\) >= subscription\.max_devices/);
+  assert.match(save, /!usage/);
+  assert.match(save, /usage\.devices_used >= usage\.max_devices/);
   assert.match(save, /setAccessKeyIssueError\(vpnProfileIssueError\(error\)\)/);
   assert.match(save, /setCreatedAccessKeys\(/);
   assert.match(save, /accessKeyFormVersionRef\.current === formVersion/);

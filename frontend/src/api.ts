@@ -487,6 +487,21 @@ export type VpnEndpointCapacity = {
   occupied_profiles: number;
   max_active_profiles: number | null;
   capacity_warning_percent: number;
+  is_published: boolean;
+  public_name: string | null;
+  country_code: string | null;
+};
+
+export type VpnEndpointPublicationUpdate = {
+  is_published: boolean;
+  public_name: string;
+  country_code: string;
+};
+
+export type VpnSubscriptionDeviceUsage = {
+  subscription_id: number;
+  devices_used: number;
+  max_devices: number;
 };
 
 export type VpnEndpointCapacityUpdate = {
@@ -1102,6 +1117,13 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+  updateVpnEndpointPublication: (id: number, payload: VpnEndpointPublicationUpdate) =>
+    request<VpnEndpointCapacity>(`/control/vpn/endpoints/${id}/publication`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  getVpnSubscriptionDeviceUsage: (id: number) =>
+    request<VpnSubscriptionDeviceUsage>(`/control/vpn/subscriptions/${id}/device-usage`, { cache: "no-store" }),
   getVpnReleaseReadiness: () =>
     request<VpnReleaseReadiness>("/control/vpn/release-readiness"),
   confirmVpnEndpointExternalVerification: (id: number) =>

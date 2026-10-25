@@ -196,6 +196,14 @@ button {
   overflow-wrap: anywhere;
 }
 
+.vpn-capacity-head {
+  flex-wrap: wrap;
+}
+
+.vpn-capacity-form > .checkbox {
+  min-height: 44px;
+}
+
 .vpn-capacity-usage {
   flex-wrap: wrap;
 }
