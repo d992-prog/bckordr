@@ -92,6 +92,13 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def scoped_request_validation_handler(request, exc):
+        broadcast_prefix = settings.api_prefix.rstrip("/") + "/control/vpn/broadcasts"
+        if request.url.path == broadcast_prefix or request.url.path.startswith(broadcast_prefix + "/"):
+            return JSONResponse(
+                {"detail": "vpn_broadcast_invalid_request"},
+                status_code=422,
+                headers={"Cache-Control": "no-store"},
+            )
         portal_prefix = settings.api_prefix.rstrip("/") + "/vpn-portal"
         if is_portal_path(request.url.path, portal_prefix):
             return JSONResponse(
