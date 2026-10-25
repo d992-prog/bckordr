@@ -1117,8 +1117,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ confirmation: "ГОТОВО К РЕЛИЗУ" }),
     }),
-  getVpnFriendInvitations: () =>
-    request<VpnFriendInvitation[]>("/control/vpn/friend-invitations"),
+  getVpnFriendInvitations: (options?: { beforeSlot?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (options?.beforeSlot !== undefined) params.set("before_slot", String(options.beforeSlot));
+    if (options?.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.toString();
+    return request<VpnFriendInvitation[]>(`/control/vpn/friend-invitations${query ? `?${query}` : ""}`);
+  },
   issueVpnFriendInvitation: () =>
     request<VpnFriendInvitationIssued>("/control/vpn/friend-invitations", {
       method: "POST",

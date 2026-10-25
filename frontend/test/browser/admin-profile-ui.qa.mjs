@@ -1,6 +1,7 @@
 // Actual admin bundle, synthetic HTTP responses only; no production connection.
 // From frontend: npm run build, then node test/browser/admin-profile-ui.qa.mjs.
 // Race regression only: node test/browser/admin-profile-ui.qa.mjs --profile-create-only.
+// Invitation regressions only: node test/browser/admin-profile-ui.qa.mjs --invitations-only.
 // Uses existing PLAYWRIGHT_MODULE_PATH / CHROMIUM_EXECUTABLE_PATH overrides when needed.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -591,6 +592,287 @@ try {
       `${label}: the full URI must stay out of console output`);
   };
 
+  if (!process.argv.includes("--profile-create-only")) {
+    const invitationPage = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    invitationPage.setDefaultTimeout(10000);
+    invitationPage.on("pageerror", (error) => errors.push(error.message));
+    const invitationLogs = [];
+    invitationPage.on("console", (message) => invitationLogs.push(message.text()));
+    await invitationPage.addInitScript(() => {
+      window.__invitationPosts = 0;
+      window.__copies = [];
+      const originalFetch = window.fetch;
+      window.fetch = (input, init) => {
+        if (String(input).endsWith("/api/control/vpn/friend-invitations") && init?.method === "POST") {
+          window.__invitationPosts += 1;
+        }
+        return originalFetch(input, init);
+      };
+      Object.defineProperty(navigator, "clipboard", { configurable: true,
+        value: { writeText: async (value) => { window.__copies.push(value); } } });
+    });
+    const invitation = (slot, state = "unused") => ({
+      slot, invite_state: state, telegram_user_id: null, telegram_username: null,
+      display_name: null, subscription_expires_at: null, provisioning_error_code: null,
+      can_rotate: state === "unused", can_retry: false, can_disable: state === "active",
+    });
+    let firstPage = [];
+    let failRefresh = false;
+    let releaseIssue;
+    let releaseRotation;
+    let holdOlder = false;
+    let olderFailure = false;
+    let olderRows = [];
+    const heldOlder = [];
+    const cursors = [];
+    let disableCalls = 0;
+    let firstPageCalls = 0;
+    let authUserId = 2;
+    let holdMutation = false;
+    const heldMutations = [];
+    await invitationPage.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (holdMutation && request.method() === "POST" && url.pathname.startsWith("/api/control/vpn/friend-invitations")) {
+        return new Promise((resolve) => heldMutations.push(async (body, status = 200) => {
+          await json(route, body, status); resolve();
+        }));
+      }
+      if (url.pathname === "/api/auth/login") return json(route, { has_feature_access: true,
+        user: { id: authUserId++, username: "next-synthetic-admin", role: "owner", status: "active", language: "ru", ...timestamps } });
+      if (url.pathname === "/api/control/vpn/friend-invitations" && request.method() === "POST") {
+        return new Promise((resolve) => { releaseIssue = async (slot) => {
+          await json(route, { invitation: invitation(slot), invite_link: `https://t.me/synthetic_bot?start=i_fixture_${slot}` });
+          resolve();
+        }; });
+      }
+      if (url.pathname.endsWith("/rotate")) return new Promise((resolve) => {
+        releaseRotation = async () => { await json(route, { detail: "Не удалось обновить приглашение" }, 503); resolve(); };
+      });
+      if (url.pathname === "/api/auth/logout") return json(route, { detail: "Вы вышли" });
+      if (url.pathname.endsWith("/disable")) {
+        disableCalls += 1;
+        return json(route, invitation(Number(url.pathname.split("/").at(-2)), "disabled"));
+      }
+      if (url.pathname === "/api/control/vpn/friend-invitations") {
+        const cursor = url.searchParams.get("before_slot");
+        if (!cursor) { firstPageCalls += 1; return json(route, firstPage); }
+        cursors.push(Number(cursor));
+        if (holdOlder) return new Promise((resolve) => heldOlder.push(async (rows) => {
+          await json(route, rows); resolve();
+        }));
+        return olderFailure ? json(route, { detail: "Приглашения временно недоступны" }, 503) : json(route, olderRows);
+      }
+      if (failRefresh && url.pathname === "/api/control/vpn/access-keys") {
+        return json(route, { detail: "Не удалось обновить список" }, 503);
+      }
+      return handleApiRoute(route);
+    });
+    const section = invitationPage.locator(".vpn-friend-invitations");
+    const rows = section.locator(".vpn-friend-invitation-row");
+    const create = section.getByRole("button", { name: "Создать приглашение", exact: true });
+    const older = section.getByRole("button", { name: "Загрузить ещё", exact: true });
+    const refresh = async () => {
+      const response = invitationPage.waitForResponse((response) => new URL(response.url()).pathname === "/api/control/vpn/friend-invitations"
+        && !new URL(response.url()).search);
+      await invitationPage.locator(".toolbar-actions").getByRole("button", { name: "Обновить", exact: true }).click();
+      await response;
+      await invitationPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    };
+    const signInAsNextUser = async () => {
+      const login = invitationPage.locator(".auth-panel").filter({ has: invitationPage.getByRole("heading", { name: "Вход", exact: true }) });
+      await login.getByRole("textbox", { name: "Логин", exact: true }).fill("synthetic-admin");
+      await login.getByLabel("Пароль", { exact: true }).fill("fixture-password");
+      await login.getByRole("button", { name: "Войти", exact: true }).click();
+      await rows.filter({ hasText: `#${firstPage[0].slot}` }).waitFor();
+    };
+    try {
+      await invitationPage.goto(`${appUrl}#vpn/customers`);
+      await section.getByRole("heading", { name: "Приглашения", exact: true }).waitFor();
+      assert.equal(await rows.count(), 0);
+      assert.equal(await create.isEnabled(), true, "empty lists must allow creation");
+      const postCount = await create.evaluate((element) => { element.click(); element.click(); return window.__invitationPosts; });
+      assert.equal(postCount, 1, "two synchronous clicks must issue only one invitation POST");
+      await until(() => Boolean(releaseIssue), "invitation POST was not held");
+      failRefresh = true;
+      await releaseIssue(301);
+      await section.getByRole("button", { name: "Копировать ссылку", exact: true }).waitFor();
+      await invitationPage.locator(".toast").filter({ hasText: "Приглашение создано, но список не обновился" }).waitFor();
+      assert.equal(await rows.count(), 1, "successful issue must merge its safe view before a failed refresh");
+      await section.getByRole("button", { name: "Копировать ссылку", exact: true }).click();
+      assert.deepEqual(await invitationPage.evaluate(() => window.__copies), ["https://t.me/synthetic_bot?start=i_fixture_301"]);
+      assert.equal((await invitationPage.locator(".toast").innerText()).includes("i_fixture_"), false);
+      failRefresh = false;
+      firstPage = [invitation(501)];
+      await refresh();
+      assert.equal(await section.getByRole("button", { name: "Копировать ссылку", exact: true }).count(), 1,
+        "a link absent from the first page must remain available");
+      await rows.filter({ hasText: "#301" }).getByRole("button", { name: "Обновить ссылку", exact: true }).click();
+      await until(() => Boolean(releaseRotation), "rotation was not held");
+      assert.equal(await section.locator(".vpn-friend-invitation-link").count(), 0, "rotation must forget the old link before its reply");
+      await releaseRotation();
+      await invitationPage.locator(".toast").filter({ hasText: "Не удалось обновить приглашение" }).waitFor();
+      assert.equal(await section.locator(".vpn-friend-invitation-link").count(), 0, "failed rotation must not restore the old link");
+      releaseIssue = null;
+      await create.click();
+      await until(() => Boolean(releaseIssue), "replacement invitation POST was not held");
+      failRefresh = true;
+      await releaseIssue(302);
+      await section.getByRole("button", { name: "Копировать ссылку", exact: true }).waitFor();
+      failRefresh = false;
+      firstPage = [invitation(501), invitation(302, "active")];
+      await refresh();
+      assert.equal(await section.locator(".vpn-friend-invitation-link").count(), 0, "redeemed state must remove the link");
+      invitationPage.once("dialog", (dialog) => dialog.dismiss());
+      await section.getByRole("button", { name: "Отключить", exact: true }).click();
+      assert.equal(disableCalls, 0, "dismissed confirmation must not disable access");
+
+      firstPage = Array.from({ length: 11 }, (_, index) => invitation(600 - index));
+      await refresh();
+      assert.equal(await rows.count(), 11);
+      assert.equal(await create.isEnabled(), true, "eleven rows must allow more creation");
+      releaseIssue = null;
+      await create.click();
+      await until(() => Boolean(releaseIssue), "twelfth invitation POST was not held");
+      failRefresh = true;
+      await releaseIssue(601);
+      await section.getByRole("button", { name: "Копировать ссылку", exact: true }).waitFor();
+      failRefresh = false;
+      firstPage = [invitation(601, "disabled"), ...firstPage];
+      await refresh();
+      assert.equal(await section.locator(".vpn-friend-invitation-link").count(), 0, "revoked state must remove the link");
+
+      firstPage = [];
+      await refresh();
+      releaseIssue = null;
+      await create.click();
+      await until(() => Boolean(releaseIssue), "old retained invitation POST was not held");
+      failRefresh = true;
+      await releaseIssue(1);
+      await section.getByRole("button", { name: "Копировать ссылку", exact: true }).waitFor();
+      failRefresh = false;
+      firstPage = Array.from({ length: 100 }, (_, index) => invitation(200 - index));
+      await refresh();
+      assert.equal(await rows.count(), 101, "a retained older link stays visible beside the first page");
+      olderRows = Array.from({ length: 99 }, (_, index) => invitation(100 - index));
+      await older.click();
+      await rows.filter({ hasText: "#2" }).last().waitFor();
+      assert.deepEqual(cursors, [101], "an isolated retained ID must not advance the contiguous server cursor");
+      assert.equal(await rows.count(), 200, "retaining ID1 must not skip IDs100..2");
+      assert.equal(await section.getByRole("button", { name: "Копировать ссылку", exact: true }).count(), 1);
+      cursors.length = 0;
+
+      firstPage = Array.from({ length: 100 }, (_, index) => invitation(300 - index));
+      await invitationPage.reload();
+      await older.waitFor();
+      holdOlder = true;
+      await older.evaluate((element) => { element.click(); element.click(); });
+      await until(() => heldOlder.length === 1, "older page was not requested");
+      assert.deepEqual(cursors, [201], "older page uses the lowest ID and prevents duplicate requests");
+      await heldOlder.shift()([invitation(201, "disabled"), ...Array.from({ length: 99 }, (_, index) => invitation(200 - index))]);
+      await rows.filter({ hasText: "#102" }).waitFor();
+      assert.equal(await rows.count(), 199, "page merge must deduplicate IDs");
+      holdOlder = false;
+      olderFailure = true;
+      await older.click();
+      await section.getByRole("alert").waitFor();
+      assert.equal(await rows.count(), 199, "load failure must retain rows");
+      olderFailure = false;
+      olderRows = [invitation(101), invitation(100)];
+      await older.click();
+      await rows.filter({ hasText: "#100" }).waitFor();
+      assert.equal(await older.count(), 0, "a short page ends pagination");
+      const displayed = await section.locator(".vpn-friend-invitation-slot").allTextContents();
+      assert.deepEqual(displayed.map((text) => Number(text.slice(1))), Array.from({ length: 201 }, (_, index) => 300 - index));
+
+      await refresh();
+      holdOlder = true;
+      await older.click();
+      await until(() => heldOlder.length === 1, "stale page was not held");
+      firstPage = Array.from({ length: 100 }, (_, index) => invitation(800 - index));
+      await refresh();
+      await heldOlder.shift()([invitation(200)]);
+      await invitationPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      assert.equal(await rows.count(), 100, "a stale page after reset must be ignored");
+      assert.equal(await rows.filter({ hasText: "#200" }).count(), 0);
+      assert.equal(await older.isEnabled(), true, "a stale response must not block current pagination");
+
+      await older.click();
+      await until(() => heldOlder.length === 1, "session-change page was not held");
+      await invitationPage.getByRole("button", { name: "Выйти", exact: true }).click();
+      await section.waitFor({ state: "detached" });
+      await heldOlder.shift()([invitation(700)]);
+      assert.equal(await section.count(), 0, "a page completed after logout must not restore the workspace");
+      firstPage = [invitation(1500)];
+      await signInAsNextUser();
+      for (const action of ["issue", "rotate", "retry", "disable"]) {
+        for (const outcome of ["success", "failure"]) {
+          firstPage = [{ ...invitation(901, action === "retry" ? "failed" : action === "disable" ? "active" : "unused"), can_retry: action === "retry" }];
+          await refresh();
+          holdMutation = true;
+          if (action === "disable") invitationPage.once("dialog", (dialog) => dialog.accept());
+          const label = { issue: "Создать приглашение", rotate: "Обновить ссылку", retry: "Повторить выдачу", disable: "Отключить" }[action];
+          await section.getByRole("button", { name: label, exact: true }).click();
+          await until(() => heldMutations.length === 1, `${action} response was not held`);
+          await invitationPage.getByRole("button", { name: "Выйти", exact: true }).click();
+          await section.waitFor({ state: "detached" });
+          firstPage = [invitation(1500)];
+          await signInAsNextUser();
+          const reloadsBeforeReply = firstPageCalls;
+          const mutationReply = invitationPage.waitForResponse((response) => response.request().method() === "POST"
+            && new URL(response.url()).pathname.startsWith("/api/control/vpn/friend-invitations"));
+          const result = ["issue", "rotate"].includes(action)
+            ? { invitation: invitation(902), invite_link: "https://t.me/synthetic_bot?start=i_late_fixture" }
+            : invitation(901, "disabled");
+          await heldMutations.shift()(outcome === "success" ? result : { detail: "Поздний ответ старой сессии" }, outcome === "success" ? 200 : 503);
+          await mutationReply;
+          await invitationPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          assert.equal(firstPageCalls, reloadsBeforeReply, `${action}/${outcome}: an old session must not reload the new workspace`);
+          assert.equal(await rows.count(), 1, `${action}/${outcome}: an old row must not enter the new workspace`);
+          assert.equal(await section.locator(".vpn-friend-invitation-link").count(), 0, `${action}/${outcome}: an old secret must not enter the new workspace`);
+          assert.equal(await invitationPage.locator(".toast").innerText(), "Вход выполнен", `${action}/${outcome}: old feedback must not overwrite the new session`);
+          holdMutation = false;
+        }
+      }
+      firstPage = [invitation(800), invitation(799, "active"), invitation(798, "disabled")];
+      await refresh();
+      await rows.first().waitFor();
+      for (const width of [1280, 390]) {
+        await invitationPage.setViewportSize({ width, height: 1000 });
+        await section.scrollIntoViewIfNeeded();
+        const bounds = await section.evaluate((element) => ({ width: element.clientWidth, content: element.scrollWidth,
+          buttons: [...element.querySelectorAll("button")].filter((button) => button.getBoundingClientRect().height < 40).length }));
+        assert.ok(bounds.content <= bounds.width + 1, `${width}px invitations must not overflow`);
+        assert.equal(bounds.buttons, 0, `${width}px invitation actions must retain usable targets`);
+        await section.screenshot({ path: path.join(output, `admin-invitations-${width}.png`),
+          style: ".vpn-admin-nav { visibility: hidden !important; }" });
+        await section.evaluate((root) => {
+          const sizes = [root, ...root.querySelectorAll("*")].map((element) => ({ element,
+            fontSize: parseFloat(getComputedStyle(element).fontSize), lineHeight: parseFloat(getComputedStyle(element).lineHeight) }));
+          sizes.forEach(({ element, fontSize, lineHeight }) => {
+            element.style.setProperty("font-size", `${fontSize * 2}px`, "important");
+            if (Number.isFinite(lineHeight)) element.style.setProperty("line-height", `${lineHeight * 2}px`, "important");
+          });
+        });
+        assert.equal(await section.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true,
+          `${width}px invitations must reflow at 200% text`);
+        await section.screenshot({ path: path.join(output, `admin-invitations-${width}-text-200.png`),
+          style: ".vpn-admin-nav { visibility: hidden !important; }" });
+        await section.evaluate((root) => [root, ...root.querySelectorAll("*")].forEach((element) => {
+          element.style.removeProperty("font-size"); element.style.removeProperty("line-height");
+        }));
+      }
+      assert.equal(invitationLogs.some((message) => message.includes("i_fixture_")), false);
+      assert.deepEqual(await invitationPage.evaluate(() => Object.values(localStorage).concat(Object.values(sessionStorage))
+        .filter((value) => value.includes("i_fixture_"))), []);
+      assert.deepEqual(errors, []);
+      console.log("PASS: mounted invitations empty/11+ creation, synchronous duplicate guard, failed-refresh link retention, rotation/redeemed/revoked cleanup, cursor merge/retry/end/stale-reset/logout, desktop/mobile/200% text; synthetic HTTP only");
+    } finally {
+      await invitationPage.close();
+    }
+  }
+
+  if (!process.argv.includes("--invitations-only")) {
   const creationPage = await browser.newPage();
   creationPage.setDefaultTimeout(10000);
   creationPage.on("pageerror", (error) => errors.push(error.message));
@@ -708,8 +990,9 @@ try {
     keys = fixtureKeys();
     reloadFailure = false;
   }
+  }
 
-  if (!process.argv.includes("--profile-create-only")) {
+  if (!process.argv.includes("--profile-create-only") && !process.argv.includes("--invitations-only")) {
   await page.goto(appUrl);
   assert.equal(await page.evaluate(() => window.location.hash), "");
   assert.match(await page.getByRole("button", { name: "домены", exact: true }).getAttribute("class"), /active-chip/);

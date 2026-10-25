@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 async function sources() {
-  return Promise.all([
+  return (await Promise.all([
     readFile(new URL("../src/App.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/VpnCustomerWorkspacePanel.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
-  ]);
+  ])).map((source) => source.replace(/\r\n/g, "\n"));
 }
 
 test("App loads only safe invitation list views and never owns a raw link", async () => {
@@ -23,16 +23,14 @@ test("App loads only safe invitation list views and never owns a raw link", asyn
   assert.doesNotMatch(appSource, /invite_link/);
 });
 
-test("workspace renders ten Russian invitation slots with guarded actions", async () => {
+test("workspace renders unlimited Russian invitations with guarded actions", async () => {
   const [, panelSource] = await sources();
 
-  assert.match(panelSource, /Тестовые приглашения\s*·\s*\{usedInvitationCount\}\/10/);
-  assert.match(panelSource, /friendInvitations\.map\(\(invitation\) =>/);
-  assert.match(panelSource, /const invitationsReady = friendInvitations\.length === 10/);
-  assert.match(
-    panelSource,
-    /invitationsReady && usedInvitationCount < 10 \? \(/,
-  );
+  assert.match(panelSource, /<h3>Приглашения<\/h3>/);
+  assert.doesNotMatch(panelSource, /usedInvitationCount|invitationsReady|Тестовые приглашения|\/10/);
+  assert.match(panelSource, /Создать приглашение/);
+  assert.match(panelSource, /7 дней[\s\S]*?7 дней/);
+  assert.match(panelSource, /Загрузить ещё/);
   for (const label of [
     "Не использовано",
     "Готовится",
@@ -44,10 +42,6 @@ test("workspace renders ten Russian invitation slots with guarded actions", asyn
   ]) {
     assert.ok(panelSource.includes(label), `missing Russian state label: ${label}`);
   }
-  assert.match(
-    panelSource,
-    /invitation\.invite_state !== "unused" \|\| invitation\.can_rotate/,
-  );
   assert.match(panelSource, /invitation\.can_rotate \? \(/);
   assert.match(panelSource, /invitation\.can_retry \? \(/);
   assert.match(panelSource, /invitation\.can_disable \? \(/);
@@ -96,8 +90,11 @@ test("one-time links disappear after the server reports a non-usable slot", asyn
 
   assert.match(
     panelSource,
-    /useEffect\(\(\) => \{[\s\S]*?friendInvitations[\s\S]*?invite_state === "unused"[\s\S]*?can_rotate[\s\S]*?setInvitationLinks[\s\S]*?\}, \[friendInvitations\]\)/,
+    /useEffect\(\(\) => \{[\s\S]*?forgetUnusableInvitationLinks\(friendInvitations\)[\s\S]*?\}, \[friendInvitations\]\)/,
   );
+  assert.match(panelSource, /rows\.filter\(\(invitation\) => !\(invitation\.invite_state === "unused" && invitation\.can_rotate\)\)/);
+  assert.match(panelSource, /Object\.entries\(current\)\.filter\(\(\[slot\]\) => !unusableSlots\.has\(Number\(slot\)\)\)/);
+  assert.match(panelSource, /forgetUnusableInvitationLinks\(page\)/);
 });
 
 test("disable requires confirmation before the mutation", async () => {

@@ -266,7 +266,12 @@ function friendInvitationIdentity(invitation: VpnFriendInvitation) {
   if (invitation.telegram_user_id) {
     return `Telegram ID ${invitation.telegram_user_id}`;
   }
-  return invitation.can_rotate ? "Ожидает друга" : "Свободный слот";
+  return invitation.can_rotate ? "Ожидает друга" : "Приглашение";
+}
+
+function mergeFriendInvitations(...pages: VpnFriendInvitation[][]) {
+  return [...new Map(pages.flat().map((invitation) => [invitation.slot, invitation])).values()]
+    .sort((left, right) => right.slot - left.slot);
 }
 
 export function VpnCustomerWorkspace({
@@ -287,6 +292,14 @@ export function VpnCustomerWorkspace({
   const [creatingCustomer, setCreatingCustomer] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [invitationLinks, setInvitationLinks] = useState<Record<number, string>>({});
+  const [invitationRows, setInvitationRows] = useState(() => mergeFriendInvitations(friendInvitations));
+  const [hasOlderInvitations, setHasOlderInvitations] = useState(friendInvitations.length === 100);
+  const [loadingOlderInvitations, setLoadingOlderInvitations] = useState(false);
+  const [olderInvitationsError, setOlderInvitationsError] = useState<string | null>(null);
+  const issuingInvitationRef = useRef(false);
+  const invitationPageRequestRef = useRef<object | null>(null);
+  const invitationCursorRef = useRef<number | undefined>(undefined);
+  const invitationSessionRef = useRef<object | null>(null);
   const [subscriptionForm, setSubscriptionForm] = useState<SubscriptionForm>(
     EMPTY_SUBSCRIPTION_FORM,
   );
@@ -343,10 +356,6 @@ export function VpnCustomerWorkspace({
     () => new Map(workers.map((worker) => [worker.id, worker])),
     [workers],
   );
-  const usedInvitationCount = friendInvitations.filter(
-    (invitation) => invitation.invite_state !== "unused" || invitation.can_rotate,
-  ).length;
-  const invitationsReady = friendInvitations.length === 10;
 
   useEffect(() => {
     if (
@@ -376,28 +385,71 @@ export function VpnCustomerWorkspace({
   }, [selectedCustomerId]);
 
   useEffect(() => {
-    const usableSlots = new Set(
-      friendInvitations
-        .filter(
-          (invitation) =>
-            invitation.invite_state === "unused" && invitation.can_rotate,
-        )
+    invitationSessionRef.current = {};
+    return () => { invitationSessionRef.current = null; };
+  }, []);
+
+  useEffect(() => {
+    invitationPageRequestRef.current = null;
+    invitationCursorRef.current = friendInvitations[friendInvitations.length - 1]?.slot;
+    setLoadingOlderInvitations(false);
+    setOlderInvitationsError(null);
+    setHasOlderInvitations(friendInvitations.length === 100);
+    setInvitationRows((current) => mergeFriendInvitations(
+      current.filter((invitation) => invitationLinks[invitation.slot]),
+      friendInvitations,
+    ));
+    forgetUnusableInvitationLinks(friendInvitations);
+    return () => { invitationPageRequestRef.current = null; };
+  }, [friendInvitations]);
+
+  function forgetUnusableInvitationLinks(rows: VpnFriendInvitation[]) {
+    const unusableSlots = new Set(
+      rows.filter((invitation) => !(invitation.invite_state === "unused" && invitation.can_rotate))
         .map((invitation) => invitation.slot),
     );
     setInvitationLinks((current) => {
       const retained = Object.fromEntries(
-        Object.entries(current).filter(([slot]) => usableSlots.has(Number(slot))),
+        Object.entries(current).filter(([slot]) => !unusableSlots.has(Number(slot))),
       );
       return Object.keys(retained).length === Object.keys(current).length
         ? current
         : retained;
     });
-  }, [friendInvitations]);
+  }
+
+  async function loadOlderInvitations() {
+    const beforeSlot = invitationCursorRef.current;
+    if (invitationPageRequestRef.current || !hasOlderInvitations || beforeSlot === undefined) return;
+    const request = {};
+    invitationPageRequestRef.current = request;
+    setLoadingOlderInvitations(true);
+    setOlderInvitationsError(null);
+    try {
+      const page = await api.getVpnFriendInvitations({ beforeSlot });
+      if (invitationPageRequestRef.current !== request) return;
+      invitationCursorRef.current = page[page.length - 1]?.slot;
+      setInvitationRows((current) => mergeFriendInvitations(current, page));
+      forgetUnusableInvitationLinks(page);
+      setHasOlderInvitations(page.length === 100);
+    } catch {
+      if (invitationPageRequestRef.current !== request) return;
+      setOlderInvitationsError("Не удалось загрузить приглашения. Попробуйте ещё раз.");
+    } finally {
+      if (invitationPageRequestRef.current === request) {
+        invitationPageRequestRef.current = null;
+        setLoadingOlderInvitations(false);
+      }
+    }
+  }
 
   async function reloadAfterSavedInvitation(failureMessage?: string) {
+    const session = invitationSessionRef.current;
+    if (!session) return;
     try {
       await reload();
     } catch {
+      if (invitationSessionRef.current !== session) return;
       notify(
         "error",
         failureMessage ?? "Изменение сохранено, но список не обновился",
@@ -409,6 +461,7 @@ export function VpnCustomerWorkspace({
     issued: VpnFriendInvitationIssued,
     successMessage: string,
   ) {
+    setInvitationRows((current) => mergeFriendInvitations(current, [issued.invitation]));
     setInvitationLinks((current) => ({
       ...current,
       [issued.invitation.slot]: issued.invite_link,
@@ -420,20 +473,25 @@ export function VpnCustomerWorkspace({
   }
 
   async function issueFriendInvitation() {
-    if (!invitationsReady || usedInvitationCount >= 10) {
+    const session = invitationSessionRef.current;
+    if (!session || issuingInvitationRef.current || busyAction !== null) {
       return;
     }
+    issuingInvitationRef.current = true;
     setBusyAction("friend-invitation-issue");
     try {
       const issued = await api.issueVpnFriendInvitation();
-      await rememberIssuedInvitation(issued, "Тестовое приглашение создано");
+      if (invitationSessionRef.current !== session) return;
+      await rememberIssuedInvitation(issued, "Приглашение создано");
     } catch (error) {
+      if (invitationSessionRef.current !== session) return;
       notify(
         "error",
         error instanceof Error ? error.message : "Не удалось создать приглашение",
       );
     } finally {
-      setBusyAction(null);
+      issuingInvitationRef.current = false;
+      if (invitationSessionRef.current === session) setBusyAction(null);
     }
   }
 
@@ -446,65 +504,78 @@ export function VpnCustomerWorkspace({
   }
 
   async function rotateFriendInvitation(invitation: VpnFriendInvitation) {
-    if (!invitation.can_rotate) {
+    const session = invitationSessionRef.current;
+    if (!session || !invitation.can_rotate) {
       return;
     }
     setBusyAction(`friend-invitation-rotate-${invitation.slot}`);
     forgetInvitationLink(invitation.slot);
     try {
       const issued = await api.rotateVpnFriendInvitation(invitation.slot);
-      await rememberIssuedInvitation(issued, `Ссылка для слота ${invitation.slot} обновлена`);
+      if (invitationSessionRef.current !== session) return;
+      await rememberIssuedInvitation(issued, `Ссылка приглашения #${invitation.slot} обновлена`);
     } catch (error) {
+      if (invitationSessionRef.current !== session) return;
       notify(
         "error",
         error instanceof Error ? error.message : "Не удалось обновить приглашение",
       );
     } finally {
-      setBusyAction(null);
+      if (invitationSessionRef.current === session) setBusyAction(null);
     }
   }
 
   async function retryFriendInvitation(invitation: VpnFriendInvitation) {
-    if (!invitation.can_retry) {
+    const session = invitationSessionRef.current;
+    if (!session || !invitation.can_retry) {
       return;
     }
     setBusyAction(`friend-invitation-retry-${invitation.slot}`);
     try {
-      await api.retryVpnFriendInvitation(invitation.slot);
-      notify("success", `Повторная выдача для слота ${invitation.slot} запланирована`);
+      const saved = await api.retryVpnFriendInvitation(invitation.slot);
+      if (invitationSessionRef.current !== session) return;
+      setInvitationRows((current) => mergeFriendInvitations(current, [saved]));
+      forgetUnusableInvitationLinks([saved]);
+      notify("success", `Повторная выдача по приглашению #${invitation.slot} запланирована`);
       await reloadAfterSavedInvitation();
     } catch (error) {
+      if (invitationSessionRef.current !== session) return;
       notify(
         "error",
         error instanceof Error ? error.message : "Не удалось повторить выдачу",
       );
     } finally {
-      setBusyAction(null);
+      if (invitationSessionRef.current === session) setBusyAction(null);
     }
   }
 
   async function disableFriendInvitation(invitation: VpnFriendInvitation) {
+    const session = invitationSessionRef.current;
     if (
+      !session ||
       !invitation.can_disable ||
       !window.confirm(
-        `Отключить участника в слоте ${invitation.slot}? Он потеряет доступ к личному кабинету и VPN.`,
+        `Отключить участника по приглашению #${invitation.slot}? Он потеряет доступ к личному кабинету и VPN.`,
       )
     ) {
       return;
     }
     setBusyAction(`friend-invitation-disable-${invitation.slot}`);
     try {
-      await api.disableVpnFriendInvitation(invitation.slot);
+      const saved = await api.disableVpnFriendInvitation(invitation.slot);
+      if (invitationSessionRef.current !== session) return;
+      setInvitationRows((current) => mergeFriendInvitations(current, [saved]));
       forgetInvitationLink(invitation.slot);
-      notify("success", `Доступ участника в слоте ${invitation.slot} отключён`);
+      notify("success", `Доступ по приглашению #${invitation.slot} отключён`);
       await reloadAfterSavedInvitation();
     } catch (error) {
+      if (invitationSessionRef.current !== session) return;
       notify(
         "error",
         error instanceof Error ? error.message : "Не удалось отключить участника",
       );
     } finally {
-      setBusyAction(null);
+      if (invitationSessionRef.current === session) setBusyAction(null);
     }
   }
 
@@ -973,27 +1044,25 @@ export function VpnCustomerWorkspace({
       <section className="vpn-workspace-section vpn-friend-invitations">
         <div className="vpn-workspace-section-head">
           <div>
-            <h3>Тестовые приглашения · {usedInvitationCount}/10</h3>
+            <h3>Приглашения</h3>
             <p className="muted">
-              Ссылка показывается только после создания или обновления. Скопируйте её до
-              выхода из раздела.
+              На активацию — 7 дней, доступ после активации — 7 дней.
+              Ссылка показывается только после создания или обновления. Скопируйте её до выхода из раздела.
             </p>
           </div>
-          {invitationsReady && usedInvitationCount < 10 ? (
-            <button
-              type="button"
-              disabled={busyAction !== null}
-              onClick={() => void issueFriendInvitation()}
-            >
-              Создать приглашение
-            </button>
-          ) : null}
+          <button
+            type="button"
+            disabled={busyAction !== null}
+            onClick={() => void issueFriendInvitation()}
+          >
+            Создать приглашение
+          </button>
         </div>
         <div className="vpn-friend-invitation-list">
-          {!invitationsReady ? (
-            <p className="muted">Загружаем тестовые приглашения…</p>
+          {invitationRows.length === 0 ? (
+            <p className="empty">Приглашений пока нет.</p>
           ) : null}
-          {friendInvitations.map((invitation) => {
+          {invitationRows.map((invitation) => {
             const inviteLink = invitationLinks[invitation.slot];
             const actionBusy = busyAction !== null;
             return (
@@ -1072,6 +1141,13 @@ export function VpnCustomerWorkspace({
             );
           })}
         </div>
+        {olderInvitationsError ? <p className="error-text" role="alert">{olderInvitationsError}</p> : null}
+        {hasOlderInvitations ? (
+          <button type="button" className="ghost" disabled={loadingOlderInvitations}
+            onClick={() => void loadOlderInvitations()} aria-busy={loadingOlderInvitations}>
+            {loadingOlderInvitations ? "Загружаем приглашения…" : "Загрузить ещё"}
+          </button>
+        ) : null}
       </section>
     );
   }

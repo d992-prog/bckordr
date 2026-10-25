@@ -58,7 +58,7 @@ test("friend invitation API uses the exact five typed control endpoints", async 
 });
 
 test("only create and rotate response types expose the one-time invite link", async () => {
-  const source = await readFile(new URL("../src/api.ts", import.meta.url), "utf8");
+  const source = (await readFile(new URL("../src/api.ts", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
   const invitationType = source.match(
     /export type VpnFriendInvitation = \{([\s\S]*?)\n\};/,
   );
@@ -72,8 +72,8 @@ test("only create and rotate response types expose the one-time invite link", as
   assert.match(issuedType[1], /invitation: VpnFriendInvitation;/);
   assert.match(issuedType[1], /invite_link: string;/);
   assert.match(
-    source,
-    /getVpnFriendInvitations: \(\) =>\s*request<VpnFriendInvitation\[\]>/,
+    source.slice(source.indexOf("getVpnFriendInvitations:"), source.indexOf("issueVpnFriendInvitation:")),
+    /return request<VpnFriendInvitation\[\]>/,
   );
   assert.match(
     source,
@@ -91,4 +91,20 @@ test("only create and rotate response types expose the one-time invite link", as
     source,
     /disableVpnFriendInvitation: \(slot: number\) =>\s*request<VpnFriendInvitation>/,
   );
+});
+
+test("friend invitation listing preserves its default URL and supports an exclusive cursor", async () => {
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    return { ok: true, json: async () => [] };
+  };
+  await api.getVpnFriendInvitations();
+  await api.getVpnFriendInvitations({ beforeSlot: 101 });
+  await api.getVpnFriendInvitations({ beforeSlot: 101, limit: 25 });
+  assert.deepEqual(calls, [
+    "/api/control/vpn/friend-invitations",
+    "/api/control/vpn/friend-invitations?before_slot=101",
+    "/api/control/vpn/friend-invitations?before_slot=101&limit=25",
+  ]);
 });
