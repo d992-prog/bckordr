@@ -932,6 +932,10 @@ async def finalize_vpn_control_operation(
         access_key.config_uri = build_control_config_uri(request)
     elif operation.action == "revoke":
         access_key.revoked_at = access_key.revoked_at or current
+    if operation.action == "provision":
+        from app.services.vpn_devices import promote_prepared_device_key
+
+        await promote_prepared_device_key(db, access_key, now=current)
     await db.flush()
     return operation
 

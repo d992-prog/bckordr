@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.db.models import VpnPlan
+from app.db.models import VpnCustomer, VpnPlan
 from app.db.session import get_db
 from app.schemas.vpn_portal import (
     MiniAppLogin,
@@ -20,7 +20,13 @@ from app.schemas.vpn_portal import (
     PortalSubscription,
     PortalTrial,
     RenamePortalProfile,
+    PortalDevice, PortalDeviceConnection, PortalDeviceLocations, SelectPortalDeviceLocation,
 )
+from app.services.vpn_devices import MissingCustomerDevice, lock_owned_device, rename_device, select_device_location
+from app.services.vpn_device_view import (
+    customer_device, customer_device_connection, customer_device_locations, list_customer_devices,
+)
+from app.services.vpn_device_subscriptions import encode_device_subscription, subscription_connection_uri
 from app.services.vpn_customer_view import (
     MissingCustomerProfile,
     UnavailableCustomerConnection,
@@ -391,3 +397,95 @@ async def logout(
     await db.commit()
     delete_session_cookie(response, _settings(request))
     return {"logged_out": True}
+
+
+async def _device_mutation_principal(db, principal, settings):
+    # Revalidate against time after any wait for the customer serialization lock.
+    await db.scalar(select(VpnCustomer.id).where(VpnCustomer.id == principal.customer.id).with_for_update())
+    principal = await lock_current_principal(db, principal, settings, datetime.now(UTC))
+    if principal is None:
+        await db.rollback()
+        raise HTTPException(status_code=401, detail="customer_authentication_required")
+    return principal
+
+
+@router.get("/v2/devices", response_model=list[PortalDevice])
+async def devices(principal: PortalPrincipal = Depends(current_customer), db: AsyncSession = Depends(get_db)):
+    return await list_customer_devices(db, principal.customer.id)
+
+
+@router.patch("/v2/devices/{device_id}", response_model=PortalDevice)
+async def rename_owned_device(
+    device_id: int, payload: RenamePortalProfile, request: Request,
+    principal: PortalPrincipal = Depends(require_mutation), db: AsyncSession = Depends(get_db),
+):
+    principal = await _device_mutation_principal(db, principal, _settings(request))
+    try:
+        _, _, device, keys = await lock_owned_device(db, principal.customer.id, device_id)
+        key = next((key for key in keys if key.device_id == device.id and key.subscription_id == device.subscription_id), None)
+        if key is None:
+            device.display_name, device.updated_at = payload.display_name, datetime.now(UTC)
+            await db.flush()
+        else:
+            await rename_device(db, key, payload.display_name)
+        await db.commit()
+        return await customer_device(db, principal.customer.id, device_id)
+    except MissingCustomerDevice:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="customer_device_not_found") from None
+
+
+@router.get("/v2/devices/{device_id}/locations", response_model=PortalDeviceLocations)
+async def device_locations(
+    device_id: int, request: Request, principal: PortalPrincipal = Depends(current_customer),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await customer_device_locations(db, principal.customer.id, device_id, _settings(request))
+    except MissingCustomerDevice:
+        raise HTTPException(status_code=404, detail="customer_device_not_found") from None
+
+
+@router.post("/v2/devices/{device_id}/location", response_model=PortalDeviceLocations, status_code=202)
+async def select_owned_device_location(
+    device_id: int, payload: SelectPortalDeviceLocation, request: Request,
+    principal: PortalPrincipal = Depends(require_mutation), db: AsyncSession = Depends(get_db),
+):
+    settings = _settings(request)
+    principal = await _device_mutation_principal(db, principal, settings)
+    try:
+        await select_device_location(db, customer_id=principal.customer.id, device_id=device_id,
+                                     endpoint_id=payload.endpoint_id, settings=settings, now=datetime.now(UTC))
+        await db.commit()
+        return await customer_device_locations(db, principal.customer.id, device_id, settings)
+    except MissingCustomerDevice:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="customer_device_not_found") from None
+    except ValueError as error:
+        await db.rollback()
+        code = ("customer_location_verification_required" if str(error) == "customer_location_verification_required"
+                else "customer_location_unavailable")
+        raise HTTPException(status_code=409, detail=code) from None
+
+
+@router.get("/v2/devices/{device_id}/connection", response_model=PortalDeviceConnection)
+async def device_connection(
+    device_id: int, request: Request, principal: PortalPrincipal = Depends(current_customer),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await customer_device_connection(db, principal.customer.id, device_id, _settings(request))
+    except MissingCustomerDevice:
+        raise HTTPException(status_code=404, detail="customer_device_not_found") from None
+    except ValueError:
+        raise HTTPException(status_code=409, detail="customer_connection_unavailable") from None
+
+
+@router.get("/subscription/{token}")
+async def device_subscription(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    headers = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff"}
+    try:
+        uri = await subscription_connection_uri(db, _settings(request), token)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="customer_connection_unavailable", headers=headers) from None
+    return Response(encode_device_subscription(uri), media_type="text/plain", headers=headers)

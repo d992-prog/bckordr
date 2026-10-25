@@ -1,13 +1,20 @@
 """Logical devices; caller owns the customer lock and transaction for writes."""
 
 from datetime import datetime
+from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
 from app.db.base import utcnow
 from app.db.models import VpnAccessKey, VpnCustomer, VpnDevice, VpnSubscription
 from app.services.vpn_display import validate_display_name
+from app.services.vpn_node_transport import (
+    VpnNodeTransportError,
+    load_transport_snapshot,
+)
 
 
 async def lock_customer_devices(
@@ -113,3 +120,107 @@ async def stage_device_revoke(
             child.status, child.updated_at = "pending_revoke", current
     await db.flush()
     return device
+
+
+class MissingCustomerDevice(LookupError):
+    def __init__(self) -> None:
+        super().__init__("customer_device_not_found")
+
+
+async def lock_owned_device(db: AsyncSession, customer_id: int, device_id: int):
+    customer, subscriptions, keys = await lock_customer_devices(db, customer_id)
+    by_id = {subscription.id: subscription for subscription in subscriptions}
+    device = await db.scalar(select(VpnDevice).where(
+        VpnDevice.id == device_id, VpnDevice.subscription_id.in_(by_id),
+    ).execution_options(populate_existing=True))
+    if customer is None or device is None:
+        raise MissingCustomerDevice()
+    return customer, by_id[device.subscription_id], device, keys
+
+
+async def select_device_location(
+    db: AsyncSession, *, customer_id: int, device_id: int,
+    endpoint_id: int, settings: Settings, now: datetime,
+) -> VpnDevice:
+    from app.db.models import VpnControlOperation, WorkerNode
+    from app.services.vpn_control_intents import (
+        VpnControlIntentError,
+        stage_vpn_control_operation,
+    )
+    from app.services.vpn_customer_view import may_read_connection
+    from app.services.vpn_policy import (
+        select_public_vpn_endpoint,
+        validate_subscription_access,
+    )
+    from app.services.vpn_provisioning import build_vpn_client_email
+
+    try:
+        async with db.begin_nested():
+            customer, subscription, device, keys = await lock_owned_device(db, customer_id, device_id)
+            if device.revoke_requested_at is not None or validate_subscription_access(
+                subscription, customer, device_slots=0, enforce_device_limit=False, now=now,
+            ):
+                raise ValueError("customer_location_unavailable")
+            child = next((key for key in keys if (key.device_id, key.subscription_id, key.endpoint_id)
+                          == (device.id, subscription.id, endpoint_id)), None)
+            if child is not None and (child.status in {"revoked", "pending_revoke"}
+                                      or child.revoked_at is not None or child.revoke_requested_at is not None):
+                raise ValueError("customer_location_unavailable")
+            if child is not None:
+                operation = await db.scalar(select(VpnControlOperation).where(
+                    VpnControlOperation.access_key_id == child.id,
+                    VpnControlOperation.generation == child.operation_generation,
+                ))
+                if operation is not None and operation.state == "uncertain":
+                    raise ValueError("customer_location_verification_required")
+            selected = await select_public_vpn_endpoint(
+                db, endpoint_id=endpoint_id, require_published=True,
+                reusable_key_id=child.id if child is not None else None,
+                now=now, health_max_age_seconds=settings.vpn_endpoint_health_max_age_seconds, lock=True,
+            )
+            if selected is None or selected.endpoint.protocol != "vless":
+                raise ValueError("customer_location_unavailable")
+            endpoint = selected.endpoint
+            worker = await db.get(WorkerNode, endpoint.worker_id)
+            load_transport_snapshot(worker, Path(settings.vpn_control_known_hosts_path))
+            if child is not None and may_read_connection(customer, subscription, child, now):
+                device.preferred_key_id, device.pending_key_id = child.id, None
+                device.updated_at = now
+                await db.flush()
+                return device
+            if child is None:
+                child = VpnAccessKey(
+                    device_id=device.id, subscription_id=subscription.id,
+                    worker_id=endpoint.worker_id, endpoint_id=endpoint.id, protocol="vless",
+                    external_uuid=str(uuid4()), panel_sub_id=uuid4().hex, display_name=device.display_name,
+                    status="pending_sync", issued_at=now, expires_at=subscription.expires_at,
+                )
+                db.add(child)
+                await db.flush()
+                child.verified_client_email = build_vpn_client_email(child.id, None)
+                await db.flush()
+            device.pending_key_id, device.updated_at = child.id, now
+            await db.flush()
+            await stage_vpn_control_operation(db, child.id, "provision", now=now, retry_failed=True)
+            return device
+    except VpnControlIntentError as error:
+        code = ("customer_location_verification_required" if error.code == "vpn_control_reconciliation_required"
+                else "customer_location_unavailable")
+        raise ValueError(code) from None
+    except (VpnNodeTransportError, OSError, TypeError):
+        raise ValueError("customer_location_unavailable") from None
+
+
+async def promote_prepared_device_key(db: AsyncSession, key: VpnAccessKey, *, now: datetime) -> None:
+    if key.device_id is None:
+        return
+    # Flush the authoritative receipt edits before refreshing only its parent.
+    await db.flush()
+    device = await db.scalar(select(VpnDevice).where(
+        VpnDevice.id == key.device_id, VpnDevice.subscription_id == key.subscription_id,
+    ).execution_options(populate_existing=True))
+    if (device is None or device.revoke_requested_at is not None or device.pending_key_id != key.id
+            or key.status != "active" or key.revoke_requested_at is not None
+            or key.revoked_at is not None or not key.config_uri):
+        return
+    device.preferred_key_id, device.pending_key_id, device.updated_at = key.id, None, now

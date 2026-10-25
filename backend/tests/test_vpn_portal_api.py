@@ -526,6 +526,7 @@ async def seed_ready_public_trial(portal_app, monkeypatch) -> None:
             status="ready",
             verified_at=utcnow(),
             max_active_profiles=4,
+            is_published=True,
         ))
         await session.commit()
 

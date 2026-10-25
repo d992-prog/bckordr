@@ -1,3 +1,4 @@
+from datetime import timedelta
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -12,6 +13,7 @@ from test_vpn_public_trial import NOW, HookedSession, add_key, worker
 
 from app.api.deps import get_current_user, require_admin
 from app.api.routes.control import router
+from app.core.config import Settings
 from app.db.base import Base
 from app.db.models import (
     AdminAuditLog,
@@ -24,7 +26,171 @@ from app.db.models import (
     WorkerNode,
 )
 from app.db.session import get_db
+from app.services import vpn_devices as devices
+from app.services.vpn_devices import attach_initial_device
 from app.services.vpn_policy import select_public_vpn_endpoint
+
+
+async def seed_device_locations(db, *, now=NOW, identity="100"):
+    customer = VpnCustomer(status="active", telegram_user_id=identity)
+    db.add(customer)
+    await db.flush()
+    subscription = VpnSubscription(customer_id=customer.id, status="active", max_devices=1,
+                                   expires_at=now + timedelta(days=30))
+    db.add(subscription)
+    endpoints = []
+    for code in ("NL", "PL", "DE"):
+        node = worker(f"private-{identity}-{code}", vpn_last_checked_at=now)
+        db.add(node)
+        await db.flush()
+        target = VpnEndpoint(worker_id=node.id, inbound_id=1, public_host=f"{code.lower()}.example", port=443,
+                             security="reality", transport="raw", status="ready", verified_at=now,
+                             max_active_profiles=1, is_published=True, public_name=code, country_code=code,
+                             server_name="cdn.example", public_key="A" * 43, short_id="aabbccdd",
+                             fingerprint="chrome", flow="xtls-rprx-vision")
+        db.add(target)
+        endpoints.append(target)
+    await db.flush()
+    key = VpnAccessKey(id=11 if identity == "100" else None,
+                       subscription_id=subscription.id, worker_id=endpoints[0].worker_id,
+                       endpoint_id=endpoints[0].id, status="active", display_name="Phone",
+                       external_uuid=str(uuid4()), issued_at=now, expires_at=subscription.expires_at,
+                       config_uri="vless://11111111-1111-4111-8111-111111111111@nl.example:443?security=reality#stored")
+    db.add(key)
+    await db.flush()
+    device = await attach_initial_device(db, key)
+    await db.commit()
+    return customer, subscription, device, key, endpoints
+
+
+@pytest_asyncio.fixture
+async def location_env(monkeypatch):
+    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    monkeypatch.setattr(devices, "load_transport_snapshot", lambda *_: object(), raising=False)
+    config = Settings(_env_file=None, VPN_CONTROL_KNOWN_HOSTS_PATH="safe-fake")
+    try:
+        async with sessions() as db:
+            seeded = await seed_device_locations(db)
+            yield SimpleNamespace(db=db, sessions=sessions, settings=config, customer=seeded[0],
+                                  subscription=seeded[1], device=seeded[2], key=seeded[3], endpoints=seeded[4])
+    finally:
+        await engine.dispose()
+
+
+async def choose(env, endpoint_id):
+    selector = getattr(devices, "select_device_location", None)
+    assert callable(selector), "location selection service is missing"
+    return await selector(env.db, customer_id=env.customer.id, device_id=env.device.id,
+                          endpoint_id=endpoint_id, settings=env.settings, now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_select_country_keeps_current_then_promotes_and_reuses_old_uuid(location_env):
+    env = location_env
+    old_identity = env.key.external_uuid, env.key.config_uri
+    await choose(env, env.endpoints[1].id)
+    assert env.device.preferred_key_id == env.key.id
+    pending = await env.db.get(VpnAccessKey, env.device.pending_key_id)
+    assert pending.device_id == env.device.id and pending.status == "pending_sync"
+    assert (env.key.external_uuid, env.key.config_uri) == old_identity
+    assert await env.db.scalar(select(func.count()).select_from(VpnDevice)) == 1
+    await choose(env, env.endpoints[1].id)
+    assert await env.db.scalar(select(func.count()).select_from(VpnControlOperation)) == 1
+    pending.status, pending.config_uri = "active", old_identity[1].replace("nl.example", "pl.example")
+    await devices.promote_prepared_device_key(env.db, pending, now=NOW)
+    assert env.device.preferred_key_id == pending.id and env.device.pending_key_id is None
+    await env.db.flush()
+    await choose(env, env.endpoints[0].id)
+    assert env.device.preferred_key_id == env.key.id and env.device.pending_key_id is None
+    assert env.key.external_uuid == old_identity[0]
+    assert await env.db.scalar(select(func.count()).select_from(VpnAccessKey)) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["failed", "uncertain"])
+async def test_failed_or_uncertain_country_never_replaces_good_current(location_env, state):
+    env = location_env
+    await choose(env, env.endpoints[1].id)
+    operation = await env.db.scalar(select(VpnControlOperation))
+    operation.state = state
+    operation.error_code = "vpn_node_preflight_failed" if state == "failed" else "vpn_node_mutation_uncertain"
+    await env.db.flush()
+    if state == "uncertain":
+        with pytest.raises(ValueError, match="customer_location_verification_required"):
+            await choose(env, env.endpoints[1].id)
+    else:
+        await choose(env, env.endpoints[1].id)
+    assert env.device.preferred_key_id == env.key.id
+
+
+@pytest.mark.asyncio
+async def test_late_result_cannot_override_new_pending_choice(location_env):
+    env = location_env
+    await choose(env, env.endpoints[1].id)
+    earlier = await env.db.get(VpnAccessKey, env.device.pending_key_id)
+    await choose(env, env.endpoints[2].id)
+    later_id = env.device.pending_key_id
+    earlier.status, earlier.config_uri = "active", env.key.config_uri
+    await devices.promote_prepared_device_key(env.db, earlier, now=NOW)
+    assert env.device.preferred_key_id == env.key.id and env.device.pending_key_id == later_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["hidden", "unhealthy", "full", "unsupported", "customer", "subscription", "expired", "revoke", "transport", "child_revoke"])
+async def test_rejected_selection_does_not_change_credential_or_pending(location_env, monkeypatch, change):
+    env = location_env
+    target = env.endpoints[1]
+    if change == "hidden":
+        target.is_published = False
+    elif change == "unhealthy":
+        target.verified_at = NOW - timedelta(days=1)
+    elif change == "full":
+        env.db.add(VpnAccessKey(subscription_id=env.subscription.id, endpoint_id=target.id,
+                                worker_id=target.worker_id, status="pending_sync"))
+    elif change == "unsupported":
+        target.protocol = "vmess"
+    elif change == "customer":
+        env.customer.status = "blocked"
+    elif change == "subscription":
+        env.subscription.status = "disabled"
+    elif change == "expired":
+        env.subscription.expires_at = NOW
+    elif change == "revoke":
+        env.device.revoke_requested_at = NOW
+    elif change == "child_revoke":
+        env.db.add(VpnAccessKey(subscription_id=env.subscription.id, device_id=env.device.id,
+                                endpoint_id=target.id, worker_id=target.worker_id, status="revoked"))
+    else:
+        from app.services.vpn_node_transport import VpnNodeTransportError
+        def reject(*_):
+            raise VpnNodeTransportError("vpn_node_transport_unavailable")
+        monkeypatch.setattr(devices, "load_transport_snapshot", reject)
+    await env.db.commit()
+    count = await env.db.scalar(select(func.count()).select_from(VpnAccessKey))
+    with pytest.raises(ValueError, match="customer_location_unavailable"):
+        await choose(env, target.id)
+    assert env.device.pending_key_id is None
+    assert await env.db.scalar(select(func.count()).select_from(VpnAccessKey)) == count
+
+
+@pytest.mark.asyncio
+async def test_selection_failure_rolls_back_new_child_pending_and_operation(location_env, monkeypatch):
+    env = location_env
+    selector = getattr(devices, "select_device_location", None)
+    assert callable(selector), "location selection service is missing"
+    from app.services.vpn_control_intents import VpnControlIntentError
+    async def reject(*args, **kwargs):
+        raise VpnControlIntentError("vpn_control_worker_busy")
+    monkeypatch.setattr("app.services.vpn_control_intents.stage_vpn_control_operation", reject)
+    with pytest.raises(ValueError, match="customer_location_unavailable"):
+        await choose(env, env.endpoints[1].id)
+    assert await env.db.scalar(select(func.count()).select_from(VpnAccessKey)) == 1
+    assert await env.db.scalar(select(func.count()).select_from(VpnControlOperation)) == 0
+    await env.db.refresh(env.device)
+    assert env.device.pending_key_id is None
 
 PAYLOAD = {"is_published": True, "public_name": "  Нидерланды  ", "country_code": " nl "}
 

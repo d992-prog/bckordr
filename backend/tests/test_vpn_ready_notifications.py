@@ -129,6 +129,26 @@ async def test_claim_rejects_ineligible_profiles(session_factory, change) -> Non
         assert await claim_ready_notice(db, now=NOW) is None
 
 
+@pytest.mark.asyncio
+async def test_country_child_does_not_send_another_initial_profile_notice(session_factory):
+    from app.services.vpn_devices import attach_initial_device
+    key_id = await _seed_ready_key(session_factory)
+    async with session_factory() as db:
+        key = await db.get(VpnAccessKey, key_id)
+        parent = await attach_initial_device(db, key)
+        child = VpnAccessKey(subscription_id=key.subscription_id, device_id=parent.id,
+                             worker_id=key.worker_id, status="active", config_uri=key.config_uri)
+        db.add(child)
+        await db.commit()
+        claim = await claim_ready_notice(db, now=NOW)
+        assert claim.access_key_id == key_id
+        key.ready_notified_at = NOW
+        key.ready_notice_claimed_at = None
+        await db.commit()
+        assert await claim_ready_notice(db, now=NOW) is None
+        assert child.ready_notified_at is None
+
+
 @pytest.mark.parametrize("status", ["active", "trial"])
 @pytest.mark.asyncio
 async def test_claim_accepts_active_unexpired_subscription_and_is_durable_once(

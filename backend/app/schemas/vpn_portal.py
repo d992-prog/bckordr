@@ -57,6 +57,34 @@ class PortalConnection(BaseModel):
     uri: str
 
 
+class PortalDevice(PortalProfile):
+    legacy_profile_id: int | None
+
+
+class PortalDeviceLocation(BaseModel):
+    endpoint_id: int
+    name: str
+    country_code: str | None
+    is_published: bool
+
+
+class PortalDeviceLocations(BaseModel):
+    current: PortalDeviceLocation | None
+    pending_endpoint_id: int | None
+    selection_state: Literal["ready", "preparing", "failed", "verification_required", "unavailable"]
+    available: list[PortalDeviceLocation]
+
+
+class SelectPortalDeviceLocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    endpoint_id: int = Field(gt=0)
+
+
+class PortalDeviceConnection(BaseModel):
+    subscription_url: str
+    direct_uri: str
+
+
 class RenamePortalProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

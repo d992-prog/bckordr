@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.db.base import utcnow
-from app.db.models import VpnAccessKey, VpnCustomer, VpnNodeEvent, VpnSubscription
+from app.db.models import VpnAccessKey, VpnCustomer, VpnDevice, VpnNodeEvent, VpnSubscription
 
 
 READY_TEXT = "Veltrix VPN\nПрофиль готов. Откройте личный кабинет, чтобы подключиться."
@@ -40,6 +40,11 @@ async def claim_ready_notice(
             .join(VpnSubscription, VpnSubscription.id == VpnAccessKey.subscription_id)
             .join(VpnCustomer, VpnCustomer.id == VpnSubscription.customer_id)
             .where(
+                or_(VpnAccessKey.device_id.is_(None), select(VpnDevice.id).where(
+                    VpnDevice.id == VpnAccessKey.device_id,
+                    VpnDevice.subscription_id == VpnAccessKey.subscription_id,
+                    VpnDevice.legacy_profile_id == VpnAccessKey.id,
+                ).exists()),
                 VpnAccessKey.status == "active",
                 VpnAccessKey.config_uri.is_not(None),
                 VpnAccessKey.config_uri != "",

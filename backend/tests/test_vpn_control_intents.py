@@ -1581,6 +1581,27 @@ async def test_finalize_observed_provision_sets_exact_uri_and_sync_fields(sessio
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("receipt,error", [("observed", None), ("failed", "vpn_node_preflight_failed"),
+                                         ("uncertain", "vpn_node_mutation_uncertain")])
+async def test_only_observed_provision_promotes_pending_device_child(session_factory, receipt, error):
+    from app.db.models import VpnDevice
+    from app.services.vpn_devices import attach_initial_device
+    operation_id, token = await _stage_claimed(session_factory)
+    async with session_factory() as db:
+        key = await db.get(VpnAccessKey, 7)
+        parent = await attach_initial_device(db, key)
+        parent.preferred_key_id, parent.pending_key_id = None, key.id
+        parent_id = parent.id
+        await db.commit()
+    async with session_factory() as db:
+        await _api().finalize_vpn_control_operation(db, operation_id, token, receipt_state=receipt,
+                                                   error_code=error, now=NOW + timedelta(seconds=2))
+        parent = await db.get(VpnDevice, parent_id)
+        assert parent.preferred_key_id == (7 if receipt == "observed" else None)
+        assert parent.pending_key_id == (None if receipt == "observed" else 7)
+
+
+@pytest.mark.asyncio
 async def test_finalize_discovers_without_lock_then_locks_operation_last(session_factory):
     api = _api()
     operation_id, token = await _stage_claimed(session_factory)
