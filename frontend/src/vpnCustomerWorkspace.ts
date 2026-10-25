@@ -73,7 +73,7 @@ export function applyAccessKeyDisplay<T extends AccessKeyDisplay>(
   accessKey: T,
   display: AccessKeyDisplay,
 ): T {
-  if (isNewerAccessKeyVersion(accessKey.updated_at, display.updated_at)) {
+  if (isNewerRecordVersion(accessKey.updated_at, display.updated_at)) {
     return accessKey;
   }
   return {
@@ -102,7 +102,7 @@ function backendTimestampParts(value: string) {
   };
 }
 
-function isNewerAccessKeyVersion(incoming: string, current: string) {
+export function isNewerRecordVersion(incoming: string, current: string) {
   const incomingParts = backendTimestampParts(incoming);
   const currentParts = backendTimestampParts(current);
   if (incomingParts && currentParts) {
@@ -134,7 +134,7 @@ export function reconcileAccessKeyDisplayOverrides(
       display &&
       ((display.display_name === accessKey.display_name &&
         display.config_uri === accessKey.config_uri) ||
-        isNewerAccessKeyVersion(accessKey.updated_at, display.updated_at))
+        isNewerRecordVersion(accessKey.updated_at, display.updated_at))
     ) {
       next.delete(accessKey.id);
     }

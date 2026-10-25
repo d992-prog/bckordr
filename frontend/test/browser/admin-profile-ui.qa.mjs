@@ -623,7 +623,7 @@ try {
       customer_id: id === 1 ? 9002 : 9102, display_name: `Логический профиль ${id}`, peak_source_count: 4,
       started_at: "2026-10-25T12:00:00Z", last_observed_at: "2026-10-25T12:04:05Z", acknowledged_at });
     let signals = Array.from({ length: 101 }, (_, index) => signal(index + 1));
-    const deviceContext = (deviceId) => {
+    const initialDeviceContext = (deviceId) => {
       const first = deviceId === 9001;
       const customerId = first ? 9002 : 9102;
       const subscriptionId = first ? 9003 : 9103;
@@ -632,6 +632,14 @@ try {
         access_key: { ...fixtureKeys()[0], id: first ? 9004 : 9104, device_id: deviceId, subscription_id: subscriptionId,
           display_name: first ? "Целевой профиль А" : "Целевой профиль Б" } };
     };
+    const contexts = new Map([9001, 9101].map((id) => [id, initialDeviceContext(id)]));
+    const deviceContext = (id) => structuredClone(contexts.get(id));
+    let contextRevision = 0;
+    const revisedAt = () => `2026-10-25T12:20:${String(++contextRevision).padStart(2, "0")}.000001`;
+    let holdCustomerWrite = false;
+    let holdSubscriptionWrite = false;
+    const heldCustomerWrites = [];
+    const heldSubscriptionWrites = [];
     let holdList = false;
     let failList = false;
     const heldLists = [];
@@ -642,6 +650,7 @@ try {
     const mutations = [];
     const customerPatches = [];
     const subscriptionCreates = [];
+    const subscriptionPatches = [];
     let userId = 1;
     await review.route("**/api/**", async (route) => {
       const request = route.request();
@@ -654,8 +663,34 @@ try {
         const id = Number(url.pathname.split("/").at(-1));
         const payload = request.postDataJSON();
         customerPatches.push({ id, payload });
-        return json(route, { ...(customers.find((customer) => customer.id === id) ?? deviceContext(9001).customer), ...payload, id });
+        const context = [...contexts.values()].find((item) => item.customer.id === id);
+        const saved = { ...(context?.customer ?? customers.find((customer) => customer.id === id)), ...payload, id, updated_at: revisedAt() };
+        if (context) context.customer = saved;
+        if (holdCustomerWrite) { heldCustomerWrites.push({ route, saved }); return; }
+        return json(route, saved);
       }
+      if (request.method() === "PATCH" && /^\/api\/control\/vpn\/subscriptions\/[0-9]+$/.test(url.pathname)) {
+        const id = Number(url.pathname.split("/").at(-1));
+        const payload = request.postDataJSON();
+        subscriptionPatches.push({ id, payload });
+        const context = [...contexts.values()].find((item) => item.subscription.id === id);
+        assert.ok(context, "abuse fixture only permits explicit outside-list subscription mutations");
+        const saved = { ...context.subscription, ...payload, updated_at: revisedAt() };
+        context.subscription = saved;
+        if (holdSubscriptionWrite) { heldSubscriptionWrites.push({ route, saved }); return; }
+        return json(route, saved);
+      }
+      if (request.method() === "POST" && /^\/api\/control\/vpn\/customers\/[0-9]+\/archive$/.test(url.pathname)) {
+        const id = Number(url.pathname.split("/").at(-2));
+        const context = [...contexts.values()].find((item) => item.customer.id === id);
+        assert.ok(context);
+        const updated_at = revisedAt();
+        context.customer = { ...context.customer, status: "archived", updated_at };
+        context.subscription = { ...context.subscription, status: "disabled", updated_at };
+        context.access_key = { ...context.access_key, status: "pending_revoke", updated_at };
+        return json(route, { customer: context.customer, disabled_subscriptions: 1, revoked_keys: 0, pending_revoke_keys: 1 });
+      }
+      if (request.method() === "POST" && url.pathname === "/api/control/vpn/lifecycle/run") return json(route, {});
       if (request.method() === "POST" && url.pathname === "/api/control/vpn/subscriptions") {
         const payload = request.postDataJSON();
         subscriptionCreates.push(payload);
@@ -703,6 +738,19 @@ try {
       await json(pending.route, success ? saved : { detail: "synthetic-private-error" }, success ? 200 : 503);
     };
     const events = () => review.locator('.vpn-admin-nav a[href="#vpn/events"]').click();
+    const openTarget = async (id) => {
+      await events();
+      await row(id).getByRole("button", { name: "Открыть клиента", exact: true }).click();
+      await review.locator(`#vpn-access-key-${id === 1 ? 9004 : 9104}`).waitFor();
+    };
+    const releaseWrite = async (queue) => {
+      const pending = queue.shift();
+      const reloaded = review.waitForResponse((reply) => reply.request().method() === "GET"
+        && new URL(reply.url()).pathname === "/api/control/vpn/subscriptions");
+      await json(pending.route, pending.saved);
+      await reloaded;
+      await review.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    };
     try {
       await review.goto(`${appUrl}#vpn/events`);
       await panel.getByRole("heading", { name: "Подозрение на совместное использование", exact: true }).waitFor();
@@ -818,6 +866,92 @@ try {
       await target.getByRole("button", { name: "Отозвать и сохранить", exact: true }).waitFor();
       await review.locator(".toolbar-actions").getByRole("button", { name: "Обновить", exact: true }).click();
       await target.getByText("Целевой профиль А", { exact: true }).waitFor();
+      const customerSection = review.locator(".vpn-workspace-stack > .vpn-workspace-section").first();
+      const outsideSubscription = review.locator("#vpn-subscription-9003");
+      await customerSection.getByRole("button", { name: "Изменить", exact: true }).click();
+      await customerSection.getByRole("textbox", { name: "Имя", exact: true }).fill("Дальний клиент А обновлён");
+      await customerSection.getByRole("button", { name: "Сохранить", exact: true }).click();
+      await review.locator(".toast").filter({ hasText: "Данные клиента сохранены" }).waitFor();
+      const savedCustomerName = await customerSection.getByRole("heading").innerText();
+      for (let count = 0; count < 2; count += 1) {
+        review.once("dialog", (dialog) => dialog.accept());
+        const patched = review.waitForResponse((reply) => reply.request().method() === "PATCH"
+          && new URL(reply.url()).pathname === "/api/control/vpn/subscriptions/9003");
+        await outsideSubscription.getByRole("button", { name: "+7 дней", exact: true }).click();
+        await patched;
+        await review.waitForFunction(() => !document.querySelector("#vpn-subscription-9003 button")?.disabled);
+      }
+      assert.deepEqual({ savedCustomerName, expirations: subscriptionPatches.map((patch) => patch.payload.expires_at) }, {
+        savedCustomerName: "Дальний клиент А обновлён", expirations: ["2030-01-08T00:00:00.000Z", "2030-01-15T00:00:00.000Z"],
+      }, "outside-list records must reflect authoritative saved responses; consecutive extensions must accumulate");
+      assert.match(await outsideSubscription.locator(":scope > .vpn-workspace-section-head .row-hint").innerText(), /15\.01\.2030/);
+
+      review.once("dialog", (dialog) => dialog.accept());
+      await customerSection.getByRole("button", { name: "В архив", exact: true }).click();
+      await customerSection.getByRole("button", { name: "Восстановить", exact: true }).waitFor();
+      await outsideSubscription.getByText("приостановлена", { exact: true }).waitFor();
+      await target.getByText("ожидает отзыва", { exact: true }).waitFor();
+      await customerSection.getByRole("button", { name: "Восстановить", exact: true }).click();
+      await customerSection.getByRole("button", { name: "В архив", exact: true }).waitFor();
+      assert.equal(await outsideSubscription.getByText("приостановлена", { exact: true }).count(), 1,
+        "restoring the customer must not invent a subscription reactivation");
+
+      holdSubscriptionWrite = true;
+      review.once("dialog", (dialog) => dialog.accept());
+      await outsideSubscription.getByRole("button", { name: "+7 дней", exact: true }).click();
+      await until(() => heldSubscriptionWrites.length === 1, "older subscription write was not held");
+      contexts.get(9001).subscription = { ...contexts.get(9001).subscription, expires_at: "2030-02-01T00:00:00Z",
+        updated_at: heldSubscriptionWrites[0].saved.updated_at.replace(".000001", ".000002") };
+      await openTarget(1);
+      await outsideSubscription.locator(".row-hint").filter({ hasText: "01.02.2030" }).waitFor();
+      await releaseWrite(heldSubscriptionWrites);
+      assert.match(await outsideSubscription.locator(":scope > .vpn-workspace-section-head .row-hint").innerText(), /01\.02\.2030/,
+        "a late mutation result must not replace a newer subscription version, even within the same millisecond");
+      holdSubscriptionWrite = false;
+      review.once("dialog", (dialog) => dialog.accept());
+      await outsideSubscription.getByRole("button", { name: "+7 дней", exact: true }).click();
+      await outsideSubscription.locator(".row-hint").filter({ hasText: "08.02.2030" }).waitFor();
+      assert.equal(subscriptionPatches.at(-1).payload.expires_at, "2030-02-08T00:00:00.000Z");
+
+      holdCustomerWrite = true;
+      await customerSection.getByRole("button", { name: "Изменить", exact: true }).click();
+      await customerSection.getByRole("textbox", { name: "Имя", exact: true }).fill("Старое сохранённое имя");
+      await customerSection.getByRole("button", { name: "Сохранить", exact: true }).click();
+      await until(() => heldCustomerWrites.length === 1, "older customer write was not held");
+      contexts.get(9001).customer = { ...contexts.get(9001).customer, first_name: "Новейшее имя клиента А",
+        updated_at: heldCustomerWrites[0].saved.updated_at.replace(".000001", ".000002") };
+      await openTarget(1);
+      await customerSection.getByRole("heading", { name: "Новейшее имя клиента А", exact: true }).waitFor();
+      await releaseWrite(heldCustomerWrites);
+      assert.equal(await customerSection.getByRole("heading").innerText(), "Новейшее имя клиента А",
+        "an older customer mutation response must not replace newer retained data");
+
+      await customerSection.getByRole("button", { name: "Изменить", exact: true }).click();
+      await customerSection.getByRole("textbox", { name: "Имя", exact: true }).fill("Запоздалое имя клиента А");
+      await customerSection.getByRole("button", { name: "Сохранить", exact: true }).click();
+      await until(() => heldCustomerWrites.length === 1, "late customer write was not held");
+      await openTarget(2);
+      await customerSection.getByRole("button", { name: "Изменить", exact: true }).click();
+      await customerSection.getByRole("textbox", { name: "Имя", exact: true }).fill("Не трогать форму клиента Б");
+      await releaseWrite(heldCustomerWrites);
+      assert.match(await review.locator(".vpn-customer-row.active-chip").innerText(), /Дальний клиент Б/);
+      assert.equal(await customerSection.getByRole("textbox", { name: "Имя", exact: true }).inputValue(), "Не трогать форму клиента Б",
+        "a late save for A must not retarget or close B's manual editor");
+      holdCustomerWrite = false;
+
+      await openTarget(1);
+      holdSubscriptionWrite = true;
+      review.once("dialog", (dialog) => dialog.accept());
+      await outsideSubscription.getByRole("button", { name: "+7 дней", exact: true }).click();
+      await until(() => heldSubscriptionWrites.length === 1, "late subscription write was not held");
+      await openTarget(2);
+      await customerSection.getByRole("button", { name: "Изменить", exact: true }).click();
+      await customerSection.getByRole("textbox", { name: "Имя", exact: true }).fill("Ещё одна форма клиента Б");
+      await releaseWrite(heldSubscriptionWrites);
+      assert.match(await review.locator(".vpn-customer-row.active-chip").innerText(), /Дальний клиент Б/);
+      assert.equal(await customerSection.getByRole("textbox", { name: "Имя", exact: true }).inputValue(), "Ещё одна форма клиента Б",
+        "late subscription responses must remain scoped to their original retained subscription");
+      holdSubscriptionWrite = false;
       holdContextIds.add(9001);
       await events();
       await row(1).getByRole("button", { name: "Открыть клиента", exact: true }).click();
@@ -866,7 +1000,7 @@ try {
       assert.equal(reviewLogs.some((value) => value.includes("synthetic-private-error")), false);
       assert.deepEqual(mutations.filter((url) => !url.endsWith("/acknowledge") && url !== "/api/auth/logout"), []);
       assert.deepEqual(reviewErrors, []);
-      console.log("PASS: mounted abuse review cursor/duplicate-ACK/uncertain-refresh/stale-filter/logout/outside-list-target/navigation-races/manual-form-targets/privacy/desktop-mobile; zero revoke/suspend/restart calls, synthetic HTTP only");
+      console.log("PASS: mounted abuse review cursor/duplicate-ACK/uncertain-refresh/stale-filter/logout/outside-list-target/manual-form-targets/saved-context-mutations/version-order/late-writes/navigation-races/privacy/desktop-mobile; zero direct revoke/suspend/restart calls, synthetic HTTP only");
     } finally {
       await review.close();
     }

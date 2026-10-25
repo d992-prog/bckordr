@@ -18,6 +18,7 @@ import {
   classifyVpnCustomer,
   customerStatusOptions,
   filterVpnCustomers,
+  isNewerRecordVersion,
   nextAccessKeyEditorAfterRename,
   reconcileAccessKeyDisplayOverrides,
   selectPrimarySubscription,
@@ -299,6 +300,7 @@ export function VpnCustomerWorkspace({
   const selectionRequestRef = useRef<object | null>(null);
   const lastSelectionRef = useRef<Props["requestedSelection"]>(null);
   const selectionFocusRef = useRef<string | null>(null);
+  const workspaceIntentRef = useRef(0);
   const [customerForm, setCustomerForm] = useState<CustomerForm>(EMPTY_CUSTOMER_FORM);
   const [editingCustomer, setEditingCustomer] = useState(false);
   const [creatingCustomer, setCreatingCustomer] = useState(false);
@@ -342,10 +344,20 @@ export function VpnCustomerWorkspace({
     Map<number, AccessKeyDisplayOverride>
   >(() => new Map());
 
-  const customers = useMemo(() => requestedContext && !loadedCustomers.some((row) => row.id === requestedContext.customer.id)
-    ? [...loadedCustomers, requestedContext.customer] : loadedCustomers, [loadedCustomers, requestedContext]);
-  const subscriptions = useMemo(() => requestedContext && !loadedSubscriptions.some((row) => row.id === requestedContext.subscription.id)
-    ? [...loadedSubscriptions, requestedContext.subscription] : loadedSubscriptions, [loadedSubscriptions, requestedContext]);
+  const customers = useMemo(() => {
+    const retained = requestedContext?.customer;
+    if (!retained) return loadedCustomers;
+    const loaded = loadedCustomers.find((row) => row.id === retained.id);
+    return loaded && !isNewerRecordVersion(retained.updated_at, loaded.updated_at) ? loadedCustomers
+      : [...loadedCustomers.filter((row) => row.id !== retained.id), retained];
+  }, [loadedCustomers, requestedContext]);
+  const subscriptions = useMemo(() => {
+    const retained = requestedContext?.subscription;
+    if (!retained) return loadedSubscriptions;
+    const loaded = loadedSubscriptions.find((row) => row.id === retained.id);
+    return loaded && !isNewerRecordVersion(retained.updated_at, loaded.updated_at) ? loadedSubscriptions
+      : [...loadedSubscriptions.filter((row) => row.id !== retained.id), retained];
+  }, [loadedSubscriptions, requestedContext]);
   const accessKeys = useMemo(() => {
     const key = requestedContext?.access_key;
     if (!key) return loadedAccessKeys;
@@ -389,6 +401,7 @@ export function VpnCustomerWorkspace({
 
   useLayoutEffect(() => {
     if (!usageEnabled || !requestedSelection || lastSelectionRef.current === requestedSelection) return;
+    workspaceIntentRef.current += 1;
     lastSelectionRef.current = requestedSelection;
     const pending = {};
     selectionRequestRef.current = pending;
@@ -417,6 +430,7 @@ export function VpnCustomerWorkspace({
         if (selectionRequestRef.current === pending) { selectionRequestRef.current = null; setSelectionLoading(false); }
       });
     return () => {
+      workspaceIntentRef.current += 1;
       if (selectionRequestRef.current === pending) lastSelectionRef.current = null;
       selectionRequestRef.current = null;
       selectionFocusRef.current = null;
@@ -435,10 +449,24 @@ export function VpnCustomerWorkspace({
   }, [requestedContext, selectedCustomerId, usageEnabled]);
 
   function cancelRequestedSelection() {
+    workspaceIntentRef.current += 1;
     selectionRequestRef.current = null;
     selectionFocusRef.current = null;
     setSelectionLoading(false);
     setSelectionError("");
+  }
+
+  function rememberRequestedCustomer(customer: VpnCustomer) {
+    setRequestedContext((current) => current?.customer.id === customer.id
+      && !isNewerRecordVersion(current.customer.updated_at, customer.updated_at)
+      ? { ...current, customer } : current);
+  }
+
+  function rememberRequestedSubscription(subscription: VpnSubscription) {
+    setRequestedContext((current) => current?.subscription.id === subscription.id
+      && current.customer.id === subscription.customer_id
+      && !isNewerRecordVersion(current.subscription.updated_at, subscription.updated_at)
+      ? { ...current, subscription } : current);
   }
 
   useEffect(() => {
@@ -727,6 +755,7 @@ export function VpnCustomerWorkspace({
 
   async function saveCustomer(event: FormEvent) {
     event.preventDefault();
+    const intent = workspaceIntentRef.current;
     const isEditing = Boolean(selectedCustomer && editingCustomer);
     setBusyAction(isEditing ? "customer-update" : "customer-create");
     try {
@@ -742,7 +771,9 @@ export function VpnCustomerWorkspace({
       const saved = isEditing
         ? await api.updateVpnCustomer(selectedCustomer!.id, payload)
         : await api.createVpnCustomer(payload);
+      rememberRequestedCustomer(saved);
       await reload();
+      if (workspaceIntentRef.current !== intent) return;
       setSelectedCustomerId(saved.id);
       setEditingCustomer(false);
       setCreatingCustomer(false);
@@ -767,15 +798,38 @@ export function VpnCustomerWorkspace({
       return;
     }
     setBusyAction("customer-archive");
+    const retained = requestedContext?.customer.id === customer.id ? requestedContext : null;
+    const intent = workspaceIntentRef.current;
     try {
       const result = await api.archiveVpnCustomer(customer.id);
+      rememberRequestedCustomer(result.customer);
+      let contextRefreshed = true;
+      if (retained) {
+        try {
+          const refreshed = await api.getVpnAbuseDeviceContext(retained.device_id, customer.id);
+          if (!matchesAbuseDeviceContext(refreshed, { deviceId: retained.device_id, customerId: customer.id })) throw new Error("device context mismatch");
+          if (workspaceIntentRef.current === intent) {
+            setRequestedContext((current) => {
+              if (current?.device_id !== retained.device_id || current.customer.id !== customer.id
+                || current.subscription.id !== refreshed.subscription.id) return current;
+              return { ...current,
+                customer: isNewerRecordVersion(current.customer.updated_at, refreshed.customer.updated_at) ? current.customer : refreshed.customer,
+                subscription: isNewerRecordVersion(current.subscription.updated_at, refreshed.subscription.updated_at) ? current.subscription : refreshed.subscription,
+                access_key: current.access_key && refreshed.access_key && current.access_key.id === refreshed.access_key.id
+                  && isNewerRecordVersion(current.access_key.updated_at, refreshed.access_key.updated_at) ? current.access_key : refreshed.access_key };
+            });
+          }
+        } catch {
+          contextRefreshed = false;
+        }
+      }
       await reload();
       const pending = result.pending_revoke_keys
         ? `, ожидают отзыва: ${result.pending_revoke_keys}`
         : "";
       notify(
-        "success",
-        `Клиент перенесён в архив. Отозвано профилей: ${result.revoked_keys}${pending}`,
+        contextRefreshed ? "success" : "error",
+        `Клиент перенесён в архив. Отозвано профилей: ${result.revoked_keys}${pending}${contextRefreshed ? "" : ". Не удалось обновить данные подписки. Откройте клиента заново из сигнала"}`,
       );
     } catch (error) {
       notify(
@@ -790,7 +844,8 @@ export function VpnCustomerWorkspace({
   async function restoreCustomer(customer: VpnCustomer) {
     setBusyAction("customer-restore");
     try {
-      await api.updateVpnCustomer(customer.id, { status: "active" });
+      const saved = await api.updateVpnCustomer(customer.id, { status: "active" });
+      rememberRequestedCustomer(saved);
       await reload();
       notify(
         "success",
@@ -822,6 +877,7 @@ export function VpnCustomerWorkspace({
 
   async function saveSubscription(event: FormEvent) {
     event.preventDefault();
+    const intent = workspaceIntentRef.current;
     if (!selectedCustomer) {
       return;
     }
@@ -868,6 +924,7 @@ export function VpnCustomerWorkspace({
         await reload();
         notify("success", "VPN подписка добавлена");
       }
+      if (workspaceIntentRef.current !== intent) return;
       setCreatingSubscription(false);
       setEditingSubscriptionId(null);
       setSubscriptionForm(EMPTY_SUBSCRIPTION_FORM);
@@ -890,6 +947,7 @@ export function VpnCustomerWorkspace({
     const result = await saveSubscriptionAndRequestSync(
       async () => {
         const saved = await api.updateVpnSubscription(subscriptionId, payload);
+        rememberRequestedSubscription(saved);
         void refreshSubscriptionDeviceUsage(subscriptionId, usageCustomerId);
         return saved;
       },
