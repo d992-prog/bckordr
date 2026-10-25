@@ -343,3 +343,40 @@ async def test_legacy_provisioning_cannot_restore_an_old_credential_generation(l
     from app.services.vpn_provisioning import provision_vpn_access_key
     await provision_vpn_access_key(env.db, old, subscription=env.subscription)
     assert old.status == "pending_revoke"
+
+
+@pytest.mark.asyncio
+async def test_replacing_one_device_preserves_other_country_device_credentials(location_env):
+    env = location_env
+    from app.services.vpn_devices import attach_initial_device
+    other = VpnAccessKey(subscription_id=env.subscription.id, endpoint_id=env.endpoints[2].id,
+                         worker_id=env.endpoints[2].worker_id, status="active", external_uuid=str(uuid4()),
+                         config_uri=env.key.config_uri, issued_at=NOW, expires_at=env.subscription.expires_at)
+    env.db.add(other)
+    await env.db.flush()
+    other_device = await attach_initial_device(env.db, other)
+    await env.db.commit()
+    before = other.external_uuid, other.config_uri, other_device.preferred_key_id, other_device.token_generation
+    await replace(env)
+    assert other.status == "active" and other.revoke_requested_at is None
+    assert (other.external_uuid, other.config_uri, other_device.preferred_key_id, other_device.token_generation) == before
+    assert await env.db.scalar(select(VpnControlOperation.id).where(VpnControlOperation.access_key_id == other.id)) is None
+
+
+@pytest.mark.asyncio
+async def test_revoke_removes_every_credential_generation_not_just_preferred(location_env):
+    env = location_env
+    newer = VpnAccessKey(subscription_id=env.subscription.id, device_id=env.device.id,
+                         credential_generation=1, endpoint_id=env.endpoints[0].id,
+                         worker_id=env.endpoints[0].worker_id, status="active", external_uuid=str(uuid4()),
+                         verified_client_email="vpn-key-newer", panel_sub_id=uuid4().hex)
+    env.db.add(newer)
+    await env.db.flush()
+    env.device.credential_generation, env.device.preferred_key_id = 1, newer.id
+    await env.db.commit()
+    operation = await service().request_device_operation(
+        env.db, customer_id=env.customer.id, device_id=env.device.id, action="revoke",
+        request_id=uuid4(), settings=env.settings, now=NOW,
+    )
+    assert env.key.status == newer.status == "pending_revoke" and operation.stage == "revoking"
+    assert {control.access_key_id for control in (await env.db.scalars(select(VpnControlOperation))).all()} == {env.key.id, newer.id}
