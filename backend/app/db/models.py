@@ -1088,6 +1088,73 @@ class VpnBotChat(Base):
     last_update_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
+class VpnBroadcastCampaign(Base):
+    __tablename__ = "vpn_broadcast_campaigns"
+    __table_args__ = (
+        UniqueConstraint("id", "bot_id", name="uq_vpn_broadcast_campaign_bot"),
+        CheckConstraint("state IN ('draft','running','completed','cancelled','failed')", name="ck_vpn_broadcast_campaign_state"),
+        CheckConstraint("revision > 0", name="ck_vpn_broadcast_campaign_revision"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bot_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), default="draft", server_default="draft")
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    preview_revision: Mapped[int | None] = mapped_column(Integer)
+    preview_recipient_count: Mapped[int | None] = mapped_column(Integer)
+    previewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
+    created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class VpnBroadcastDelivery(Base):
+    __tablename__ = "vpn_broadcast_deliveries"
+    __table_args__ = (
+        ForeignKeyConstraint(["campaign_id", "bot_id"], ["vpn_broadcast_campaigns.id", "vpn_broadcast_campaigns.bot_id"], ondelete="RESTRICT", name="fk_vpn_broadcast_delivery_campaign"),
+        ForeignKeyConstraint(["bot_id", "chat_id"], ["vpn_bot_chats.bot_id", "vpn_bot_chats.chat_id"], ondelete="RESTRICT", name="fk_vpn_broadcast_delivery_chat"),
+        UniqueConstraint("campaign_id", "chat_id", name="uq_vpn_broadcast_delivery_recipient"),
+        CheckConstraint("state IN ('pending','claimed','sending','sent','failed','skipped','uncertain','cancelled')", name="ck_vpn_broadcast_delivery_state"),
+        CheckConstraint("attempt_count >= 0", name="ck_vpn_broadcast_delivery_attempt_count"),
+        Index("ix_vpn_broadcast_deliveries_due", "campaign_id", "state", "available_at"),
+        Index("ix_vpn_broadcast_deliveries_lease", "state", "lease_until"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    bot_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    chat_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
+    claim_token: Mapped[str | None] = mapped_column(String(36))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class VpnBotRateGate(Base):
+    __tablename__ = "vpn_bot_rate_gates"
+
+    token_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    next_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cooldown_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class VpnBotChatRateGate(Base):
+    __tablename__ = "vpn_bot_chat_rate_gates"
+
+    token_fingerprint: Mapped[str] = mapped_column(ForeignKey("vpn_bot_rate_gates.token_fingerprint", ondelete="RESTRICT"), primary_key=True)
+    chat_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    next_send_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class VpnTelegramUpdate(Base):
     __tablename__ = "vpn_telegram_updates"
 

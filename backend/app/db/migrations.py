@@ -1,7 +1,7 @@
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.db.vpn_broadcast_migrations import VPN_BOT_CHAT_MIGRATIONS
+from app.db.vpn_broadcast_migrations import VPN_BOT_CHAT_MIGRATIONS, VPN_BROADCAST_MIGRATIONS
 from app.db.vpn_device_migrations import (
     VPN_DEVICE_MIGRATIONS,
     VPN_ENDPOINT_PUBLICATION_MIGRATIONS,
@@ -641,6 +641,7 @@ VPN_UNLIMITED_INVITATION_MIGRATIONS = (
 MIGRATIONS += VPN_FRIEND_INVITATION_MIGRATIONS + VPN_DEVICE_MIGRATIONS + VPN_UNLIMITED_INVITATION_MIGRATIONS
 MIGRATIONS += VPN_ENDPOINT_PUBLICATION_MIGRATIONS
 MIGRATIONS += VPN_BOT_CHAT_MIGRATIONS
+MIGRATIONS += VPN_BROADCAST_MIGRATIONS
 
 
 async def run_startup_migrations(engine: AsyncEngine) -> None:
