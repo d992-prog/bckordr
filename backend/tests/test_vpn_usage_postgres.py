@@ -490,3 +490,61 @@ async def test_usage_foreign_keys_restrict_and_open_incidents_are_unique(pg_fact
             )
         )
         await db.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locked", [models.VpnKeySourceSample, models.VpnUsageHour])
+async def test_retention_skips_busy_rows_without_deleting_traffic_baselines(
+    pg_factory,
+    locked,
+):
+    worker_id, _, keys = await seed(pg_factory)
+    pending = await claim(usage, pg_factory)
+    assert await usage.apply_usage_poll(pg_factory, pending, receipt(pending), now=NOW)
+    expired = NOW - timedelta(days=91)
+    async with pg_factory() as db:
+        db.add_all(
+            models.VpnKeySourceSample(
+                access_key_id=key_id,
+                worker_id=worker_id,
+                minute_at=expired,
+                observed_at=expired,
+                state="unsupported",
+                key_epoch=None,
+                source_hashes=None,
+            )
+            for key_id in keys
+        )
+        db.add(
+            models.VpnUsageHour(
+                access_key_id=keys[0],
+                worker_id=worker_id,
+                hour_start=expired,
+                upload_bytes=0,
+                download_bytes=0,
+                sample_count=1,
+                first_sample_at=expired,
+                last_sample_at=expired + timedelta(seconds=1),
+            )
+        )
+        await db.commit()
+    async with pg_factory() as owner, owner.begin():
+        await owner.scalar(
+            select(locked)
+            .where(
+                locked.access_key_id == keys[0],
+            )
+            .with_for_update()
+        )
+        assert (
+            await asyncio.wait_for(
+                usage.cleanup_usage_retention(pg_factory, now=NOW),
+                1,
+            )
+            == 2
+        )
+    assert await usage.cleanup_usage_retention(pg_factory, now=NOW) == 1
+    async with pg_factory() as db:
+        assert len((await db.scalars(select(models.VpnKeyUsageSample))).all()) == 2
+        assert await db.scalar(select(models.VpnKeySourceSample)) is None
+        assert await db.scalar(select(models.VpnUsageHour)) is None

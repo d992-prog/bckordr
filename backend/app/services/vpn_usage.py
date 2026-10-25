@@ -11,7 +11,7 @@ from pathlib import Path
 from time import monotonic
 from uuid import uuid4
 
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select, tuple_
 
 from app.db import models
 from app.db.base import utcnow
@@ -46,6 +46,9 @@ from app.services.vpn_node_usage import (
 from app.services.vpn_xray_runtime import _email, _normalized
 
 USAGE_LEASE_SECONDS = 45
+USAGE_RETENTION_DAYS = 90
+SOURCE_RETENTION_HOURS = 24
+USAGE_CLEANUP_BATCH_SIZE = 1000
 _SAFE_ERRORS = frozenset(
     {
         "vpn_usage_transport_failed",
@@ -335,6 +338,7 @@ async def apply_usage_poll(
     *,
     now: datetime,
     error_code: str | None = None,
+    deadline: float | None = None,
 ) -> bool:
     started = monotonic()
     current = _current(now)
@@ -416,8 +420,14 @@ async def apply_usage_poll(
                 )
             }
         # Include pool/SQL waits in the supplied clock before the first write.
-        current += timedelta(seconds=max(0.0, monotonic() - started))
-        if _as_utc(poll.lease_until) <= current:
+        finished = monotonic()
+        current += timedelta(seconds=max(0.0, finished - started))
+        task = asyncio.current_task()
+        if (
+            _as_utc(poll.lease_until) <= current
+            or (deadline is not None and finished >= deadline)
+            or (task is not None and task.cancelling())
+        ):
             return False
         if not valid:
             _failure(poll, "vpn_usage_binding_changed")
@@ -518,6 +528,7 @@ async def collect_usage_poll(
     known_hosts_path: Path,
     *,
     now=utcnow,
+    deadline: float | None = None,
     snapshot_loader=load_transport_snapshot,
     transport=execute_vpn_node_usage_over_ssh,
 ) -> bool:
@@ -525,6 +536,8 @@ async def collect_usage_poll(
         session_factory, known_hosts_path, now(), snapshot_loader=snapshot_loader
     )
     if claim is None:
+        return False
+    if deadline is not None and monotonic() >= deadline:
         return False
     try:
         receipt = await transport(
@@ -537,6 +550,66 @@ async def collect_usage_poll(
         raise
     except Exception:  # noqa: BLE001 - never store transport stdout or credentials
         receipt, error = None, "vpn_usage_transport_failed"
+    task = asyncio.current_task()
+    if (deadline is not None and monotonic() >= deadline) or (
+        task is not None and task.cancelling()
+    ):
+        return False
     return await apply_usage_poll(
-        session_factory, claim, receipt, now=now(), error_code=error
+        session_factory,
+        claim,
+        receipt,
+        now=now(),
+        error_code=error,
+        deadline=deadline,
     )
+
+
+async def cleanup_usage_retention(session_factory, *, now: datetime) -> int:
+    """Remove one bounded batch; current traffic baselines are never expired."""
+    current = _current(now)
+    sources = models.VpnKeySourceSample
+    hours = models.VpnUsageHour
+    source_cutoff = current - timedelta(hours=SOURCE_RETENTION_HOURS)
+    hour_cutoff = current - timedelta(days=USAGE_RETENTION_DAYS)
+    async with session_factory() as db, db.begin():
+        source_ids = tuple(
+            (
+                await db.scalars(
+                    select(sources.access_key_id)
+                    .where(sources.observed_at < source_cutoff)
+                    .order_by(sources.observed_at, sources.access_key_id)
+                    .limit(USAGE_CLEANUP_BATCH_SIZE)
+                    .with_for_update(skip_locked=True)
+                )
+            ).all()
+        )
+        if source_ids:
+            await db.execute(
+                delete(sources).where(
+                    sources.access_key_id.in_(source_ids),
+                    sources.observed_at < source_cutoff,
+                )
+            )
+        remaining = USAGE_CLEANUP_BATCH_SIZE - len(source_ids)
+        if not remaining:
+            return len(source_ids)
+        hour_ids = (
+            await db.execute(
+                select(hours.access_key_id, hours.worker_id, hours.hour_start)
+                .where(hours.hour_start < hour_cutoff)
+                .order_by(hours.hour_start, hours.access_key_id, hours.worker_id)
+                .limit(remaining)
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+        if hour_ids:
+            await db.execute(
+                delete(hours).where(
+                    tuple_(hours.access_key_id, hours.worker_id, hours.hour_start).in_(
+                        hour_ids
+                    ),
+                    hours.hour_start < hour_cutoff,
+                )
+            )
+        return len(source_ids) + len(hour_ids)

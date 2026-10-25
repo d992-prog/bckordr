@@ -6,6 +6,7 @@ import math
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from time import monotonic
 
 from sqlalchemy import and_, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -45,12 +46,14 @@ from app.services.vpn_node_transport import (
     VpnNodeTransportError,
     load_transport_snapshot,
 )
+from app.services.vpn_node_usage import MAX_CLOCK_SKEW_MS
 from app.services.vpn_portal_auth import cleanup_expired_portal_auth
 from app.services.vpn_ready_notifications import (
     ReadyNoticeSender,
     deliver_next_ready_notice,
 )
 from app.services.vpn_telegram import send_telegram_message
+from app.services.vpn_usage import cleanup_usage_retention, collect_usage_poll
 from app.services.zone_scanner import run_zone_scan_job
 
 logger = logging.getLogger(__name__)
@@ -58,6 +61,9 @@ PORTAL_AUTH_CLEANUP_TIMEOUT_SECONDS = 5.0
 # Strict SSH can use 50 seconds; allow DB selection/commit and bounded cleanup.
 VPN_FLEET_HEALTH_TIMEOUT_SECONDS = 90.0
 VPN_FLEET_HEALTH_CLEANUP_TIMEOUT_SECONDS = 1.0
+VPN_USAGE_INTERVAL_SECONDS = 60
+VPN_USAGE_CONCURRENCY = 4
+VPN_USAGE_TIMEOUT_SECONDS = 35
 _VPN_CONTROL_RELEASE_ID = re.compile(r"[0-9a-f]{64}")
 
 
@@ -86,6 +92,7 @@ class ControlRuntimeOrchestrator:
         vpn_broadcast_dispatcher: Callable[..., Awaitable[bool]] = (
             dispatch_next_broadcast_delivery
         ),
+        vpn_usage_collector: Callable[..., Awaitable[bool]] = collect_usage_poll,
     ) -> None:
         self._session_factory = session_factory
         self._interval_seconds = max(interval_seconds, 0.25)
@@ -126,6 +133,7 @@ class ControlRuntimeOrchestrator:
         )
         self._vpn_ready_sender = vpn_ready_sender
         self._vpn_broadcast_dispatcher = vpn_broadcast_dispatcher
+        self._vpn_usage_collector = vpn_usage_collector
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._zone_scan_tasks: dict[int, asyncio.Task[None]] = {}
@@ -137,6 +145,10 @@ class ControlRuntimeOrchestrator:
         self._detached_vpn_fleet_health_probes: set[asyncio.Task[bool]] = set()
         self._vpn_ready_notification_task: asyncio.Task[None] | None = None
         self._vpn_broadcast_task: asyncio.Task[None] | None = None
+        self._vpn_usage_tasks: set[asyncio.Task[None]] = set()
+        self._vpn_usage_cleanup_task: asyncio.Task[None] | None = None
+        self._last_vpn_usage_at = None
+        self._last_vpn_usage_cleanup_at = None
         self._last_worker_supervision_at = None
         self._last_discovery_at = None
         self._last_vpn_lifecycle_at = None
@@ -152,6 +164,12 @@ class ControlRuntimeOrchestrator:
 
     async def shutdown(self) -> None:
         self._stop_event.set()
+        usage_tasks = set(self._vpn_usage_tasks)
+        if self._vpn_usage_cleanup_task is not None:
+            usage_tasks.add(self._vpn_usage_cleanup_task)
+        for usage_task in usage_tasks:
+            if not usage_task.done():
+                usage_task.cancel()
         task = self._task
         if task is not None:
             task.cancel()
@@ -205,6 +223,10 @@ class ControlRuntimeOrchestrator:
             except asyncio.CancelledError:
                 pass
         self._vpn_broadcast_task = None
+        if usage_tasks:
+            await asyncio.gather(*usage_tasks, return_exceptions=True)
+        self._vpn_usage_tasks.clear()
+        self._vpn_usage_cleanup_task = None
         database = self._vpn_control_database
         if database is not None:
             await database.engine.dispose()
@@ -356,6 +378,7 @@ class ControlRuntimeOrchestrator:
                 start_vpn_broadcasts = await registry_state(session, self._settings) == "ready"
             await session.commit()
         self._start_vpn_fleet_health(now)
+        self._start_vpn_usage(now)
         if start_vpn_broadcasts:
             if self._vpn_control_database is None:
                 self._vpn_control_database = self._vpn_control_database_factory(self._settings)
@@ -378,6 +401,79 @@ class ControlRuntimeOrchestrator:
                 name="vpn-ready-notification",
             )
         await self._start_zone_scan_jobs_if_needed()
+
+    def _start_vpn_usage(self, now) -> None:
+        settings = self._settings
+        if (
+            settings is None or settings.vpn_usage_enabled is not True
+            or not settings.vpn_control_known_hosts_path.strip()
+            or not math.isfinite(settings.vpn_control_db_command_timeout_seconds)
+            or settings.vpn_control_db_command_timeout_seconds <= 0
+            or settings.vpn_control_db_statement_timeout_ms <= 0
+            or self._stop_event.is_set()
+        ):
+            return
+        if self._vpn_control_database is None:
+            try:
+                self._vpn_control_database = self._vpn_control_database_factory(settings)
+            except Exception:  # noqa: BLE001 - do not abort the core cycle or log DB secrets
+                logger.error("VPN usage database unavailable")
+                return
+        if (
+            self._vpn_usage_cleanup_task is None or self._vpn_usage_cleanup_task.done()
+        ) and (
+            self._last_vpn_usage_cleanup_at is None
+            or (now - self._last_vpn_usage_cleanup_at).total_seconds() >= VPN_USAGE_INTERVAL_SECONDS
+        ):
+            self._last_vpn_usage_cleanup_at = now
+            self._vpn_usage_cleanup_task = asyncio.create_task(
+                self._run_vpn_usage_cleanup(now), name="vpn-usage-retention",
+            )
+        self._vpn_usage_tasks = {task for task in self._vpn_usage_tasks if not task.done()}
+        minute = now.replace(second=0, microsecond=0)
+        if self._vpn_usage_tasks or (now - minute).total_seconds() * 1000 > MAX_CLOCK_SKEW_MS or (
+            self._last_vpn_usage_at is not None
+            and (minute - self._last_vpn_usage_at).total_seconds() < VPN_USAGE_INTERVAL_SECONDS
+        ):
+            return
+        self._last_vpn_usage_at = minute
+        self._vpn_usage_tasks = {
+            asyncio.create_task(self._run_vpn_usage(), name="vpn-usage-collector")
+            for _ in range(VPN_USAGE_CONCURRENCY)
+        }
+
+    async def _run_vpn_usage(self) -> None:
+        assert self._settings is not None and self._vpn_control_database is not None
+        timeout = asyncio.timeout(VPN_USAGE_TIMEOUT_SECONDS)
+        deadline = monotonic() + VPN_USAGE_TIMEOUT_SECONDS
+        try:
+            async with timeout:
+                while not self._stop_event.is_set():
+                    if not await self._vpn_usage_collector(
+                        self._vpn_control_database.session_factory,
+                        Path(self._settings.vpn_control_known_hosts_path.strip()),
+                        now=utcnow,
+                        deadline=deadline,
+                    ) or timeout.expired():
+                        break
+            if timeout.expired():
+                logger.error("VPN usage collection timed out")
+        except TimeoutError:
+            logger.error("VPN usage collection timed out")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - transport/SQL details may contain private data
+            logger.error("VPN usage collection failed")
+
+    async def _run_vpn_usage_cleanup(self, now) -> None:
+        assert self._vpn_control_database is not None
+        try:
+            async with asyncio.timeout(VPN_USAGE_TIMEOUT_SECONDS):
+                await cleanup_usage_retention(self._vpn_control_database.session_factory, now=now)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - keep SQL/private details out of logs
+            logger.error("VPN usage retention cleanup failed")
 
     def _vpn_fleet_health_due(self, now) -> bool:
         settings = self._settings

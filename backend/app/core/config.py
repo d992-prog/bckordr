@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     vpn_fleet_health_enabled: bool = Field(
         default=False, alias="VPN_FLEET_HEALTH_ENABLED"
     )
+    vpn_usage_enabled: bool = Field(default=False, alias="VPN_USAGE_ENABLED")
     vpn_fleet_health_interval_seconds: float = Field(
         default=120.0,
         ge=30.0,

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
@@ -836,3 +836,180 @@ async def test_collect_commits_claim_before_network_and_only_apply_uses_new_sess
     finally:
         release.set()
     assert await task
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expires_only_old_hours_and_sources_and_preserves_baseline(
+    usage, factory
+):
+    worker_id, _, keys = await seed(factory)
+    pending = await claim(usage, factory)
+    assert await usage.apply_usage_poll(factory, pending, receipt(pending), now=NOW)
+    async with factory() as db:
+        for offset in (timedelta(days=90, seconds=1), timedelta(days=90)):
+            hour = NOW - offset
+            db.add(
+                models.VpnUsageHour(
+                    access_key_id=keys[0],
+                    worker_id=worker_id,
+                    hour_start=hour,
+                    upload_bytes=3,
+                    download_bytes=7,
+                    sample_count=1,
+                    first_sample_at=hour,
+                    last_sample_at=hour + timedelta(seconds=1),
+                )
+            )
+        for key_id, age in zip(keys, (timedelta(days=1, seconds=1), timedelta(days=1))):
+            observed = NOW - age
+            db.add(
+                models.VpnKeySourceSample(
+                    access_key_id=key_id,
+                    worker_id=worker_id,
+                    minute_at=observed,
+                    observed_at=observed,
+                    state="ok",
+                    key_epoch="synthetic",
+                    source_hashes=[],
+                )
+            )
+        worker = await db.get(models.WorkerNode, worker_id)
+        worker.status = "offline"
+        await db.commit()
+    assert await usage.cleanup_usage_retention(factory, now=NOW) == 2
+    async with factory() as db:
+        assert (
+            await db.scalar(select(func.count()).select_from(models.VpnUsageHour)) == 1
+        )
+        assert (
+            await db.scalars(select(models.VpnKeySourceSample.access_key_id))
+        ).all() == [keys[1]]
+        assert (
+            await db.scalar(select(func.count()).select_from(models.VpnKeyUsageSample))
+            == 2
+        )
+
+
+@pytest.mark.asyncio
+async def test_cleanup_has_one_shared_1000_row_budget_and_prioritizes_sources(
+    usage, factory
+):
+    worker_id, _, keys = await seed(factory, count=1001)
+    expired = NOW - timedelta(days=91)
+    async with factory() as db:
+        db.add_all(
+            models.VpnKeySourceSample(
+                access_key_id=key_id,
+                worker_id=worker_id,
+                minute_at=expired,
+                observed_at=expired,
+                state="unsupported",
+                key_epoch=None,
+                source_hashes=None,
+            )
+            for key_id in keys
+        )
+        db.add(
+            models.VpnUsageHour(
+                access_key_id=keys[0],
+                worker_id=worker_id,
+                hour_start=expired,
+                upload_bytes=0,
+                download_bytes=0,
+                sample_count=1,
+                first_sample_at=expired,
+                last_sample_at=expired + timedelta(seconds=1),
+            )
+        )
+        await db.commit()
+    assert await usage.cleanup_usage_retention(factory, now=NOW) == 1000
+    async with factory() as db:
+        assert (
+            await db.scalar(select(func.count()).select_from(models.VpnKeySourceSample))
+            == 1
+        )
+        assert (
+            await db.scalar(select(func.count()).select_from(models.VpnUsageHour)) == 1
+        )
+    assert await usage.cleanup_usage_retention(factory, now=NOW) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_reason", ["deadline", "cancelled"])
+async def test_collect_never_applies_late_transport_even_if_cancellation_is_swallowed(
+    usage,
+    factory,
+    monkeypatch,
+    late_reason,
+):
+    worker_id, _, _ = await seed(factory)
+    clock = [100.0]
+    monkeypatch.setattr(usage, "monotonic", lambda: clock[0])
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def transport(snapshot, request, **kwargs):
+        entered.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            pass
+        if late_reason == "deadline":
+            clock[0] += 36
+        return receipt(SimpleNamespace(request=request))
+
+    task = asyncio.create_task(
+        usage.collect_usage_poll(
+            factory,
+            KNOWN_HOSTS,
+            now=lambda: NOW,
+            deadline=135.0,
+            snapshot_loader=lambda *_: object(),
+            transport=transport,
+        )
+    )
+    await asyncio.wait_for(entered.wait(), 2)
+    if late_reason == "cancelled":
+        task.cancel()
+    else:
+        release.set()
+    assert not await asyncio.wait_for(task, 2)
+    async with factory() as db:
+        assert await db.scalar(select(models.VpnKeyUsageSample)) is None
+        assert await db.scalar(select(models.VpnUsageHour)) is None
+        assert (
+            await db.get(models.VpnNodeUsagePoll, worker_id)
+        ).claim_token is not None
+
+
+@pytest.mark.asyncio
+async def test_operation_deadline_is_rechecked_after_apply_connection_wait(
+    usage,
+    factory,
+    monkeypatch,
+):
+    worker_id, _, _ = await seed(factory)
+    pending = await claim(usage, factory)
+    clock = [100.0]
+    monkeypatch.setattr(usage, "monotonic", lambda: clock[0])
+
+    class DelayedSession(AsyncSession):
+        async def __aenter__(self):
+            session = await super().__aenter__()
+            clock[0] = 106.0
+            return session
+
+    delayed_factory = async_sessionmaker(
+        factory.kw["bind"],
+        class_=DelayedSession,
+        expire_on_commit=False,
+    )
+    assert not await usage.apply_usage_poll(
+        delayed_factory,
+        pending,
+        receipt(pending),
+        now=NOW,
+        deadline=105.0,
+    )
+    assert (await poll(factory, worker_id)).claim_token == pending.claim_token
+    async with factory() as db:
+        assert await db.scalar(select(models.VpnKeyUsageSample)) is None
