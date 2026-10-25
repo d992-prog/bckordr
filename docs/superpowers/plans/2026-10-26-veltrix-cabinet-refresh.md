@@ -12,6 +12,17 @@
 
 ---
 
+## Progress
+
+- [x] Task 1: server contracts and baseline repair; independent specification and quality reviews passed. Local new settings/API tests: 92 passed, 1 PostgreSQL skip; requested regression: 330 passed, 3 PostgreSQL skips; frontend: 204 passed and production build passed.
+- [x] Task 1 PostgreSQL follow-up: the new concurrent initial-save API test passed on isolated PostgreSQL 14. Combined run: 109 passed, 1 unrelated older device-race fixture failed because it creates no issuable VPN endpoint. Task 2 repairs that connected fixture and reruns it. Temporary database and remote source copy were removed.
+- [x] Visual choice: user approved variant 3 (`.impeccable/mocks/cabinet-refresh-c.png`); composition measurements and existing plate checks prepared. Application UI has not yet been rewritten.
+- [ ] Task 2: device lifecycle and credential generations — implementation and regression checks in progress.
+- [ ] Task 3: gated expiry reminders.
+- [ ] Task 4: compact customer UI.
+- [ ] Task 5: operator settings UI.
+- [ ] Task 6: integrated review and release handoff.
+
 ## Working rules and verification commands
 
 Worktree: `D:\паразитное seo\backorder\project\.worktrees\veltrix-cabinet-refresh`.
@@ -97,6 +108,7 @@ with pytest.raises(ValueError):
 
 - [ ] Add nonnegative `credential_generation` to devices and keys (default 0); replace unique `(device_id, endpoint_id)` with `(device_id, credential_generation, endpoint_id)`. Keep all old rows/UUIDs. Add persistent operation record with unique `(customer_id, request_id)`, device/action, explicit stage, generation, chosen endpoint, creation/update times and bounded public error. Actions: `create`, `revoke`, `replace`; stages: `revoking`, `provisioning`, `completed`, `failed`, `uncertain`. Store original request identity fields so a replay with another payload is 409, not a new mutation. Migrations are repeatable and coexist with old startup backfills.
 - [ ] Implement owned creation under existing customer → subscriptions → keys lock order. Validate named owned subscription, slot count, published healthy endpoint and transport readiness; create logical device/key and stage provision using existing helper patterns. A request timeout is recovered by replaying the same UUID. Provide `POST /v2/devices` with `subscription_id`, `endpoint_id`, `display_name`, `request_id`; status 202 until ready.
+- [ ] Provide read-only `GET /v2/locations?subscription_id=<owned-id>` so a customer with no existing device can choose their first country. Return only public ready selectable locations, apply existing capacity checks, reserve no slot and expose no credentials. Foreign subscriptions are 404; unavailable capacity returns an empty list.
 - [ ] Implement `POST /v2/devices/{id}/revoke` and `/replace` with `{request_id}` and existing CSRF/session revalidation. Persist operations before remote work. Revoke invalidates feed then queues every child key for verified removal. Replacement advances feed generation once, revokes all old keys, then creates new-generation credentials only after every old key is confirmed revoked and the subscription remains valid. Never clear sticky revoke on an old key. Uncertain removals block replacement and slot release. New credentials stay on the original logical device.
 - [ ] Add owned `GET /v2/device-operations/{id}` for refresh/recovery. Response is safe operation metadata, never request snapshots or credentials. Resume progress through the existing bounded lifecycle/runtime tick, not a new daemon. Throttle completed independent replacements to one per device/24 hours; retries of one operation remain allowed.
 - [ ] Include `operation` metadata in device responses (nullable) and `credential_generation` only if required for stale-response guards; update exact fixtures. While an operation is active, block conflicting location changes and derive pending UI states. Restrict all preferred/pending/connection/select queries to matching current generation; revoke remains all-generation. Count unfinished replacement as one occupied device even when no active old key remains. Preserve admin slot limits and existing legacy endpoint checks.
