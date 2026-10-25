@@ -350,18 +350,19 @@ async def apply_usage_poll(
         worker = await db.scalar(
             select(models.WorkerNode)
             .where(models.WorkerNode.id == claim.worker_id)
-            .with_for_update()
+            .with_for_update(skip_locked=True)
             .execution_options(populate_existing=True)
         )
+        if worker is None:
+            return False
         poll = await db.scalar(
             select(models.VpnNodeUsagePoll)
             .where(models.VpnNodeUsagePoll.worker_id == claim.worker_id)
-            .with_for_update()
+            .with_for_update(skip_locked=True)
             .execution_options(populate_existing=True)
         )
         if (
-            worker is None
-            or poll is None
+            poll is None
             or poll.claim_token != claim.claim_token
             or poll.lease_until is None
             or _as_utc(poll.lease_until) <= current

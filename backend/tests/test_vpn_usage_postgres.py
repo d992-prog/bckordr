@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import inspect, select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from test_vpn_endpoint_migrations import (
     postgres_schema as postgres_schema,  # noqa: PLC0414
 )
@@ -159,6 +160,56 @@ async def test_locked_worker_and_poll_are_skipped_without_waiting(pg_factory):
             )
             is None
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locked", [models.WorkerNode, models.VpnNodeUsagePoll])
+async def test_apply_does_not_wait_on_a_row_lock_beyond_the_claim_lease(
+    pg_factory, locked
+):
+    worker_id, _, _ = await seed(pg_factory)
+    pending = await claim(usage, pg_factory)
+    attempted = asyncio.Event()
+    clock = SimpleNamespace(now=NOW + timedelta(seconds=20))
+
+    class ObservedSession(AsyncSession):
+        async def scalar(self, statement, **kwargs):
+            if (
+                statement._for_update_arg is not None
+                and statement.column_descriptions[0]["entity"] is locked
+            ):
+                attempted.set()
+            return await super().scalar(statement, **kwargs)
+
+    applying = async_sessionmaker(
+        pg_factory.kw["bind"], class_=ObservedSession, expire_on_commit=False
+    )
+    async with pg_factory() as owner:
+        column = locked.id if locked is models.WorkerNode else locked.worker_id
+        await owner.scalar(select(locked).where(column == worker_id).with_for_update())
+        task = asyncio.create_task(
+            usage.apply_usage_poll(applying, pending, receipt(pending), now=clock.now)
+        )
+        try:
+            await asyncio.wait_for(attempted.wait(), 1)
+            clock.now = NOW + timedelta(seconds=50)
+            assert clock.now > pending.claimed_at + timedelta(
+                seconds=usage.USAGE_LEASE_SECONDS
+            )
+            finished, _ = await asyncio.wait({task}, timeout=0.2)
+        finally:
+            await owner.rollback()
+            result = await asyncio.wait_for(task, 2)
+        assert result is False
+        assert finished == {task}, (
+            "apply must finish while the contended row remains locked"
+        )
+    async with pg_factory() as db:
+        assert (
+            await db.get(models.VpnNodeUsagePoll, worker_id)
+        ).claim_token == pending.claim_token
+        assert await db.scalar(select(models.VpnKeyUsageSample)) is None
+        assert await db.scalar(select(models.VpnUsageHour)) is None
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.db import models
@@ -615,6 +615,54 @@ async def test_apply_prefetches_baselines_and_hours_in_bounded_queries(usage, fa
     finally:
         event.remove(engine, "before_cursor_execute", capture)
     assert len(reads) <= 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locked", [models.WorkerNode, models.VpnNodeUsagePoll])
+async def test_apply_cannot_wait_past_lease_with_a_prelock_timestamp(
+    usage, factory, locked
+):
+    worker_id, _, _ = await seed(factory)
+    pending = await claim(usage, factory)
+    attempted, release = asyncio.Event(), asyncio.Event()
+    clock = SimpleNamespace(now=NOW + timedelta(seconds=20))
+    lock_order = []
+
+    class ContendedSession(AsyncSession):
+        async def scalar(self, statement, **kwargs):
+            lock = statement._for_update_arg
+            if lock is not None:
+                entity = statement.column_descriptions[0]["entity"]
+                lock_order.append(entity)
+                if entity is locked:
+                    attempted.set()
+                    if lock.skip_locked:
+                        return None
+                    await release.wait()
+            return await super().scalar(statement, **kwargs)
+
+    contended_factory = async_sessionmaker(
+        factory.kw["bind"], class_=ContendedSession, expire_on_commit=False
+    )
+    task = asyncio.create_task(
+        usage.apply_usage_poll(
+            contended_factory, pending, receipt(pending), now=clock.now
+        )
+    )
+    await asyncio.wait_for(attempted.wait(), 1)
+    clock.now = NOW + timedelta(seconds=50)
+    assert clock.now > pending.claimed_at + timedelta(seconds=usage.USAGE_LEASE_SECONDS)
+    release.set()
+    assert not await task
+    assert lock_order == (
+        [models.WorkerNode]
+        if locked is models.WorkerNode
+        else [models.WorkerNode, models.VpnNodeUsagePoll]
+    )
+    assert (await poll(factory, worker_id)).claim_token == pending.claim_token
+    async with factory() as db:
+        assert await db.scalar(select(models.VpnKeyUsageSample)) is None
+        assert await db.scalar(select(models.VpnUsageHour)) is None
 
 
 @pytest.mark.asyncio
