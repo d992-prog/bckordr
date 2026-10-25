@@ -4,6 +4,7 @@ from datetime import timedelta
 
 import pytest
 from itsdangerous import URLSafeSerializer
+from sqlalchemy import update
 from test_vpn_friend_invitations import NOW
 from test_vpn_policy import session_factory as session_factory  # noqa: PLC0414
 
@@ -209,3 +210,68 @@ async def test_feed_rechecks_live_policy_and_binding_before_returning_secret(
         ) as failure:
             await subscription_connection_uri(db, settings(), token, now=NOW)
         assert token not in str(failure.value) and URI not in str(failure.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["customer", "subscription", "key", "device"])
+async def test_feed_refreshes_policy_even_when_caller_cached_old_orm_rows(session_factory, target):
+    async with session_factory() as cached:
+        customer, subscription, key, device = await seed(cached)
+        token = device_token(settings(), device)
+        model, identity, values = {
+            "customer": (VpnCustomer, customer.id, {"status": "blocked"}),
+            "subscription": (VpnSubscription, subscription.id, {"expires_at": NOW}),
+            "key": (VpnAccessKey, key.id, {"status": "pending_revoke"}),
+            "device": (VpnDevice, device.id, {"revoke_requested_at": NOW}),
+        }[target]
+        async with session_factory() as writer:
+            await writer.execute(update(model).where(model.id == identity).values(**values))
+            await writer.commit()
+        with pytest.raises(ValueError, match="^device_subscription_unavailable$"):
+            await subscription_connection_uri(cached, settings(), token, now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_feed_never_uses_preferred_key_from_another_subscription(session_factory):
+    async with session_factory() as db:
+        customer, _, _, device = await seed(db)
+        other_subscription = VpnSubscription(customer_id=customer.id, status="active")
+        db.add(other_subscription)
+        await db.flush()
+        foreign = VpnAccessKey(subscription_id=other_subscription.id, device_id=device.id,
+                               status="active", config_uri=URI)
+        db.add(foreign)
+        await db.flush()
+        device.preferred_key_id = foreign.id
+        await db.commit()
+        with pytest.raises(ValueError, match="^device_subscription_unavailable$"):
+            await subscription_connection_uri(db, settings(), device_token(settings(), device), now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_hidden_endpoint_and_uncertain_pending_do_not_remove_ready_current_feed(session_factory):
+    from uuid import uuid4
+
+    from app.db.models import VpnControlOperation, VpnEndpoint, WorkerNode
+    async with session_factory() as db:
+        _, subscription, key, device = await seed(db)
+        worker = WorkerNode(name="never-public-technical-name")
+        db.add(worker)
+        await db.flush()
+        endpoint = VpnEndpoint(worker_id=worker.id, inbound_id=1, public_host="vpn.example", port=443,
+                               is_published=False)
+        db.add(endpoint)
+        await db.flush()
+        key.worker_id, key.endpoint_id = worker.id, endpoint.id
+        pending = VpnAccessKey(subscription_id=subscription.id, device_id=device.id, worker_id=worker.id,
+                               status="pending_sync", operation_generation=1)
+        db.add(pending)
+        await db.flush()
+        device.pending_key_id = pending.id
+        db.add(VpnControlOperation(id=str(uuid4()), access_key_id=pending.id, worker_id=worker.id,
+                                   endpoint_id=endpoint.id, generation=1, action="provision", state="uncertain",
+                                   request_snapshot={}, request_digest="a" * 64))
+        await db.commit()
+        assert "@vpn.example:" in await subscription_connection_uri(
+            db, settings(), device_token(settings(), device), now=NOW,
+        )

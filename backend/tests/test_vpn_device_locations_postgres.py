@@ -87,6 +87,11 @@ async def test_location_choices_serialize_one_child_and_last_pending(postgres_sc
             original_id, pending_id = device.preferred_key_id, device.pending_key_id
             token = uuid4()
             claimed = await claim_next_vpn_control_operation(db, claim_token=token, now=NOW + timedelta(seconds=1))
+            # Equal timestamps use UUID order; claim both workers if the newer choice wins that tie.
+            if claimed.endpoint_id != endpoints[1]:
+                await db.commit()
+                token = uuid4()
+                claimed = await claim_next_vpn_control_operation(db, claim_token=token, now=NOW + timedelta(seconds=1))
             assert claimed.endpoint_id == endpoints[1]
             await db.commit()
             await finalize_vpn_control_operation(db, UUID(claimed.id), token, receipt_state="observed", error_code=None,
@@ -179,12 +184,13 @@ async def test_expired_captured_principal_cannot_mutate_after_customer_lock_wait
     from app.api.routes.vpn_portal import _device_mutation_principal
     from app.services.vpn_portal_auth import issue_session, lookup_session
     factory, (owner_id, device_id, _), _ = await environment(postgres_schema, monkeypatch)
-    settings = Settings(_env_file=None, VPN_PORTAL_ALLOWED_TELEGRAM_IDS="100")
+    settings = Settings(_env_file=None, VPN_PORTAL_ENABLED=True, VPN_PORTAL_ALLOWED_TELEGRAM_IDS="100")
     async with factory() as seed:
         raw = await issue_session(seed, owner_id, "100")
         await seed.commit()
     async with factory() as holder, factory() as waiter:
         principal = await lookup_session(waiter, raw, settings)
+        assert principal is not None
         session = await holder.get(VpnCustomerSession, principal.session.token_hash)
         session.expires_at = utcnow() + timedelta(seconds=0.3)
         await holder.commit()

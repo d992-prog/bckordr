@@ -7,7 +7,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import Depends, FastAPI, Request
-from sqlalchemy import event, update
+from sqlalchemy import event, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 from test_vpn_device_locations import seed_device_locations
@@ -176,3 +176,65 @@ async def test_hidden_current_is_readable_but_never_a_selectable_option(device_a
                                            "country_code": None, "is_published": False}
     assert env.ids.endpoints[0] not in [row["endpoint_id"] for row in response.json()["available"]]
     assert (await env.client.get(f"/api/vpn-portal/v2/devices/{env.ids.device}/connection")).status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["", "/locations", "/location", "/connection"])
+async def test_foreign_logical_device_is_generic_404(device_api, suffix):
+    env = device_api
+    async with env.sessions() as db:
+        _, _, foreign, _, _ = await seed_device_locations(db, now=utcnow(), identity="200")
+        foreign_id = foreign.id
+    path = f"/api/vpn-portal/v2/devices/{foreign_id}{suffix}"
+    if suffix == "":
+        response = await env.client.patch(path, json={"display_name": "Foreign rename"}, headers=env.headers)
+    elif suffix == "/location":
+        response = await env.client.post(path, json={"endpoint_id": env.ids.endpoints[1]}, headers=env.headers)
+    else:
+        response = await env.client.get(path)
+    assert response.status_code == 404
+    assert response.json() == {"detail": "customer_device_not_found"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["failed", "uncertain"])
+async def test_failed_and_uncertain_selection_keep_old_connection_and_safe_metadata(device_api, state):
+    from app.db.models import VpnControlOperation
+    env = device_api
+    path = f"/api/vpn-portal/v2/devices/{env.ids.device}"
+    before = (await env.client.get(path + "/connection")).json()
+    assert (await env.client.post(path + "/location", json={"endpoint_id": env.ids.endpoints[1]},
+                                  headers=env.headers)).status_code == 202
+    async with env.sessions() as db:
+        operation = await db.scalar(select(VpnControlOperation))
+        operation.state = state
+        operation.error_code = "vpn_node_preflight_failed" if state == "failed" else "vpn_node_mutation_uncertain"
+        await db.commit()
+    view = (await env.client.get(path + "/locations")).json()
+    assert view["selection_state"] == ("failed" if state == "failed" else "verification_required")
+    assert (await env.client.get(path + "/connection")).json() == before
+    if state == "uncertain":
+        response = await env.client.post(path + "/location", json={"endpoint_id": env.ids.endpoints[1]}, headers=env.headers)
+        assert response.status_code == 409
+        assert response.json() == {"detail": "customer_location_verification_required"}
+
+
+@pytest.mark.asyncio
+async def test_connection_and_feed_fail_closed_for_weak_secret_and_permanent_revoke(device_api):
+    from app.services.vpn_devices import lock_key_device_context, stage_device_revoke
+    env = device_api
+    path = f"/api/vpn-portal/v2/devices/{env.ids.device}/connection"
+    original = (await env.client.get(path)).json()
+    env.app.state.settings.session_secret_key = "weak"
+    assert (await env.client.get(path)).status_code == 409
+    assert (await env.client.get(original["subscription_url"])).status_code == 404
+    env.app.state.settings.session_secret_key = SECRET
+    async with env.sessions() as db:
+        key = await lock_key_device_context(db, env.ids.key)
+        await stage_device_revoke(db, key)
+        await db.commit()
+    assert (await env.client.get(path)).status_code == 409
+    revoked_feed = await env.client.get(original["subscription_url"])
+    assert revoked_feed.status_code == 404
+    assert original["subscription_url"] not in revoked_feed.text and original["direct_uri"] not in revoked_feed.text
+    assert (await env.client.get("/api/vpn-portal/v2/devices")).json()[0]["state"] == "pending_revoke"
