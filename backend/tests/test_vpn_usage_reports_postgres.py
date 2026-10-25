@@ -9,7 +9,16 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from test_vpn_endpoint_migrations import (
     postgres_schema as postgres_schema,  # noqa: PLC0414
 )
-from test_vpn_usage_api import CUSTOMER, NODES, hour, poll, report_app, sample, seed
+from test_vpn_usage_api import (
+    CUSTOMER,
+    NODES,
+    assert_mutable_current_hour_preserves_known_bytes,
+    hour,
+    poll,
+    report_app,
+    sample,
+    seed,
+)
 
 from app.db.base import Base
 
@@ -46,3 +55,10 @@ async def test_report_grouping_and_scoped_subqueries_execute_on_postgres(pg_env)
     assert customer.json()["upload_bytes"] == 20
     assert len(customer.json()["devices"]) == 1
     assert customer.json()["devices"][0]["download_bytes"] == 40
+
+
+@pytest.mark.asyncio
+async def test_mutable_current_hour_after_request_clock_keeps_known_totals_on_postgres(
+    pg_env, monkeypatch
+):
+    await assert_mutable_current_hour_preserves_known_bytes(pg_env, monkeypatch)

@@ -550,3 +550,64 @@ async def test_non_vpn_workers_are_not_in_usage_list_but_disabled_historical_nod
     assert [row["worker_id"] for row in (await env.client.get(NODES)).json()] == [
         worker_id
     ]
+
+
+async def assert_mutable_current_hour_preserves_known_bytes(env, monkeypatch):
+    from app.api.routes import vpn_usage
+
+    ids = await seed(env)
+    monkeypatch.setattr(vpn_usage, "utcnow", lambda: ids.now)
+    bucket = ids.now.replace(minute=0, second=0, microsecond=0)
+    async with env.sessions() as db:
+        db.add(hour(ids.keys[0], ids.workers[0], ids.now))
+        await db.commit()
+    assert (await env.client.get(NODES)).json()[0]["upload_bytes"] == 10
+    assert (await env.client.get(CUSTOMER.format(ids.customer))).json()[
+        "upload_bytes"
+    ] == 10
+    async with env.sessions() as db:
+        current = await db.get(m.VpnUsageHour, (ids.keys[0], ids.workers[0], bucket))
+        current.upload_bytes = 15
+        current.last_sample_at = ids.now + timedelta(milliseconds=1)
+        await db.commit()
+    node = (await env.client.get(NODES)).json()[0]
+    customer = (await env.client.get(CUSTOMER.format(ids.customer))).json()
+    assert node["upload_bytes"] == customer["upload_bytes"] == 15
+    assert node["coverage"] == customer["coverage"] == "partial"
+    assert customer["devices"][0]["upload_bytes"] == 15
+
+
+@pytest.mark.asyncio
+async def test_current_hour_update_after_request_clock_does_not_erase_known_totals(
+    env, monkeypatch
+):
+    await assert_mutable_current_hour_preserves_known_bytes(env, monkeypatch)
+
+
+def test_after_request_sample_keeps_bytes_but_is_not_complete_current_coverage():
+    from app.services.vpn_usage_reports import _totals
+
+    now = utcnow().replace(minute=0, second=0, microsecond=0)
+    start = now - timedelta(days=1)
+    aggregate = SimpleNamespace(
+        upload_bytes=15,
+        download_bytes=20,
+        key_count=1,
+        sample_count=1440,
+        measured_since=start,
+        last_sample_at=now + timedelta(milliseconds=1),
+    )
+    evidence = SimpleNamespace(
+        last_sample_at=now,
+        unavailable_count=0,
+        last_attempt_at=now,
+        key_count=1,
+        baseline_count=1,
+        poll_count=1,
+        missing_period_count=0,
+        partial_count=0,
+        oldest_sample_at=now,
+        oldest_poll_at=now,
+    )
+    result = _totals(aggregate, evidence, start=start, now=now)
+    assert result.upload_bytes == 15 and result.coverage == "partial"

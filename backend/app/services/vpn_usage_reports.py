@@ -53,9 +53,8 @@ def _hours(group, start, now):
             func.min(Hour.first_sample_at).label("measured_since"),
             func.max(Hour.last_sample_at).label("last_sample_at"),
         )
-        .where(
-            Hour.hour_start >= start, Hour.hour_start <= now, Hour.last_sample_at <= now
-        )
+        # The current bucket can advance after the request clock; keep its known bytes.
+        .where(Hour.hour_start >= start, Hour.hour_start <= now)
         .group_by(group)
     )
 
@@ -155,6 +154,7 @@ def _totals(
             and aggregate.key_count == evidence.key_count
             and not evidence.missing_period_count
             and not evidence.partial_count
+            and last_at <= now
             and fresh_since <= _as_utc(evidence.oldest_sample_at) <= now
             and fresh_since <= _as_utc(evidence.oldest_poll_at) <= now
             and _as_utc(aggregate.measured_since) <= start
