@@ -21,6 +21,7 @@ from app.schemas.vpn_portal import (
     PortalMe,
     PortalPlan,
     PortalProfile,
+    PortalPreferences,
     PortalSubscription,
     PortalTrial,
     RenamePortalProfile,
@@ -181,6 +182,31 @@ async def config(request: Request, db: AsyncSession = Depends(get_db)) -> dict[s
 @router.get("/me", response_model=PortalMe)
 async def me(principal: PortalPrincipal = Depends(current_customer)) -> PortalMe:
     return _portal_me(principal)
+
+
+@router.get("/preferences", response_model=PortalPreferences)
+async def preferences(
+    response: Response,
+    principal: PortalPrincipal = Depends(current_customer),
+) -> PortalPreferences:
+    response.headers["Cache-Control"] = "no-store"
+    return PortalPreferences(expiry_reminders=principal.customer.expiry_reminders)
+
+
+@router.patch("/preferences", response_model=PortalPreferences)
+async def update_preferences(
+    payload: PortalPreferences, request: Request, response: Response,
+    principal: PortalPrincipal = Depends(require_mutation),
+    db: AsyncSession = Depends(get_db),
+) -> PortalPreferences:
+    settings = _settings(request)
+    principal = await _device_mutation_principal(db, principal, settings)
+    principal.customer.expiry_reminders = payload.expiry_reminders
+    await db.flush()
+    await _device_mutation_principal(db, principal, settings)
+    await db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return payload
 
 
 @router.get("/usage", response_model=PortalUsageResponse)

@@ -683,6 +683,7 @@ class VpnCustomer(Base):
     last_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active", server_default="active")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expiry_reminders: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     trial_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
@@ -1158,6 +1159,36 @@ class VpnBroadcastDelivery(Base):
     campaign_id: Mapped[int] = mapped_column(Integer, nullable=False)
     bot_id: Mapped[str] = mapped_column(String(64), nullable=False)
     chat_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
+    claim_token: Mapped[str | None] = mapped_column(String(36))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class VpnExpiryReminder(Base):
+    __tablename__ = "vpn_expiry_reminders"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "expires_at", "event_kind", name="uq_vpn_expiry_reminder_event"),
+        ForeignKeyConstraint(["bot_id", "chat_id"], ["vpn_bot_chats.bot_id", "vpn_bot_chats.chat_id"], ondelete="RESTRICT", name="fk_vpn_expiry_reminder_chat"),
+        CheckConstraint("event_kind IN ('3d','1d','expired')", name="ck_vpn_expiry_reminder_kind"),
+        CheckConstraint("state IN ('pending','claimed','sending','sent','failed','skipped','uncertain')", name="ck_vpn_expiry_reminder_state"),
+        CheckConstraint("attempt_count >= 0", name="ck_vpn_expiry_reminder_attempt_count"),
+        Index("ix_vpn_expiry_reminders_due", "state", "available_at"),
+        Index("ix_vpn_expiry_reminders_lease", "state", "lease_until"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(ForeignKey("vpn_subscriptions.id", ondelete="CASCADE"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    event_kind: Mapped[str] = mapped_column(String(16))
+    enabled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    bot_id: Mapped[str] = mapped_column(String(64))
+    chat_id: Mapped[str] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
     claim_token: Mapped[str | None] = mapped_column(String(36))

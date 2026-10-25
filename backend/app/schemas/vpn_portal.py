@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from app.services.vpn_display import validate_display_name
 
@@ -12,6 +12,12 @@ from app.services.vpn_display import validate_display_name
 class PortalMe(BaseModel):
     display_name: str
     csrf_token: str
+
+
+class PortalPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expiry_reminders: StrictBool
 
 
 class PortalPlan(BaseModel):
