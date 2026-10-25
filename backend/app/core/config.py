@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     vpn_ready_notifications_enabled: bool = Field(
         default=False, alias="VPN_READY_NOTIFICATIONS_ENABLED"
     )
+    vpn_broadcasts_enabled: bool = Field(default=False, alias="VPN_BROADCASTS_ENABLED")
     vpn_telegram_bot_token: str = Field(default="", alias="VPN_TELEGRAM_BOT_TOKEN")
     vpn_telegram_bot_username: str = Field(default="", alias="VPN_TELEGRAM_BOT_USERNAME")
     vpn_telegram_webhook_secret: str = Field(default="", alias="VPN_TELEGRAM_WEBHOOK_SECRET")

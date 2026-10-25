@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 import logging
 import math
-from pathlib import Path
 import re
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from sqlalchemy import and_, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -24,9 +24,9 @@ from app.services.attack_runtime import (
     autoplan_due_attack_runs,
     finalize_expired_attack_runs,
     rebalance_worker_pool,
-    refresh_active_task_targets,
     recompute_run_statistics,
     recompute_worker_domain_counts,
+    refresh_active_task_targets,
     supervise_worker_pool,
 )
 from app.services.discovery import process_due_discovery_domains
@@ -36,10 +36,15 @@ from app.services.discovery_worker_runtime import (
     load_eligible_discovery_workers,
 )
 from app.services.notifier import TelegramNotifier
+from app.services.vpn_bot_chats import registry_state
+from app.services.vpn_broadcasts import dispatch_next_broadcast_delivery
 from app.services.vpn_control_dispatcher import dispatch_next_vpn_control_operation
 from app.services.vpn_fleet_health import probe_next_vpn_endpoint
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
-from app.services.vpn_node_transport import VpnNodeTransportError, load_transport_snapshot
+from app.services.vpn_node_transport import (
+    VpnNodeTransportError,
+    load_transport_snapshot,
+)
 from app.services.vpn_portal_auth import cleanup_expired_portal_auth
 from app.services.vpn_ready_notifications import (
     ReadyNoticeSender,
@@ -78,6 +83,9 @@ class ControlRuntimeOrchestrator:
             probe_next_vpn_endpoint
         ),
         vpn_ready_sender: ReadyNoticeSender = send_telegram_message,
+        vpn_broadcast_dispatcher: Callable[..., Awaitable[bool]] = (
+            dispatch_next_broadcast_delivery
+        ),
     ) -> None:
         self._session_factory = session_factory
         self._interval_seconds = max(interval_seconds, 0.25)
@@ -117,6 +125,7 @@ class ControlRuntimeOrchestrator:
             settings.vpn_ready_notifications_enabled if settings else False
         )
         self._vpn_ready_sender = vpn_ready_sender
+        self._vpn_broadcast_dispatcher = vpn_broadcast_dispatcher
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._zone_scan_tasks: dict[int, asyncio.Task[None]] = {}
@@ -127,6 +136,7 @@ class ControlRuntimeOrchestrator:
         self._vpn_fleet_health_probe_task: asyncio.Task[bool] | None = None
         self._detached_vpn_fleet_health_probes: set[asyncio.Task[bool]] = set()
         self._vpn_ready_notification_task: asyncio.Task[None] | None = None
+        self._vpn_broadcast_task: asyncio.Task[None] | None = None
         self._last_worker_supervision_at = None
         self._last_discovery_at = None
         self._last_vpn_lifecycle_at = None
@@ -186,6 +196,15 @@ class ControlRuntimeOrchestrator:
             except asyncio.CancelledError:
                 pass
         self._vpn_ready_notification_task = None
+        broadcast_task = self._vpn_broadcast_task
+        if broadcast_task is not None:
+            if not broadcast_task.done():
+                broadcast_task.cancel()
+            try:
+                await broadcast_task
+            except asyncio.CancelledError:
+                pass
+        self._vpn_broadcast_task = None
         database = self._vpn_control_database
         if database is not None:
             await database.engine.dispose()
@@ -205,6 +224,7 @@ class ControlRuntimeOrchestrator:
     async def run_cycle(self) -> None:
         start_vpn_lifecycle = False
         start_vpn_control_dispatch = False
+        start_vpn_broadcasts = False
         lifecycle_now = None
         async with self._session_factory() as session:
             now = utcnow()
@@ -328,8 +348,20 @@ class ControlRuntimeOrchestrator:
                         pass
                     else:
                         start_vpn_control_dispatch = True
+            if (
+                self._settings is not None
+                and self._settings.vpn_broadcasts_enabled is True
+                and (self._vpn_broadcast_task is None or self._vpn_broadcast_task.done())
+            ):
+                start_vpn_broadcasts = await registry_state(session, self._settings) == "ready"
             await session.commit()
         self._start_vpn_fleet_health(now)
+        if start_vpn_broadcasts:
+            if self._vpn_control_database is None:
+                self._vpn_control_database = self._vpn_control_database_factory(self._settings)
+            self._vpn_broadcast_task = asyncio.create_task(
+                self._run_vpn_broadcasts(), name="vpn-broadcast-dispatch",
+            )
         if start_vpn_lifecycle:
             self._vpn_lifecycle_task = asyncio.create_task(
                 self._run_vpn_lifecycle(lifecycle_now),
@@ -556,6 +588,24 @@ class ControlRuntimeOrchestrator:
             raise
         except Exception:
             logger.error("VPN control dispatch failed")
+
+    async def _run_vpn_broadcasts(self) -> None:
+        assert self._settings is not None and self._vpn_control_database is not None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 1
+        try:
+            for _ in range(20):
+                if self._stop_event.is_set() or loop.time() >= deadline:
+                    break
+                if not await self._vpn_broadcast_dispatcher(
+                    self._vpn_control_database.session_factory, self._settings,
+                ):
+                    break
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - isolate news failures without logging their content
+            logger.error("VPN broadcast dispatch failed")
 
     async def _run_vpn_ready_notification(self) -> None:
         assert self._settings is not None

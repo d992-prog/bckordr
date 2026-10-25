@@ -196,6 +196,22 @@ async def extend_bot_cooldown(
         )
 
 
+async def bot_cooldown_remaining(
+    session_factory, token: str, *, now: datetime
+) -> float:
+    async with session_factory() as db:
+        value = await db.scalar(
+            select(VpnBotRateGate.cooldown_until).where(
+                VpnBotRateGate.token_fingerprint == token_fingerprint(token),
+            )
+        )
+        return (
+            max(0, (_as_utc(value) - _as_utc(now)).total_seconds())
+            if value is not None
+            else 0
+        )
+
+
 async def send_gated_payload(
     settings: Settings,
     payload: dict,

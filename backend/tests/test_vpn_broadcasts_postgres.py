@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from test_vpn_bot_chats import settings
+from test_vpn_broadcasts import immediate_gate as immediate_gate  # noqa: PLC0414
 from test_vpn_broadcasts import seed
 from test_vpn_devices_postgres import wait_for_blocker
 from test_vpn_endpoint_migrations import (
@@ -12,15 +13,17 @@ from test_vpn_endpoint_migrations import (
 from test_vpn_friend_invitations import NOW
 
 from app.db.base import Base
-from app.db.models import VpnBroadcastCampaign, VpnBroadcastDelivery
+from app.db.models import VpnBotChat, VpnBroadcastCampaign, VpnBroadcastDelivery
 from app.db.vpn_broadcast_migrations import (
     VPN_BOT_CHAT_MIGRATIONS,
     VPN_BROADCAST_MIGRATIONS,
 )
+from app.services.vpn_bot_delivery import TelegramDeliveryResult
 from app.services.vpn_broadcasts import (
     cancel_broadcast,
     confirm_broadcast,
     create_broadcast_draft,
+    dispatch_next_broadcast_delivery,
     preview_broadcast,
 )
 
@@ -154,3 +157,138 @@ async def test_confirm_cancel_race_cannot_recreate_cancelled_queue(
         assert (await db.get(VpnBroadcastCampaign, campaign_id)).state == "cancelled"
         states = (await db.scalars(select(VpnBroadcastDelivery.state))).all()
         assert states == ([] if cancel_first else ["cancelled"])
+
+
+@pytest.mark.asyncio
+async def test_parallel_dispatchers_send_one_recipient_once(
+    postgres_schema, immediate_gate
+):
+    factory, campaign_id = await environment(postgres_schema)
+    calls = []
+
+    async def sender(*_args):
+        calls.append(True)
+        async with factory() as db:
+            job = await db.scalar(
+                select(VpnBroadcastDelivery).with_for_update(nowait=True)
+            )
+            assert job.state == "sending"
+        return TelegramDeliveryResult("sent", message_id=71)
+
+    await asyncio.gather(
+        *[
+            dispatch_next_broadcast_delivery(
+                factory, settings(), sender=sender, now=lambda: NOW
+            )
+            for _ in range(2)
+        ]
+    )
+    assert calls == [True]
+    async with factory() as db:
+        assert (await db.get(VpnBroadcastCampaign, campaign_id)).state == "completed"
+        job = await db.scalar(select(VpnBroadcastDelivery))
+        assert job.state == "sent" and job.attempt_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_commits_during_http_and_preserves_its_outcome(
+    postgres_schema, immediate_gate
+):
+    factory, campaign_id = await environment(postgres_schema)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def sender(*_args):
+        started.set()
+        await release.wait()
+        return TelegramDeliveryResult("sent", message_id=71)
+
+    task = asyncio.create_task(
+        dispatch_next_broadcast_delivery(
+            factory, settings(), sender=sender, now=lambda: NOW
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 10)
+        async with factory() as db:
+            await asyncio.wait_for(
+                cancel_broadcast(db, campaign_id, actor_id=None, now=NOW), 5
+            )
+            await db.commit()
+        release.set()
+        await asyncio.wait_for(task, 10)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    async with factory() as db:
+        assert (await db.get(VpnBroadcastCampaign, campaign_id)).state == "cancelled"
+        assert (await db.scalar(select(VpnBroadcastDelivery))).state == "sent"
+
+
+@pytest.mark.asyncio
+async def test_recipient_lock_wait_cannot_turn_expired_claim_into_sending(
+    postgres_schema, monkeypatch
+):
+    from datetime import timedelta
+
+    from app.services import vpn_broadcasts
+
+    factory, _ = await environment(postgres_schema)
+    clock = [NOW]
+    _, claim = await vpn_broadcasts._claim_delivery(
+        factory, settings(), lambda: clock[0]
+    )
+    original_pair = vpn_broadcasts._locked_pair
+    waiter_pid = asyncio.get_running_loop().create_future()
+
+    async def tracked_pair(db, *args, **kwargs):
+        result = await original_pair(db, *args, **kwargs)
+        if not waiter_pid.done():
+            waiter_pid.set_result(await db.scalar(text("SELECT pg_backend_pid()")))
+        return result
+
+    monkeypatch.setattr(vpn_broadcasts, "_locked_pair", tracked_pair)
+    async with factory() as holder:
+        holder_pid = await holder.scalar(text("SELECT pg_backend_pid()"))
+        await holder.get(VpnBotChat, ("111", "12345"), with_for_update=True)
+        task = asyncio.create_task(
+            vpn_broadcasts._mark_sending(factory, settings(), claim, lambda: clock[0])
+        )
+        try:
+            pid = await asyncio.wait_for(waiter_pid, 5)
+            await wait_for_blocker(postgres_schema.engine, pid, holder_pid, task)
+            clock[0] = NOW + timedelta(seconds=31)
+            await holder.commit()
+            assert await asyncio.wait_for(task, 10) is False
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    async with factory() as db:
+        assert (await db.scalar(select(VpnBroadcastDelivery))).state == "claimed"
+
+
+@pytest.mark.asyncio
+async def test_sending_lease_recovers_uncertain_not_pending(
+    postgres_schema, immediate_gate
+):
+    from datetime import timedelta
+
+    factory, _ = await environment(postgres_schema)
+    calls = []
+
+    async def sender(*_args):
+        calls.append(True)
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await dispatch_next_broadcast_delivery(
+            factory, settings(), sender=sender, now=lambda: NOW
+        )
+    await dispatch_next_broadcast_delivery(
+        factory, settings(), sender=sender, now=lambda: NOW + timedelta(seconds=31)
+    )
+    assert calls == [True]
+    async with factory() as db:
+        assert (await db.scalar(select(VpnBroadcastDelivery))).state == "uncertain"

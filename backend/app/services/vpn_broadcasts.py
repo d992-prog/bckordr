@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from uuid import uuid4
 
 from sqlalchemy import and_, func, insert, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +16,13 @@ from app.db.base import utcnow
 from app.db.models import VpnBotChat, VpnBroadcastCampaign, VpnBroadcastDelivery
 from app.services.audit import add_audit_log
 from app.services.vpn_bot_chats import configured_vpn_bot_id, registry_state
+from app.services.vpn_bot_delivery import (
+    TelegramDeliveryResult,
+    bot_cooldown_remaining,
+    extend_bot_cooldown,
+    post_telegram_payload,
+    reserve_bot_send_slot,
+)
 from app.services.vpn_policy import _as_utc
 
 
@@ -259,3 +269,299 @@ async def broadcast_counts(db: AsyncSession, campaign_id: int) -> dict[str, int]
     )
     result.update(rows.all())
     return {"recipient_count": sum(result.values()), **result}
+
+
+@dataclass(frozen=True, slots=True)
+class BroadcastClaim:
+    campaign_id: int
+    delivery_id: int
+    bot_id: str
+    chat_id: str = field(repr=False)
+    body: str = field(repr=False)
+    token: str = field(repr=False)
+
+
+async def _locked_pair(db, campaign_id, delivery_id, *, skip_locked=False):
+    campaign = await db.scalar(
+        select(VpnBroadcastCampaign)
+        .where(VpnBroadcastCampaign.id == campaign_id)
+        .with_for_update(skip_locked=skip_locked)
+    )
+    if campaign is None:
+        return None, None
+    job = await db.scalar(
+        select(VpnBroadcastDelivery)
+        .where(
+            VpnBroadcastDelivery.id == delivery_id,
+            VpnBroadcastDelivery.campaign_id == campaign_id,
+        )
+        .with_for_update(skip_locked=skip_locked)
+    )
+    return campaign, job
+
+
+async def _complete(db, campaign):
+    await db.flush()
+    if campaign.state == "running" and not await db.scalar(
+        select(VpnBroadcastDelivery.id)
+        .where(
+            VpnBroadcastDelivery.campaign_id == campaign.id,
+            VpnBroadcastDelivery.state.in_(("pending", "claimed", "sending")),
+        )
+        .limit(1)
+    ):
+        campaign.state = "completed"
+
+
+async def _recover(db, clock):
+    candidates = (
+        await db.execute(
+            select(VpnBroadcastDelivery.campaign_id, VpnBroadcastDelivery.id)
+            .where(
+                VpnBroadcastDelivery.state.in_(("claimed", "sending")),
+                VpnBroadcastDelivery.lease_until <= _as_utc(clock()),
+            )
+            .order_by(VpnBroadcastDelivery.lease_until, VpnBroadcastDelivery.id)
+            .limit(20)
+        )
+    ).all()
+    for campaign_id, delivery_id in candidates:
+        campaign, job = await _locked_pair(
+            db, campaign_id, delivery_id, skip_locked=True
+        )
+        moment = _as_utc(clock())
+        if (
+            job is None
+            or job.state not in ("claimed", "sending")
+            or job.lease_until is None
+            or _as_utc(job.lease_until) > moment
+        ):
+            continue
+        if job.state == "sending" or job.sending_at is not None:
+            job.state, job.finished_at, job.error_code = (
+                "uncertain",
+                moment,
+                "vpn_bot_delivery_uncertain",
+            )
+        elif campaign.state == "running":
+            job.state, job.available_at = "pending", moment
+        else:
+            job.state, job.finished_at = "cancelled", moment
+        job.claim_token = job.lease_until = None
+        await _complete(db, campaign)
+
+
+async def _claim_delivery(session_factory, settings, clock):
+    async with session_factory() as db, db.begin():
+        await _recover(db, clock)
+        if await registry_state(db, settings) != "ready":
+            return False, None
+        bot_id, moment = configured_vpn_bot_id(settings), _as_utc(clock())
+        due = (
+            select(VpnBroadcastDelivery.id)
+            .where(
+                VpnBroadcastDelivery.campaign_id == VpnBroadcastCampaign.id,
+                VpnBroadcastDelivery.state == "pending",
+                VpnBroadcastDelivery.available_at <= moment,
+            )
+            .exists()
+        )
+        campaign = await db.scalar(
+            select(VpnBroadcastCampaign)
+            .where(
+                VpnBroadcastCampaign.state == "running",
+                VpnBroadcastCampaign.bot_id == bot_id,
+                due,
+            )
+            .order_by(VpnBroadcastCampaign.id)
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        if campaign is None:
+            return False, None
+        job = await db.scalar(
+            select(VpnBroadcastDelivery)
+            .where(
+                VpnBroadcastDelivery.campaign_id == campaign.id,
+                VpnBroadcastDelivery.state == "pending",
+                VpnBroadcastDelivery.available_at <= moment,
+            )
+            .order_by(VpnBroadcastDelivery.id)
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        if job is None:
+            return False, None
+        chat = await db.get(VpnBotChat, (job.bot_id, job.chat_id), with_for_update=True)
+        if chat is None or chat.blocked_at is not None:
+            job.state, job.finished_at, job.error_code = (
+                "skipped",
+                _as_utc(clock()),
+                "vpn_bot_blocked",
+            )
+            await _complete(db, campaign)
+            return True, None
+        job.state, job.claim_token = "claimed", str(uuid4())
+        job.lease_until = _as_utc(clock()) + timedelta(seconds=30)
+        return True, BroadcastClaim(
+            campaign.id, job.id, job.bot_id, job.chat_id, campaign.body, job.claim_token
+        )
+
+
+async def _release_rate_wait(session_factory, claim, delay, clock):
+    async with session_factory() as db, db.begin():
+        campaign, job = await _locked_pair(db, claim.campaign_id, claim.delivery_id)
+        if (
+            job is not None
+            and job.claim_token == claim.token
+            and job.state == "claimed"
+            and campaign.state == "running"
+        ):
+            job.state, job.available_at = (
+                "pending",
+                _as_utc(clock()) + timedelta(seconds=delay),
+            )
+            job.claim_token = job.lease_until = None
+
+
+async def _mark_sending(session_factory, settings, claim, clock):
+    async with session_factory() as db, db.begin():
+        campaign, job = await _locked_pair(db, claim.campaign_id, claim.delivery_id)
+        moment = _as_utc(clock())
+        if (
+            job is None
+            or job.claim_token != claim.token
+            or job.state != "claimed"
+            or campaign.state != "running"
+            or job.lease_until is None
+            or _as_utc(job.lease_until) <= moment
+            or await registry_state(db, settings) != "ready"
+            or configured_vpn_bot_id(settings) != claim.bot_id
+        ):
+            return False
+        chat = await db.get(VpnBotChat, (job.bot_id, job.chat_id), with_for_update=True)
+        moment = _as_utc(clock())
+        if job.lease_until is None or _as_utc(job.lease_until) <= moment:
+            return False
+        if chat is None or chat.blocked_at is not None:
+            job.state, job.finished_at, job.error_code = (
+                "skipped",
+                moment,
+                "vpn_bot_blocked",
+            )
+            job.lease_until = None
+            await _complete(db, campaign)
+            return False
+        job.state, job.sending_at = "sending", moment
+        job.lease_until = moment + timedelta(seconds=30)
+        job.attempt_count += 1
+        return True
+
+
+async def _finalize_delivery(session_factory, claim, result, clock):
+    async with session_factory() as db, db.begin():
+        campaign, job = await _locked_pair(db, claim.campaign_id, claim.delivery_id)
+        if job is None or job.claim_token != claim.token or job.state != "sending":
+            return
+        moment = _as_utc(clock())
+        job.error_code, job.lease_until = result.error_code, None
+        if result.state == "retry" and campaign.state == "running":
+            job.state, job.available_at = (
+                "pending",
+                moment + timedelta(seconds=result.retry_after or 30),
+            )
+            job.claim_token = job.sending_at = None
+            return
+        job.finished_at = moment
+        if result.state == "sent":
+            job.state, job.telegram_message_id = "sent", result.message_id
+        elif result.state == "blocked":
+            job.state = "skipped"
+            chat = await db.get(
+                VpnBotChat, (job.bot_id, job.chat_id), with_for_update=True
+            )
+            if chat is not None:
+                chat.blocked_at = moment
+        elif result.state == "failed":
+            job.state = "failed"
+        elif result.state == "retry":
+            job.state = "cancelled"
+        else:
+            job.state = "uncertain"
+        if result.error_code == "vpn_bot_auth_failed" and campaign.state == "running":
+            campaign.state = "failed"
+            await db.execute(
+                update(VpnBroadcastDelivery)
+                .where(
+                    VpnBroadcastDelivery.campaign_id == campaign.id,
+                    VpnBroadcastDelivery.state.in_(("pending", "claimed")),
+                    VpnBroadcastDelivery.sending_at.is_(None),
+                )
+                .values(
+                    state="cancelled",
+                    finished_at=moment,
+                    claim_token=None,
+                    lease_until=None,
+                    error_code="vpn_bot_auth_failed",
+                )
+            )
+        await _complete(db, campaign)
+
+
+async def dispatch_next_broadcast_delivery(
+    session_factory, settings, *, sender=None, now=utcnow
+) -> bool:
+    processed, claim = await _claim_delivery(session_factory, settings, now)
+    if claim is None:
+        return processed
+    delay = await reserve_bot_send_slot(
+        session_factory,
+        settings.vpn_telegram_bot_token,
+        claim.chat_id,
+        now=_as_utc(now()),
+    )
+    if delay:
+        await _release_rate_wait(session_factory, claim, delay, now)
+        return True
+    if not await _mark_sending(session_factory, settings, claim, now):
+        return True
+    delay = await bot_cooldown_remaining(
+        session_factory, settings.vpn_telegram_bot_token, now=_as_utc(now())
+    )
+    if delay:
+        await _finalize_delivery(
+            session_factory,
+            claim,
+            TelegramDeliveryResult(
+                "retry",
+                retry_after=max(1, int(delay + 1)),
+                error_code="vpn_bot_rate_limited",
+            ),
+            now,
+        )
+        return True
+    try:
+        result = await asyncio.wait_for(
+            (sender or post_telegram_payload)(
+                settings.vpn_telegram_bot_token,
+                {
+                    "chat_id": claim.chat_id,
+                    "text": claim.body,
+                    "link_preview_options": {"is_disabled": True},
+                },
+            ),
+            timeout=10,
+        )
+    except Exception:  # noqa: BLE001 - a lost response is never evidence of non-delivery
+        result = TelegramDeliveryResult(
+            "uncertain", error_code="vpn_bot_delivery_uncertain"
+        )
+    if result.error_code == "vpn_bot_rate_limited":
+        await extend_bot_cooldown(
+            session_factory,
+            settings.vpn_telegram_bot_token,
+            result.retry_after,
+            now=_as_utc(now()),
+        )
+    await _finalize_delivery(session_factory, claim, result, now)
+    return True
