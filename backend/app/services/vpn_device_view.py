@@ -12,6 +12,7 @@ from app.db.models import (
     VpnControlOperation,
     VpnCustomer,
     VpnDevice,
+    VpnDeviceOperation,
     VpnEndpoint,
     VpnSubscription,
 )
@@ -54,6 +55,7 @@ async def _children(db: AsyncSession, device: VpnDevice) -> list[VpnAccessKey]:
 
 def _readable(customer, subscription, device, key, now):
     return bool(device.revoke_requested_at is None and key is not None
+                and key.credential_generation == device.credential_generation
                 and key.revoke_requested_at is None and key.revoked_at is None
                 and may_read_connection(customer, subscription, key, now))
 
@@ -61,13 +63,21 @@ def _readable(customer, subscription, device, key, now):
 async def _device_metadata(db, row, now) -> PortalDevice:
     device, subscription, customer = row
     children = await _children(db, device)
-    preferred = next((key for key in children if key.id == device.preferred_key_id), None)
+    preferred = next((key for key in children if key.id == device.preferred_key_id
+                      and key.credential_generation == device.credential_generation), None)
     if device.revoke_requested_at is not None:
         state = "pending_revoke" if any(key.status in DEVICE_SLOT_STATUSES for key in children) else "revoked"
     else:
         state = preferred.status if preferred is not None else "unavailable"
+    operation = await db.scalar(select(VpnDeviceOperation).where(
+        VpnDeviceOperation.device_id == device.id,
+    ).order_by(VpnDeviceOperation.finished_at.is_(None).desc(),
+               VpnDeviceOperation.created_at.desc(), VpnDeviceOperation.id.desc()).limit(1))
+    if operation is not None and operation.finished_at is None:
+        state = "pending_revoke" if operation.stage == "revoking" else "pending_sync"
     return PortalDevice(id=device.id, subscription_id=subscription.id, display_name=device.display_name,
                         legacy_profile_id=device.legacy_profile_id, state=state,
+                        credential_generation=device.credential_generation, operation=operation,
                         can_connect=_readable(customer, subscription, device, preferred, now))
 
 
@@ -92,12 +102,40 @@ def _location(endpoint: VpnEndpoint) -> PortalDeviceLocation:
                                 is_published=endpoint.is_published)
 
 
+async def customer_creation_locations(db: AsyncSession, customer_id: int, subscription_id: int,
+                                      settings: Settings, *, now: datetime | None = None):
+    from app.services.vpn_policy import validate_subscription_access
+
+    current = now or utcnow()
+    row = (await db.execute(select(VpnSubscription, VpnCustomer).join(
+        VpnCustomer, VpnCustomer.id == VpnSubscription.customer_id,
+    ).where(VpnSubscription.id == subscription_id, VpnCustomer.id == customer_id)
+        .execution_options(populate_existing=True))).first()
+    if row is None:
+        raise MissingCustomerDevice()
+    subscription, customer = row
+    if validate_subscription_access(subscription, customer, device_slots=0, enforce_device_limit=False, now=current):
+        raise ValueError("customer_device_subscription_unavailable")
+    endpoint_ids = (await db.scalars(select(VpnEndpoint.id).where(VpnEndpoint.is_published.is_(True))
+                                   .order_by(VpnEndpoint.id))).all()
+    available = []
+    for endpoint_id in endpoint_ids:
+        selected = await select_public_vpn_endpoint(
+            db, endpoint_id=endpoint_id, now=current,
+            health_max_age_seconds=settings.vpn_endpoint_health_max_age_seconds,
+        )
+        if selected is not None and selected.endpoint.protocol == "vless":
+            available.append(_location(selected.endpoint))
+    return available
+
+
 async def customer_device_locations(
     db: AsyncSession, customer_id: int, device_id: int, settings: Settings, *, now: datetime | None = None,
 ) -> PortalDeviceLocations:
     current_time = now or utcnow()
     device, subscription, customer = await owned_device(db, customer_id, device_id)
     children = await _children(db, device)
+    children = [key for key in children if key.credential_generation == device.credential_generation]
     preferred = next((key for key in children if key.id == device.preferred_key_id), None)
     pending = next((key for key in children if key.id == device.pending_key_id), None)
     current = await db.get(VpnEndpoint, preferred.endpoint_id, populate_existing=True) if preferred and preferred.endpoint_id else None
@@ -115,7 +153,12 @@ async def customer_device_locations(
     available = []
     from app.services.vpn_policy import validate_subscription_access
 
-    if device.revoke_requested_at is None and validate_subscription_access(
+    from app.services.vpn_device_operations import pending_device_operation
+
+    pending_operation = await pending_device_operation(db, device.id)
+    if pending_operation is not None:
+        state = "verification_required" if pending_operation.stage == "uncertain" else "preparing"
+    if pending_operation is None and device.revoke_requested_at is None and validate_subscription_access(
         subscription, customer, device_slots=0, enforce_device_limit=False, now=current_time,
     ) is None:
         endpoint_ids = (await db.scalars(select(VpnEndpoint.id).where(VpnEndpoint.is_published.is_(True))

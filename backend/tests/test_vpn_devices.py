@@ -41,7 +41,7 @@ def test_device_schema_is_present_and_has_ownership_constraints():
     assert "status" not in table.c
     assert "device_id" in VpnAccessKey.__table__.c
     assert {constraint.name for constraint in VpnAccessKey.__table__.constraints} >= {
-        "fk_vpn_access_key_device_subscription", "uq_vpn_access_key_device_endpoint",
+        "fk_vpn_access_key_device_subscription", "uq_vpn_access_key_device_generation_endpoint",
     }
     assert {constraint.name for constraint in table.constraints} >= {
         "fk_vpn_device_legacy_profile", "fk_vpn_device_preferred_key", "fk_vpn_device_pending_key",

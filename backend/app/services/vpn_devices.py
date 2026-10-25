@@ -56,10 +56,11 @@ async def checked_device(db: AsyncSession, key: VpnAccessKey) -> VpnDevice | Non
         raise ValueError("vpn_device_binding_invalid")
     for key_id in (device.preferred_key_id, device.pending_key_id):
         if key_id is not None:
-            binding = (await db.execute(select(VpnAccessKey.device_id, VpnAccessKey.subscription_id).where(
+            binding = (await db.execute(select(VpnAccessKey.device_id, VpnAccessKey.subscription_id,
+                                              VpnAccessKey.credential_generation).where(
                 VpnAccessKey.id == key_id,
             ))).one_or_none()
-            if binding is None or tuple(binding) != (device.id, device.subscription_id):
+            if binding is None or tuple(binding) != (device.id, device.subscription_id, device.credential_generation):
                 raise ValueError("vpn_device_binding_invalid")
     return device
 
@@ -106,6 +107,15 @@ async def stage_device_revoke(
 ) -> VpnDevice:
     current = now or utcnow()
     device = await attach_initial_device(db, key)
+    from app.db.models import VpnDeviceOperation
+
+    operations = (await db.scalars(select(VpnDeviceOperation).where(
+        VpnDeviceOperation.device_id == device.id, VpnDeviceOperation.action.in_(("create", "replace")),
+        VpnDeviceOperation.finished_at.is_(None),
+    ))).all()
+    for operation in operations:
+        operation.stage, operation.public_error = "failed", "customer_device_revoked"
+        operation.finished_at, operation.updated_at = current, current
     if device.revoke_requested_at is None:
         device.revoke_requested_at = current
         device.token_generation += 1
@@ -157,12 +167,16 @@ async def select_device_location(
     try:
         async with db.begin_nested():
             customer, subscription, device, keys = await lock_owned_device(db, customer_id, device_id)
-            if device.revoke_requested_at is not None or validate_subscription_access(
+            from app.services.vpn_device_operations import pending_device_operation
+
+            if (await pending_device_operation(db, device.id) is not None
+                    or device.revoke_requested_at is not None or validate_subscription_access(
                 subscription, customer, device_slots=0, enforce_device_limit=False, now=now,
-            ):
+            )):
                 raise ValueError("customer_location_unavailable")
-            child = next((key for key in keys if (key.device_id, key.subscription_id, key.endpoint_id)
-                          == (device.id, subscription.id, endpoint_id)), None)
+            child = next((key for key in keys if (key.device_id, key.subscription_id, key.endpoint_id,
+                                                 key.credential_generation)
+                          == (device.id, subscription.id, endpoint_id, device.credential_generation)), None)
             if child is not None and (child.status in {"revoked", "pending_revoke"}
                                       or child.revoked_at is not None or child.revoke_requested_at is not None):
                 raise ValueError("customer_location_unavailable")
@@ -191,6 +205,7 @@ async def select_device_location(
             if child is None:
                 child = VpnAccessKey(
                     device_id=device.id, subscription_id=subscription.id,
+                    credential_generation=device.credential_generation,
                     worker_id=endpoint.worker_id, endpoint_id=endpoint.id, protocol="vless",
                     external_uuid=str(uuid4()), panel_sub_id=uuid4().hex, display_name=device.display_name,
                     status="pending_sync", issued_at=now, expires_at=subscription.expires_at,
@@ -220,6 +235,7 @@ async def promote_prepared_device_key(db: AsyncSession, key: VpnAccessKey, *, no
         VpnDevice.id == key.device_id, VpnDevice.subscription_id == key.subscription_id,
     ).execution_options(populate_existing=True))
     if (device is None or device.revoke_requested_at is not None or device.pending_key_id != key.id
+            or key.credential_generation != device.credential_generation
             or key.status != "active" or key.revoke_requested_at is not None
             or key.revoked_at is not None or not key.config_uri):
         return

@@ -849,6 +849,7 @@ class VpnDevice(Base):
         UniqueConstraint("id", "subscription_id", name="uq_vpn_device_id_subscription"),
         UniqueConstraint("legacy_profile_id", name="uq_vpn_device_legacy_profile"),
         CheckConstraint("token_generation >= 0", name="ck_vpn_device_token_generation"),
+        CheckConstraint("credential_generation >= 0", name="ck_vpn_device_credential_generation"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -866,6 +867,7 @@ class VpnDevice(Base):
         "vpn_access_keys.id", use_alter=True, name="fk_vpn_device_pending_key", ondelete="RESTRICT",
     ), nullable=True)
     token_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    credential_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     revoke_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -880,7 +882,9 @@ class VpnAccessKey(Base):
             ["device_id", "subscription_id"], ["vpn_devices.id", "vpn_devices.subscription_id"],
             name="fk_vpn_access_key_device_subscription", ondelete="RESTRICT",
         ),
-        UniqueConstraint("device_id", "endpoint_id", name="uq_vpn_access_key_device_endpoint"),
+        UniqueConstraint("device_id", "credential_generation", "endpoint_id",
+                         name="uq_vpn_access_key_device_generation_endpoint"),
+        CheckConstraint("credential_generation >= 0", name="ck_vpn_access_key_credential_generation"),
         ForeignKeyConstraint(
             ["endpoint_id", "worker_id"],
             ["vpn_endpoints.id", "vpn_endpoints.worker_id"],
@@ -900,6 +904,7 @@ class VpnAccessKey(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     subscription_id: Mapped[int] = mapped_column(ForeignKey("vpn_subscriptions.id", ondelete="CASCADE"), index=True)
     device_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    credential_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     worker_id: Mapped[int | None] = mapped_column(
         ForeignKey("worker_nodes.id", ondelete="SET NULL"),
         nullable=True,
@@ -948,6 +953,31 @@ class VpnAccessKey(Base):
 
     subscription: Mapped[VpnSubscription] = relationship(back_populates="access_keys")
     worker: Mapped[WorkerNode | None] = relationship(back_populates="vpn_access_keys")
+
+
+class VpnDeviceOperation(Base):
+    __tablename__ = "vpn_device_operations"
+    __table_args__ = (
+        UniqueConstraint("customer_id", "request_id", name="uq_vpn_device_operation_request"),
+        CheckConstraint("credential_generation >= 0", name="ck_vpn_device_operation_generation"),
+        CheckConstraint("action IN ('create','revoke','replace')", name="ck_vpn_device_operation_action"),
+        CheckConstraint("stage IN ('revoking','provisioning','completed','failed','uncertain')",
+                        name="ck_vpn_device_operation_stage"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("vpn_customers.id", ondelete="RESTRICT"), index=True)
+    request_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    device_id: Mapped[int] = mapped_column(ForeignKey("vpn_devices.id", ondelete="RESTRICT"), index=True)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    stage: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    credential_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    endpoint_id: Mapped[int | None] = mapped_column(ForeignKey("vpn_endpoints.id", ondelete="RESTRICT"), nullable=True)
+    request_identity: Mapped[dict] = mapped_column(JSON, nullable=False)
+    public_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, server_default=func.now())
 
 
 class VpnFriendInvitation(Base):

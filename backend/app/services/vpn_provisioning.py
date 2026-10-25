@@ -1228,7 +1228,9 @@ async def provision_vpn_access_key(
     from app.services.vpn_devices import checked_device
 
     device = await checked_device(db, access_key)
-    if access_key.revoke_requested_at is not None or (device is not None and device.revoke_requested_at is not None):
+    if access_key.revoke_requested_at is not None or (device is not None and (
+        device.revoke_requested_at is not None or access_key.credential_generation != device.credential_generation
+    )):
         if access_key.status != "revoked":
             access_key.status = "pending_revoke"
         return access_key

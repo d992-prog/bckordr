@@ -7,6 +7,7 @@ import json
 from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
 from app.db.base import utcnow
 from app.db.models import VpnAccessKey, VpnCustomer, VpnNodeEvent, VpnSubscription, WorkerNode
 from app.services.app_settings import VPN_LIFECYCLE_LAST_RESULT_KEY, set_app_setting
@@ -96,7 +97,7 @@ async def _process_revoke(
     pending = "pending_suspend" if suspend else "pending_revoke"
     operation = "suspension" if suspend else "revoke"
     if access_key.worker_id is None:
-        if not access_key.config_uri:
+        if not access_key.config_uri and (suspend or not access_key.external_uuid):
             access_key.status = completed
             if not suspend:
                 access_key.revoked_at = current_time
@@ -221,7 +222,11 @@ async def _run_vpn_lifecycle_maintenance(
     current_time: datetime,
     batch_size: int,
     key_timeout_seconds: float,
+    settings: Settings | None = None,
 ) -> dict[str, int | str]:
+    from app.services.vpn_device_operations import replacement_for_old_key, resume_device_operations
+
+    await resume_device_operations(db, settings=settings, now=current_time, batch_size=batch_size)
     result = _new_result(current_time)
     expired_subscription_ids = (
         await db.scalars(
@@ -320,11 +325,17 @@ async def _run_vpn_lifecycle_maintenance(
             action = "provision" if policy_action == "sync" else policy_action
             result["checked_keys"] += 1
             try:
+                access_key = await lock_key_device_context(db, access_key.id)
+                if access_key is None:
+                    continue
+                device = await checked_device(db, access_key)
+                replacement = await replacement_for_old_key(db, device, access_key) if action == "revoke" else None
                 await stage_vpn_control_operation(
                     db,
                     access_key.id,
                     action,
                     now=current_time,
+                    device_operation_id=replacement.id if replacement else None,
                 )
             except VpnControlIntentError as exc:
                 if exc.code not in {
@@ -362,7 +373,9 @@ async def _run_vpn_lifecycle_maintenance(
             else subscription_key_action(subscription, customer, current_time)
         )
         if action == "revoke":
-            await stage_device_revoke(db, access_key, now=current_time)
+            replacement = await replacement_for_old_key(db, device, access_key)
+            if replacement is None:
+                await stage_device_revoke(db, access_key, now=current_time)
         result["checked_keys"] += 1
         worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
         try:
@@ -414,6 +427,7 @@ async def _run_vpn_lifecycle_maintenance(
         json.dumps(result, ensure_ascii=False, separators=(",", ":")),
     )
     await db.commit()
+    await resume_device_operations(db, settings=settings, now=current_time, batch_size=batch_size)
     return result
 
 
@@ -423,6 +437,7 @@ async def run_vpn_lifecycle_maintenance(
     now: datetime | None = None,
     batch_size: int = 50,
     key_timeout_seconds: float = 30.0,
+    settings: Settings | None = None,
 ) -> dict[str, int | str]:
     async with vpn_mutation_lock():
         current_time = _as_utc(now or utcnow())
@@ -432,4 +447,5 @@ async def run_vpn_lifecycle_maintenance(
             current_time=current_time,
             batch_size=max(1, batch_size),
             key_timeout_seconds=max(0.01, key_timeout_seconds),
+            settings=settings,
         )

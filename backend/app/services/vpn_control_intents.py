@@ -284,6 +284,7 @@ async def stage_vpn_control_operation(
     *,
     now: datetime | None = None,
     retry_failed: bool = False,
+    device_operation_id: str | None = None,
 ) -> VpnControlOperation:
     """Lock authoritative policy rows and flush one immutable queued intent."""
     if type(access_key_id) is not int or access_key_id <= 0:
@@ -378,6 +379,19 @@ async def stage_vpn_control_operation(
     from app.services.vpn_devices import checked_device, stage_device_revoke
 
     device = await checked_device(db, access_key)
+    if device_operation_id is not None:
+        from app.services.vpn_device_operations import replacement_for_old_key
+
+        replacement = await replacement_for_old_key(db, device, access_key)
+        if (action != "revoke" or replacement is None or replacement.id != device_operation_id
+                or replacement.customer_id != customer.id
+                or replacement.request_identity != {"action": "replace", "device_id": device.id}
+                or replacement.credential_generation not in {
+                    device.credential_generation, device.credential_generation + 1,
+                }):
+            _fail("vpn_control_device_operation_invalid")
+    if device is not None and action != "revoke" and access_key.credential_generation != device.credential_generation:
+        _fail("vpn_control_revoke_sticky")
     sticky_revoke = (
         (device is not None and device.revoke_requested_at is not None)
         or
@@ -402,7 +416,7 @@ async def stage_vpn_control_operation(
             }[desired]
         )
 
-    if action == "revoke":
+    if action == "revoke" and device_operation_id is None:
         await stage_device_revoke(db, access_key, now=current)
 
     current_operation = next(

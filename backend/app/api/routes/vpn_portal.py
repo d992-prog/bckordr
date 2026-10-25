@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Annotated, Literal
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,11 +25,17 @@ from app.schemas.vpn_portal import (
     PortalTrial,
     RenamePortalProfile,
     PortalDevice, PortalDeviceConnection, PortalDeviceLocations, SelectPortalDeviceLocation,
+    CreatePortalDevice, PortalDeviceOperation, PortalDeviceRequest,
+    PortalDeviceLocation,
 )
 from app.services.vpn_cabinet_settings import get_cabinet_settings
 from app.services.vpn_devices import MissingCustomerDevice, lock_owned_device, rename_device, select_device_location
+from app.services.vpn_device_operations import (
+    owned_device_operation, request_device_creation, request_device_operation,
+)
 from app.services.vpn_device_view import (
     customer_device, customer_device_connection, customer_device_locations, list_customer_devices,
+    customer_creation_locations,
 )
 from app.services.vpn_device_subscriptions import encode_device_subscription, subscription_connection_uri
 from app.services.vpn_customer_view import (
@@ -444,6 +451,95 @@ async def _device_mutation_principal(db, principal, settings):
 @router.get("/v2/devices", response_model=list[PortalDevice])
 async def devices(principal: PortalPrincipal = Depends(current_customer), db: AsyncSession = Depends(get_db)):
     return await list_customer_devices(db, principal.customer.id)
+
+
+@router.get("/v2/locations", response_model=list[PortalDeviceLocation])
+async def creation_locations(
+    request: Request, subscription_id: int = Query(gt=0, le=2**31 - 1),
+    principal: PortalPrincipal = Depends(current_customer), db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await customer_creation_locations(db, principal.customer.id, subscription_id, _settings(request))
+    except (MissingCustomerDevice, ValueError) as error:
+        raise _device_operation_error(error) from None
+
+
+_DEVICE_ERRORS = frozenset({
+    "customer_device_request_invalid", "customer_device_request_conflict", "customer_device_limit_reached",
+    "customer_device_subscription_unavailable", "customer_device_endpoint_unavailable", "customer_device_unavailable",
+    "customer_device_operation_pending", "customer_device_replacement_limited",
+})
+
+
+def _device_operation_error(error):
+    if isinstance(error, MissingCustomerDevice):
+        return HTTPException(status_code=404, detail="customer_device_not_found")
+    code = str(error)
+    return HTTPException(status_code=409, detail=code if code in _DEVICE_ERRORS else "customer_device_unavailable")
+
+
+@router.post("/v2/devices", response_model=PortalDeviceOperation, status_code=202)
+async def create_owned_device(
+    payload: CreatePortalDevice, request: Request, response: Response,
+    principal: PortalPrincipal = Depends(require_mutation), db: AsyncSession = Depends(get_db),
+):
+    settings = _settings(request)
+    principal = await _device_mutation_principal(db, principal, settings)
+    try:
+        operation = await request_device_creation(
+            db, customer_id=principal.customer.id, settings=settings, now=datetime.now(UTC),
+            **payload.model_dump(),
+        )
+        await _device_mutation_principal(db, principal, settings)
+        await db.commit()
+        response.status_code = 200 if operation.stage == "completed" else 202
+        return operation
+    except (MissingCustomerDevice, ValueError) as error:
+        await db.rollback()
+        raise _device_operation_error(error) from None
+
+
+async def _owned_device_action(device_id, action, payload, request, response, principal, db):
+    settings = _settings(request)
+    principal = await _device_mutation_principal(db, principal, settings)
+    try:
+        operation = await request_device_operation(
+            db, customer_id=principal.customer.id, device_id=device_id, action=action,
+            request_id=payload.request_id, settings=settings, now=datetime.now(UTC),
+        )
+        await _device_mutation_principal(db, principal, settings)
+        await db.commit()
+        response.status_code = 200 if operation.stage == "completed" else 202
+        return operation
+    except (MissingCustomerDevice, ValueError) as error:
+        await db.rollback()
+        raise _device_operation_error(error) from None
+
+
+@router.post("/v2/devices/{device_id}/revoke", response_model=PortalDeviceOperation, status_code=202)
+async def revoke_owned_device(
+    device_id: Annotated[int, Path(gt=0, le=2**31 - 1)], payload: PortalDeviceRequest, request: Request, response: Response,
+    principal: PortalPrincipal = Depends(require_mutation), db: AsyncSession = Depends(get_db),
+):
+    return await _owned_device_action(device_id, "revoke", payload, request, response, principal, db)
+
+
+@router.post("/v2/devices/{device_id}/replace", response_model=PortalDeviceOperation, status_code=202)
+async def replace_owned_device(
+    device_id: Annotated[int, Path(gt=0, le=2**31 - 1)], payload: PortalDeviceRequest, request: Request, response: Response,
+    principal: PortalPrincipal = Depends(require_mutation), db: AsyncSession = Depends(get_db),
+):
+    return await _owned_device_action(device_id, "replace", payload, request, response, principal, db)
+
+
+@router.get("/v2/device-operations/{operation_id}", response_model=PortalDeviceOperation)
+async def device_operation(
+    operation_id: UUID, principal: PortalPrincipal = Depends(current_customer), db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await owned_device_operation(db, principal.customer.id, operation_id)
+    except MissingCustomerDevice:
+        raise HTTPException(status_code=404, detail="customer_device_not_found") from None
 
 
 @router.patch("/v2/devices/{device_id}", response_model=PortalDevice)

@@ -28,6 +28,14 @@ ORIGIN = "https://portal.example"
 @pytest_asyncio.fixture
 async def device_api(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    @event.listens_for(engine.sync_engine, "connect")
+    def explicit_transactions(connection, _record):
+        connection.isolation_level = None
+
+    @event.listens_for(engine.sync_engine, "begin")
+    def begin_transaction(connection):
+        connection.exec_driver_sql("BEGIN")
+
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -74,7 +82,7 @@ async def test_v2_lists_one_logical_device_without_secrets_or_get_writes(device_
     assert response.status_code == locations.status_code == 200
     assert response.json() == [{"id": env.ids.device, "subscription_id": env.ids.subscription,
                                 "display_name": "Phone", "state": "active", "can_connect": True,
-                                "legacy_profile_id": env.ids.key}]
+                                "legacy_profile_id": env.ids.key, "credential_generation": 0, "operation": None}]
     assert not mutations
     text = response.text + locations.text
     assert "vless://" not in text and "subscription/" not in text and "private-" not in text

@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
-from app.db.models import VpnAccessKey, VpnCustomer, VpnSubscription
+from app.db.models import VpnAccessKey, VpnCustomer, VpnDevice, VpnSubscription
 from app.schemas.vpn_portal import (
     PortalConnection,
     PortalProfile,
@@ -147,11 +147,13 @@ async def _current_customer(
 
 def _owned_profile_query(customer_id: int, profile_id: int):
     return (
-        select(VpnAccessKey, VpnSubscription)
+        select(VpnAccessKey, VpnSubscription, VpnDevice)
         .join(
             VpnSubscription,
             VpnSubscription.id == VpnAccessKey.subscription_id,
         )
+        .outerjoin(VpnDevice, and_(VpnDevice.id == VpnAccessKey.device_id,
+                                  VpnDevice.subscription_id == VpnAccessKey.subscription_id))
         .where(
             VpnAccessKey.id == profile_id,
             VpnSubscription.customer_id == customer_id,
@@ -165,13 +167,23 @@ def _portal_profile(
     subscription: VpnSubscription,
     access_key: VpnAccessKey,
     now: datetime,
+    device: VpnDevice | None = None,
 ) -> PortalProfile:
     return PortalProfile(
         id=access_key.id,
         subscription_id=subscription.id,
         display_name=profile_display_name(access_key),
         state=_profile_state(access_key),
-        can_connect=may_read_connection(customer, subscription, access_key, now),
+        can_connect=_current_device_key(access_key, device) and may_read_connection(customer, subscription, access_key, now),
+    )
+
+
+def _current_device_key(key: VpnAccessKey, device: VpnDevice | None) -> bool:
+    if key.revoke_requested_at is not None or key.revoked_at is not None:
+        return False
+    return key.device_id is None or bool(
+        device is not None and device.revoke_requested_at is None
+        and key.credential_generation == device.credential_generation
     )
 
 
@@ -223,11 +235,13 @@ async def list_customer_profiles(
         return []
     rows = (
         await db.execute(
-            select(VpnAccessKey, VpnSubscription)
+            select(VpnAccessKey, VpnSubscription, VpnDevice)
             .join(
                 VpnSubscription,
                 VpnSubscription.id == VpnAccessKey.subscription_id,
             )
+            .outerjoin(VpnDevice, and_(VpnDevice.id == VpnAccessKey.device_id,
+                                      VpnDevice.subscription_id == VpnAccessKey.subscription_id))
             .where(VpnSubscription.customer_id == customer.id)
             .order_by(VpnAccessKey.id.asc())
             .execution_options(populate_existing=True)
@@ -235,8 +249,8 @@ async def list_customer_profiles(
     ).all()
     current_time = _current_time(now)
     return [
-        _portal_profile(current_customer, subscription, access_key, current_time)
-        for access_key, subscription in rows
+        _portal_profile(current_customer, subscription, access_key, current_time, device)
+        for access_key, subscription, device in rows
     ]
 
 
@@ -250,10 +264,10 @@ async def customer_connection(
     row = (await db.execute(_owned_profile_query(customer.id, profile_id))).first()
     if row is None:
         raise MissingCustomerProfile()
-    access_key, subscription = row
+    access_key, subscription, device = row
     current_customer = await _current_customer(db, customer.id)
     current_time = _current_time(now)
-    if current_customer is None or not may_read_connection(
+    if current_customer is None or not _current_device_key(access_key, device) or not may_read_connection(
         current_customer, subscription, access_key, current_time
     ):
         raise UnavailableCustomerConnection()
@@ -292,4 +306,5 @@ async def rename_customer_profile(
         subscription,
         access_key,
         current_time,
+        await db.get(VpnDevice, access_key.device_id) if access_key.device_id is not None else None,
     )
