@@ -624,3 +624,55 @@ async def test_cooldown_arriving_during_marker_commit_prevents_http(
     )
     async with session_factory() as db:
         assert (await db.scalar(select(VpnBroadcastDelivery))).state == "pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recover", [False, True])
+async def test_delayed_cooldown_cannot_start_http_after_sending_lease(
+    session_factory, immediate_gate, monkeypatch, recover
+):
+    from app.services import vpn_broadcasts
+
+    await campaign(session_factory)
+    clock = [NOW]
+
+    async def delayed_cooldown(*_args, **_kwargs):
+        clock[0] += timedelta(seconds=31)
+        if recover:
+            async with session_factory() as db, db.begin():
+                await vpn_broadcasts._recover(db, lambda: clock[0])
+        return 0
+
+    async def sender(*_args):
+        pytest.fail("an expired sending marker must not start HTTP")
+
+    monkeypatch.setattr(
+        vpn_broadcasts, "bot_cooldown_remaining", delayed_cooldown
+    )
+    await dispatch_next_broadcast_delivery(
+        session_factory, settings(), sender=sender, now=lambda: clock[0]
+    )
+    async with session_factory() as db:
+        job = await db.scalar(select(VpnBroadcastDelivery))
+        assert job.state == ("uncertain" if recover else "pending")
+
+
+@pytest.mark.asyncio
+async def test_403_does_not_block_newer_valid_inbound(
+    session_factory, immediate_gate
+):
+    await campaign(session_factory)
+
+    async def sender(*_args):
+        async with session_factory() as db, db.begin():
+            chat = await db.get(VpnBotChat, ("111", "12345"))
+            chat.last_seen_at = NOW + timedelta(seconds=1)
+            chat.last_update_id = 7
+        return TelegramDeliveryResult("blocked", error_code="vpn_bot_blocked")
+
+    await dispatch_next_broadcast_delivery(
+        session_factory, settings(), sender=sender, now=lambda: NOW
+    )
+    async with session_factory() as db:
+        assert (await db.scalar(select(VpnBroadcastDelivery))).state == "skipped"
+        assert (await db.get(VpnBotChat, ("111", "12345"))).blocked_at is None

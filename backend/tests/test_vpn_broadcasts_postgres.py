@@ -295,3 +295,54 @@ async def test_sending_lease_recovers_uncertain_not_pending(
     assert calls == [True]
     async with factory() as db:
         assert (await db.scalar(select(VpnBroadcastDelivery))).state == "uncertain"
+
+
+@pytest.mark.asyncio
+async def test_403_waiting_for_chat_lock_preserves_newer_inbound(
+    postgres_schema, monkeypatch
+):
+    from datetime import timedelta
+
+    from app.services import vpn_broadcasts
+    from app.services.vpn_bot_chats import _record_chat
+
+    factory, _ = await environment(postgres_schema, confirmed=True)
+    _, claim = await vpn_broadcasts._claim_delivery(factory, settings(), lambda: NOW)
+    assert claim is not None
+    assert await vpn_broadcasts._mark_sending(factory, settings(), claim, lambda: NOW)
+    original_pair = vpn_broadcasts._locked_pair
+    waiter_pid = asyncio.get_running_loop().create_future()
+
+    async def tracked_pair(db, *args, **kwargs):
+        result = await original_pair(db, *args, **kwargs)
+        waiter_pid.set_result(await db.scalar(text("SELECT pg_backend_pid()")))
+        return result
+
+    monkeypatch.setattr(vpn_broadcasts, "_locked_pair", tracked_pair)
+    async with factory() as holder:
+        holder_pid = await holder.scalar(text("SELECT pg_backend_pid()"))
+        await holder.get(VpnBotChat, ("111", "12345"), with_for_update=True)
+        task = asyncio.create_task(
+            vpn_broadcasts._finalize_delivery(
+                factory,
+                claim,
+                TelegramDeliveryResult("blocked", error_code="vpn_bot_blocked"),
+                lambda: NOW,
+            )
+        )
+        try:
+            pid = await asyncio.wait_for(waiter_pid, 5)
+            await wait_for_blocker(postgres_schema.engine, pid, holder_pid, task)
+            await _record_chat(
+                holder, "111", "12345", 7, NOW + timedelta(seconds=1), unblock=True
+            )
+            await holder.commit()
+            await asyncio.wait_for(task, 10)
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    async with factory() as db:
+        chat = await db.get(VpnBotChat, ("111", "12345"))
+        assert chat.last_update_id == 7 and chat.blocked_at is None
+        assert (await db.scalar(select(VpnBroadcastDelivery))).state == "skipped"

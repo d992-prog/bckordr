@@ -455,15 +455,15 @@ async def _mark_sending(session_factory, settings, claim, clock):
         job.state, job.sending_at = "sending", moment
         job.lease_until = moment + timedelta(seconds=30)
         job.attempt_count += 1
-        return True
+        return job.lease_until
 
 
 async def _finalize_delivery(session_factory, claim, result, clock):
+    moment = _as_utc(clock())
     async with session_factory() as db, db.begin():
         campaign, job = await _locked_pair(db, claim.campaign_id, claim.delivery_id)
         if job is None or job.claim_token != claim.token or job.state != "sending":
             return
-        moment = _as_utc(clock())
         job.error_code, job.lease_until = result.error_code, None
         if result.state == "retry" and campaign.state == "running":
             job.state, job.available_at = (
@@ -480,7 +480,7 @@ async def _finalize_delivery(session_factory, claim, result, clock):
             chat = await db.get(
                 VpnBotChat, (job.bot_id, job.chat_id), with_for_update=True
             )
-            if chat is not None:
+            if chat is not None and _as_utc(chat.last_seen_at) <= moment:
                 chat.blocked_at = moment
         elif result.state == "failed":
             job.state = "failed"
@@ -523,7 +523,8 @@ async def dispatch_next_broadcast_delivery(
     if delay:
         await _release_rate_wait(session_factory, claim, delay, now)
         return True
-    if not await _mark_sending(session_factory, settings, claim, now):
+    sending_deadline = await _mark_sending(session_factory, settings, claim, now)
+    if not sending_deadline:
         return True
     delay = await bot_cooldown_remaining(
         session_factory, settings.vpn_telegram_bot_token, now=_as_utc(now())
@@ -536,6 +537,17 @@ async def dispatch_next_broadcast_delivery(
                 "retry",
                 retry_after=max(1, int(delay + 1)),
                 error_code="vpn_bot_rate_limited",
+            ),
+            now,
+        )
+        return True
+    if sending_deadline <= _as_utc(now()) + timedelta(seconds=10):
+        # Database waits must not let HTTP start outside the committed sending lease.
+        await _finalize_delivery(
+            session_factory,
+            claim,
+            TelegramDeliveryResult(
+                "retry", retry_after=30, error_code="vpn_bot_unreachable"
             ),
             now,
         )
