@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import traceback
+from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -220,7 +221,7 @@ def test_receipt_binds_exact_request_and_time(usage, changes):
 @pytest.fixture
 def node(tmp_path, entry, monkeypatch):
     path = tmp_path / "panel.db"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("CREATE TABLE inbounds (id)")
         db.execute("INSERT INTO inbounds VALUES (7)")
         db.execute("CREATE TABLE client_traffics (id,email,up,down,reset_count)")
@@ -354,7 +355,7 @@ def test_observer_reads_only_managed_counters_without_mutations(
     ],
 )
 def test_invalid_or_missing_counter_never_becomes_zero(entry, usage, node, statement):
-    with sqlite3.connect(node["database"]) as db:
+    with closing(sqlite3.connect(node["database"])) as db, db:
         db.execute(statement)
     result = observe(entry, usage, node)
     assert result.keys[0].traffic_state == "unavailable"
@@ -800,7 +801,7 @@ def test_source_errors_are_unavailable_without_losing_traffic(
         source_node["inbounds"].append(
             dict(source_node["inbounds"][0], id=8, tag="other")
         )
-        with sqlite3.connect(source_node["database"]) as db:
+        with closing(sqlite3.connect(source_node["database"])) as db, db:
             db.execute("INSERT INTO inbounds VALUES (8)")
         source_node["inbounds"][-1]["settings"] = {"clients": []}
         source_node["runtime_users"]["public"].pop(0)
@@ -846,7 +847,7 @@ def test_slow_optional_sources_reserve_time_for_final_runtime_identity(
             }
         )
         source_node["runtime_users"][tag] = []
-        with sqlite3.connect(source_node["database"]) as db:
+        with closing(sqlite3.connect(source_node["database"])) as db, db:
             db.execute("INSERT INTO inbounds VALUES (?)", (inbound_id,))
     started = time.monotonic()
     clock = {"now": started}
@@ -948,7 +949,7 @@ def test_source_inventory_and_output_limits_are_fail_closed(
                     "settings": {"clients": []},
                 }
             )
-            with sqlite3.connect(source_node["database"]) as db:
+            with closing(sqlite3.connect(source_node["database"])) as db, db:
                 db.execute("INSERT INTO inbounds VALUES (?)", (8 + index,))
     elif bad == "user_limit":
         source_node["online"] = {"users": [{}] * 10001}
@@ -982,8 +983,9 @@ def test_root_entrypoint_contains_errors_without_output(entry, usage, monkeypatc
         assert out.getvalue() == err.getvalue() == b""
 
 
+@pytest.mark.parametrize("token_ending", [b"", b"\n"])
 def test_entrypoint_uses_private_token_get_session_without_journal(
-    entry, usage, monkeypatch, tmp_path
+    entry, usage, monkeypatch, tmp_path, token_ending
 ):
     req, result = request(usage), receipt(usage)
     config, token, database = (
@@ -1013,7 +1015,7 @@ def test_entrypoint_uses_private_token_get_session_without_journal(
 
     def private_file(path, *, limit):
         reads.append(("read", path, limit))
-        return b"private-token\n" if path == token else b"{}"
+        return b"private-token" + token_ending if path == token else b"{}"
 
     monkeypatch.setattr(entry, "_read_private_file", private_file)
 

@@ -130,6 +130,52 @@ def test_remote_database_path_rejects_noncanonical_or_windows_paths(
         deployment._config(raw)
 
 
+@pytest.mark.parametrize("ending", [b"", b"\n"])
+def test_install_preserves_maximum_token_with_optional_lf(tmp_path, monkeypatch, ending):
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    layout = _layout(tmp_path)
+    token = b"a" * 4096 + ending
+    _private_file(layout.token, token)
+    before = layout.token.stat()
+    database = tmp_path / "panel.db"
+    _private_file(database, b"sqlite-placeholder")
+    # Canonical remote paths are tested separately; map this fixture onto Windows too.
+    monkeypatch.setattr(deployment, "_config", lambda _raw: database)
+    bundle, digest = _bundle(tmp_path)
+
+    assert deployment.install_node_release(
+        bundle, expected_sha256=digest, node_config=_config(database), layout=layout,
+        python_executable=Path(sys.executable), owner_uid=before.st_uid, require_posix=False,
+    ) == "installed"
+
+    assert layout.token.read_bytes() == token
+    after = layout.token.stat()
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+            stat.S_IMODE(after.st_mode), after.st_uid) == (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+        stat.S_IMODE(before.st_mode), before.st_uid,
+    )
+
+
+def test_deployment_helper_bundles_shared_token_parser_and_imports_isolated(tmp_path):
+    deployment = importlib.import_module("app.services.vpn_node_deployment")
+    bundle, digest = _bundle(tmp_path)
+    helper = tmp_path / "helper.pyz"
+    deployment.build_node_deployment_helper(
+        BACKEND, helper, node_bundle=bundle, expected_node_sha256=digest,
+        node_config=b'{"version":1,"panel_url":"http://127.0.0.1:2053/","database_path":"/etc/x-ui/x-ui.db"}',
+    )
+    with zipfile.ZipFile(helper) as archive:
+        assert "app/services/vpn_node_token.py" in archive.namelist()
+    probe = subprocess.run(
+        [sys.executable, "-I", "-S", str(helper), "--import-probe"],
+        capture_output=True, check=False, timeout=10,
+    )
+    assert (probe.returncode, probe.stdout, probe.stderr) == (
+        0, deployment.DEPLOYMENT_HELPER_SENTINEL, b"",
+    )
+
+
 @REQUIRES_REMOTE_POSIX_FILESYSTEM
 def test_fresh_install_is_atomic_and_preserves_token(tmp_path: Path) -> None:
     deployment = importlib.import_module("app.services.vpn_node_deployment")

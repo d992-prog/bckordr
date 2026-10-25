@@ -948,7 +948,8 @@ def test_temporary_installer_is_not_in_permanent_dispatcher_bundle() -> None:
     assert "app/services/vpn_reality_endpoint_installer.py" not in BUNDLE_MEMBERS
 
 
-def test_default_node_execution_requires_root_and_constructs_token_only_panel(monkeypatch) -> None:
+@pytest.mark.parametrize("token_ending", [b"", b"\n"])
+def test_default_node_execution_requires_root_and_constructs_token_only_panel(monkeypatch, token_ending) -> None:
     module = _module()
     request = module.parse_install_request(_request(action="inspect"))
     with pytest.raises(module.EndpointInstallError, match="^vpn_endpoint_install_privilege_required$"):
@@ -964,7 +965,7 @@ def test_default_node_execution_requires_root_and_constructs_token_only_panel(mo
     monkeypatch.setattr(
         module,
         "_read_private_file",
-        lambda path, *, limit: b"token-only\n"
+        lambda path, *, limit: b"token-only" + token_ending
         if path == module.NODE_TOKEN_PATH
         else b"{}",
     )
@@ -979,7 +980,8 @@ def test_default_node_execution_requires_root_and_constructs_token_only_panel(mo
     assert seen == {"panel_url": "http://panel.example/base/", "api_token": "token-only"}
 
 
-def test_default_node_execution_accepts_only_maximum_sized_token_line(monkeypatch) -> None:
+@pytest.mark.parametrize("token_ending", [b"", b"\n"])
+def test_default_node_execution_accepts_only_maximum_sized_token_line(monkeypatch, token_ending) -> None:
     module = _module()
     request = module.parse_install_request(_request(action="inspect"))
     token = b"a" * module.MAX_TOKEN_BYTES
@@ -991,7 +993,7 @@ def test_default_node_execution_accepts_only_maximum_sized_token_line(monkeypatc
             seen.update(panel_url=panel_url, api_token=api_token)
 
     def read_private_file(path, *, limit):
-        value = token + b"\n" if path == module.NODE_TOKEN_PATH else b"{}"
+        value = token + token_ending if path == module.NODE_TOKEN_PATH else b"{}"
         if len(value) > limit:
             raise module.EndpointInstallError("vpn_endpoint_install_environment_invalid")
         return value

@@ -23,6 +23,8 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 from uuid import uuid4
 
+from app.services.vpn_node_token import MAX_TOKEN_BYTES, parse_node_token_bytes
+
 try:
     import asyncssh
 except ModuleNotFoundError as error:
@@ -36,9 +38,9 @@ _BUNDLE_MEMBERS = (
     "app/__init__.py",
     "app/services/__init__.py",
     "app/services/vpn_xui_node_http.py",
+    "app/services/vpn_node_token.py",
     "app/services/vpn_node_bootstrap.py",
 )
-_TOKEN = re.compile(rb"[A-Za-z0-9._~+/\-]{1,4096}=*\Z", re.ASCII)
 _TOKEN_LINE = re.compile(
     rb"^apiToken: ([A-Za-z0-9._~+/\-]{1,4096}=*)$", re.ASCII | re.MULTILINE
 )
@@ -1011,7 +1013,7 @@ def _prepare_vpn_node(
                 layout.token,
                 owner_uid,
                 mode=0o600,
-                limit=4097,
+                limit=MAX_TOKEN_BYTES + 1,
                 require_posix=require_posix,
             )
             config_raw = _secure_file(
@@ -1028,7 +1030,9 @@ def _prepare_vpn_node(
                 limit=4096,
                 require_posix=require_posix,
             )
-            if not token_raw.endswith(b"\n") or not _TOKEN.fullmatch(token_raw[:-1]):
+            try:
+                token = parse_node_token_bytes(token_raw)
+            except ValueError:
                 _fail("vpn_node_bootstrap_foreign_state")
             if config_raw != _node_config_bytes(
                 panel_url,
@@ -1041,7 +1045,6 @@ def _prepare_vpn_node(
             _prepare_release_directories(
                 layout, owner_uid, require_posix=require_posix
             )
-            token = token_raw[:-1].decode("ascii")
             _wait_for_panel_session(panel_url, token, panel_session_factory)
             return VpnNodeBootstrapReceipt(
                 "already_prepared", panel_url, str(database), xui_version
@@ -1177,7 +1180,7 @@ def _prepare_vpn_node(
                 database, token_name, target_must_exist=True
             ) != token_state:
                 _fail("vpn_node_bootstrap_mutation_uncertain")
-            token = token_raw.decode("ascii")
+            token = parse_node_token_bytes(token_raw)
             for command in (start_command, ready_command):
                 result = _invoke_command(
                     runner,

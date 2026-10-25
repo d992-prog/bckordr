@@ -21,6 +21,7 @@ from app.services.vpn_node_request import (
     node_request_digest,
     parse_node_request,
 )
+from app.services.vpn_node_token import MAX_TOKEN_BYTES, parse_node_token_bytes
 from app.services.vpn_xui_node_executor import execute_node_client_operation
 from app.services.vpn_xui_node_http import NodePanelSession, validate_panel_url
 
@@ -30,7 +31,6 @@ NODE_TOKEN_PATH = Path("/var/lib/veltrix-vpn/control-auth/api-token")
 NODE_JOURNAL_DIRECTORY = Path("/var/lib/veltrix-vpn/control-journal")
 MAX_REQUEST_BYTES = 128 * 1024
 MAX_CONFIG_BYTES = 64 * 1024
-MAX_TOKEN_BYTES = 4096
 EXIT_FAILURE = 1
 EXIT_INVALID_REQUEST = 2
 EXIT_INTERRUPTED = 3
@@ -282,13 +282,7 @@ def run_node_entrypoint(
         _validate_private_regular_file(database_path)
         _validate_journal(journal_directory)
         token_raw = _read_private_file(token_path, limit=MAX_TOKEN_BYTES + 1)
-        if (
-            not token_raw.endswith(b"\n")
-            or b"\n" in token_raw[:-1]
-            or b"\r" in token_raw
-        ):
-            _fail()
-        token = token_raw[:-1].decode("ascii", errors="strict")
+        token = parse_node_token_bytes(token_raw)
 
         def panel_factory() -> NodePanelSession:
             return NodePanelSession(

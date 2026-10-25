@@ -29,6 +29,7 @@ from app.services.vpn_node_health import (
     parse_node_health_request,
     serialize_node_health_receipt,
 )
+from app.services.vpn_node_token import parse_node_token_bytes
 from app.services.vpn_xui_node_http import NodePanelError, NodePanelSession
 from app.services.vpn_xui_node_observation import (
     NodeEndpointObservation,
@@ -121,13 +122,7 @@ def run_node_health_entrypoint(
         )
         _validate_private_regular_file(database_path)
         token_raw = _read_private_file(token_path, limit=MAX_TOKEN_BYTES + 1)
-        if (
-            not token_raw.endswith(b"\n")
-            or b"\n" in token_raw[:-1]
-            or b"\r" in token_raw
-        ):
-            raise NodeEntrypointError from None
-        token = token_raw[:-1].decode("ascii", errors="strict")
+        token = parse_node_token_bytes(token_raw)
         panel_session = NodePanelSession(
             panel_url,
             username=None,

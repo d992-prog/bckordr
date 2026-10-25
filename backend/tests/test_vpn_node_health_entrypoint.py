@@ -8,6 +8,7 @@ import io
 import json
 import sqlite3
 import threading
+from contextlib import closing
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -66,7 +67,7 @@ def target() -> VpnEndpointTarget:
 @pytest.fixture
 def node(tmp_path, target):
     database = tmp_path / "x-ui.db"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("CREATE TABLE inbounds (id)")
         connection.execute("INSERT INTO inbounds VALUES (?)", (target.inbound_id,))
     state = {
@@ -284,12 +285,13 @@ def test_endpoint_observation_is_immutable_and_does_not_read_clients(
         ("listener", "vpn_node_health_listener_unavailable", "running"),
     ],
 )
+@pytest.mark.parametrize("token_ending", [b"", b"\n"])
 def test_exact_health_receipt_and_read_only_state(
-    monkeypatch, entrypoint, node, target, tmp_path, case, error_code, runtime
+    monkeypatch, entrypoint, node, target, tmp_path, case, error_code, runtime, token_ending
 ):
     if case == "missing":
         node["inbounds"]["obj"] = []
-        with sqlite3.connect(node["database"]) as connection:
+        with closing(sqlite3.connect(node["database"])) as connection, connection:
             connection.execute("DELETE FROM inbounds")
     elif case == "stopped":
         node["status"]["obj"]["xray"]["state"] = "stop"
@@ -303,7 +305,7 @@ def test_exact_health_receipt_and_read_only_state(
         node["listener"] = False
 
     config, token, checked = install_trusted_inputs(
-        monkeypatch, entrypoint, node, tmp_path
+        monkeypatch, entrypoint, node, tmp_path, token_value=SECRET.encode() + token_ending
     )
     database_hash = hashlib.sha256(node["database"].read_bytes()).digest()
     panel_payload = deepcopy([node["status"], node["inbounds"]])
@@ -354,8 +356,9 @@ def test_exact_health_receipt_and_read_only_state(
         ),
     ],
 )
+@pytest.mark.parametrize("token_ending", [b"", b"\n"])
 def test_token_file_line_length_boundary(
-    monkeypatch, entrypoint, node, target, tmp_path, token_size, expected
+    monkeypatch, entrypoint, node, target, tmp_path, token_size, expected, token_ending
 ):
     node["expected_token"] = "a" * token_size
     config, token, _checked = install_trusted_inputs(
@@ -363,7 +366,7 @@ def test_token_file_line_length_boundary(
         entrypoint,
         node,
         tmp_path,
-        token_value=b"a" * token_size + b"\n",
+        token_value=b"a" * token_size + token_ending,
     )
 
     code, stdout, stderr = run(
@@ -596,7 +599,8 @@ def test_valid_request_maps_trusted_input_failures_to_one_static_receipt(
 @pytest.mark.parametrize(
     "token_value",
     [
-        SECRET.encode(),
+        b"",
+        b"\n",
         SECRET.encode() + b"\n\n",
         b"first\nsecond\n",
         SECRET.encode() + b"\r\n",

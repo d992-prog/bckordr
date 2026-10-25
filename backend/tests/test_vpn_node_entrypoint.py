@@ -7,6 +7,7 @@ import os
 import sqlite3
 import stat
 import threading
+from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -132,9 +133,10 @@ def run(entrypoint, raw, *, config, token, journal, executor, uid=lambda: 0):
     return code, stdout.getvalue(), stderr.getvalue()
 
 
-def test_exact_request_and_receipt(monkeypatch, entrypoint, tmp_path):
+@pytest.mark.parametrize("token_ending", [b"", b"\n"])
+def test_exact_request_and_receipt(monkeypatch, entrypoint, tmp_path, token_ending):
     config, token, database, journal, checked = install_trusted_inputs(
-        monkeypatch, entrypoint, tmp_path
+        monkeypatch, entrypoint, tmp_path, token_value=SECRET.encode() + token_ending
     )
     calls = []
 
@@ -191,14 +193,15 @@ def test_exact_request_and_receipt(monkeypatch, entrypoint, tmp_path):
 
 
 @pytest.mark.parametrize(("token_size", "expected_success"), [(4096, True), (4097, False)])
+@pytest.mark.parametrize("token_ending", [b"", b"\n"])
 def test_token_file_line_length_boundary(
-    monkeypatch, entrypoint, tmp_path, token_size, expected_success
+    monkeypatch, entrypoint, tmp_path, token_size, expected_success, token_ending
 ):
     config, token, _database, journal, _checked = install_trusted_inputs(
         monkeypatch,
         entrypoint,
         tmp_path,
-        token_value=b"a" * token_size + b"\n",
+        token_value=b"a" * token_size + token_ending,
     )
     seen = []
 
@@ -231,7 +234,8 @@ def test_token_file_line_length_boundary(
 @pytest.mark.parametrize(
     "token_value",
     [
-        SECRET.encode(),
+        b"",
+        b"\n",
         SECRET.encode() + b"\n\n",
         b"first\nsecond\n",
         SECRET.encode() + b"\r\n",
@@ -651,7 +655,7 @@ def integrated_node(tmp_path):
     journal.mkdir(mode=0o700)
     initialize_node_journal(journal)
     database = tmp_path / "x-ui.db"
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection, connection:
         connection.execute("CREATE TABLE inbounds (id)")
         connection.execute("INSERT INTO inbounds VALUES (3)")
         connection.execute(
@@ -744,7 +748,7 @@ def integrated_node(tmp_path):
             raw = self.rfile.read(int(self.headers["Content-Length"]))
             body = json.loads(raw)
             state["writes"].append((self.path, body))
-            with sqlite3.connect(journal / "operations.sqlite3") as connection:
+            with closing(sqlite3.connect(journal / "operations.sqlite3")) as connection, connection:
                 state["mark_checks"].append(
                     connection.execute(
                         "SELECT phase FROM operations WHERE operation_id=?",
@@ -841,9 +845,9 @@ def test_real_entrypoint_executor_panel_database_and_journal_integration(
     assert json.loads(stdout)["state"] == "observed"
     assert len(integrated_node["writes"]) == 1
     assert integrated_node["mark_checks"] == [True]
-    with sqlite3.connect(
+    with closing(sqlite3.connect(
         integrated_node["journal"] / "operations.sqlite3"
-    ) as connection:
+    )) as connection, connection:
         assert connection.execute(
             "SELECT phase,error_code FROM operations WHERE operation_id=?",
             (OPERATION_ID,),
@@ -859,9 +863,9 @@ def test_real_entrypoint_contains_interruption_after_mutation_and_journals_uncer
     assert stdout == stderr == b""
     assert len(integrated_node["writes"]) == 1
     assert integrated_node["mark_checks"] == [True]
-    with sqlite3.connect(
+    with closing(sqlite3.connect(
         integrated_node["journal"] / "operations.sqlite3"
-    ) as connection:
+    )) as connection, connection:
         assert connection.execute(
             "SELECT phase,error_code FROM operations WHERE operation_id=?",
             (OPERATION_ID,),

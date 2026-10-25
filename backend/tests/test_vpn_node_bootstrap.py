@@ -102,6 +102,7 @@ def test_bootstrap_bundle_is_deterministic_and_imports_in_isolated_python(
     assert changed_digest != first_digest
     with zipfile.ZipFile(first) as archive:
         main = archive.read("__main__.py").decode("ascii")
+        assert "app/services/vpn_node_token.py" in archive.namelist()
     assert repr(_build_vpn_install_command()) in main
     assert repr(_build_xui_stop_command()) in main
     assert repr(XUI_START_COMMAND) in main
@@ -329,9 +330,12 @@ def _prepared(layout: BootstrapLayout, *, worker_id: int = 16) -> str:
     return token
 
 
-def test_exact_existing_token_and_config_are_idempotent(tmp_path: Path) -> None:
+@pytest.mark.parametrize("token_ending", [b"", b"\n"])
+def test_exact_existing_token_and_config_are_idempotent(tmp_path: Path, token_ending: bytes) -> None:
     layout = _layout(tmp_path)
     token = _prepared(layout)
+    layout.token.write_bytes(token.encode() + token_ending)
+    original_token = layout.token.read_bytes()
     seen: list[tuple[str, str]] = []
 
     def panel(panel_url: str, *, api_token: str):
@@ -360,6 +364,7 @@ def test_exact_existing_token_and_config_are_idempotent(tmp_path: Path) -> None:
         XUI_VERSION,
     )
     assert seen == [("http://127.0.0.1:2053/panel/", token)]
+    assert layout.token.read_bytes() == original_token
 
 
 def test_existing_xui_bootstrap_creates_missing_release_directories(
@@ -918,13 +923,16 @@ def test_completed_bootstrap_rejects_replaced_backup(tmp_path: Path) -> None:
         ("symlink", "vpn_node_bootstrap_environment_invalid"),
     ],
 )
+@pytest.mark.parametrize("token_ending", [b"", b"\n"])
 def test_completed_bootstrap_rejects_untrusted_provenance_sidecar(
     tmp_path: Path,
     fault: str,
     code: str,
+    token_ending: bytes,
 ) -> None:
     layout = _layout(tmp_path)
-    _prepared(layout)
+    token = _prepared(layout)
+    layout.token.write_bytes(token.encode() + token_ending)
     if fault == "missing":
         layout.provenance.unlink()
     elif fault == "content":

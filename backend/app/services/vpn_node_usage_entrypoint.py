@@ -30,6 +30,7 @@ from app.services.vpn_node_entrypoint import (
     _read_private_file,
     _validate_private_regular_file,
 )
+from app.services.vpn_node_token import parse_node_token_bytes
 from app.services.vpn_node_usage import (
     MAX_OBSERVATION_SECONDS,
     MAX_USAGE_REQUEST_BYTES,
@@ -515,12 +516,11 @@ def run_node_usage_entrypoint(
             _read_private_file(config_path, limit=MAX_CONFIG_BYTES)
         )
         _validate_private_regular_file(database_path)
-        token = _read_private_file(token_path, limit=MAX_TOKEN_BYTES + 1)
-        _require(
-            token.endswith(b"\n") and b"\n" not in token[:-1] and b"\r" not in token
+        token = parse_node_token_bytes(
+            _read_private_file(token_path, limit=MAX_TOKEN_BYTES + 1)
         )
         with NodePanelSession(
-            panel_url, api_token=token[:-1].decode("ascii"), timeout_seconds=3
+            panel_url, api_token=token, timeout_seconds=3
         ) as panel:
             receipt = observer(panel, request=request, database_path=database_path)
         encoded = serialize_node_usage_receipt(receipt, request)

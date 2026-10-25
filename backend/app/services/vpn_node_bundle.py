@@ -17,6 +17,7 @@ BUNDLE_MEMBERS = (
     "app/services/vpn_node_health.py",
     "app/services/vpn_node_usage.py",
     "app/services/vpn_node_request.py",
+    "app/services/vpn_node_token.py",
     "app/services/vpn_node_journal.py",
     "app/services/vpn_xui_node_http.py",
     "app/services/vpn_xui_node_observation.py",
@@ -34,6 +35,7 @@ _MAIN = (
     b"import app.services.vpn_node_health\n"
     b"import app.services.vpn_node_usage\n"
     b"import app.services.vpn_node_request\n"
+    b"import app.services.vpn_node_token\n"
     b"import app.services.vpn_node_journal\n"
     b"import app.services.vpn_xui_node_http\n"
     b"import app.services.vpn_xui_node_observation\n"

@@ -30,6 +30,7 @@ def test_bundle_has_exact_manifest_and_stable_hash(tmp_path):
     second_hash = build_node_bundle(BACKEND, second)
 
     expected = set(BUNDLE_MEMBERS) | {"__main__.py"}
+    assert "app/services/vpn_node_token.py" in expected
     assert archive_members(first) == expected
     assert first.read_bytes() == second.read_bytes()
     assert first_hash == second_hash == hashlib.sha256(first.read_bytes()).hexdigest()

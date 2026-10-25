@@ -76,6 +76,7 @@ def test_endpoint_candidate_bundle_is_deterministic_minimal_and_importable(tmp_p
     assert first.read_bytes() == second.read_bytes()
     with zipfile.ZipFile(first) as archive:
         assert set(archive.namelist()) == {"__main__.py", *module.ENDPOINT_BUNDLE_MEMBERS}
+        assert "app/services/vpn_node_token.py" in archive.namelist()
         assert "app/services/vpn_node_entrypoint.py" not in archive.namelist()
         assert "app/services/vpn_node_bundle.py" not in archive.namelist()
     result = subprocess.run(

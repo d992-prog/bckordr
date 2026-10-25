@@ -21,10 +21,10 @@ from uuid import uuid4
 
 from app.services.vpn_node_bundle import IMPORT_PROBE_SENTINEL
 from app.services.vpn_node_journal import initialize_node_journal
+from app.services.vpn_node_token import MAX_TOKEN_BYTES
 
 MAX_BUNDLE_BYTES = 4 * 1024 * 1024
 MAX_CONFIG_BYTES = 64 * 1024
-MAX_TOKEN_BYTES = 4096
 MAX_DATABASE_BYTES = 16 * 1024 * 1024 * 1024
 DEPLOYMENT_HELPER_SENTINEL = b"veltrix-vpn-deployer-import-ok-v1\n"
 _HELPER_MEMBERS = (
@@ -32,6 +32,7 @@ _HELPER_MEMBERS = (
     "app/services/__init__.py",
     "app/services/vpn_node_bundle.py",
     "app/services/vpn_node_journal.py",
+    "app/services/vpn_node_token.py",
     "app/services/vpn_node_deployment.py",
 )
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -1274,7 +1275,7 @@ def _recover_interrupted(
             raise NodeDeploymentError("vpn_node_deployment_incomplete") from None
         token_identity = _identity(
             layout.token,
-            MAX_TOKEN_BYTES,
+            MAX_TOKEN_BYTES + 1,
             owner_uid,
             enforce_metadata=require_posix,
         )
@@ -1372,7 +1373,7 @@ def install_node_release(
     )
     token_identity = _identity(
         layout.token,
-        MAX_TOKEN_BYTES,
+        MAX_TOKEN_BYTES + 1,
         owner_uid,
         enforce_metadata=require_posix,
     )
@@ -1519,7 +1520,7 @@ def install_node_release(
         if (
             _identity(
                 layout.token,
-                MAX_TOKEN_BYTES,
+                MAX_TOKEN_BYTES + 1,
                 owner_uid,
                 enforce_metadata=require_posix,
             )
@@ -1547,7 +1548,7 @@ def install_node_release(
             protected_state_unchanged = (
                 _identity(
                     layout.token,
-                    MAX_TOKEN_BYTES,
+                    MAX_TOKEN_BYTES + 1,
                     owner_uid,
                     enforce_metadata=require_posix,
                 )

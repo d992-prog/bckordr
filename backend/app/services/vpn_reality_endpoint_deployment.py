@@ -39,6 +39,7 @@ ENDPOINT_BUNDLE_MEMBERS = (
     "app/__init__.py",
     "app/services/__init__.py",
     "app/services/vpn_endpoint_types.py",
+    "app/services/vpn_node_token.py",
     "app/services/vpn_xui_identity.py",
     "app/services/vpn_xui_node_http.py",
     "app/services/vpn_xui_node_observation.py",
@@ -59,6 +60,7 @@ def _main(worker_id: int) -> bytes:
     return (
         "import sys\n"
         "import app.services.vpn_endpoint_types\n"
+        "import app.services.vpn_node_token\n"
         "import app.services.vpn_xui_identity\n"
         "import app.services.vpn_xui_node_http\n"
         "import app.services.vpn_xui_node_observation\n"

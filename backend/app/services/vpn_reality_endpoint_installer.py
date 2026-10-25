@@ -21,6 +21,7 @@ from typing import Any, BinaryIO, Literal, Protocol
 from urllib.parse import quote, unquote
 from uuid import UUID
 
+from app.services.vpn_node_token import MAX_TOKEN_BYTES, parse_node_token_bytes
 from app.services.vpn_xray_runtime import _run as _run_xray
 from app.services.vpn_xray_runtime import _trusted_file
 from app.services.vpn_xui_node_observation import (
@@ -50,7 +51,6 @@ XRAY_EXECUTABLE = Path("/usr/local/x-ui/bin/xray-linux-amd64")
 MAX_REQUEST_BYTES = 128 * 1024
 MAX_RECEIPT_BYTES = 2048
 MAX_CONFIG_BYTES = 64 * 1024
-MAX_TOKEN_BYTES = 4096
 POST_MUTATION_SETTLE_SECONDS = 10.0
 POST_MUTATION_POLL_SECONDS = 0.05
 NODE_CONFIG_PATH = Path("/var/lib/veltrix-vpn/control-auth/node.json")
@@ -1119,13 +1119,7 @@ def _execute_node_request(
         )
         _validate_private_regular_file(database_path)
         token_raw = _read_private_file(token_path, limit=MAX_TOKEN_BYTES + 1)
-        if (
-            not token_raw.endswith(b"\n")
-            or b"\n" in token_raw[:-1]
-            or b"\r" in token_raw
-        ):
-            _fail("vpn_endpoint_install_environment_invalid")
-        token = token_raw[:-1].decode("ascii", errors="strict")
+        token = parse_node_token_bytes(token_raw)
 
         def panel_factory() -> EndpointAdminPanelSession:
             return EndpointAdminPanelSession(panel_url, api_token=token)
