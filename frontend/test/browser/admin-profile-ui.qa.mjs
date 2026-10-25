@@ -3,6 +3,7 @@
 // Race regression only: node test/browser/admin-profile-ui.qa.mjs --profile-create-only.
 // Invitation regressions only: node test/browser/admin-profile-ui.qa.mjs --invitations-only.
 // Publication/device usage: node test/browser/admin-profile-ui.qa.mjs --admin-operations-only.
+// Measured traffic: node test/browser/admin-profile-ui.qa.mjs --usage-only.
 // Uses existing PLAYWRIGHT_MODULE_PATH / CHROMIUM_EXECUTABLE_PATH overrides when needed.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -194,6 +195,10 @@ try {
     if (pathname === "/api/control/overview") return json(route, { checked_at: stamp, capacity: {} });
     if (pathname === "/api/control/vpn/customers") return json(route, customers);
     if (pathname === "/api/control/vpn/subscriptions") return json(route, subscriptions);
+    if (/\/api\/control\/vpn\/customers\/\d+\/usage$/.test(pathname)) {
+      return json(route, { customer_id: Number(pathname.split("/").at(-2)), days: Number(new URL(request.url()).searchParams.get("days")),
+        upload_bytes: null, download_bytes: null, measured_since: null, last_sample_at: null, coverage: "none", devices: [] });
+    }
     if (/\/api\/control\/vpn\/subscriptions\/\d+\/device-usage$/.test(pathname)) {
       return json(route, deviceUsages.get(Number(pathname.split("/").at(-2))));
     }
@@ -605,6 +610,153 @@ try {
       `${label}: the full URI must stay out of console output`);
   };
 
+  if (process.argv.includes("--usage-only")) {
+    const usagePage = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    usagePage.setDefaultTimeout(10000);
+    const usageErrors = [];
+    usagePage.on("pageerror", (error) => usageErrors.push(error.message));
+    const usageRow = (worker_id, overrides = {}) => ({ worker_id, upload_bytes: null, download_bytes: null,
+      measured_since: null, last_sample_at: null, coverage: "none", active_devices: 2,
+      occupied_profiles: 3, max_active_profiles: 10, cpu_load: 0.75, ram_usage_percent: 25, ...overrides });
+    const rows = Array.from({ length: 100 }, (_, index) => usageRow(41 + index));
+    rows[1] = usageRow(42, { upload_bytes: 0, download_bytes: 0, coverage: "partial", last_sample_at: stamp });
+    rows[2] = usageRow(43, { upload_bytes: 1073741824, download_bytes: 2147483648, coverage: "stale", measured_since: stamp, last_sample_at: stamp, cpu_load: null, ram_usage_percent: null });
+    rows[3] = usageRow(44, { upload_bytes: 4096, download_bytes: 8192, coverage: "unavailable", measured_since: stamp, last_sample_at: stamp });
+    const nodeCalls = [];
+    let failNodes = false;
+    let holdNodePeriod = null;
+    let holdNodeCursor = false;
+    let holdCustomer = null;
+    const heldStats = [];
+    const customerStats = (customerId, days) => ({ customer_id: customerId, days,
+      upload_bytes: 3221225472, download_bytes: 4294967296, measured_since: stamp, last_sample_at: stamp, coverage: "partial",
+      devices: [{ device_id: customerId === 1 ? 121 : 122, display_name: customerId === 1 ? "Телефон: две страны" : "Ноутбук Бориса", upload_bytes: 3221225472, download_bytes: 4294967296, measured_since: stamp, last_sample_at: stamp, coverage: "partial" }] });
+    await usagePage.route("**/api/**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/api/auth/logout") return json(route, { detail: "logged out" });
+      if (url.pathname === "/api/control/vpn/usage/nodes") {
+        nodeCalls.push(url.search);
+        if (holdNodePeriod === Number(url.searchParams.get("days")) || holdNodeCursor && Number(url.searchParams.get("after_id")) > 0) { heldStats.push(route); return; }
+        if (failNodes) return json(route, { detail: "synthetic private upstream details" }, 503);
+        if (Number(url.searchParams.get("days")) !== 1) return json(route, [usageRow(41, { upload_bytes: Number(url.searchParams.get("days")) * 1073741824, download_bytes: 0, coverage: "partial", measured_since: stamp, last_sample_at: stamp }), rows[2], rows[3]]);
+        return json(route, Number(url.searchParams.get("after_id")) ? [usageRow(141)] : rows);
+      }
+      if (/\/customers\/\d+\/usage$/.test(url.pathname)) {
+        const customerId = Number(url.pathname.split("/").at(-2));
+        if (holdCustomer === customerId) { heldStats.push(route); return; }
+        return json(route, customerStats(customerId, Number(url.searchParams.get("days"))));
+      }
+      return handleApiRoute(route);
+    });
+    await usagePage.goto(`${appUrl}#vpn/overview`);
+    const nodes = usagePage.locator('[data-vpn-usage="nodes"]');
+    await nodes.getByRole("heading", { name: "Трафик нод", exact: true }).waitFor({ timeout: 3000 });
+    await nodes.getByText("Frankfurt 1", { exact: true }).waitFor();
+    assert.equal(await nodes.locator("tbody tr").count(), 100);
+    assert.match(await nodes.locator("tbody tr").nth(0).innerText(), /Нет данных/);
+    assert.match(await nodes.locator("tbody tr").nth(1).innerText(), /0 Б/);
+    assert.match(await nodes.locator("tbody tr").nth(2).innerText(), /1 ГиБ.*2 ГиБ/s);
+    assert.match(await nodes.locator("tbody tr").nth(2).innerText(), /Данные устарели/);
+    assert.match(await nodes.locator("tbody tr").nth(2).innerText(), /Последнее измерение/);
+    assert.match(await nodes.locator("tbody tr").nth(3).innerText(), /Сбор недоступен/);
+    assert.match(await nodes.locator("tbody tr").nth(3).innerText(), /4 КиБ/);
+    assert.equal(await nodes.locator('tbody tr').first().locator('[data-label="Нагрузка CPU"]').innerText(), "0.75");
+    assert.equal(await nodes.locator('tbody tr').first().locator('[data-label="RAM"]').innerText(), "25 %");
+    assert.equal(await nodes.locator('tbody tr').first().locator('[data-label="Занято профилей / лимит"]').innerText(), "3 / 10");
+    await nodes.getByRole("button", { name: "Показать ещё ноды", exact: true }).evaluate((button) => { button.click(); button.click(); });
+    await nodes.locator("tbody tr").nth(100).waitFor();
+    assert.equal(nodeCalls.filter((query) => query.includes("after_id=140")).length, 1);
+    assert.equal(await nodes.getByRole("button", { name: "Показать ещё ноды" }).count(), 0);
+    holdNodePeriod = 7;
+    await nodes.getByLabel("Период статистики").selectOption("7");
+    await until(() => heldStats.length === 1, "held older period was not requested");
+    await nodes.getByLabel("Период статистики").selectOption("30");
+    await nodes.getByText("30 ГиБ", { exact: true }).waitFor();
+    await json(heldStats.shift(), [usageRow(41, { upload_bytes: 7516192768 })]);
+    await usagePage.waitForTimeout(100);
+    assert.equal(await nodes.getByText("30 ГиБ", { exact: true }).count(), 1, "late period cannot overwrite selected period");
+    failNodes = true;
+    await nodes.getByRole("button", { name: "Обновить статистику", exact: true }).click();
+    await nodes.getByRole("alert").waitFor();
+    assert.equal(await nodes.getByText("30 ГиБ", { exact: true }).count(), 1, "failed refresh retains measured totals");
+    assert.equal((await nodes.innerText()).includes("private upstream"), false);
+    failNodes = false;
+    await nodes.getByRole("button", { name: "Повторить загрузку статистики", exact: true }).click();
+    await nodes.getByRole("alert").waitFor({ state: "detached" });
+    holdNodePeriod = null;
+    await nodes.getByLabel("Период статистики").selectOption("1");
+    await nodes.locator("tbody tr").nth(99).waitFor();
+    holdNodeCursor = true;
+    await nodes.getByRole("button", { name: "Показать ещё ноды", exact: true }).click();
+    await until(() => heldStats.length === 1, "held older page was not requested");
+    await nodes.getByLabel("Период статистики").selectOption("7");
+    await nodes.getByText("7 ГиБ", { exact: true }).waitFor();
+    await json(heldStats.shift(), [usageRow(999)]);
+    await usagePage.waitForTimeout(100);
+    assert.equal(await nodes.getByText("Нода #999", { exact: true }).count(), 0, "late pagination cannot cross a period reset");
+    assert.equal(await nodes.locator("tbody tr").count(), 3);
+    holdNodeCursor = false;
+    for (const width of [1280, 390]) {
+      await usagePage.setViewportSize({ width, height: 1000 });
+      const dimensions = await nodes.evaluate((element) => ({ width: element.getBoundingClientRect().width, viewport: innerWidth, scrollWidth: document.documentElement.scrollWidth }));
+      assert.ok(dimensions.width <= width && dimensions.scrollWidth <= width, `usage ${width}px overflow ${JSON.stringify(dimensions)}`);
+      await nodes.getByLabel("Период статистики").focus();
+      assert.equal(await nodes.getByLabel("Период статистики").evaluate((element) => element.labels.length), 1);
+      for (const control of await nodes.locator("button,select").all()) {
+        if (await control.isDisabled()) continue;
+        await control.focus();
+        await usagePage.keyboard.press("Tab"); await usagePage.keyboard.press("Shift+Tab");
+        assert.equal(await control.evaluate((element) => document.activeElement === element && element.matches(":focus-visible") && getComputedStyle(element).outlineStyle !== "none"), true, "usage control has visible keyboard focus");
+      }
+      await nodes.screenshot({ path: path.join(output, `usage-nodes-${width}.png`), style: ".vpn-admin-nav { visibility: hidden !important; }" });
+      await nodes.evaluate((root) => {
+        const sizes = [root, ...root.querySelectorAll("*")].filter((element) => element instanceof HTMLElement).map((element) => ({ element, size: parseFloat(getComputedStyle(element).fontSize), line: parseFloat(getComputedStyle(element).lineHeight) }));
+        for (const { element, size, line } of sizes) {
+          element.style.fontSize = `${size * 2}px`;
+          if (Number.isFinite(line)) element.style.lineHeight = `${line * 2}px`;
+        }
+      });
+      assert.equal(await usagePage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "usage 200% text does not overflow page");
+      await nodes.screenshot({ path: path.join(output, `usage-nodes-${width}-200.png`), style: ".vpn-admin-nav { visibility: hidden !important; }" });
+      await nodes.evaluate((root) => [root, ...root.querySelectorAll("*")].forEach((element) => { element.style.removeProperty("font-size"); element.style.removeProperty("line-height"); }));
+    }
+    await usagePage.locator('.vpn-admin-nav a[href="#vpn/customers"]').click();
+    const customerUsage = usagePage.locator('[data-vpn-usage="customer"]');
+    await customerUsage.getByRole("heading", { name: "Трафик клиента", exact: true }).waitFor();
+    await customerUsage.getByText("Телефон: две страны", { exact: true }).waitFor();
+    assert.equal(await customerUsage.locator("tbody tr").count(), 1, "child countries remain one logical profile");
+    assert.match(await customerUsage.innerText(), /3 ГиБ/);
+    assert.match(await customerUsage.innerText(), /4 ГиБ/);
+    await customerUsage.screenshot({ path: path.join(output, "usage-customer-390.png") });
+    holdCustomer = 1;
+    await customerUsage.getByRole("button", { name: "Обновить статистику", exact: true }).click();
+    await until(() => heldStats.length === 1, "old customer refresh was not held");
+    await usagePage.getByRole("button", { name: /Борис/, exact: false }).first().click();
+    await customerUsage.getByText("Ноутбук Бориса", { exact: true }).waitFor();
+    await json(heldStats.shift(), { ...customerStats(1, 1), upload_bytes: 999 });
+    await usagePage.waitForTimeout(100);
+    assert.equal(await customerUsage.getByText("Телефон: две страны", { exact: true }).count(), 0, "late previous-customer reply is ignored");
+    failNodes = true;
+    await usagePage.locator('.vpn-admin-nav a[href="#vpn/nodes"]').click();
+    await nodes.getByRole("alert").waitFor();
+    assert.equal(await nodes.locator("tbody tr").count(), 0, "initial load failure is not rendered as measured zeros");
+    failNodes = false;
+    await nodes.getByRole("button", { name: "Повторить загрузку статистики", exact: true }).click();
+    await nodes.locator("tbody tr").nth(99).waitFor();
+    await usagePage.locator('.vpn-admin-nav a[href="#vpn/customers"]').click();
+    await customerUsage.getByText("Ноутбук Бориса", { exact: true }).waitFor();
+    holdCustomer = 2;
+    await customerUsage.getByLabel("Период статистики").selectOption("30");
+    await until(() => heldStats.length === 1, "logout usage reply was not held");
+    await usagePage.getByRole("button", { name: "Выйти", exact: true }).click();
+    await usagePage.getByRole("heading", { name: "Вход", exact: true }).waitFor();
+    await json(heldStats.shift(), customerStats(2, 30));
+    await usagePage.waitForTimeout(100);
+    assert.equal(await usagePage.locator("[data-vpn-usage]").count(), 0, "late usage after logout cannot restore private data");
+    assert.deepEqual(usageErrors, []);
+    await usagePage.close();
+    console.log("PASS: measured node/customer usage with coverage, exact zero, cursor and logical profiles; synthetic HTTP only");
+  } else {
   if (!process.argv.includes("--profile-create-only") && !process.argv.includes("--invitations-only")) {
     const operations = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
     operations.setDefaultTimeout(10000);
@@ -1886,6 +2038,7 @@ try {
   assert.equal(workerDeleteCalls - deleteCallsBeforeRace, 1);
   assert.deepEqual(errors, []);
   console.log(`PASS: actual admin bundle accessibility=${JSON.stringify(accessibilityAuditCounts)} rename/cancel/selection/reload-failure/stale-GET/delayed-PATCH/external-rename/revoke/two-key-pending/copy-fallback/error/narrow-profile-bounds, synthetic HTTP only`);
+  }
   }
 } finally {
   await browser?.close();

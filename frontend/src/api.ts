@@ -504,6 +504,32 @@ export type VpnSubscriptionDeviceUsage = {
   max_devices: number;
 };
 
+export type VpnUsageDays = 1 | 7 | 30;
+export type VpnUsageTotals = {
+  upload_bytes: number | null;
+  download_bytes: number | null;
+  measured_since: string | null;
+  last_sample_at: string | null;
+  coverage: "none" | "partial" | "current" | "stale" | "unavailable";
+};
+export type VpnNodeUsage = VpnUsageTotals & {
+  worker_id: number;
+  active_devices: number;
+  occupied_profiles: number;
+  max_active_profiles: number | null;
+  cpu_load: number | null;
+  ram_usage_percent: number | null;
+};
+export type VpnDeviceUsage = VpnUsageTotals & {
+  device_id: number;
+  display_name: string;
+};
+export type VpnCustomerUsage = VpnUsageTotals & {
+  customer_id: number;
+  days: VpnUsageDays;
+  devices: VpnDeviceUsage[];
+};
+
 export type VpnEndpointCapacityUpdate = {
   max_active_profiles: number | null;
   capacity_warning_percent: number;
@@ -1124,6 +1150,10 @@ export const api = {
     }),
   getVpnSubscriptionDeviceUsage: (id: number) =>
     request<VpnSubscriptionDeviceUsage>(`/control/vpn/subscriptions/${id}/device-usage`, { cache: "no-store" }),
+  getVpnNodeUsage: (days: VpnUsageDays = 1, options?: { afterId?: number }) =>
+    request<VpnNodeUsage[]>(`/control/vpn/usage/nodes?days=${days}&after_id=${options?.afterId ?? 0}&limit=100`, { cache: "no-store" }),
+  getVpnCustomerUsage: (id: number, days: VpnUsageDays = 1) =>
+    request<VpnCustomerUsage>(`/control/vpn/customers/${id}/usage?days=${days}`, { cache: "no-store" }),
   getVpnReleaseReadiness: () =>
     request<VpnReleaseReadiness>("/control/vpn/release-readiness"),
   confirmVpnEndpointExternalVerification: (id: number) =>

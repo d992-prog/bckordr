@@ -27,10 +27,12 @@ import {
   type VpnCustomerFilter,
   type VpnCustomerOperationalStatus,
 } from "./vpnCustomerWorkspace";
+import { VpnUsagePanel } from "./VpnUsagePanel";
 
 type NoticeType = "success" | "error";
 
 type Props = {
+  usageEnabled?: boolean;
   customers: VpnCustomer[];
   subscriptions: VpnSubscription[];
   accessKeys: VpnAccessKey[];
@@ -275,6 +277,7 @@ function mergeFriendInvitations(...pages: VpnFriendInvitation[][]) {
 }
 
 export function VpnCustomerWorkspace({
+  usageEnabled = true,
   customers,
   subscriptions,
   accessKeys,
@@ -1832,6 +1835,7 @@ export function VpnCustomerWorkspace({
               )}
             </section>
 
+            {usageEnabled ? <VpnUsagePanel key={selectedCustomer.id} customerId={selectedCustomer.id} /> : null}
             <section className="vpn-workspace-section">
               <div className="vpn-workspace-section-head">
                 <div>

@@ -55,6 +55,7 @@ import {
 import { VpnCustomerWorkspace } from "./VpnCustomerWorkspacePanel";
 import { shouldApplyLoadGeneration } from "./vpnCustomerWorkspace";
 import { VpnEndpointCapacityPanel } from "./VpnEndpointCapacityPanel";
+import { VpnUsagePanel } from "./VpnUsagePanel";
 import { replaceVpnEndpointCapacity } from "./vpnEndpointCapacity";
 import { VpnNodeOnboardingPanel } from "./VpnNodeOnboardingPanel";
 import {
@@ -4789,6 +4790,7 @@ export default function App() {
           ) : null}
         </div>
         <VpnAdminNavigation activeSection={vpnAdminSection} />
+        {vpnAdminSection === "overview" || vpnAdminSection === "nodes" ? <VpnUsagePanel key={session?.user.id} workers={workers} /> : null}
 
         <section
           className="stack"
@@ -4925,6 +4927,8 @@ export default function App() {
             </div>
           </div>
           <VpnCustomerWorkspace
+            key={session?.user.id}
+            usageEnabled={vpnAdminSection === "customers"}
             customers={vpnCustomers}
             subscriptions={vpnSubscriptions}
             accessKeys={vpnAccessKeys}

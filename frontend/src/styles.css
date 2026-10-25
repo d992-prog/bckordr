@@ -2020,6 +2020,60 @@ button:disabled {
   border-color: var(--vpn-admin-border);
 }
 
+.vpn-admin-shell .vpn-usage-panel {
+  min-width: 0;
+  max-width: 100%;
+}
+.vpn-admin-shell .vpn-usage-panel .card-head {
+  flex-wrap: wrap;
+}
+.vpn-admin-shell .vpn-usage-panel .actions label {
+  display: grid;
+  gap: 6px;
+}
+.vpn-admin-shell .vpn-usage-table caption {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+@media (max-width: 640px) {
+  .vpn-admin-shell .vpn-usage-table {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+  .vpn-admin-shell .vpn-usage-table :is(table, tbody, tr, td) {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+  .vpn-admin-shell .vpn-usage-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .vpn-admin-shell .vpn-usage-table tbody { display: grid; gap: 12px; }
+  .vpn-admin-shell .vpn-usage-table tr {
+    display: grid;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--vpn-admin-border);
+    border-radius: 14px;
+  }
+  .vpn-admin-shell .vpn-usage-table td { padding: 0; border: 0; overflow-wrap: anywhere; }
+  .vpn-admin-shell .vpn-usage-table td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    color: var(--vpn-admin-muted);
+    font-weight: 700;
+  }
+}
+
 .vpn-admin-shell [data-vpn-admin-section="nodes"] .simple-table td[data-label="Действия"] {
   min-width: 320px;
 }
