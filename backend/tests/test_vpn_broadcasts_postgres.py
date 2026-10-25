@@ -57,7 +57,7 @@ async def test_broadcast_migrations_repeat_and_match_metadata(
             assert set(columns) == set(model.__table__.columns.keys())
 
 
-async def environment(postgres_schema):
+async def environment(postgres_schema, *, confirmed=False):
     async with postgres_schema.engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(postgres_schema.engine, expire_on_commit=False)
@@ -67,6 +67,8 @@ async def environment(postgres_schema):
             db, settings(), "Не отправлять: синтетический тест", actor_id=None, now=NOW
         )
         await preview_broadcast(db, settings(), draft.id, now=NOW)
+        if confirmed:
+            await confirm(db, draft.id)
         await db.commit()
         return factory, draft.id
 
@@ -163,7 +165,7 @@ async def test_confirm_cancel_race_cannot_recreate_cancelled_queue(
 async def test_parallel_dispatchers_send_one_recipient_once(
     postgres_schema, immediate_gate
 ):
-    factory, campaign_id = await environment(postgres_schema)
+    factory, campaign_id = await environment(postgres_schema, confirmed=True)
     calls = []
 
     async def sender(*_args):
@@ -194,7 +196,7 @@ async def test_parallel_dispatchers_send_one_recipient_once(
 async def test_cancel_commits_during_http_and_preserves_its_outcome(
     postgres_schema, immediate_gate
 ):
-    factory, campaign_id = await environment(postgres_schema)
+    factory, campaign_id = await environment(postgres_schema, confirmed=True)
     started, release = asyncio.Event(), asyncio.Event()
 
     async def sender(*_args):
@@ -234,11 +236,12 @@ async def test_recipient_lock_wait_cannot_turn_expired_claim_into_sending(
 
     from app.services import vpn_broadcasts
 
-    factory, _ = await environment(postgres_schema)
+    factory, _ = await environment(postgres_schema, confirmed=True)
     clock = [NOW]
     _, claim = await vpn_broadcasts._claim_delivery(
         factory, settings(), lambda: clock[0]
     )
+    assert claim is not None
     original_pair = vpn_broadcasts._locked_pair
     waiter_pid = asyncio.get_running_loop().create_future()
 
@@ -275,7 +278,7 @@ async def test_sending_lease_recovers_uncertain_not_pending(
 ):
     from datetime import timedelta
 
-    factory, _ = await environment(postgres_schema)
+    factory, _ = await environment(postgres_schema, confirmed=True)
     calls = []
 
     async def sender(*_args):

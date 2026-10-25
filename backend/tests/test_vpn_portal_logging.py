@@ -330,6 +330,28 @@ def test_safe_log_filter_preserves_ordinary_nonportal_error_details() -> None:
     assert "Stack (most recent call last)" in rendered
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "app.services.vpn_broadcasts",
+        "app.services.vpn_bot_delivery",
+        "app.api.routes.vpn_broadcasts",
+    ],
+)
+def test_news_loggers_never_render_message_body_recipient_or_exception_context(name):
+    rendered = _formatted_log(
+        name,
+        "news payload=%r",
+        {"body": "private-news-body", "chat_id": "123456789", "token": "111:private-token"},
+        exc_info=RuntimeError("private-news-body for 123456789"),
+        stack_info=True,
+    )
+    assert "private-news-body" not in rendered
+    assert "123456789" not in rendered and "private-token" not in rendered
+    assert "Stack (most recent call last)" not in rendered
+    assert "exception_type=RuntimeError" in rendered
+
+
 def test_safe_log_filter_removes_secrets_from_nonportal_exception_text() -> None:
     rendered = _formatted_log(
         "app.services.notifier",

@@ -74,7 +74,7 @@ async def post_telegram_payload(token: str, payload: dict) -> TelegramDeliveryRe
         return TelegramDeliveryResult(
             "retry", retry_after=30, error_code="vpn_bot_unreachable"
         )
-    except httpx.HTTPError:
+    except (httpx.HTTPError, httpx.InvalidURL):
         return uncertain
     if response.status_code >= 500 or 300 <= response.status_code < 400:
         return uncertain

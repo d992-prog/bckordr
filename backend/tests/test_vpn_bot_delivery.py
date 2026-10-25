@@ -137,6 +137,7 @@ async def test_exact_one_shot_results_without_secret_or_response_echo(
         (httpx.WriteTimeout, "uncertain"),
         (httpx.WriteError, "uncertain"),
         (httpx.RemoteProtocolError, "uncertain"),
+        (httpx.InvalidURL, "uncertain"),
     ],
 )
 async def test_transport_outcomes_are_not_blindly_retried(monkeypatch, error, state):
@@ -145,6 +146,8 @@ async def test_transport_outcomes_are_not_blindly_retried(monkeypatch, error, st
     async def respond(request):
         nonlocal attempts
         attempts += 1
+        if error is httpx.InvalidURL:
+            raise error("synthetic-secret-and-body")
         raise error("synthetic-secret-and-body", request=request)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(respond))

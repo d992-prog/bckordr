@@ -6,14 +6,17 @@ import traceback
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-
 REDACTED = "[REDACTED]"
+_NEWS_LOGGERS = (
+    "app.services.vpn_bot_delivery",
+    "app.services.vpn_broadcasts",
+    "app.api.routes.vpn_broadcasts",
+)
 _SENSITIVE_EXCEPTION_LOGGERS = (
     "app.api.routes.vpn_portal",
     "app.services.vpn_portal",
     "app.services.vpn_device_subscriptions",
-    "app.services.vpn_bot_delivery",
-    "app.services.vpn_broadcasts",
+    *_NEWS_LOGGERS,
     "httpcore",
     "httpx",
     "sqlalchemy",
@@ -108,7 +111,9 @@ class SafeLogFilter(logging.Filter):
                 rendered = "unformattable log record [REDACTED]"
 
         lowered = rendered.lower()
-        if record.name.startswith("sqlalchemy.") and record.args and (
+        if record.name.startswith(_NEWS_LOGGERS):
+            rendered = "VPN bot event [REDACTED]"
+        elif record.name.startswith("sqlalchemy.") and record.args and (
             "vpn_portal_login_attempts" in lowered
             or "vpn_portal_mini_app_exchanges" in lowered
             or "code_verifier" in lowered
