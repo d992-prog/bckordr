@@ -114,6 +114,8 @@ async def test_operator_revoke_and_replace_serialize_without_resurrection(postgr
 @pytest.mark.asyncio
 async def test_admin_creation_cannot_take_replacement_slot_after_all_old_keys_revoked(postgres_schema, monkeypatch):
     factory, ids = await setup(postgres_schema, monkeypatch)
+    monkeypatch.setattr(control, "utcnow", lambda: NOW)
+    monkeypatch.setattr("app.services.vpn_policy.utcnow", lambda: NOW)
     async with factory() as holder, factory() as waiter:
         operation = await replace(holder, ids, uuid4())
         old = await holder.get(VpnAccessKey, ids.key)
@@ -204,6 +206,47 @@ async def test_customer_creations_on_one_country_capacity_have_one_winner(postgr
     async with factory() as db:
         assert await db.scalar(select(func.count()).select_from(VpnDeviceOperation)) == 1
         assert await db.scalar(select(func.count()).select_from(VpnAccessKey).where(VpnAccessKey.endpoint_id == ids.endpoints[1])) == 1
+
+
+@pytest.mark.asyncio
+async def test_delayed_lifecycle_candidate_refreshes_after_independent_replacement_completion(postgres_schema, monkeypatch):
+    from app.services import vpn_lifecycle
+    from test_vpn_device_operations import receipt, resume
+
+    factory, ids = await setup(postgres_schema, monkeypatch)
+    async with factory() as db:
+        await replace(db, ids, uuid4())
+        await db.commit()
+    candidate_read, release = asyncio.Event(), asyncio.Event()
+    original = vpn_lifecycle.lock_key_device_context
+    async with factory() as holder, factory() as waiter:
+        assert await holder.scalar(text("SELECT pg_backend_pid()")) != await waiter.scalar(text("SELECT pg_backend_pid()"))
+        async def delayed_lock(db, key_id):
+            if db is waiter and key_id == ids.key:
+                candidate_read.set()
+                await asyncio.wait_for(release.wait(), 20)
+            return await original(db, key_id)
+        monkeypatch.setattr(vpn_lifecycle, "lock_key_device_context", delayed_lock)
+        task = asyncio.create_task(vpn_lifecycle.run_vpn_lifecycle_maintenance(waiter, now=NOW, settings=ids.settings))
+        try:
+            await asyncio.wait_for(candidate_read.wait(), 10)
+            env = SimpleNamespace(db=holder, settings=ids.settings)
+            await receipt(env)
+            await resume(env)
+            await receipt(env)
+            await resume(env)
+            release.set()
+            await asyncio.wait_for(task, 15)
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    async with factory() as db:
+        device = await db.get(VpnDevice, ids.device)
+        fresh = await db.get(VpnAccessKey, device.preferred_key_id)
+        assert fresh.status == "active" and fresh.credential_generation == 1
+        assert device.revoke_requested_at is None and device.token_generation == 1
 
 
 @pytest.mark.asyncio

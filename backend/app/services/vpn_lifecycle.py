@@ -316,24 +316,36 @@ async def _run_vpn_lifecycle_maintenance(
     rows = [*revoke_rows, *provision_rows]
 
     for access_key, subscription in rows:
+        # Candidate policy can change while another tick holds the owner lock.
+        access_key = await lock_key_device_context(db, access_key.id)
+        if access_key is None or access_key.status == "revoked":
+            continue
+        subscription = await db.get(VpnSubscription, access_key.subscription_id)
+        if subscription is None:
+            continue
+        customer = await db.get(VpnCustomer, subscription.customer_id)
+        device = await checked_device(db, access_key)
+        policy_action = subscription_key_action(subscription, customer, current_time)
+        action = "revoke" if (
+            access_key.status == "pending_revoke" or access_key.revoke_requested_at is not None
+            or (device is not None and device.revoke_requested_at is not None)
+        ) else policy_action
+        replacement = await replacement_for_old_key(db, device, access_key) if (
+            action == "revoke" and policy_action != "revoke"
+        ) else None
+        if (device is not None and access_key.credential_generation != device.credential_generation
+                and device.revoke_requested_at is None and policy_action != "revoke" and replacement is None):
+            continue
+        if (action, access_key.status) in {("sync", "active"), ("suspend", "suspended")}:
+            continue
         if access_key.endpoint_id is not None:
-            customer = await db.get(VpnCustomer, subscription.customer_id)
-            policy_action = (
-                "revoke" if access_key.status == "pending_revoke"
-                else subscription_key_action(subscription, customer, current_time)
-            )
-            action = "provision" if policy_action == "sync" else policy_action
+            control_action = "provision" if action == "sync" else action
             result["checked_keys"] += 1
             try:
-                access_key = await lock_key_device_context(db, access_key.id)
-                if access_key is None:
-                    continue
-                device = await checked_device(db, access_key)
-                replacement = await replacement_for_old_key(db, device, access_key) if action == "revoke" else None
                 await stage_vpn_control_operation(
                     db,
                     access_key.id,
-                    action,
+                    control_action,
                     now=current_time,
                     device_operation_id=replacement.id if replacement else None,
                 )
@@ -348,7 +360,7 @@ async def _run_vpn_lifecycle_maintenance(
                     "provision": "pending_sync_keys",
                     "suspend": "pending_suspend_keys",
                     "revoke": "pending_revoke_keys",
-                }[action]
+                }[control_action]
             ] += 1
             await set_app_setting(
                 db,
@@ -358,22 +370,7 @@ async def _run_vpn_lifecycle_maintenance(
             await db.commit()
             continue
 
-        access_key = await lock_key_device_context(db, access_key.id)
-        if access_key is None or access_key.status == "revoked":
-            continue
-        subscription = await db.get(VpnSubscription, access_key.subscription_id)
-        if subscription is None:
-            continue
-        customer = await db.get(VpnCustomer, subscription.customer_id)
-        device = await checked_device(db, access_key)
-        action = (
-            "revoke" if access_key.status == "pending_revoke" or (
-                device is not None and device.revoke_requested_at is not None
-            )
-            else subscription_key_action(subscription, customer, current_time)
-        )
         if action == "revoke":
-            replacement = await replacement_for_old_key(db, device, access_key)
             if replacement is None:
                 await stage_device_revoke(db, access_key, now=current_time)
         result["checked_keys"] += 1

@@ -380,3 +380,28 @@ async def test_revoke_removes_every_credential_generation_not_just_preferred(loc
     )
     assert env.key.status == newer.status == "pending_revoke" and operation.stage == "revoking"
     assert {control.access_key_id for control in (await env.db.scalars(select(VpnControlOperation))).all()} == {env.key.id, newer.id}
+
+
+@pytest.mark.asyncio
+async def test_delayed_lifecycle_old_revoke_candidate_cannot_revoke_completed_replacement(location_env, monkeypatch):
+    env = location_env
+    operation = await replace(env)
+    await env.db.commit()
+    from app.services import vpn_lifecycle
+    original = vpn_lifecycle.lock_key_device_context
+    delayed = False
+    async def after_other_tick_finishes_replacement(db, key_id):
+        nonlocal delayed
+        if not delayed:
+            delayed = True
+            await receipt(env)
+            await resume(env)
+            await receipt(env)
+            await resume(env)
+            assert operation.stage == "completed" and env.device.revoke_requested_at is None
+        return await original(db, key_id)
+    monkeypatch.setattr(vpn_lifecycle, "lock_key_device_context", after_other_tick_finishes_replacement)
+    await vpn_lifecycle.run_vpn_lifecycle_maintenance(env.db, now=NOW, settings=env.settings)
+    fresh = await env.db.get(VpnAccessKey, env.device.preferred_key_id)
+    assert delayed and fresh.credential_generation == 1 and fresh.status == "active"
+    assert env.device.revoke_requested_at is None and env.device.token_generation == 1
