@@ -34,6 +34,12 @@ PUBLIC_READINESS_KEY = "vpn_public_release_ready_v1"
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def isolate_control_dispatch_from_usage_retention(monkeypatch):
+    # These engine gates cover control dispatch; DB-only retention is tested separately.
+    monkeypatch.setattr(ControlRuntimeOrchestrator, "_start_vpn_usage", lambda _self, _now: None)
+
+
 def _settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "DB_URL": "sqlite+aiosqlite:///./vpn-control-runtime-test.db",

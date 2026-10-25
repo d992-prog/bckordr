@@ -405,8 +405,7 @@ class ControlRuntimeOrchestrator:
     def _start_vpn_usage(self, now) -> None:
         settings = self._settings
         if (
-            settings is None or settings.vpn_usage_enabled is not True
-            or not settings.vpn_control_known_hosts_path.strip()
+            settings is None
             or not math.isfinite(settings.vpn_control_db_command_timeout_seconds)
             or settings.vpn_control_db_command_timeout_seconds <= 0
             or settings.vpn_control_db_statement_timeout_ms <= 0
@@ -429,6 +428,8 @@ class ControlRuntimeOrchestrator:
             self._vpn_usage_cleanup_task = asyncio.create_task(
                 self._run_vpn_usage_cleanup(now), name="vpn-usage-retention",
             )
+        if settings.vpn_usage_enabled is not True or not settings.vpn_control_known_hosts_path.strip():
+            return
         self._vpn_usage_tasks = {task for task in self._vpn_usage_tasks if not task.done()}
         minute = now.replace(second=0, microsecond=0)
         if self._vpn_usage_tasks or (now - minute).total_seconds() * 1000 > MAX_CLOCK_SKEW_MS or (

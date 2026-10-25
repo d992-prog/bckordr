@@ -90,9 +90,28 @@ def test_usage_is_disabled_by_default_with_only_one_new_setting():
         {"VPN_CONTROL_KNOWN_HOSTS_PATH": " "},
     ],
 )
-async def test_usage_disabled_or_unpinned_creates_no_tasks_or_database(
+async def test_usage_disabled_or_unpinned_still_expires_source_samples(
     factory, overrides
 ):
+    from test_vpn_usage import seed
+
+    from app.db.models import VpnKeySourceSample
+
+    worker_id, _, keys = await seed(factory)
+    expired = NOW - timedelta(hours=24, seconds=1)
+    async with factory() as db, db.begin():
+        db.add(
+            VpnKeySourceSample(
+                access_key_id=keys[0],
+                worker_id=worker_id,
+                minute_at=expired,
+                observed_at=expired,
+                state="ok",
+                key_epoch="synthetic",
+                source_hashes=[],
+            )
+        )
+
     async def collector(*args, **kwargs):
         pytest.fail("disabled usage must not collect")
 
@@ -101,10 +120,16 @@ async def test_usage_disabled_or_unpinned_creates_no_tasks_or_database(
         collector,
         config=settings(**overrides),
     )
-    await runtime.run_cycle()
-    await runtime.shutdown()
-    assert database_calls == disposed == []
-    assert not runtime._vpn_usage_tasks
+    try:
+        await runtime.run_cycle()
+        assert runtime._vpn_usage_cleanup_task is not None
+        await runtime._vpn_usage_cleanup_task
+        assert not runtime._vpn_usage_tasks
+        async with factory() as db:
+            assert await db.get(VpnKeySourceSample, keys[0]) is None
+    finally:
+        await runtime.shutdown()
+    assert len(database_calls) == 1 and disposed == [True]
 
 
 @pytest.mark.asyncio
