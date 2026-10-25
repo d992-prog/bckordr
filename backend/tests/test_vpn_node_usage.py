@@ -831,6 +831,64 @@ def test_online_probe_drift_invalidates_entire_receipt(
         source_observe(entry, usage, source_node)
 
 
+@pytest.mark.parametrize("drift", [None, "config", "process"])
+def test_slow_optional_sources_reserve_time_for_final_runtime_identity(
+    entry, usage, source_node, monkeypatch, drift
+):
+    for index in range(5):
+        tag, inbound_id = f"other-{index}", index + 8
+        source_node["inbounds"].append(
+            {
+                "id": inbound_id,
+                "protocol": "vless",
+                "tag": tag,
+                "settings": {"clients": []},
+            }
+        )
+        source_node["runtime_users"][tag] = []
+        with sqlite3.connect(source_node["database"]) as db:
+            db.execute("INSERT INTO inbounds VALUES (?)", (inbound_id,))
+    started = time.monotonic()
+    clock = {"now": started}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+    original = entry.runtime._run
+    process = source_node["process"]
+
+    def slow_query(argv, deadline):
+        value = original(argv, deadline)
+        if argv[1] == "api":
+            elapsed = 2.0 if argv[2] == "inbounduser" else 3.01
+            if clock["now"] + elapsed >= deadline:
+                clock["now"] = deadline + 0.001
+                if drift == "config":
+                    process["data"][process["config"]] = encoded(
+                        {**process["value"], "changed": True}
+                    )
+                elif drift == "process":
+                    process["data"][process["pid"] / "stat"] = (
+                        b"123 (xray) S " + b"0 " * 18 + b"999 0\n"
+                    )
+                raise entry.runtime.XrayRuntimeError("vpn_xray_runtime_unavailable")
+            clock["now"] += elapsed
+        return value
+
+    monkeypatch.setattr(entry.runtime, "_run", slow_query)
+    if drift is not None:
+        with pytest.raises(usage.VpnNodeUsageError):
+            source_observe(entry, usage, source_node)
+        return
+    result = source_observe(entry, usage, source_node)
+    assert clock["now"] - started < usage.MAX_OBSERVATION_SECONDS
+    assert [(key.upload_bytes, key.download_bytes) for key in result.keys] == [
+        (100, 200),
+        (300, 400),
+    ]
+    assert all(
+        key.source_state == "unavailable" and not key.sources for key in result.keys
+    )
+    assert process["calls"][-1] == [str(process["executable"]), "version"]
+
+
 @pytest.mark.parametrize("during_probe", [False, True])
 def test_source_api_with_additional_public_listener_is_unavailable(
     entry, usage, source_node, during_probe

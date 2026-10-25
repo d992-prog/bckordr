@@ -63,6 +63,7 @@ _EXECUTABLE = Path("/usr/local/x-ui/bin/xray-linux-amd64")
 _CONFIG = Path("/usr/local/x-ui/bin/config.json")
 _INVENTORY_LIMIT = 10_000
 _PARAMETER_BATCH = 128
+_FINAL_RUNTIME_RESERVE_SECONDS = 3.0
 # shortcut: source probes cover at most 64 VLESS inbounds; paginate before raising this bound
 _SOURCE_TAG_LIMIT = 64
 
@@ -422,7 +423,14 @@ def observe_node_usage(
             inbounds, panel.request("GET", "panel/api/clients/list"), request
         )
         counters = _counter_rows(connection, request, deadline)
-        sources = _source_samples(request, matched, inbounds, before[3], deadline)
+        # Optional source probes cannot spend the mandatory final trust-check budget.
+        sources = _source_samples(
+            request,
+            matched,
+            inbounds,
+            before[3],
+            deadline - _FINAL_RUNTIME_RESERVE_SECONDS,
+        )
         record_counts = defaultdict(int)
         for values in counters.values():
             for row in values:
