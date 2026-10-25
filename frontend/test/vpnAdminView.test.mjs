@@ -10,6 +10,7 @@ test("VPN admin sections are stable and unknown metrics stay unknown", () => {
   assert.equal(vpnAdminSectionFromHash("#vpn/nodes"), "nodes");
   assert.equal(vpnAdminSectionFromHash("#vpn/plans"), "plans");
   assert.equal(vpnAdminSectionFromHash("#vpn/events"), "events");
+  assert.equal(vpnAdminSectionFromHash("#vpn/broadcasts"), "broadcasts");
   assert.equal(vpnAdminSectionFromHash("#vpn/unknown"), "overview");
   assert.equal(displayMetric(null), "Нет данных");
   assert.equal(displayMetric(0), "0");
@@ -38,7 +39,7 @@ test("VPN admin hash detection distinguishes its route from the rest of the admi
   assert.equal(isVpnAdminHash("#vpn-other/customers"), false);
 });
 
-test("VPN admin navigation exposes the five stable sections and current page", async () => {
+test("VPN admin navigation exposes the six sections and current page", async () => {
   const source = await readFile(new URL("../src/VpnAdminNavigation.tsx", import.meta.url), "utf8");
   const hrefs = [...source.matchAll(/href:\s*"(#vpn\/[a-z]+)"/g)].map((match) => match[1]);
 
@@ -48,6 +49,7 @@ test("VPN admin navigation exposes the five stable sections and current page", a
     "#vpn/nodes",
     "#vpn/plans",
     "#vpn/events",
+    "#vpn/broadcasts",
   ]);
   assert.match(source, /aria-label="Разделы управления VPN"/);
   assert.match(source, /"button-link ghost active-chip"/);

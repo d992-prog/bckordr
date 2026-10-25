@@ -4,6 +4,7 @@
 // Invitation regressions only: node test/browser/admin-profile-ui.qa.mjs --invitations-only.
 // Publication/device usage: node test/browser/admin-profile-ui.qa.mjs --admin-operations-only.
 // Measured traffic: node test/browser/admin-profile-ui.qa.mjs --usage-only.
+// Plain-text news: node test/browser/admin-profile-ui.qa.mjs --broadcasts-only.
 // Uses existing PLAYWRIGHT_MODULE_PATH / CHROMIUM_EXECUTABLE_PATH overrides when needed.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -610,7 +611,282 @@ try {
       `${label}: the full URI must stay out of console output`);
   };
 
-  if (process.argv.includes("--usage-only")) {
+  if (process.argv.includes("--broadcasts-only")) {
+    const news = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    news.setDefaultTimeout(10000);
+    const newsErrors = [];
+    news.on("pageerror", (error) => newsErrors.push(error.message));
+    let recipients = 6;
+    let config = { enabled: true, registry_state: "ready", eligible_recipients: recipients, explanation: "Новость получат пользователи, которые уже писали боту и не заблокировали его" };
+    const emptyCounts = { recipient_count: 0, pending: 0, claimed: 0, sending: 0, sent: 0, failed: 0, skipped: 0, uncertain: 0, cancelled: 0 };
+    let campaign = null;
+    let conflict = true;
+    let revisionConflict = false;
+    let nextCampaignId = 11;
+    let detailGets = 0;
+    let holdPoll = false;
+    let heldPoll;
+    let heldPollSnapshot;
+    const mutations = [];
+    await news.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const pathname = url.pathname;
+      if (!pathname.startsWith("/api/control/vpn/broadcasts")) return handleApiRoute(route);
+      if (pathname.endsWith("/config")) return json(route, { ...config, eligible_recipients: config.registry_state === "ready" ? recipients : null });
+      if (request.method() === "GET" && pathname === "/api/control/vpn/broadcasts") return json(route, campaign ? [{ id: campaign.id, state: campaign.state, revision: campaign.revision, created_at: stamp, confirmed_at: null, cancelled_at: null }] : []);
+      if (request.method() === "GET") {
+        detailGets += 1;
+        if (holdPoll && campaign?.state === "running") { holdPoll = false; heldPoll = route; heldPollSnapshot = structuredClone(campaign); return; }
+        return json(route, campaign);
+      }
+      const payload = request.postDataJSON();
+      mutations.push({ pathname, method: request.method(), payload });
+      if (pathname === "/api/control/vpn/broadcasts") {
+        campaign = { id: nextCampaignId++, body: payload.body, state: "draft", revision: 1, preview_revision: null, preview_recipient_count: null, previewed_at: null, created_at: stamp, confirmed_at: null, cancelled_at: null, counts: { ...emptyCounts } };
+        return json(route, campaign, 201);
+      }
+      if (request.method() === "PATCH") {
+        campaign = { ...campaign, body: payload.body, revision: campaign.revision + 1, preview_revision: null, preview_recipient_count: null, previewed_at: null };
+        return json(route, campaign);
+      }
+      if (pathname.endsWith("/preview")) {
+        assert.deepEqual(payload, {});
+        campaign = { ...campaign, preview_revision: campaign.revision, preview_recipient_count: recipients, previewed_at: stamp };
+        return json(route, campaign);
+      }
+      if (pathname.endsWith("/confirm")) {
+        assert.deepEqual(payload, { expected_revision: campaign.revision, expected_recipient_count: campaign.preview_recipient_count, confirm: true });
+        if (conflict) { conflict = false; recipients = 7; return json(route, { detail: "vpn_broadcast_audience_changed" }, 409); }
+        if (revisionConflict) {
+          revisionConflict = false;
+          campaign = { ...campaign, body: "Новая серверная версия", revision: campaign.revision + 1, preview_revision: null, preview_recipient_count: null, previewed_at: null };
+          return json(route, { detail: "vpn_broadcast_preview_changed" }, 409);
+        }
+        campaign = { ...campaign, state: "running", counts: { ...emptyCounts, recipient_count: 7, pending: 2, sending: 1, sent: 1, failed: 1, skipped: 1, uncertain: 1 } };
+        return json(route, campaign, 202);
+      }
+      if (pathname.endsWith("/cancel")) {
+        assert.deepEqual(payload, {});
+        campaign = { ...campaign, state: "cancelled", counts: { ...campaign.counts, pending: 0, cancelled: 2 } };
+        return json(route, campaign);
+      }
+      throw new Error(`Unexpected news mutation ${pathname}`);
+    });
+    await news.goto(`${appUrl}#vpn/broadcasts`);
+    const panel = news.locator(".vpn-broadcast-panel");
+    await panel.getByRole("heading", { name: "Новости VPN-бота", exact: true }).waitFor({ timeout: 3000 });
+    const originalBody = "<b>Новости</b>\n😀";
+    await panel.getByLabel("Текст новости", { exact: true }).fill(originalBody);
+    assert.equal(await panel.getByLabel("Текст новости", { exact: true }).getAttribute("maxlength"), null);
+    await panel.getByText(`Осталось символов: ${4096 - Array.from(originalBody).length}`, { exact: true }).waitFor();
+    await panel.getByRole("button", { name: "Сохранить черновик", exact: true }).evaluate((button) => { button.click(); button.click(); });
+    await panel.getByRole("status").filter({ hasText: "Черновик сохранён" }).waitFor();
+    assert.equal(mutations.filter((item) => item.pathname === "/api/control/vpn/broadcasts").length, 1);
+    await panel.getByRole("button", { name: "Предпросмотр", exact: true }).click();
+    await panel.locator(".vpn-broadcast-preview").waitFor();
+    assert.equal(await panel.locator(".vpn-broadcast-preview").textContent(), originalBody);
+    assert.equal(await panel.locator(".vpn-broadcast-preview b").count(), 0);
+    assert.equal(mutations.filter((item) => item.pathname.endsWith("/confirm")).length, 0);
+    const body = `${originalBody}\nПравка`;
+    await panel.getByLabel("Текст новости", { exact: true }).fill(body);
+    assert.equal(await panel.getByRole("button", { name: "Отправить новость", exact: true }).isDisabled(), true);
+    await panel.getByRole("button", { name: "Сохранить черновик", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "Черновик сохранён" }).waitFor();
+    await panel.getByRole("button", { name: "Предпросмотр", exact: true }).click();
+    await panel.getByRole("button", { name: "Отправить новость", exact: true }).click();
+    let dialog = news.getByRole("dialog", { name: "Подтвердить отправку новости?", exact: true });
+    await dialog.waitFor();
+    assert.equal(await dialog.locator(".vpn-broadcast-preview").textContent(), body);
+    assert.equal(mutations.filter((item) => item.pathname.endsWith("/confirm")).length, 0, "opening confirmation never sends");
+    await dialog.getByRole("button", { name: "Подтвердить отправку", exact: true }).evaluate((button) => { button.click(); button.click(); });
+    await panel.getByRole("alert").filter({ hasText: "Список получателей изменился" }).waitFor();
+    assert.equal(await news.getByRole("dialog").count(), 0);
+    assert.equal(await panel.getByRole("button", { name: "Отправить новость", exact: true }).isDisabled(), true);
+    assert.equal(mutations.filter((item) => item.pathname.endsWith("/confirm")).length, 1, "409 never auto-retries confirmation");
+    await panel.getByRole("button", { name: "Предпросмотр", exact: true }).click();
+    await panel.getByRole("button", { name: "Отправить новость", exact: true }).click();
+    dialog = news.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Подтвердить отправку", exact: true }).click();
+    await panel.getByText("Отправляется", { exact: true }).waitFor();
+    await panel.getByText("Неопределено: Telegram мог доставить сообщение. Автоматического повтора не будет", { exact: true }).waitFor();
+    const getsBeforePoll = detailGets;
+    holdPoll = true;
+    await until(() => detailGets > getsBeforePoll, "running news campaign was not polled in 2s");
+    await panel.getByRole("button", { name: "Остановить оставшуюся очередь", exact: true }).click();
+    await panel.getByText("Остановлена", { exact: true }).waitFor();
+    assert.ok(heldPoll);
+    await json(heldPoll, heldPollSnapshot);
+    await news.waitForTimeout(100);
+    await panel.getByText("Остановлена", { exact: true }).waitFor();
+    assert.equal(campaign.counts.sent, 1); assert.equal(campaign.counts.sending, 1); assert.equal(campaign.counts.cancelled, 2);
+    const getsAfterCancel = detailGets;
+    await news.waitForTimeout(2200);
+    assert.equal(detailGets, getsAfterCancel, "terminal campaign stops automatic polling");
+    assert.equal(await panel.getByRole("button", { name: /повтор.*отправ/i }).count(), 0);
+    campaign = { ...campaign, counts: { ...campaign.counts, sending: 0, sent: 2 } };
+    await panel.getByRole("button", { name: "Обновить состояние", exact: true }).click();
+    await panel.locator(".vpn-broadcast-counts > div").filter({ has: news.getByText("Отправлено", { exact: true }) }).locator("dd").getByText("2", { exact: true }).waitFor();
+    await panel.getByRole("button", { name: "Новый черновик", exact: true }).click();
+    await panel.getByLabel("Текст новости", { exact: true }).fill("Проверка версии");
+    await panel.getByRole("button", { name: "Сохранить черновик", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "Черновик сохранён" }).waitFor();
+    await panel.getByRole("button", { name: "Предпросмотр", exact: true }).click();
+    await panel.getByRole("button", { name: "Отправить новость", exact: true }).click();
+    revisionConflict = true;
+    await news.getByRole("dialog").getByRole("button", { name: "Подтвердить отправку", exact: true }).click();
+    await panel.getByRole("alert").filter({ hasText: "Версия черновика изменилась" }).waitFor();
+    await news.waitForTimeout(100);
+    assert.equal(await panel.getByLabel("Текст новости", { exact: true }).inputValue(), "Новая серверная версия", "revision conflict reloads authoritative text, not a ghost old draft");
+    assert.equal(await panel.getByRole("button", { name: "Отправить новость", exact: true }).isDisabled(), true);
+    for (const registry_state of ["ready", "history_unverified", "bot_changed", "unconfigured"]) {
+      config = { ...config, enabled: false, registry_state, explanation: `Проверка реестра: ${registry_state}` };
+      await panel.getByRole("button", { name: "Обновить настройки и список", exact: true }).click();
+      await panel.getByText(config.explanation, { exact: true }).waitFor();
+      assert.equal(await panel.getByRole("button", { name: "Отправить новость", exact: true }).isDisabled(), true);
+      if (registry_state !== "ready") {
+        await panel.getByText("Получателей в реестре: Нет данных", { exact: true }).waitFor();
+        assert.equal(await panel.getByRole("button", { name: "Предпросмотр", exact: true }).isDisabled(), true);
+      } else {
+        assert.equal(await panel.getByRole("button", { name: "Сохранить черновик", exact: true }).isDisabled(), false, "disabled sender still allows drafts");
+      }
+    }
+    config = { ...config, enabled: true, registry_state: "ready", explanation: "Реестр готов" };
+    await panel.getByRole("button", { name: "Обновить настройки и список", exact: true }).click();
+    await panel.getByText("Реестр готов", { exact: true }).waitFor();
+    await panel.getByRole("button", { name: "Новый черновик", exact: true }).click();
+    const longBody = "😀".repeat(4096);
+    await panel.getByLabel("Текст новости", { exact: true }).fill(longBody);
+    await panel.getByText("Осталось символов: 0", { exact: true }).waitFor();
+    await panel.getByRole("button", { name: "Сохранить черновик", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "Черновик сохранён" }).waitFor();
+    await panel.getByRole("button", { name: "Предпросмотр", exact: true }).click();
+    await panel.getByRole("button", { name: "Отправить новость", exact: true }).click();
+    dialog = news.getByRole("dialog");
+    assert.equal(await dialog.locator(".vpn-broadcast-preview").textContent(), longBody);
+    assert.equal(await dialog.locator(".vpn-broadcast-preview").evaluate((element) => element.clientHeight <= innerHeight / 2), true, "long exact preview has a bounded keyboard-scrollable region");
+    await dialog.getByRole("button", { name: "Отмена", exact: true }).click();
+    for (const width of [1280, 390]) {
+      await news.setViewportSize({ width, height: 1000 });
+      await assertVisibleVpnInteractiveTraversal(news, `news-${width}`);
+      assert.equal(await news.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await panel.screenshot({ path: path.join(output, `news-${width}.png`), style: ".vpn-admin-nav { visibility: hidden !important; }" });
+    }
+    await panel.getByRole("button", { name: "Отправить новость", exact: true }).click();
+    dialog = news.getByRole("dialog");
+    await dialog.getByLabel("Точный текст новости", { exact: true }).focus();
+    await news.keyboard.press("Tab"); await news.keyboard.press("Shift+Tab");
+    assert.equal(await dialog.getByLabel("Точный текст новости", { exact: true }).evaluate((element) => element.matches(":focus-visible")), true);
+    await dialog.screenshot({ path: path.join(output, "news-confirm-390.png") });
+    await news.keyboard.press("Escape");
+    assert.equal(await news.getByRole("dialog").count(), 0);
+    for (const width of [1280, 390]) {
+      await news.setViewportSize({ width, height: 1000 });
+      await news.reload();
+      await panel.getByLabel("Текст новости", { exact: true }).fill("Новость о работе VPN-бота\nПодключения продолжат работать.");
+      await assertAdminTwoHundredPercentTextReflow(news, `news-${width}-text-200`);
+      await panel.screenshot({ path: path.join(output, `news-${width}-text-200.png`) });
+    }
+    assert.deepEqual(newsErrors, []);
+    await news.close();
+
+    const racePage = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    racePage.on("pageerror", (error) => newsErrors.push(error.message));
+    racePage.setDefaultTimeout(10000);
+    const fixtureCampaign = (id) => ({ id, revision: 1, state: "draft", body: `Кампания ${id}`, preview_revision: null, preview_recipient_count: null, previewed_at: null, created_at: stamp, confirmed_at: null, cancelled_at: null, counts: { ...emptyCounts } });
+    const summaries = Array.from({ length: 50 }, (_, index) => { const { body, counts, preview_revision, preview_recipient_count, previewed_at, ...row } = fixtureCampaign(100 - index); return row; });
+    const heldNews = [];
+    let pages = 0;
+    let holdDetail98 = false;
+    let failDetail97 = true;
+    let campaign98 = fixtureCampaign(98);
+    await racePage.route("**/api/**", async (route) => {
+      const request = route.request(); const url = new URL(request.url()); const path = url.pathname;
+      if (path === "/api/auth/logout") return json(route, {});
+      if (!path.startsWith("/api/control/vpn/broadcasts")) return handleApiRoute(route);
+      if (path.endsWith("/config")) return json(route, { ...config, enabled: true, registry_state: "ready", eligible_recipients: 7 });
+      if (path === "/api/control/vpn/broadcasts" && request.method() === "GET") {
+        if (url.searchParams.has("before_id")) { pages += 1; assert.equal(url.searchParams.get("before_id"), "51"); return json(route, [fixtureCampaign(50)]); }
+        return json(route, summaries);
+      }
+      if (path === "/api/control/vpn/broadcasts" && request.method() === "POST") { heldNews.push(route); return; }
+      if (path === "/api/control/vpn/broadcasts/98/preview") return json(route, { ...campaign98, preview_revision: campaign98.revision, preview_recipient_count: 7, previewed_at: stamp });
+      const id = Number(path.split("/").pop());
+      if (id === 97 && failDetail97) { failDetail97 = false; return json(route, { detail: "synthetic detail error" }, 503); }
+      if ((request.method() === "GET" && (id === 100 || id === 98 && holdDetail98)) || request.method() === "PATCH") { heldNews.push(route); return; }
+      if (id === 98) return json(route, campaign98);
+      return json(route, fixtureCampaign(id));
+    });
+    await racePage.goto(`${appUrl}#vpn/broadcasts`);
+    const racePanel = racePage.locator(".vpn-broadcast-panel");
+    await racePanel.getByRole("button", { name: "Показать ещё рассылки", exact: true }).evaluate((button) => { button.click(); button.click(); });
+    await racePanel.getByRole("button", { name: "Показать ещё рассылки", exact: true }).waitFor({ state: "detached" });
+    assert.equal(pages, 1, "campaign cursor page has a synchronous duplicate guard");
+    await racePanel.getByLabel("Рассылка", { exact: true }).selectOption("100");
+    await until(() => heldNews.length === 1, "old selected campaign detail was not held");
+    await racePanel.getByLabel("Рассылка", { exact: true }).selectOption("99");
+    await racePage.waitForFunction(() => document.querySelector('textarea[aria-describedby="vpn-news-count"]')?.value === "Кампания 99");
+    await json(heldNews.shift(), { ...fixtureCampaign(100), body: "Старая секретная кампания" });
+    await racePage.waitForTimeout(100);
+    assert.equal(await racePanel.getByLabel("Текст новости", { exact: true }).inputValue(), "Кампания 99");
+    await racePanel.getByLabel("Текст новости", { exact: true }).fill("Отложенная правка");
+    await racePanel.getByRole("button", { name: "Сохранить черновик", exact: true }).click();
+    await until(() => heldNews.length === 1, "old draft PATCH was not held");
+    await racePanel.getByLabel("Рассылка", { exact: true }).selectOption("98");
+    await racePage.waitForFunction(() => document.querySelector('textarea[aria-describedby="vpn-news-count"]')?.value === "Кампания 98");
+    await json(heldNews.shift(), { ...fixtureCampaign(99), body: "Отложенная правка", revision: 2 });
+    await racePage.waitForTimeout(100);
+    assert.equal(await racePanel.getByLabel("Текст новости", { exact: true }).inputValue(), "Кампания 98", "old mutation cannot replace new campaign");
+    await racePanel.getByRole("button", { name: "Предпросмотр", exact: true }).click();
+    await racePage.waitForFunction(() => ![...document.querySelectorAll("button")].find((button) => button.textContent === "Отправить новость")?.disabled);
+    holdDetail98 = true;
+    await racePanel.getByRole("button", { name: "Обновить состояние", exact: true }).click();
+    await until(() => heldNews.length === 1, "manual campaign refresh was not held");
+    campaign98 = { ...campaign98, body: "Новая версия другого администратора", revision: 2 };
+    await json(heldNews.shift(), campaign98);
+    await racePage.waitForTimeout(100);
+    assert.equal(await racePanel.getByRole("button", { name: "Отправить новость", exact: true }).isDisabled(), true, "fresh server revision invalidates local consent preview");
+    assert.equal(await racePanel.locator(".vpn-broadcast-preview").count(), 0);
+    assert.equal(await racePanel.getByLabel("Текст новости", { exact: true }).inputValue(), campaign98.body, "clean editor follows an authoritative manual refresh");
+    await racePanel.getByRole("button", { name: "Обновить состояние", exact: true }).click();
+    await until(() => heldNews.length === 1, "editable refresh was not held");
+    await racePanel.getByLabel("Текст новости", { exact: true }).fill("Новая локальная правка");
+    await json(heldNews.shift(), { ...campaign98, body: "Запоздавшая серверная версия", revision: 3 });
+    await racePage.waitForTimeout(100);
+    assert.equal(await racePanel.getByLabel("Текст новости", { exact: true }).inputValue(), "Новая локальная правка", "late read cannot erase a newly typed edit");
+    await racePanel.getByLabel("Рассылка", { exact: true }).selectOption("97");
+    await racePanel.getByRole("alert").filter({ hasText: "Не удалось обновить состояние рассылки" }).waitFor();
+    assert.equal(await racePanel.getByRole("button", { name: "Обновить состояние", exact: true }).count(), 1, "initial detail failure retains an explicit retry action");
+    await racePanel.getByRole("button", { name: "Обновить состояние", exact: true }).click();
+    await racePage.waitForFunction(() => document.querySelector('textarea[aria-describedby="vpn-news-count"]')?.value === "Кампания 97");
+    await racePanel.getByRole("button", { name: "Новый черновик", exact: true }).click();
+    await racePanel.getByLabel("Текст новости", { exact: true }).fill("Секрет после выхода");
+    await racePanel.getByRole("button", { name: "Сохранить черновик", exact: true }).click();
+    await until(() => heldNews.length === 1, "logout create was not held");
+    await racePage.getByRole("button", { name: "Выйти", exact: true }).click();
+    await racePage.getByRole("heading", { name: "Вход", exact: true }).waitFor();
+    await json(heldNews.shift(), { ...fixtureCampaign(101), body: "Секрет после выхода" }, 201);
+    await racePage.waitForTimeout(100);
+    assert.equal((await racePage.locator("body").innerText()).includes("Секрет после выхода"), false);
+    assert.equal(await racePage.locator(".vpn-broadcast-panel").count(), 0);
+    await racePage.close();
+    const setupPage = await browser.newPage({ viewport: { width: 390, height: 1000 } });
+    let heldConfig;
+    await setupPage.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/control/vpn/broadcasts/config") { heldConfig = route; return; }
+      if (path === "/api/control/vpn/broadcasts") return json(route, { detail: "synthetic list failure" }, 503);
+      return handleApiRoute(route);
+    });
+    await setupPage.goto(`${appUrl}#vpn/broadcasts`);
+    await setupPage.getByRole("alert").filter({ hasText: "Не удалось загрузить список рассылок" }).waitFor();
+    await json(heldConfig, { ...config, enabled: true, registry_state: "ready", eligible_recipients: 7 });
+    await setupPage.waitForTimeout(100);
+    assert.equal(await setupPage.getByRole("alert").filter({ hasText: "Не удалось загрузить список рассылок" }).count(), 1, "successful config response cannot erase an independent list error");
+    await setupPage.close();
+    assert.deepEqual(newsErrors, []);
+    console.log("PASS: plain-text news draft/preview/edit/explicit confirmation/409/progress/poll/cancel; synthetic HTTP only");
+  } else if (process.argv.includes("--usage-only")) {
     const usagePage = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
     usagePage.setDefaultTimeout(10000);
     const usageErrors = [];

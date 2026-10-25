@@ -505,6 +505,39 @@ export type VpnSubscriptionDeviceUsage = {
 };
 
 export type VpnUsageDays = 1 | 7 | 30;
+export type VpnBroadcastConfig = {
+  enabled: boolean;
+  registry_state: "ready" | "history_unverified" | "bot_changed" | "unconfigured";
+  eligible_recipients: number | null;
+  explanation: string;
+};
+export type VpnBroadcastSummary = {
+  id: number;
+  revision: number;
+  state: "draft" | "running" | "completed" | "cancelled" | "failed";
+  created_at: string;
+  confirmed_at: string | null;
+  cancelled_at: string | null;
+};
+export type VpnBroadcastCounts = {
+  recipient_count: number;
+  pending: number;
+  claimed: number;
+  sending: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  uncertain: number;
+  cancelled: number;
+};
+export type VpnBroadcastDetail = VpnBroadcastSummary & {
+  body: string;
+  preview_revision: number | null;
+  preview_recipient_count: number | null;
+  previewed_at: string | null;
+  counts: VpnBroadcastCounts;
+};
+export type VpnBroadcastConfirmation = { expected_revision: number; expected_recipient_count: number; confirm: true };
 export type VpnUsageTotals = {
   upload_bytes: number | null;
   download_bytes: number | null;
@@ -1154,6 +1187,14 @@ export const api = {
     request<VpnNodeUsage[]>(`/control/vpn/usage/nodes?days=${days}&after_id=${options?.afterId ?? 0}&limit=100`, { cache: "no-store" }),
   getVpnCustomerUsage: (id: number, days: VpnUsageDays = 1) =>
     request<VpnCustomerUsage>(`/control/vpn/customers/${id}/usage?days=${days}`, { cache: "no-store" }),
+  getVpnBroadcastConfig: () => request<VpnBroadcastConfig>("/control/vpn/broadcasts/config", { cache: "no-store" }),
+  getVpnBroadcasts: (options?: { beforeId?: number }) => request<VpnBroadcastSummary[]>(`/control/vpn/broadcasts?limit=50${options?.beforeId === undefined ? "" : `&before_id=${options.beforeId}`}`, { cache: "no-store" }),
+  getVpnBroadcast: (id: number) => request<VpnBroadcastDetail>(`/control/vpn/broadcasts/${id}`, { cache: "no-store" }),
+  createVpnBroadcast: (body: string) => request<VpnBroadcastDetail>("/control/vpn/broadcasts", { method: "POST", cache: "no-store", body: JSON.stringify({ body }) }),
+  updateVpnBroadcast: (id: number, body: string) => request<VpnBroadcastDetail>(`/control/vpn/broadcasts/${id}`, { method: "PATCH", cache: "no-store", body: JSON.stringify({ body }) }),
+  previewVpnBroadcast: (id: number) => request<VpnBroadcastDetail>(`/control/vpn/broadcasts/${id}/preview`, { method: "POST", cache: "no-store", body: "{}" }),
+  confirmVpnBroadcast: (id: number, payload: VpnBroadcastConfirmation) => request<VpnBroadcastDetail>(`/control/vpn/broadcasts/${id}/confirm`, { method: "POST", cache: "no-store", body: JSON.stringify(payload) }),
+  cancelVpnBroadcast: (id: number) => request<VpnBroadcastDetail>(`/control/vpn/broadcasts/${id}/cancel`, { method: "POST", cache: "no-store", body: "{}" }),
   getVpnReleaseReadiness: () =>
     request<VpnReleaseReadiness>("/control/vpn/release-readiness"),
   confirmVpnEndpointExternalVerification: (id: number) =>
