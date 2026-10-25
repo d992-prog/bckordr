@@ -42,13 +42,17 @@ async def lock_key_device_context(db: AsyncSession, key_id: int) -> VpnAccessKey
 async def checked_device(db: AsyncSession, key: VpnAccessKey) -> VpnDevice | None:
     if key.device_id is None:
         return None
+    # A fresh parent read must not discard this transaction's staged parent edits.
+    await db.flush()
     device = await db.get(VpnDevice, key.device_id, populate_existing=True)
     if device is None or device.subscription_id != key.subscription_id:
         raise ValueError("vpn_device_binding_invalid")
     for key_id in (device.preferred_key_id, device.pending_key_id):
         if key_id is not None:
-            child = await db.get(VpnAccessKey, key_id, populate_existing=True)
-            if child is None or (child.device_id, child.subscription_id) != (device.id, device.subscription_id):
+            binding = (await db.execute(select(VpnAccessKey.device_id, VpnAccessKey.subscription_id).where(
+                VpnAccessKey.id == key_id,
+            ))).one_or_none()
+            if binding is None or tuple(binding) != (device.id, device.subscription_id):
                 raise ValueError("vpn_device_binding_invalid")
     return device
 

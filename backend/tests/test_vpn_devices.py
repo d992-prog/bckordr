@@ -340,3 +340,22 @@ async def test_strict_retry_rechecks_parent_latch_when_child_state_is_stale(read
     parent = await db.get(models.VpnDevice, key.device_id)
     assert parent.revoke_requested_at and parent.token_generation == 1
     assert await count_device_slots(db, key.subscription_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_renewal_updates_both_children_without_autoflush(session_factory):
+    from app.services.vpn_devices import attach_initial_device
+    async with session_factory() as db:
+        _, subscription, preferred = await seed(db)
+        device = await attach_initial_device(db, preferred)
+        child = VpnAccessKey(subscription_id=subscription.id, device_id=device.id, status="suspended")
+        db.add(child)
+        await db.commit()
+        db.autoflush = False
+        expiration = utcnow() + timedelta(days=30)
+        await stage_subscription_update(db, subscription, {"expires_at": expiration})
+        await db.commit()
+        await db.refresh(preferred)
+        await db.refresh(child)
+        assert preferred.status == child.status == "pending_sync"
+        assert preferred.expires_at == child.expires_at == expiration.replace(tzinfo=None)
