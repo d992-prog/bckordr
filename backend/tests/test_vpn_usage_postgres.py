@@ -601,3 +601,252 @@ async def test_apply_source_prefetch_prevents_retention_from_losing_valid_traffi
         if not apply_task.done():
             apply_task.cancel()
         await asyncio.gather(apply_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_abuse_concurrent_fifth_window_creates_one_open_incident(pg_factory):
+    from test_vpn_abuse import device_seed, evaluate, incidents, samples, state, windows
+
+    from app.services import vpn_abuse as abuse
+
+    ids = await device_seed(pg_factory)
+    await windows(abuse, pg_factory, ids, count=4)
+    minute = NOW + timedelta(minutes=4)
+    await samples(pg_factory, ids, minute)
+    barrier = asyncio.Barrier(2)
+
+    async def contender():
+        await barrier.wait()
+        await evaluate(abuse, pg_factory, ids, minute)
+
+    await asyncio.wait_for(asyncio.gather(contender(), contender()), 5)
+    assert len(await incidents(pg_factory)) == 1
+    assert (await state(pg_factory, ids)).consecutive_windows == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ack_first", [False, True])
+async def test_abuse_evaluation_and_acknowledgement_share_state_then_incident_order(
+    pg_factory, ack_first
+):
+    from test_vpn_abuse import device_seed, evaluate, incidents, samples, state, windows
+
+    from app.services import vpn_abuse as abuse
+
+    ids = await device_seed(pg_factory)
+    await windows(abuse, pg_factory, ids)
+    incident_id = (await incidents(pg_factory))[0].id
+    minute = NOW + timedelta(minutes=5)
+    await samples(pg_factory, ids, minute)
+    locked, release, second_started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class PausedStateSession(AsyncSession):
+        async def scalar(self, statement, **kwargs):
+            result = await super().scalar(statement, **kwargs)
+            if (
+                statement._for_update_arg is not None
+                and statement.column_descriptions[0]["entity"]
+                is models.VpnDeviceAbuseState
+            ):
+                locked.set()
+                await release.wait()
+            return result
+
+    class SignalledSession(AsyncSession):
+        async def execute(self, statement, *args, **kwargs):
+            second_started.set()
+            return await super().execute(statement, *args, **kwargs)
+
+    paused = async_sessionmaker(
+        pg_factory.kw["bind"], class_=PausedStateSession, expire_on_commit=False
+    )
+    signalled = async_sessionmaker(
+        pg_factory.kw["bind"], class_=SignalledSession, expire_on_commit=False
+    )
+
+    async def ack(factory):
+        async with factory() as db, db.begin():
+            await abuse.acknowledge_incident(
+                db, incident_id, actor_id=None, now=minute + timedelta(seconds=25)
+            )
+
+    first = asyncio.create_task(
+        ack(paused) if ack_first else evaluate(abuse, paused, ids, minute)
+    )
+    second = None
+    try:
+        await asyncio.wait_for(locked.wait(), 3)
+        second = asyncio.create_task(
+            evaluate(abuse, signalled, ids, minute) if ack_first else ack(signalled)
+        )
+        await asyncio.wait_for(second_started.wait(), 3)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), 5)
+        rows = await incidents(pg_factory)
+        assert len(rows) == 1 and rows[0].acknowledged_at is not None
+        assert (await state(pg_factory, ids)).consecutive_windows == 0
+    finally:
+        release.set()
+        for task in (first, second):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (first, second) if task is not None),
+            return_exceptions=True,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["new_child", "revoke"])
+async def test_abuse_child_snapshot_is_taken_after_waiting_for_state_lock(
+    pg_factory, change
+):
+    from test_vpn_abuse import device_seed, evaluate, incidents, samples, state, windows
+
+    from app.services import vpn_abuse as abuse
+
+    ids = await device_seed(pg_factory)
+    await windows(abuse, pg_factory, ids, count=4)
+    minute = NOW + timedelta(minutes=4)
+    await samples(pg_factory, ids, minute)
+    entered = asyncio.Event()
+
+    class SignalledSession(AsyncSession):
+        async def execute(self, statement, *args, **kwargs):
+            entered.set()
+            return await super().execute(statement, *args, **kwargs)
+
+    waiting = async_sessionmaker(
+        pg_factory.kw["bind"], class_=SignalledSession, expire_on_commit=False
+    )
+    task = None
+    try:
+        async with pg_factory() as owner, owner.begin():
+            await owner.scalar(
+                select(models.VpnDeviceAbuseState)
+                .where(models.VpnDeviceAbuseState.device_id == ids.device)
+                .with_for_update()
+            )
+            task = asyncio.create_task(evaluate(abuse, waiting, ids, minute))
+            await asyncio.wait_for(entered.wait(), 3)
+            async with pg_factory() as writer, writer.begin():
+                parent = await writer.get(models.VpnDevice, ids.device)
+                if change == "revoke":
+                    parent.revoke_requested_at = minute
+                else:
+                    writer.add(
+                        models.VpnAccessKey(
+                            subscription_id=parent.subscription_id,
+                            device_id=ids.device,
+                            worker_id=ids.workers[0],
+                            status="pending_sync",
+                            created_at=minute,
+                        )
+                    )
+        await asyncio.wait_for(task, 5)
+        assert (await state(pg_factory, ids)).consecutive_windows == 0
+        assert await incidents(pg_factory) == []
+    finally:
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_abuse_state_lock_and_implicit_fk_do_not_block_credential_mutations(
+    pg_factory,
+):
+    from test_vpn_abuse import device_seed, evaluate, samples
+
+    from app.services import vpn_abuse as abuse
+
+    ids = await device_seed(pg_factory)
+    await samples(pg_factory, ids, NOW)
+    locked, release = asyncio.Event(), asyncio.Event()
+
+    class PausedStateSession(AsyncSession):
+        async def scalar(self, statement, **kwargs):
+            result = await super().scalar(statement, **kwargs)
+            if (
+                statement._for_update_arg is not None
+                and statement.column_descriptions[0]["entity"]
+                is models.VpnDeviceAbuseState
+            ):
+                locked.set()
+                await release.wait()
+            return result
+
+    paused = async_sessionmaker(
+        pg_factory.kw["bind"], class_=PausedStateSession, expire_on_commit=False
+    )
+    task = asyncio.create_task(evaluate(abuse, paused, ids, NOW))
+    try:
+        await asyncio.wait_for(locked.wait(), 3)
+        async with pg_factory() as db, db.begin():
+            await db.execute(text("SET LOCAL lock_timeout='500ms'"))
+            customer_id = await db.scalar(select(models.VpnCustomer.id))
+            await db.scalar(
+                select(models.VpnCustomer)
+                .where(models.VpnCustomer.id == customer_id)
+                .with_for_update()
+            )
+            await db.scalars(
+                select(models.VpnSubscription)
+                .where(models.VpnSubscription.customer_id == customer_id)
+                .order_by(models.VpnSubscription.id)
+                .with_for_update()
+            )
+            await db.scalars(
+                select(models.VpnAccessKey)
+                .where(models.VpnAccessKey.device_id == ids.device)
+                .order_by(models.VpnAccessKey.id)
+                .with_for_update()
+            )
+            await db.scalar(
+                select(models.WorkerNode)
+                .where(models.WorkerNode.id == ids.workers[0])
+                .with_for_update()
+            )
+            await db.scalar(
+                select(models.VpnEndpoint)
+                .where(models.VpnEndpoint.id == ids.endpoints[0])
+                .with_for_update()
+            )
+            (
+                await db.get(models.VpnDevice, ids.device)
+            ).display_name = "Rename does not wait for detector"
+        release.set()
+        await asyncio.wait_for(task, 5)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_abuse_expiry_skips_busy_state_without_source_or_worker_locks(pg_factory):
+    from test_vpn_abuse import device_seed, windows
+
+    from app.services import vpn_abuse as abuse
+
+    ids = await device_seed(pg_factory)
+    await windows(abuse, pg_factory, ids, count=1)
+    async with pg_factory() as owner, owner.begin():
+        await owner.scalar(
+            select(models.VpnDeviceAbuseState)
+            .where(models.VpnDeviceAbuseState.device_id == ids.device)
+            .with_for_update()
+        )
+        assert (
+            await asyncio.wait_for(
+                abuse.expire_abuse_windows(pg_factory, now=NOW + timedelta(minutes=3)),
+                1,
+            )
+            == 0
+        )
+    assert (
+        await abuse.expire_abuse_windows(pg_factory, now=NOW + timedelta(minutes=3))
+        == 1
+    )

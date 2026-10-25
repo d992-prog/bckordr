@@ -37,6 +37,7 @@ from app.services.discovery_worker_runtime import (
     load_eligible_discovery_workers,
 )
 from app.services.notifier import TelegramNotifier
+from app.services.vpn_abuse import expire_abuse_windows
 from app.services.vpn_bot_chats import registry_state
 from app.services.vpn_broadcasts import dispatch_next_broadcast_delivery
 from app.services.vpn_control_dispatcher import dispatch_next_vpn_control_operation
@@ -471,6 +472,7 @@ class ControlRuntimeOrchestrator:
         try:
             async with asyncio.timeout(VPN_USAGE_TIMEOUT_SECONDS):
                 await cleanup_usage_retention(self._vpn_control_database.session_factory, now=now)
+                await expire_abuse_windows(self._vpn_control_database.session_factory, now=now)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - keep SQL/private details out of logs

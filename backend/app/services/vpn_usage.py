@@ -613,7 +613,7 @@ async def collect_usage_poll(
         task is not None and task.cancelling()
     ):
         return False
-    return await apply_usage_poll(
+    applied = await apply_usage_poll(
         session_factory,
         claim,
         receipt,
@@ -621,6 +621,13 @@ async def collect_usage_poll(
         error_code=error,
         deadline=deadline,
     )
+    if applied:
+        from app.services.vpn_abuse import evaluate_device_abuse
+
+        minute = datetime.fromtimestamp(claim.request.minute_ms / 1000, UTC)
+        for device_id in sorted({binding[3] for binding in claim.bindings if binding[3] is not None}):
+            await evaluate_device_abuse(session_factory, device_id, minute_at=minute, now=now())
+    return applied
 
 
 async def cleanup_usage_retention(session_factory, *, now: datetime) -> int:

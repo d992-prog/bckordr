@@ -97,10 +97,20 @@ def create_app() -> FastAPI:
         broadcast_prefix = settings.api_prefix.rstrip("/") + "/control/vpn/broadcasts"
         if request.url.path == broadcast_prefix or request.url.path.startswith(broadcast_prefix + "/"):
             response.headers["Cache-Control"] = "no-store"
+        abuse_prefix = settings.api_prefix.rstrip("/") + "/control/vpn/abuse"
+        if request.url.path == abuse_prefix or request.url.path.startswith(abuse_prefix + "/"):
+            response.headers["Cache-Control"] = "no-store"
         return response
 
     @app.exception_handler(RequestValidationError)
     async def scoped_request_validation_handler(request, exc):
+        abuse_prefix = settings.api_prefix.rstrip("/") + "/control/vpn/abuse"
+        if request.url.path == abuse_prefix or request.url.path.startswith(abuse_prefix + "/"):
+            return JSONResponse(
+                {"detail": "vpn_abuse_invalid_request"},
+                status_code=422,
+                headers={"Cache-Control": "no-store"},
+            )
         broadcast_prefix = settings.api_prefix.rstrip("/") + "/control/vpn/broadcasts"
         if request.url.path == broadcast_prefix or request.url.path.startswith(broadcast_prefix + "/"):
             return JSONResponse(
