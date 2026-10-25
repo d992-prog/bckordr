@@ -17,8 +17,8 @@
 - [x] Task 1: server contracts and baseline repair; independent specification and quality reviews passed. Local new settings/API tests: 92 passed, 1 PostgreSQL skip; requested regression: 330 passed, 3 PostgreSQL skips; frontend: 204 passed and production build passed.
 - [x] Task 1 PostgreSQL follow-up: the new concurrent initial-save API test passed on isolated PostgreSQL 14. Combined run: 109 passed, 1 unrelated older device-race fixture failed because it creates no issuable VPN endpoint. Task 2 repairs that connected fixture and reruns it. Temporary database and remote source copy were removed.
 - [x] Visual choice: user approved variant 3 (`.impeccable/mocks/cabinet-refresh-c.png`); composition measurements and existing plate checks prepared. Application UI has not yet been rewritten.
-- [ ] Task 2: device lifecycle and credential generations — implementation and regression checks in progress.
-- [ ] Task 3: gated expiry reminders.
+- [x] Task 2: device lifecycle and credential generations — implemented through `b8096b5`; independent specification and quality reviews passed. Fixed stale lifecycle candidates, cross-owner worker/endpoint lock inversion (including archive), and unbound-UUID archive confirmation. Latest local operation/archive review: 48 passed. Isolated PostgreSQL snapshot `9d3ae0a`: 236 passed, including independent-session opposite-country replacements; temporary database/source copy removed. The final one-line archive guard and its real regression passed locally; exact final source is included in the next PostgreSQL acceptance batch before release.
+- [ ] Task 3: gated expiry reminders — implementation in progress; operator gate remains off by default, synthetic senders only.
 - [ ] Task 4: compact customer UI.
 - [ ] Task 5: operator settings UI.
 - [ ] Task 6: integrated review and release handoff.
