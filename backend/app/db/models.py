@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -1070,6 +1071,21 @@ class VpnNodeEvent(Base):
     )
 
     worker: Mapped[WorkerNode] = relationship(back_populates="vpn_events")
+
+
+class VpnBotChat(Base):
+    __tablename__ = "vpn_bot_chats"
+    __table_args__ = (
+        CheckConstraint("last_update_id IS NULL OR last_update_id >= 0", name="ck_vpn_bot_chat_update_id"),
+        Index("ix_vpn_bot_chats_bot_id_blocked_at", "bot_id", "blocked_at"),
+    )
+
+    bot_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    chat_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_update_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class VpnTelegramUpdate(Base):

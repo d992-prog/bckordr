@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-import re
-from typing import Awaitable, Callable
 
 import httpx
 from sqlalchemy import select
@@ -19,6 +19,10 @@ from app.db.models import (
     VpnNodeEvent,
     VpnSubscription,
     VpnTelegramUpdate,
+)
+from app.services.vpn_bot_chats import (
+    BotRegistryConfigurationError,
+    record_private_bot_chat,
 )
 from app.services.vpn_customer_view import (
     MissingCustomerProfile,
@@ -717,6 +721,12 @@ async def process_telegram_update(
     if message is None:
         await session.commit()
         return {"processed": False, "duplicate": False}
+
+    try:
+        await record_private_bot_chat(session, settings, message)
+    except BotRegistryConfigurationError:
+        # Invalid bot configuration disables news registration, not existing command handling.
+        pass
 
     if message.chat_type == "private" and _has_start_payload(message.text):
         token = friend_invite_token(message.text)
