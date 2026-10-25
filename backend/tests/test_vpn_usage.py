@@ -592,6 +592,32 @@ async def test_invalid_receipt_keeps_protocol_unknown_without_baseline(usage, fa
 
 
 @pytest.mark.asyncio
+async def test_apply_prefetches_baselines_and_hours_in_bounded_queries(usage, factory):
+    from sqlalchemy import event
+
+    await seed(factory, count=50)
+    pending = await claim(usage, factory)
+    engine = factory.kw["bind"].sync_engine
+    reads = []
+
+    def capture(connection, cursor, statement, values, context, many):
+        if statement.lstrip().upper().startswith("SELECT") and (
+            "FROM vpn_key_usage_samples" in statement
+            or "FROM vpn_usage_hours" in statement
+        ):
+            reads.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        assert await usage.apply_usage_poll(
+            factory, pending, receipt(pending), now=NOW + timedelta(seconds=1)
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert len(reads) <= 2
+
+
+@pytest.mark.asyncio
 async def test_collect_commits_claim_before_network_and_only_apply_uses_new_session(
     usage, factory
 ):

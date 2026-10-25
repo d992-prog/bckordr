@@ -384,13 +384,33 @@ async def apply_usage_poll(
             _failure(poll, error_code or "vpn_usage_unavailable")
             return True
         observed = datetime.fromtimestamp(receipt.observed_ms / 1000, UTC)
+        hour = observed.replace(minute=0, second=0, microsecond=0)
+        key_ids = [key.access_key_id for key in receipt.keys]
+        baselines = {
+            sample.access_key_id: sample
+            for sample in await db.scalars(
+                select(models.VpnKeyUsageSample).where(
+                    models.VpnKeyUsageSample.access_key_id.in_(key_ids)
+                )
+            )
+        }
+        hours = {
+            aggregate.access_key_id: aggregate
+            for aggregate in await db.scalars(
+                select(models.VpnUsageHour).where(
+                    models.VpnUsageHour.access_key_id.in_(key_ids),
+                    models.VpnUsageHour.worker_id == worker.id,
+                    models.VpnUsageHour.hour_start == hour,
+                )
+            )
+        }
         complete = len(claim.bindings) == len(receipt.keys)
         overflow = False
         for key in receipt.keys:
             if key.traffic_state != "ok":
                 complete = False
                 continue
-            previous = await db.get(models.VpnKeyUsageSample, key.access_key_id)
+            previous = baselines.get(key.access_key_id)
             if previous is not None and _as_utc(previous.sampled_at) >= observed:
                 complete = False
                 continue
@@ -413,10 +433,7 @@ async def apply_usage_poll(
                 complete = False
             else:
                 # shortcut: minute deltas are booked to the ending UTC hour; split measured intervals if finer boundary attribution is required
-                hour = observed.replace(minute=0, second=0, microsecond=0)
-                aggregate = await db.get(
-                    models.VpnUsageHour, (key.access_key_id, worker.id, hour)
-                )
+                aggregate = hours.get(key.access_key_id)
                 if aggregate is None:
                     db.add(
                         models.VpnUsageHour(
