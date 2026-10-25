@@ -26,9 +26,17 @@ from app.services.vpn_node_health import (
     parse_node_health_receipt,
     serialize_node_health_request,
 )
+from app.services.vpn_node_usage import (
+    MAX_USAGE_RECEIPT_BYTES,
+    UsageReceipt,
+    UsageRequest,
+    parse_node_usage_receipt,
+    serialize_node_usage_request,
+)
 
 FIXED_NODE_COMMAND = "/usr/bin/python3 -I -S /opt/veltrix-vpn/current/vpn-node.pyz"
 FIXED_NODE_HEALTH_COMMAND = FIXED_NODE_COMMAND + " --health"
+FIXED_NODE_USAGE_COMMAND = FIXED_NODE_COMMAND + " --usage"
 FIXED_NODE_RECEIPT_LOOKUP_COMMAND = FIXED_NODE_COMMAND + " --lookup-receipt"
 MAX_KNOWN_HOSTS_BYTES = 64 * 1024
 MAX_PRIVATE_KEY_BYTES = 64 * 1024
@@ -564,10 +572,14 @@ async def _execute_health_operation(
     connection,
     request_bytes: bytes,
     process_holder: list[object],
-) -> VpnNodeHealthReceipt:
+    *,
+    command: str = FIXED_NODE_HEALTH_COMMAND,
+    stdout_limit: int = MAX_HEALTH_PAYLOAD_BYTES,
+    receipt_parser: Callable = parse_node_health_receipt,
+) -> VpnNodeHealthReceipt | UsageReceipt:
     async with connection:
         process = await connection.create_process(
-            FIXED_NODE_HEALTH_COMMAND,
+            command,
             term_type=None,
             encoding=None,
         )
@@ -578,12 +590,12 @@ async def _execute_health_operation(
         stdout, stderr = await _read_process_output(
             process,
             "preflight",
-            stdout_limit=MAX_HEALTH_PAYLOAD_BYTES,
+            stdout_limit=stdout_limit,
         )
         await process.wait()
         if process.exit_status != 0 or stderr:
             _fail()
-        return parse_node_health_receipt(stdout)
+        return receipt_parser(stdout)
 
 
 async def _bounded_health_cleanup(
@@ -666,6 +678,37 @@ async def execute_vpn_node_health_over_ssh(
         request_bytes = serialize_node_health_request(request, now_ms=now_ms)
     except Exception:  # noqa: BLE001 - collapse request details into a safe code
         _fail()
+    return await _execute_read_only_over_ssh(snapshot, request_bytes, connector=connector)
+
+
+async def execute_vpn_node_usage_over_ssh(
+    snapshot: VpnNodeTransportSnapshot,
+    request: UsageRequest,
+    *,
+    now_ms: int | None = None,
+    connector: Callable[..., object] = asyncssh.connect,
+) -> UsageReceipt:
+    """Execute one bounded usage observation through the existing pinned transport."""
+    try:
+        request_bytes = serialize_node_usage_request(request, now_ms=now_ms)
+    except Exception:  # noqa: BLE001 - collapse request details into a safe code
+        _fail()
+    return await _execute_read_only_over_ssh(
+        snapshot, request_bytes, connector=connector,
+        command=FIXED_NODE_USAGE_COMMAND, stdout_limit=MAX_USAGE_RECEIPT_BYTES,
+        receipt_parser=lambda raw: parse_node_usage_receipt(raw, request, now_ms=now_ms),
+    )
+
+
+async def _execute_read_only_over_ssh(
+    snapshot: VpnNodeTransportSnapshot,
+    request_bytes: bytes,
+    *,
+    connector: Callable[..., object],
+    command: str = FIXED_NODE_HEALTH_COMMAND,
+    stdout_limit: int = MAX_HEALTH_PAYLOAD_BYTES,
+    receipt_parser: Callable = parse_node_health_receipt,
+) -> VpnNodeHealthReceipt | UsageReceipt:
     options = _connection_options(snapshot)
     connection = None
     operation_task = None
@@ -679,17 +722,15 @@ async def execute_vpn_node_health_over_ssh(
                 **options,
             )
         operation_task = asyncio.create_task(
-            _execute_health_operation(connection, request_bytes, process_holder)
+            _execute_health_operation(
+                connection, request_bytes, process_holder, command=command,
+                stdout_limit=stdout_limit, receipt_parser=receipt_parser,
+            )
         )
         done, _pending = await asyncio.wait(
             {operation_task}, timeout=REMOTE_OPERATION_TIMEOUT
         )
         if not done:
-            await _cleanup_health_transport(
-                connection,
-                process_holder[0] if process_holder else None,
-                operation_task,
-            )
             _fail()
         return operation_task.result()
     except asyncio.CancelledError:
@@ -701,7 +742,13 @@ async def execute_vpn_node_health_over_ssh(
             )
         raise
     except VpnNodeTransportError:
-        raise
+        if connection is not None:
+            await _cleanup_health_transport(
+                connection,
+                process_holder[0] if process_holder else None,
+                operation_task,
+            )
+        _fail()
     except Exception:  # noqa: BLE001 - collapse transport details into a safe code
         if connection is not None:
             await _cleanup_health_transport(

@@ -15,6 +15,7 @@ BUNDLE_MEMBERS = (
     "app/services/__init__.py",
     "app/services/vpn_endpoint_types.py",
     "app/services/vpn_node_health.py",
+    "app/services/vpn_node_usage.py",
     "app/services/vpn_node_request.py",
     "app/services/vpn_node_journal.py",
     "app/services/vpn_xui_node_http.py",
@@ -24,12 +25,14 @@ BUNDLE_MEMBERS = (
     "app/services/vpn_xui_node_executor.py",
     "app/services/vpn_node_entrypoint.py",
     "app/services/vpn_node_health_entrypoint.py",
+    "app/services/vpn_node_usage_entrypoint.py",
 )
 IMPORT_PROBE_SENTINEL = b"veltrix-vpn-node-import-ok-v1\n"
 _MAIN = (
     b"import sys\n"
     b"import app.services.vpn_endpoint_types\n"
     b"import app.services.vpn_node_health\n"
+    b"import app.services.vpn_node_usage\n"
     b"import app.services.vpn_node_request\n"
     b"import app.services.vpn_node_journal\n"
     b"import app.services.vpn_xui_node_http\n"
@@ -39,6 +42,7 @@ _MAIN = (
     b"import app.services.vpn_xui_node_executor\n"
     b"from app.services.vpn_node_entrypoint import main, run_node_receipt_lookup\n"
     b"from app.services.vpn_node_health_entrypoint import run_node_health_entrypoint\n"
+    b"from app.services.vpn_node_usage_entrypoint import run_node_usage_entrypoint\n"
     b"if sys.argv[1:] == ['--import-probe']:\n"
     b"    sys.stdout.buffer.write("
     + repr(IMPORT_PROBE_SENTINEL).encode("ascii")
@@ -48,6 +52,8 @@ _MAIN = (
     b"    raise SystemExit(run_node_receipt_lookup(sys.stdin.buffer, sys.stdout.buffer, sys.stderr.buffer))\n"
     b"if sys.argv[1:] == ['--health']:\n"
     b"    raise SystemExit(run_node_health_entrypoint(sys.stdin.buffer, sys.stdout.buffer, sys.stderr.buffer))\n"
+    b"if sys.argv[1:] == ['--usage']:\n"
+    b"    raise SystemExit(run_node_usage_entrypoint(sys.stdin.buffer, sys.stdout.buffer, sys.stderr.buffer))\n"
     b"if sys.argv[1:]:\n"
     b"    raise SystemExit(1)\n"
     b"raise SystemExit(main())\n"
