@@ -8,6 +8,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 from sqlalchemy import or_, select
@@ -31,6 +32,7 @@ from app.services.vpn_node_transport import (
     load_transport_snapshot,
 )
 from app.services.vpn_node_usage import (
+    MAX_CLOCK_SKEW_MS,
     MAX_INT64,
     MAX_USAGE_IDENTITIES,
     UsageIdentity,
@@ -334,6 +336,7 @@ async def apply_usage_poll(
     now: datetime,
     error_code: str | None = None,
 ) -> bool:
+    started = monotonic()
     current = _current(now)
     if receipt is not None:
         try:
@@ -378,33 +381,43 @@ async def apply_usage_poll(
             )
         except Exception:  # noqa: BLE001 - changing bindings invalidate this batch
             valid = False
+        if valid and receipt is not None:
+            observed = datetime.fromtimestamp(receipt.observed_ms / 1000, UTC)
+            hour = observed.replace(minute=0, second=0, microsecond=0)
+            key_ids = [key.access_key_id for key in receipt.keys]
+            baselines = {
+                sample.access_key_id: sample
+                for sample in await db.scalars(
+                    select(models.VpnKeyUsageSample).where(
+                        models.VpnKeyUsageSample.access_key_id.in_(key_ids)
+                    )
+                )
+            }
+            hours = {
+                aggregate.access_key_id: aggregate
+                for aggregate in await db.scalars(
+                    select(models.VpnUsageHour).where(
+                        models.VpnUsageHour.access_key_id.in_(key_ids),
+                        models.VpnUsageHour.worker_id == worker.id,
+                        models.VpnUsageHour.hour_start == hour,
+                    )
+                )
+            }
+        # Include pool/SQL waits in the supplied clock before the first write.
+        current += timedelta(seconds=max(0.0, monotonic() - started))
+        if _as_utc(poll.lease_until) <= current:
+            return False
         if not valid:
             _failure(poll, "vpn_usage_binding_changed")
             return False
+        if receipt is not None and (
+            abs(_milliseconds(current) - claim.request.minute_ms) > MAX_CLOCK_SKEW_MS
+            or abs(_milliseconds(current) - receipt.observed_ms) > MAX_CLOCK_SKEW_MS
+        ):
+            receipt, error_code = None, "vpn_usage_receipt_invalid"
         if receipt is None:
             _failure(poll, error_code or "vpn_usage_unavailable")
             return True
-        observed = datetime.fromtimestamp(receipt.observed_ms / 1000, UTC)
-        hour = observed.replace(minute=0, second=0, microsecond=0)
-        key_ids = [key.access_key_id for key in receipt.keys]
-        baselines = {
-            sample.access_key_id: sample
-            for sample in await db.scalars(
-                select(models.VpnKeyUsageSample).where(
-                    models.VpnKeyUsageSample.access_key_id.in_(key_ids)
-                )
-            )
-        }
-        hours = {
-            aggregate.access_key_id: aggregate
-            for aggregate in await db.scalars(
-                select(models.VpnUsageHour).where(
-                    models.VpnUsageHour.access_key_id.in_(key_ids),
-                    models.VpnUsageHour.worker_id == worker.id,
-                    models.VpnUsageHour.hour_start == hour,
-                )
-            )
-        }
         complete = len(claim.bindings) == len(receipt.keys)
         overflow = False
         for key in receipt.keys:

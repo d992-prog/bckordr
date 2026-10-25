@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 from sqlalchemy import inspect, select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from test_vpn_endpoint_migrations import (
     postgres_schema as postgres_schema,  # noqa: PLC0414
 )
@@ -210,6 +210,57 @@ async def test_apply_does_not_wait_on_a_row_lock_beyond_the_claim_lease(
         ).claim_token == pending.claim_token
         assert await db.scalar(select(models.VpnKeyUsageSample)) is None
         assert await db.scalar(select(models.VpnUsageHour)) is None
+
+
+@pytest.mark.asyncio
+async def test_apply_rechecks_lease_after_waiting_for_the_connection_pool(
+    pg_factory, postgres_schema, monkeypatch
+):
+    worker_id, _, _ = await seed(pg_factory)
+    pending = await claim(usage, pg_factory)
+    clock = SimpleNamespace(elapsed=0.0)
+    monkeypatch.setattr(usage, "monotonic", lambda: clock.elapsed, raising=False)
+    requested = asyncio.Event()
+
+    class ObservedSession(AsyncSession):
+        async def scalar(self, statement, **kwargs):
+            if statement._for_update_arg is not None:
+                requested.set()
+            return await super().scalar(statement, **kwargs)
+
+    engine = create_async_engine(
+        postgres_schema.engine.url,
+        pool_size=1,
+        max_overflow=0,
+        connect_args={"server_settings": {"search_path": postgres_schema.name}},
+        hide_parameters=True,
+    )
+    applying = async_sessionmaker(
+        engine, class_=ObservedSession, expire_on_commit=False
+    )
+    task = None
+    try:
+        async with engine.connect():
+            task = asyncio.create_task(
+                usage.apply_usage_poll(
+                    applying, pending, receipt(pending), now=NOW + timedelta(seconds=20)
+                )
+            )
+            await asyncio.wait_for(requested.wait(), 1)
+            clock.elapsed = 30.0
+        assert not await asyncio.wait_for(task, 2)
+        async with pg_factory() as db:
+            assert (
+                await db.get(models.VpnNodeUsagePoll, worker_id)
+            ).claim_token == pending.claim_token
+            assert await db.scalar(select(models.VpnKeyUsageSample)) is None
+            assert await db.scalar(select(models.VpnUsageHour)) is None
+    finally:
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

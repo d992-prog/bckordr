@@ -666,6 +666,74 @@ async def test_apply_cannot_wait_past_lease_with_a_prelock_timestamp(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("wait_point", ["connection", "counter_read"])
+async def test_apply_refreshes_lease_after_connection_and_read_waits(
+    usage, factory, monkeypatch, wait_point
+):
+    worker_id, _, _ = await seed(factory)
+    pending = await claim(usage, factory)
+    clock = SimpleNamespace(elapsed=0.0)
+    monkeypatch.setattr(usage, "monotonic", lambda: clock.elapsed, raising=False)
+
+    class DelayedSession(AsyncSession):
+        async def __aenter__(self):
+            session = await super().__aenter__()
+            if wait_point == "connection":
+                clock.elapsed = 30.0
+            return session
+
+        async def scalars(self, statement, **kwargs):
+            result = await super().scalars(statement, **kwargs)
+            if (
+                wait_point == "counter_read"
+                and statement.column_descriptions[0]["entity"] is models.VpnUsageHour
+            ):
+                clock.elapsed = 30.0
+            return result
+
+    delayed_factory = async_sessionmaker(
+        factory.kw["bind"], class_=DelayedSession, expire_on_commit=False
+    )
+    assert not await usage.apply_usage_poll(
+        delayed_factory, pending, receipt(pending), now=NOW + timedelta(seconds=20)
+    )
+    assert (await poll(factory, worker_id)).claim_token == pending.claim_token
+    async with factory() as db:
+        assert await db.scalar(select(models.VpnKeyUsageSample)) is None
+        assert await db.scalar(select(models.VpnUsageHour)) is None
+
+
+@pytest.mark.asyncio
+async def test_receipt_freshness_expires_during_connection_wait_before_lease(
+    usage, factory, monkeypatch
+):
+    worker_id, _, _ = await seed(factory)
+    pending = await claim(usage, factory)
+    clock = SimpleNamespace(elapsed=0.0)
+    monkeypatch.setattr(usage, "monotonic", lambda: clock.elapsed, raising=False)
+
+    class DelayedSession(AsyncSession):
+        async def __aenter__(self):
+            session = await super().__aenter__()
+            clock.elapsed = 15.0
+            return session
+
+    delayed_factory = async_sessionmaker(
+        factory.kw["bind"], class_=DelayedSession, expire_on_commit=False
+    )
+    assert await usage.apply_usage_poll(
+        delayed_factory, pending, receipt(pending), now=NOW + timedelta(seconds=20)
+    )
+    state = await poll(factory, worker_id)
+    assert (
+        state.traffic_state == "unavailable"
+        and state.last_error_code == "vpn_usage_receipt_invalid"
+    )
+    async with factory() as db:
+        assert await db.scalar(select(models.VpnKeyUsageSample)) is None
+
+
+@pytest.mark.asyncio
 async def test_collect_commits_claim_before_network_and_only_apply_uses_new_session(
     usage, factory
 ):
