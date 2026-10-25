@@ -343,7 +343,7 @@ async def test_fresh_postgres_schema_has_exact_invitation_constraints(
     columns, constraints = await _invitation_catalog(postgres_schema.engine)
 
     assert columns == {
-        "slot": "smallint",
+        "slot": "integer",
         "token_digest": "character varying",
         "created_by_user_id": "integer",
         "created_at": "timestamp with time zone",
@@ -353,9 +353,7 @@ async def test_fresh_postgres_schema_has_exact_invitation_constraints(
         "access_key_id": "integer",
         "revoked_at": "timestamp with time zone",
     }
-    assert constraints["ck_vpn_friend_invitation_slot"][0] == (
-        "CHECK (((slot >= 1) AND (slot <= 10)))"
-    )
+    assert constraints["ck_vpn_friend_invitation_slot"][0] == "CHECK ((slot > 0))"
     assert "redeemed_at IS NULL" in constraints[
         "ck_vpn_friend_invitation_redemption"
     ][0]

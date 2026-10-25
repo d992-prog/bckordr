@@ -15,7 +15,8 @@ def test_device_migration_is_registered_after_existing_migrations():
     assert importlib.util.find_spec("app.db.vpn_device_migrations") is not None
     from app.db.migrations import MIGRATIONS
     from app.db.vpn_device_migrations import VPN_DEVICE_MIGRATIONS
-    assert MIGRATIONS[-len(VPN_DEVICE_MIGRATIONS):] == VPN_DEVICE_MIGRATIONS
+    start = MIGRATIONS.index(VPN_DEVICE_MIGRATIONS[0])
+    assert MIGRATIONS[start:start + len(VPN_DEVICE_MIGRATIONS)] == VPN_DEVICE_MIGRATIONS
 
 
 async def migrate(engine):

@@ -143,23 +143,25 @@ async def _count(db: AsyncSession, model: type[object]) -> int:
 
 
 @pytest.mark.asyncio
-async def test_eleven_concurrent_issues_persist_exactly_ten_slots(
+async def test_eleven_concurrent_issues_all_persist_unique_identities(
     postgres_friend_control: PostgresFriendControl,
 ) -> None:
     control = postgres_friend_control
-    all_read_empty = asyncio.Event()
+    all_ready_to_insert = asyncio.Event()
     observations = 0
 
     class RacingIssueSession(AsyncSession):
-        async def scalars(self, statement, *args, **kwargs):
+        async def flush(self, objects=None):
             nonlocal observations
-            result = await super().scalars(statement, *args, **kwargs)
-            if "vpn_friend_invitations.slot" in str(statement):
+            if not self.info.get("invitation_insert_waited") and any(
+                isinstance(row, VpnFriendInvitation) for row in self.new
+            ):
+                self.info["invitation_insert_waited"] = True
                 observations += 1
                 if observations == 11:
-                    all_read_empty.set()
-                await asyncio.wait_for(all_read_empty.wait(), timeout=30)
-            return result
+                    all_ready_to_insert.set()
+                await asyncio.wait_for(all_ready_to_insert.wait(), timeout=30)
+            return await super().flush(objects)
 
     racing_sessions = async_sessionmaker(
         control.engine,
@@ -195,12 +197,10 @@ async def test_eleven_concurrent_issues_persist_exactly_ten_slots(
         ).all()
     assert observations == 11
     assert sorted(value for state, value in results if state == "issued") == list(
-        range(1, 11)
+        range(1, 12)
     )
-    assert [value for state, value in results if state == "rejected"] == [
-        "friend_invitation_cohort_full"
-    ]
-    assert slots == list(range(1, 11))
+    assert [value for state, value in results if state == "rejected"] == []
+    assert slots == list(range(1, 12))
 
 
 @pytest.mark.asyncio

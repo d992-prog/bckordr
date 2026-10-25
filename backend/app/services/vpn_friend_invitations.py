@@ -215,21 +215,6 @@ async def require_friend_invitation_readiness(
     return endpoint
 
 
-def _empty_view(slot: int) -> FriendInvitationView:
-    return FriendInvitationView(
-        slot=slot,
-        invite_state="unused",
-        telegram_user_id=None,
-        telegram_username=None,
-        display_name=None,
-        subscription_expires_at=None,
-        provisioning_error_code=None,
-        can_rotate=False,
-        can_retry=False,
-        can_disable=False,
-    )
-
-
 def _display_name(customer: VpnCustomer) -> str:
     full_name = " ".join(
         part.strip()
@@ -370,7 +355,14 @@ def _unredeemed_view(invitation: VpnFriendInvitation, now: datetime) -> FriendIn
 async def list_friend_invitations(
     db: AsyncSession,
     now: datetime,
+    *,
+    before_slot: int | None = None,
+    limit: int = 100,
 ) -> list[FriendInvitationView]:
+    if type(limit) is not int or not 1 <= limit <= 100 or (
+        before_slot is not None and (type(before_slot) is not int or before_slot <= 0)
+    ):
+        raise ValueError("invalid_invitation_page")
     latest_generation = (
         select(func.max(VpnControlOperation.generation))
         .where(VpnControlOperation.access_key_id == VpnAccessKey.id)
@@ -405,13 +397,15 @@ async def list_friend_invitations(
                     VpnControlOperation.generation == latest_generation,
                 ),
             )
-            .order_by(VpnFriendInvitation.slot.asc())
+            .where(VpnFriendInvitation.slot < before_slot if before_slot is not None else true())
+            .order_by(VpnFriendInvitation.slot.desc())
+            .limit(limit)
             .execution_options(populate_existing=True)
         )
     ).all()
     current = _current_time(now)
-    issued = {
-        invitation.slot: _view(
+    return [
+        _view(
             invitation,
             access_key,
             subscription,
@@ -420,8 +414,7 @@ async def list_friend_invitations(
             current,
         )
         for invitation, access_key, subscription, customer, operation in rows
-    }
-    return [issued.get(slot, _empty_view(slot)) for slot in range(1, 11)]
+    ]
 
 
 async def _discover_friend_binding(
@@ -662,40 +655,26 @@ async def issue_friend_invitation(
     username = _bot_username(settings)
     await require_friend_invitation_readiness(db, settings)
     current = _current_time(now)
-    occupied_slots = set(await db.scalars(select(VpnFriendInvitation.slot)))
-
-    for slot in range(1, 11):
-        if slot in occupied_slots:
-            continue
-        while True:
-            token, digest = _new_token()
-            try:
-                async with db.begin_nested():
-                    invitation = VpnFriendInvitation(
-                        slot=slot,
-                        token_digest=digest,
-                        created_by_user_id=actor_user_id,
-                        created_at=current,
-                        redeem_expires_at=current + INVITE_LIFETIME,
-                    )
-                    db.add(invitation)
-                    await db.flush()
-                return _issued(invitation, username, token, current)
-            except IntegrityError:
-                if await db.scalar(
-                    select(VpnFriendInvitation.slot).where(
-                        VpnFriendInvitation.slot == slot
-                    )
-                ) is not None:
-                    break
-                if await db.scalar(
-                    select(VpnFriendInvitation.slot).where(
-                        VpnFriendInvitation.token_digest == digest
-                    )
-                ) is not None:
-                    continue
+    while True:
+        token, digest = _new_token()
+        try:
+            async with db.begin_nested():
+                invitation = VpnFriendInvitation(
+                    token_digest=digest,
+                    created_by_user_id=actor_user_id,
+                    created_at=current,
+                    redeem_expires_at=current + INVITE_LIFETIME,
+                )
+                db.add(invitation)
+                await db.flush()
+            return _issued(invitation, username, token, current)
+        except IntegrityError:
+            if await db.scalar(
+                select(VpnFriendInvitation.slot).where(
+                    VpnFriendInvitation.token_digest == digest
+                )
+            ) is None:
                 raise
-    raise FriendInvitationConflict("friend_invitation_cohort_full")
 
 
 async def rotate_friend_invitation(

@@ -607,7 +607,35 @@ VPN_FRIEND_INVITATION_MIGRATIONS = (
 )
 
 
-MIGRATIONS += VPN_FRIEND_INVITATION_MIGRATIONS + VPN_DEVICE_MIGRATIONS
+VPN_UNLIMITED_INVITATION_MIGRATIONS = (
+    """
+    DO $$
+    DECLARE
+        sequence_value BIGINT;
+        sequence_called BOOLEAN;
+        highest_id BIGINT;
+    BEGIN
+        LOCK TABLE vpn_friend_invitations IN ACCESS EXCLUSIVE MODE;
+        ALTER TABLE vpn_friend_invitations ALTER COLUMN slot TYPE INTEGER;
+        ALTER TABLE vpn_friend_invitations DROP CONSTRAINT IF EXISTS ck_vpn_friend_invitation_slot;
+        ALTER TABLE vpn_friend_invitations ADD CONSTRAINT ck_vpn_friend_invitation_slot CHECK (slot > 0);
+        CREATE SEQUENCE IF NOT EXISTS vpn_friend_invitations_slot_seq AS INTEGER;
+        ALTER SEQUENCE vpn_friend_invitations_slot_seq OWNED BY vpn_friend_invitations.slot;
+        ALTER TABLE vpn_friend_invitations ALTER COLUMN slot
+            SET DEFAULT nextval('vpn_friend_invitations_slot_seq'::regclass);
+        SELECT last_value, is_called INTO sequence_value, sequence_called
+            FROM vpn_friend_invitations_slot_seq;
+        SELECT COALESCE(MAX(slot), 0) INTO highest_id FROM vpn_friend_invitations;
+        IF highest_id > sequence_value OR (highest_id = sequence_value AND NOT sequence_called) THEN
+            PERFORM setval('vpn_friend_invitations_slot_seq'::regclass, highest_id, true);
+        END IF;
+    END;
+    $$
+    """,
+)
+
+
+MIGRATIONS += VPN_FRIEND_INVITATION_MIGRATIONS + VPN_DEVICE_MIGRATIONS + VPN_UNLIMITED_INVITATION_MIGRATIONS
 
 
 async def run_startup_migrations(engine: AsyncEngine) -> None:

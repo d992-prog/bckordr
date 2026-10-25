@@ -91,6 +91,27 @@ async def test_friend_invitation_routes_require_admin_authentication():
 
 
 @pytest.mark.asyncio
+async def test_invitation_list_has_bounded_exclusive_cursor(monkeypatch):
+    engine, session_factory = await _database()
+    calls = []
+
+    async def fake_list(db, now, *, before_slot=None, limit=100):
+        calls.append((before_slot, limit))
+        return [_view(110), _view(109)]
+
+    monkeypatch.setattr(control_routes, "list_friend_invitations", fake_list)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_app(session_factory)), base_url="http://testserver") as client:
+        response = await client.get(LIST_URL + "?before_slot=111&limit=2")
+        assert response.status_code == 200
+        assert [row["slot"] for row in response.json()] == [110, 109]
+        assert calls == [(111, 2)]
+        for query in ("before_slot=0", "before_slot=-1", "limit=0", "limit=101"):
+            assert (await client.get(LIST_URL + "?" + query)).status_code == 422
+        assert calls == [(111, 2)]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_friend_invitation_admin_contract_serializes_mutations_and_redacts_audit(
     monkeypatch,
 ):
@@ -105,9 +126,10 @@ async def test_friend_invitation_admin_contract_serializes_mutations_and_redacts
         yield
         serialized.append("exit")
 
-    async def fake_list(db, now):
+    async def fake_list(db, now, *, before_slot=None, limit=100):
         del db
         assert now.tzinfo is not None
+        assert before_slot is None and limit == 100
         return [_view(slot) for slot in range(1, 11)]
 
     async def fake_issue(db, settings, actor_user_id, now):

@@ -179,7 +179,7 @@ def _utc(value: datetime) -> datetime:
 
 
 @pytest.mark.asyncio
-async def test_issue_returns_raw_link_once_and_list_returns_ten_safe_slots(
+async def test_issue_returns_raw_link_once_and_list_returns_only_safe_issued_rows(
     ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
 ) -> None:
     db, settings, transport_calls = ready_session
@@ -202,13 +202,11 @@ async def test_issue_returns_raw_link_once_and_list_returns_ten_safe_slots(
     assert invitation.created_by_user_id == 1
     assert _utc(invitation.created_at) == NOW
     assert _utc(invitation.redeem_expires_at) == NOW + timedelta(days=7)
-    assert len(views) == 10
-    assert [view.slot for view in views] == list(range(1, 11))
+    assert len(views) == 1
+    assert [view.slot for view in views] == [1]
     assert views[0] == issued.view
     assert views[0].invite_state == "unused"
     assert views[0].can_rotate is True
-    assert views[1].invite_state == "unused"
-    assert views[1].can_rotate is False
     assert not hasattr(views[0], "token")
     assert not hasattr(views[0], "link")
     assert raw_token not in repr(views)
@@ -417,7 +415,7 @@ async def test_issue_maps_invalid_strict_transport_to_the_same_bounded_error(
 
 
 @pytest.mark.asyncio
-async def test_eleventh_sequential_issue_is_rejected_without_mutating_ten_slots(
+async def test_eleventh_sequential_issue_preserves_the_previous_invitations(
     ready_session: tuple[AsyncSession, Settings, list[tuple[int, Path]]],
 ) -> None:
     db, settings, _ = ready_session
@@ -426,13 +424,12 @@ async def test_eleventh_sequential_issue_is_rejected_without_mutating_ten_slots(
         await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
         for _ in range(10)
     ]
-    with pytest.raises(FriendInvitationConflict) as error:
-        await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
+    eleventh = await issue_friend_invitation(db, settings, actor_user_id=1, now=NOW)
 
     rows = (await db.scalars(select(VpnFriendInvitation))).all()
     assert [item.view.slot for item in issued] == list(range(1, 11))
-    assert str(error.value) == "friend_invitation_cohort_full"
-    assert len(rows) == 10
+    assert eleventh.view.slot == 11
+    assert len(rows) == 11
 
 
 @pytest.mark.asyncio
@@ -694,6 +691,8 @@ async def test_list_derives_all_states_from_exact_chain_and_latest_operation(
 
     views = await list_friend_invitations(db, NOW)
 
+    assert [item.slot for item in views] == list(range(10, 0, -1))
+    views = sorted(views, key=lambda item: item.slot)
     assert [item.invite_state for item in views] == [
         "unused",
         "unused",

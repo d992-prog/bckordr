@@ -13,7 +13,6 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
-    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -950,7 +949,7 @@ class VpnAccessKey(Base):
 class VpnFriendInvitation(Base):
     __tablename__ = "vpn_friend_invitations"
     __table_args__ = (
-        CheckConstraint("slot BETWEEN 1 AND 10", name="ck_vpn_friend_invitation_slot"),
+        CheckConstraint("slot > 0", name="ck_vpn_friend_invitation_slot"),
         CheckConstraint(
             "(redeemed_at IS NULL AND telegram_user_id IS NULL AND access_key_id IS NULL) OR "
             "(redeemed_at IS NOT NULL AND telegram_user_id IS NOT NULL AND access_key_id IS NOT NULL)",
@@ -959,7 +958,7 @@ class VpnFriendInvitation(Base):
         UniqueConstraint("access_key_id", name="uq_vpn_friend_invitation_access_key"),
     )
 
-    slot: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     token_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     created_by_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True

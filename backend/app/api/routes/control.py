@@ -3265,11 +3265,13 @@ def _friend_invitation_http_error(
     response_model=list[VpnFriendInvitationResponse],
 )
 async def get_vpn_friend_invitations(
+    before_slot: int | None = Query(default=None, gt=0),
+    limit: int = Query(default=100, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ) -> list[VpnFriendInvitationResponse]:
     del admin
-    invitations = await list_friend_invitations(db, utcnow())
+    invitations = await list_friend_invitations(db, utcnow(), before_slot=before_slot, limit=limit)
     return [_friend_invitation_response(invitation) for invitation in invitations]
 
 
