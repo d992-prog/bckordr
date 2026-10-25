@@ -511,3 +511,36 @@ async def test_state_lock_wait_cannot_revive_an_expired_collection_window(
     await evaluate(abuse, factory, ids, minute)
     assert (await state(factory, ids)).consecutive_windows == 0
     assert await incidents(factory) == []
+
+
+@pytest.mark.asyncio
+async def test_acknowledgement_lock_wait_crossing_minute_requires_five_new_windows(
+    abuse, factory, monkeypatch
+):
+    ids = await device_seed(factory)
+    await windows(abuse, factory, ids)
+    incident = (await incidents(factory))[0]
+    requested = NOW + timedelta(minutes=4, seconds=59, milliseconds=990)
+    acked = requested + timedelta(milliseconds=30)
+    minute = NOW + timedelta(minutes=5)
+    await samples(factory, ids, minute)
+    async with factory() as db, db.begin():
+        for key_id in ids.keys:
+            row = await db.get(m.VpnKeySourceSample, key_id)
+            row.observed_at = minute + timedelta(milliseconds=1)
+    ticks = iter((0.0, 0.03))
+    with monkeypatch.context() as clock:
+        clock.setattr(abuse, "monotonic", lambda: next(ticks))
+        async with factory() as db, db.begin():
+            await abuse.acknowledge_incident(
+                db, incident.id, actor_id=None, now=requested
+            )
+    saved = (await incidents(factory))[0]
+    assert saved.acknowledged_at.replace(tzinfo=NOW.tzinfo) == acked
+    await evaluate(abuse, factory, ids, minute)
+    assert (await state(factory, ids)).consecutive_windows == 0
+    await windows(abuse, factory, ids, start=6, count=4)
+    assert len(await incidents(factory)) == 1
+    await windows(abuse, factory, ids, start=10, count=1)
+    rows = await incidents(factory)
+    assert len(rows) == 2 and rows[1].acknowledged_at is None

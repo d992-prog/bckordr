@@ -850,3 +850,73 @@ async def test_abuse_expiry_skips_busy_state_without_source_or_worker_locks(pg_f
         await abuse.expire_abuse_windows(pg_factory, now=NOW + timedelta(minutes=3))
         == 1
     )
+
+
+@pytest.mark.asyncio
+async def test_abuse_ack_incident_lock_wait_crossing_minute_ignores_pre_ack_sample(
+    pg_factory, monkeypatch
+):
+    from test_vpn_abuse import device_seed, evaluate, incidents, samples, state, windows
+
+    from app.services import vpn_abuse as abuse
+
+    ids = await device_seed(pg_factory)
+    await windows(abuse, pg_factory, ids)
+    incident_id = (await incidents(pg_factory))[0].id
+    requested = NOW + timedelta(minutes=4, seconds=59, milliseconds=990)
+    minute = NOW + timedelta(minutes=5)
+    waiting = asyncio.Event()
+
+    class SignalledSession(AsyncSession):
+        async def scalar(self, statement, **kwargs):
+            if (
+                statement._for_update_arg is not None
+                and statement.column_descriptions[0]["entity"]
+                is models.VpnAbuseIncident
+            ):
+                waiting.set()
+            return await super().scalar(statement, **kwargs)
+
+    blocked = async_sessionmaker(
+        pg_factory.kw["bind"], class_=SignalledSession, expire_on_commit=False
+    )
+
+    async def acknowledge():
+        async with blocked() as db, db.begin():
+            await abuse.acknowledge_incident(
+                db, incident_id, actor_id=None, now=requested
+            )
+
+    elapsed = 0.0
+    task = None
+    try:
+        with monkeypatch.context() as clock:
+            clock.setattr(abuse, "monotonic", lambda: elapsed)
+            async with pg_factory() as owner, owner.begin():
+                await owner.scalar(
+                    select(models.VpnAbuseIncident)
+                    .where(models.VpnAbuseIncident.id == incident_id)
+                    .with_for_update()
+                )
+                task = asyncio.create_task(acknowledge())
+                await asyncio.wait_for(waiting.wait(), 3)
+                await samples(pg_factory, ids, minute)
+                async with pg_factory() as db, db.begin():
+                    for key_id in ids.keys:
+                        row = await db.get(models.VpnKeySourceSample, key_id)
+                        row.observed_at = minute + timedelta(milliseconds=1)
+                elapsed = 0.03
+            await asyncio.wait_for(task, 5)
+        saved = (await incidents(pg_factory))[0]
+        assert saved.acknowledged_at == requested + timedelta(milliseconds=30)
+        await evaluate(abuse, pg_factory, ids, minute)
+        assert (await state(pg_factory, ids)).consecutive_windows == 0
+        await windows(abuse, pg_factory, ids, start=6, count=4)
+        assert len(await incidents(pg_factory)) == 1
+        await windows(abuse, pg_factory, ids, start=10, count=1)
+        assert len(await incidents(pg_factory)) == 2
+    finally:
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

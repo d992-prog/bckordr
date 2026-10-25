@@ -253,6 +253,7 @@ async def evaluate_device_abuse(
 async def acknowledge_incident(
     db, incident_id: int, *, actor_id: int | None, now: datetime
 ):
+    started = monotonic()
     device_id = await db.scalar(
         select(m.VpnAbuseIncident.device_id).where(m.VpnAbuseIncident.id == incident_id)
     )
@@ -266,7 +267,7 @@ async def acknowledge_incident(
         .execution_options(populate_existing=True)
     )
     if incident.acknowledged_at is None:
-        current = _as_utc(now)
+        current = _as_utc(now) + timedelta(seconds=max(0.0, monotonic() - started))
         incident.acknowledged_at = current
         incident.acknowledged_by_user_id = actor_id
         _reset(state)
