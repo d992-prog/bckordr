@@ -185,14 +185,345 @@ async function newPortalPage(browser, options = {}) {
   return { context, page, diagnostics };
 }
 
-async function installApi(page, handler, { trial = disabledTrial } = {}) {
+async function installApi(page, handler, { trial = disabledTrial, locations = { current: null, pending_endpoint_id: null, selection_state: "unavailable", available: [] } } = {}) {
   await page.route("**/api/vpn-portal/**", async (route) => {
     const url = new URL(route.request().url());
     if (trial !== null && route.request().method() === "GET" && url.pathname.endsWith("/trial")) {
       return responseJson(route, trial);
     }
+    if (locations !== null && url.pathname.endsWith("/locations")) return responseJson(route, locations);
     await handler(route, url.pathname, route.request());
   });
+}
+
+async function verifyDeviceLocations(browser, origin) {
+  const germany = { endpoint_id: 7, name: "Германия", country_code: "DE", is_published: true };
+  const netherlands = { endpoint_id: 8, name: "Нидерланды", country_code: "NL", is_published: true };
+  const ready = { current: germany, pending_endpoint_id: null, selection_state: "ready", available: [germany, netherlands] };
+  const devices = profiles.map((profile) => ({ ...profile, id: profile.id + 100, legacy_profile_id: profile.id }));
+  const stableUrl = "https://vpn.example/api/vpn-portal/subscription/synthetic-device-secret";
+  const { context, page, diagnostics } = await newPortalPage(browser, { captureClipboard: true });
+  let currentLocations = ready;
+  let pendingSelection;
+  let posts = 0;
+  let deviceLoads = 0;
+  const requests = [];
+  await installApi(page, async (route, pathname, request) => {
+    requests.push(pathname);
+    if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+    if (pathname.endsWith("/me")) return responseJson(route, me);
+    if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions);
+    if (pathname.endsWith("/plans")) return responseJson(route, []);
+    if (pathname.endsWith("/v2/devices")) { deviceLoads += 1; return responseJson(route, devices); }
+    if (pathname.endsWith("/locations")) return responseJson(route, currentLocations);
+    if (pathname.endsWith("/121/location")) {
+      posts += 1;
+      assert.equal(request.headers()["x-csrf-token"], me.csrf_token);
+      assert.deepEqual(request.postDataJSON(), { endpoint_id: 8 });
+      pendingSelection = route;
+      return;
+    }
+    if (pathname.endsWith("/121/connection")) return responseJson(route, { subscription_url: stableUrl, direct_uri: "vless://must-not-render" });
+    return responseJson(route, {}, 404);
+  }, { locations: null });
+  await page.goto(`${origin}/cabinet/#profiles`);
+  await page.locator(".profile-card").first().waitFor({ timeout: 3000 });
+  assert.equal(await page.locator(".profile-card").count(), 2, "logical devices, not child credentials, determine card count");
+  const card = page.locator(".profile-card").first();
+  await card.getByLabel("Сервер").selectOption("8");
+  assert.equal(posts, 0, "native selection alone never mutates");
+  await card.getByRole("button", { name: "Показать ссылку" }).click();
+  assert.equal(await card.locator("textarea").inputValue(), stableUrl);
+  await card.getByRole("button", { name: "Скопировать", exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.__portalClipboardWrites), [stableUrl]);
+  await card.getByRole("button", { name: "Показать QR-код" }).click();
+  await card.locator("img.qr-code").waitFor();
+  await card.getByRole("button", { name: "Выбрать сервер" }).evaluate((button) => { button.click(); button.click(); });
+  await page.waitForFunction(() => document.querySelector(".device-location-picker button[type=submit]")?.disabled);
+  assert.equal(posts, 1, "held POST has a synchronous duplicate guard");
+  currentLocations = { ...ready, pending_endpoint_id: 8, selection_state: "preparing" };
+  await responseJson(pendingSelection, currentLocations, 202);
+  await card.getByText("Готовим подключение. Текущий сервер остаётся доступен.").waitFor();
+  assert.equal(await card.locator("textarea").inputValue(), stableUrl);
+  assert.equal(await card.getByLabel("Сервер").isDisabled(), false, "another server remains selectable while provisioning");
+  currentLocations = { ...ready, current: netherlands };
+  await card.getByText("Текущий сервер: NL · Нидерланды", { exact: true }).waitFor({ timeout: 5000 });
+  await page.waitForFunction(() => document.querySelector(".device-location-picker")?.textContent.includes("После смены сервера"));
+  assert.ok(deviceLoads >= 2, "ready transition refreshes parent device metadata");
+  assert.equal(await card.locator("textarea").inputValue(), stableUrl);
+  assert.equal(requests.some((pathname) => /\/profiles(?:\/|$)/.test(pathname)), false);
+  assert.equal((await page.locator("body").innerText()).includes("vless://must-not-render"), false);
+  await assertNoHorizontalOverflow(page);
+  await assertVisibleInteractiveAccessibility(page, "device-locations-390", ".portal-nav");
+  await page.screenshot({ path: path.join(outputRoot, "device-locations-390.png"), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await assertNoHorizontalOverflow(page);
+  await page.screenshot({ path: path.join(outputRoot, "device-locations-desktop.png"), fullPage: true });
+  await assertTwoHundredPercentTextReflow(page, "device-locations-desktop-200", ".portal-nav");
+  await page.screenshot({ path: path.join(outputRoot, "device-locations-desktop-200.png"), fullPage: true });
+  await assertSecretAbsent(page, diagnostics, "vless://must-not-render");
+  await context.close();
+}
+
+async function verifyDeviceLocationEdges(browser, origin) {
+  const a = { endpoint_id: 7, name: "Германия", country_code: "DE", is_published: true };
+  const b = { endpoint_id: 8, name: "Нидерланды", country_code: "NL", is_published: true };
+  const device = { ...profiles[0], id: 121, legacy_profile_id: 21 };
+  const ready = { current: a, pending_endpoint_id: null, selection_state: "ready", available: [a, b] };
+  const stableUrl = "https://vpn.example/subscription/synthetic-stable-secret";
+  async function fixture(page, handler, options) {
+    return installApi(page, async (route, pathname, request) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
+      if (pathname.endsWith("/plans")) return responseJson(route, []);
+      if (pathname.endsWith("/connection")) return responseJson(route, { subscription_url: stableUrl, direct_uri: "vless://never-reveal-child" });
+      if (pathname.endsWith("/logout")) return responseJson(route, { logged_out: true });
+      return handler(route, pathname, request);
+    }, { locations: null, ...options });
+  }
+  {
+    const { context, page } = await newPortalPage(browser);
+    let deviceLoads = 0;
+    await fixture(page, (route, pathname) => {
+      if (pathname.endsWith("/v2/devices")) { deviceLoads += 1; return responseJson(route, [device]); }
+      if (pathname.endsWith("/locations")) return responseJson(route, ready);
+      if (pathname.endsWith("/location")) return responseJson(route, { ...ready, current: b }, 202);
+      return responseJson(route, {}, 404);
+    });
+    await page.goto(`${origin}/cabinet/#profiles`);
+    const card = page.locator(".profile-card");
+    await card.getByLabel("Сервер").selectOption("8");
+    await card.getByRole("button", { name: "Выбрать сервер" }).click();
+    await card.getByText("Текущий сервер: NL · Нидерланды", { exact: true }).waitFor();
+    await page.waitForTimeout(100);
+    assert.equal(deviceLoads, 2, "reusing an already-ready child also refreshes parent connectability");
+    await context.close();
+  }
+  {
+    const { context, page, diagnostics } = await newPortalPage(browser);
+    let heldQr;
+    await page.route("**/assets/index-*.js", (route) => { heldQr = route; });
+    await fixture(page, (route, pathname) => {
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, [device]);
+      if (pathname.endsWith("/locations")) return responseJson(route, ready);
+      return responseJson(route, {}, 404);
+    });
+    await page.goto(`${origin}/cabinet/#profiles`);
+    await page.getByRole("button", { name: "Показать ссылку" }).click();
+    await page.locator("textarea").waitFor();
+    await page.getByRole("button", { name: "Показать QR-код" }).click();
+    await page.getByRole("button", { name: "Создаём QR-код…" }).waitFor();
+    assert.ok(heldQr, "QR module is held locally before logout");
+    await page.locator('.portal-nav a[href="#account"]').click();
+    await page.getByRole("button", { name: "Выйти", exact: true }).click();
+    await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
+    await heldQr.continue();
+    await page.waitForTimeout(100);
+    assert.equal(await page.locator(".qr-code").count(), 0);
+    await assertSecretAbsent(page, diagnostics, stableUrl);
+    await context.close();
+  }
+  {
+    const { context, page } = await newPortalPage(browser);
+    let gets = 0;
+    let posts = 0;
+    await fixture(page, (route, pathname) => {
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, [device]);
+      if (pathname.endsWith("/locations")) return ++gets === 1 ? responseJson(route, {}, 503) : responseJson(route, ready);
+      if (pathname.endsWith("/location")) { posts += 1; return responseJson(route, {}, 409); }
+      return responseJson(route, {}, 404);
+    });
+    await page.goto(`${origin}/cabinet/#profiles`);
+    await page.getByRole("alert").filter({ hasText: "Не удалось загрузить серверы" }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Выбрать сервер" }).isDisabled(), true);
+    await page.getByRole("button", { name: "Обновить статус", exact: true }).click();
+    await page.getByLabel("Сервер").selectOption("8");
+    await page.getByRole("button", { name: "Выбрать сервер" }).click();
+    await page.getByRole("alert").filter({ hasText: "Не удалось выбрать сервер" }).waitFor();
+    await page.getByText("Текущий сервер: DE · Германия", { exact: true }).waitFor();
+    assert.equal(await page.getByLabel("Сервер").inputValue(), "8");
+    await page.waitForTimeout(2100);
+    assert.equal(posts, 1, "failed mutation is never retried automatically");
+    await context.close();
+  }
+  for (const state of ["failed", "verification_required"]) {
+    const { context, page } = await newPortalPage(browser);
+    let gets = 0;
+    await fixture(page, (route, pathname) => {
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, [device]);
+      if (pathname.endsWith("/locations")) { gets += 1; return responseJson(route, ready); }
+      if (pathname.endsWith("/location")) return responseJson(route, { ...ready, selection_state: state, pending_endpoint_id: 8 }, 202);
+      return responseJson(route, {}, 404);
+    });
+    await page.goto(`${origin}/cabinet/#profiles`);
+    const card = page.locator(".profile-card");
+    await card.getByRole("button", { name: "Показать ссылку" }).click();
+    await card.locator("textarea").waitFor();
+    await card.getByLabel("Сервер").selectOption("8");
+    await card.getByRole("button", { name: "Выбрать сервер" }).click();
+    await card.getByText(state === "failed"
+      ? "Не удалось подготовить сервер. Выберите его снова, чтобы повторить попытку."
+      : "Результат подготовки проверяется. Можно выбрать другой доступный сервер.").waitFor();
+    if (state === "failed") assert.equal(await card.getByRole("alert").filter({ hasText: "Не удалось подготовить сервер" }).count(), 1, "failed preparation is announced as a failed action");
+    assert.equal(await card.locator("textarea").inputValue(), stableUrl);
+    await card.getByText("Текущий сервер: DE · Германия", { exact: true }).waitFor();
+    assert.equal(await card.getByLabel("Сервер").isDisabled(), false);
+    await page.waitForTimeout(2100);
+    assert.equal(gets, 1, "terminal preparation states stop polling");
+    await context.close();
+  }
+  {
+    const { context, page } = await newPortalPage(browser);
+    await fixture(page, (route, pathname) => {
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, [device]);
+      if (pathname.endsWith("/locations")) return responseJson(route, {
+        ...ready, current: { ...a, is_published: false }, pending_endpoint_id: 99,
+        selection_state: "preparing", available: [b],
+      });
+      return responseJson(route, {}, 404);
+    });
+    await page.goto(`${origin}/cabinet/#profiles`);
+    await page.getByText("Готовим подключение. Текущий сервер остаётся доступен.").waitFor();
+    assert.equal(await page.getByLabel("Сервер").inputValue(), "");
+    assert.equal(await page.getByRole("button", { name: "Выбрать сервер" }).isDisabled(), true, "a no-longer-selectable pending server cannot enable a blank submit");
+    await page.getByLabel("Сервер").selectOption("8");
+    assert.equal(await page.getByRole("button", { name: "Выбрать сервер" }).isDisabled(), false);
+    await context.close();
+  }
+  {
+    const { context, page } = await newPortalPage(browser);
+    let gets = 0;
+    let oldGet;
+    await fixture(page, (route, pathname) => {
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, [device]);
+      if (pathname.endsWith("/locations")) {
+        gets += 1;
+        if (gets === 2) { oldGet = route; return; }
+        return responseJson(route, { ...ready, current: { ...a, name: "Ранее выданное подключение", country_code: null, is_published: false }, available: [b] });
+      }
+      if (pathname.endsWith("/location")) return responseJson(route, { ...ready, current: b }, 202);
+      return responseJson(route, {}, 404);
+    });
+    await page.goto(`${origin}/cabinet/#profiles`);
+    const card = page.locator(".profile-card");
+    await card.getByText("Текущий сервер: Ранее выданное подключение", { exact: true }).waitFor();
+    assert.deepEqual(await card.getByLabel("Сервер").locator("option").allTextContents(), ["Выберите сервер", "NL · Нидерланды"]);
+    await card.getByLabel("Сервер").selectOption("8");
+    await card.getByRole("button", { name: "Обновить статус" }).click();
+    await page.waitForTimeout(50);
+    assert.ok(oldGet);
+    // A submit already queued before a refresh must supersede that older GET.
+    await card.locator("form.device-location-picker").evaluate((form) => form.requestSubmit());
+    await card.getByText("Текущий сервер: NL · Нидерланды", { exact: true }).waitFor();
+    await responseJson(oldGet, ready);
+    await page.waitForTimeout(100);
+    assert.equal(await card.getByText("Текущий сервер: DE · Германия", { exact: true }).count(), 0);
+    await context.close();
+  }
+  {
+    const { context, page } = await newPortalPage(browser);
+    await page.addInitScript(() => {
+      const schedule = window.setTimeout.bind(window);
+      const cancel = window.clearTimeout.bind(window);
+      const pending = new Map();
+      let id = 100000;
+      window.setTimeout = (callback, delay, ...args) => {
+        if (delay !== 2000) return schedule(callback, delay, ...args);
+        pending.set(++id, () => callback(...args));
+        return id;
+      };
+      window.clearTimeout = (timer) => { pending.delete(timer); cancel(timer); };
+      window.__runLocationPoll = () => {
+        const next = pending.entries().next().value;
+        if (!next) return false;
+        pending.delete(next[0]); next[1](); return true;
+      };
+    });
+    let gets = 0;
+    await fixture(page, (route, pathname) => {
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, [device]);
+      if (pathname.endsWith("/locations")) { gets += 1; return responseJson(route, { ...ready, selection_state: "preparing", pending_endpoint_id: 8 }); }
+      return responseJson(route, {}, 404);
+    });
+    await page.goto(`${origin}/cabinet/#profiles`);
+    await page.getByText("Готовим подключение. Текущий сервер остаётся доступен.").waitFor();
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      assert.equal(await page.evaluate(() => window.__runLocationPoll()), true);
+      await page.waitForFunction(() => !document.querySelector(".device-location-picker select")?.disabled);
+    }
+    await page.getByText("Подготовка ещё не завершена. Обновите статус вручную.").waitFor();
+    assert.equal(gets, 31, "initial GET plus exactly thirty automatic attempts");
+    assert.equal(await page.evaluate(() => window.__runLocationPoll()), false);
+    assert.equal(gets, 31);
+    await page.getByRole("button", { name: "Обновить статус", exact: true }).click();
+    await page.waitForTimeout(50);
+    assert.equal(gets, 32);
+    assert.equal(await page.evaluate(() => window.__runLocationPoll()), false, "manual status refresh does not silently restart the exhausted automatic budget");
+    await context.close();
+  }
+  for (const delayed of ["locations", "location", "connection"]) {
+    const { context, page, diagnostics } = await newPortalPage(browser);
+    let held;
+    await installApi(page, (route, pathname, request) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions);
+      if (pathname.endsWith("/plans")) return responseJson(route, []);
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, [device]);
+      if (pathname.endsWith(`/${delayed}`)) { held = route; return; }
+      if (pathname.endsWith("/locations")) return responseJson(route, ready);
+      if (pathname.endsWith("/logout")) return responseJson(route, { logged_out: true });
+      return responseJson(route, {}, 404);
+    }, { locations: null });
+    await page.goto(`${origin}/cabinet/#profiles`);
+    await page.locator(".profile-card").waitFor();
+    if (delayed === "location") {
+      await page.getByLabel("Сервер").selectOption("8");
+      await page.getByRole("button", { name: "Выбрать сервер" }).click();
+    }
+    if (delayed === "connection") await page.getByRole("button", { name: "Показать ссылку" }).click();
+    await page.waitForTimeout(50);
+    assert.ok(held, `held ${delayed} request must exist before logout`);
+    await page.locator('.portal-nav a[href="#account"]').click();
+    await page.getByRole("button", { name: "Выйти", exact: true }).click();
+    await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
+    await responseJson(held, delayed === "connection" ? { subscription_url: stableUrl, direct_uri: "vless://never" } : { ...ready, current: b });
+    await page.waitForTimeout(100);
+    assert.equal(await page.locator(".profile-card, textarea, .qr-code").count(), 0);
+    await assertSecretAbsent(page, diagnostics, stableUrl);
+    await context.close();
+  }
+  {
+    const { context, page } = await newPortalPage(browser);
+    let deviceLoads = 0;
+    let pendingBulk;
+    let pendingRename;
+    await fixture(page, (route, pathname, request) => {
+      if (pathname.endsWith("/v2/devices")) {
+        deviceLoads += 1;
+        if (deviceLoads === 2) { pendingBulk = route; return; }
+        return responseJson(route, [device]);
+      }
+      if (pathname.endsWith("/locations")) return responseJson(route, ready);
+      if (pathname.endsWith("/121") && request.method() === "PATCH") { pendingRename = route; return; }
+      return responseJson(route, {}, 404);
+    }, { trial: { ...disabledTrial, state: "preparing" } });
+    await page.goto(`${origin}/cabinet/#profiles`);
+    const card = page.locator(".profile-card");
+    await card.getByRole("button", { name: "Переименовать" }).click();
+    await card.getByLabel("Название профиля").fill("Имя после обновления");
+    await card.getByRole("button", { name: "Сохранить", exact: true }).click();
+    await page.waitForTimeout(2200);
+    assert.ok(pendingBulk);
+    assert.ok(pendingRename);
+    await responseJson(pendingRename, { ...device, display_name: "Имя после обновления" });
+    await card.getByRole("heading", { name: "Имя после обновления", exact: true }).waitFor();
+    await responseJson(pendingBulk, [device]);
+    await page.waitForTimeout(100);
+    assert.equal(await card.getByRole("heading", { name: "Имя после обновления", exact: true }).count(), 1, "bulk started during rename cannot overwrite the saved result");
+    await context.close();
+  }
 }
 
 function assertNoHorizontalOverflow(page) {
@@ -888,14 +1219,14 @@ async function verifyFullPortal(browser, origin) {
     if (pathname.endsWith("/me")) return responseJson(route, me);
     if (pathname.endsWith("/plans")) return responseJson(route, []);
     if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions);
-    if (pathname.endsWith("/profiles") && request.method() === "GET") return responseJson(route, profiles);
-    if (pathname.endsWith("/profiles/21/connection")) {
+    if (pathname.endsWith("/v2/devices") && request.method() === "GET") return responseJson(route, profiles);
+    if (pathname.endsWith("/v2/devices/21/connection")) {
       connectionCalls += 1;
       return connectionCalls <= 2
-        ? responseJson(route, { uri: `vless://full-secret-${connectionCalls}@example.test:443?security=tls&very=long#iPhone` })
+        ? responseJson(route, { subscription_url: `vless://full-secret-${connectionCalls}@example.test:443?security=tls&very=long#iPhone` })
         : responseJson(route, {}, 404);
     }
-    if (pathname.endsWith("/profiles/21") && request.method() === "PATCH") {
+    if (pathname.endsWith("/v2/devices/21") && request.method() === "PATCH") {
       renameCalls += 1;
       return renameCalls === 1
         ? responseJson(route, { ...profiles[0], display_name: "Личный iPhone" })
@@ -1030,7 +1361,7 @@ async function verifyInitialPortalStates(browser, origin) {
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/plans")) return responseJson(route, []);
       if (pathname.endsWith("/subscriptions")) { pendingSubscriptions = route; return; }
-      if (pathname.endsWith("/profiles")) { pendingProfiles = route; return; }
+      if (pathname.endsWith("/v2/devices")) { pendingProfiles = route; return; }
       return responseJson(route, {}, 404);
     });
 
@@ -1056,7 +1387,7 @@ async function verifyInitialPortalStates(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/plans")) return responseJson(route, []);
-      if (pathname.endsWith("/subscriptions") || pathname.endsWith("/profiles")) {
+      if (pathname.endsWith("/subscriptions") || pathname.endsWith("/v2/devices")) {
         return failData ? responseJson(route, {}, 500) : responseJson(route, []);
       }
       return responseJson(route, {}, 404);
@@ -1083,7 +1414,7 @@ async function verifyInitialPortalStates(browser, origin) {
       if (pathname.endsWith("/subscriptions")) {
         return firstLoad ? responseJson(route, {}, 503) : responseJson(route, subscriptions.slice(0, 1));
       }
-      if (pathname.endsWith("/profiles")) {
+      if (pathname.endsWith("/v2/devices")) {
         if (firstLoad) {
           firstLoad = false;
           return responseJson(route, {}, 503);
@@ -1124,7 +1455,7 @@ async function verifyLegacyPlansRoute(browser, origin) {
         is_trial: false,
       }]);
     }
-    if (pathname.endsWith("/subscriptions") || pathname.endsWith("/profiles")) {
+    if (pathname.endsWith("/subscriptions") || pathname.endsWith("/v2/devices")) {
       return responseJson(route, []);
     }
     return responseJson(route, {}, 404);
@@ -1196,7 +1527,7 @@ async function verifyPublicTrialFlow(browser, origin) {
       if (pathname.endsWith("/subscriptions")) {
         return responseJson(route, trialReads >= 3 ? [trialSubscription] : []);
       }
-      if (pathname.endsWith("/profiles")) {
+      if (pathname.endsWith("/v2/devices")) {
         return responseJson(route, trialReads >= 3 ? [trialProfile] : []);
       }
       return responseJson(route, {}, 404);
@@ -1230,7 +1561,7 @@ async function verifyPublicTrialFlow(browser, origin) {
         pendingTrial = route;
         return;
       }
-      if (pathname.endsWith("/subscriptions") || pathname.endsWith("/profiles")) {
+      if (pathname.endsWith("/subscriptions") || pathname.endsWith("/v2/devices")) {
         return responseJson(route, []);
       }
       if (pathname.endsWith("/logout")) return responseJson(route, { logged_out: true });
@@ -1266,7 +1597,7 @@ async function verifyMiniAppStates(browser, origin) {
       if (pathname.endsWith("/auth/mini-app")) return responseJson(route, { display_name: "Bob", csrf_token: "csrf-bob" });
       if (pathname.endsWith("/me")) return responseJson(route, { display_name: "Bob", csrf_token: "csrf-bob" });
       if (pathname.endsWith("/subscriptions")) return responseJson(route, []);
-      if (pathname.endsWith("/profiles")) return responseJson(route, []);
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, []);
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/#profiles`);
@@ -1369,8 +1700,8 @@ async function verifyIOSGestureBoundCopy(browser, origin) {
     if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
     if (pathname.endsWith("/me")) return responseJson(route, me);
     if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-    if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
-    if (pathname.endsWith("/connection")) return responseJson(route, { uri: "vless://ios-gesture-secret" });
+    if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
+    if (pathname.endsWith("/connection")) return responseJson(route, { subscription_url: "vless://ios-gesture-secret" });
     return responseJson(route, {}, 404);
   });
   await page.goto(`${origin}/cabinet/`);
@@ -1392,8 +1723,8 @@ async function verifySessionInvalidation(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
-      if (pathname.endsWith("/connection")) return responseJson(route, { uri: "vless://quick-copy-secret" });
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/connection")) return responseJson(route, { subscription_url: "vless://quick-copy-secret" });
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/`);
@@ -1417,7 +1748,7 @@ async function verifySessionInvalidation(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
       if (pathname.endsWith("/connection")) {
         pendingConnection = route;
         return;
@@ -1432,7 +1763,7 @@ async function verifySessionInvalidation(browser, origin) {
     await page.getByRole("button", { name: "Выйти", exact: true }).click();
     await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
     assert.ok(pendingConnection);
-    await responseJson(pendingConnection, { uri: "vless://must-never-copy" });
+    await responseJson(pendingConnection, { subscription_url: "vless://must-never-copy" });
     await page.waitForTimeout(100);
     assert.deepEqual(await page.evaluate(() => window.__portalClipboardWrites), []);
     await assertSecretAbsent(page, diagnostics, "vless://must-never-copy");
@@ -1445,7 +1776,7 @@ async function verifySessionInvalidation(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
       if (pathname.endsWith("/connection")) return responseJson(route, {}, 401);
       return responseJson(route, {}, 404);
     });
@@ -1464,7 +1795,7 @@ async function verifySessionInvalidation(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
       if (pathname.endsWith("/connection")) { pendingConnection = route; return; }
       return responseJson(route, {}, 404);
     });
@@ -1473,7 +1804,7 @@ async function verifySessionInvalidation(browser, origin) {
     await page.locator('.portal-nav a[href="#account"]').click();
     await page.getByRole("heading", { name: "Аккаунт" }).waitFor();
     assert.ok(pendingConnection);
-    await responseJson(pendingConnection, { uri: "vless://must-not-survive-home-unmount" });
+    await responseJson(pendingConnection, { subscription_url: "vless://must-not-survive-home-unmount" });
     await page.waitForTimeout(100);
     assert.deepEqual(await page.evaluate(() => window.__portalClipboardWrites), []);
     await assertSecretAbsent(page, diagnostics, "vless://must-not-survive-home-unmount");
@@ -1489,8 +1820,8 @@ async function verifySessionInvalidation(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
-      if (pathname.endsWith("/connection")) return responseJson(route, { uri: "vless://delayed-clipboard-secret" });
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/connection")) return responseJson(route, { subscription_url: "vless://delayed-clipboard-secret" });
       if (pathname.endsWith("/logout")) return responseJson(route, { logged_out: true });
       return responseJson(route, {}, 404);
     });
@@ -1517,11 +1848,11 @@ async function verifySessionInvalidation(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
       if (pathname.endsWith("/connection")) {
         connectionCalls += 1;
         return connectionCalls === 1
-          ? responseJson(route, { uri: "vless://home-prefetch" })
+          ? responseJson(route, { subscription_url: "vless://home-prefetch" })
           : responseJson(route, {}, 401);
       }
       return responseJson(route, {}, 404);
@@ -1545,7 +1876,7 @@ async function verifySessionInvalidation(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
       if (pathname.endsWith("/connection")) {
         pendingConnection = route;
         return;
@@ -1562,7 +1893,7 @@ async function verifySessionInvalidation(browser, origin) {
     await page.getByRole("button", { name: "Выйти", exact: true }).click();
     await page.getByRole("heading", { name: "Вы вышли из аккаунта" }).waitFor();
     assert.ok(pendingConnection);
-    await responseJson(pendingConnection, { uri: "vless://must-never-render" });
+    await responseJson(pendingConnection, { subscription_url: "vless://must-never-render" });
     await page.waitForTimeout(100);
     await assertSecretAbsent(page, diagnostics, "vless://must-never-render");
     await context.close();
@@ -1575,7 +1906,7 @@ async function verifySessionInvalidation(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
       if (pathname.endsWith("/logout")) {
         logoutCalls += 1;
         return responseJson(route, {}, 401);
@@ -1601,9 +1932,9 @@ async function verifyProfileRequestRaces(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles") && request.method() === "GET") return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices") && request.method() === "GET") return responseJson(route, profiles.slice(0, 1));
       if (pathname.endsWith("/connection")) { pendingConnection = route; return; }
-      if (pathname.endsWith("/profiles/21") && request.method() === "PATCH") {
+      if (pathname.endsWith("/v2/devices/21") && request.method() === "PATCH") {
         return responseJson(route, { ...profiles[0], display_name: "После гонки" });
       }
       return responseJson(route, {}, 404);
@@ -1617,7 +1948,7 @@ async function verifyProfileRequestRaces(browser, origin) {
     await card.getByRole("button", { name: "Сохранить" }).click();
     await card.getByRole("heading", { name: "После гонки" }).waitFor();
     assert.ok(pendingConnection);
-    await responseJson(pendingConnection, { uri: "vless://obsolete-after-rename" });
+    await responseJson(pendingConnection, { subscription_url: "vless://obsolete-after-rename" });
     await page.waitForTimeout(100);
     assert.equal(await card.locator("textarea").count(), 0);
     await assertSecretAbsent(page, diagnostics, "vless://obsolete-after-rename");
@@ -1631,9 +1962,9 @@ async function verifyProfileRequestRaces(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles") && request.method() === "GET") return responseJson(route, profiles.slice(0, 1));
-      if (pathname.endsWith("/profiles/21") && request.method() === "PATCH") { pendingRename = route; return; }
-      if (pathname.endsWith("/connection")) return responseJson(route, { uri: "vless://must-not-start" });
+      if (pathname.endsWith("/v2/devices") && request.method() === "GET") return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices/21") && request.method() === "PATCH") { pendingRename = route; return; }
+      if (pathname.endsWith("/connection")) return responseJson(route, { subscription_url: "vless://must-not-start" });
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/#profiles`);
@@ -1652,14 +1983,14 @@ async function verifyProfileRequestRaces(browser, origin) {
 }
 
 async function verifyParallelLoadUnauthorized(browser, origin) {
-  for (const failingFirst of ["subscriptions", "profiles"]) {
+  for (const failingFirst of ["subscriptions", "v2/devices"]) {
     const { context, page } = await newPortalPage(browser);
     let heldRoute;
     await installApi(page, async (route, pathname) => {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith(`/${failingFirst}`)) return responseJson(route, {}, 503);
-      if (pathname.endsWith(failingFirst === "subscriptions" ? "/profiles" : "/subscriptions")) {
+      if (pathname.endsWith(failingFirst === "subscriptions" ? "/v2/devices" : "/subscriptions")) {
         heldRoute = route;
         return;
       }
@@ -1690,7 +2021,7 @@ async function verifyParallelLoadUnauthorized(browser, origin) {
           ? responseJson(route, {}, 503)
           : responseJson(route, subscriptions.slice(0, 1));
       }
-      if (pathname.endsWith("/profiles")) {
+      if (pathname.endsWith("/v2/devices")) {
         profilesCalls += 1;
         if (profilesCalls === 1) {
           staleProfilesRoute = route;
@@ -1722,12 +2053,12 @@ async function verifyRenameAcrossHashRemount(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles") && request.method() === "GET") return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices") && request.method() === "GET") return responseJson(route, profiles.slice(0, 1));
       if (pathname.endsWith("/connection")) {
         connectionCalls += 1;
-        return responseJson(route, { uri: `vless://connection-${connectionCalls}` });
+        return responseJson(route, { subscription_url: `vless://connection-${connectionCalls}` });
       }
-      if (pathname.endsWith("/profiles/21") && request.method() === "PATCH") {
+      if (pathname.endsWith("/v2/devices/21") && request.method() === "PATCH") {
         pendingRename = route;
         return;
       }
@@ -1763,9 +2094,9 @@ async function verifyRenameAcrossHashRemount(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles") && request.method() === "GET") return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices") && request.method() === "GET") return responseJson(route, profiles.slice(0, 1));
       if (pathname.endsWith("/connection")) { pendingConnection = route; return; }
-      if (pathname.endsWith("/profiles/21") && request.method() === "PATCH") { pendingRename = route; return; }
+      if (pathname.endsWith("/v2/devices/21") && request.method() === "PATCH") { pendingRename = route; return; }
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/#profiles`);
@@ -1781,7 +2112,7 @@ async function verifyRenameAcrossHashRemount(browser, origin) {
     assert.ok(pendingConnection);
     assert.ok(pendingRename);
     await responseJson(pendingRename, { ...profiles[0], display_name: "Ещё имя" });
-    await responseJson(pendingConnection, { uri: "vless://obsolete-pending-reveal" });
+    await responseJson(pendingConnection, { subscription_url: "vless://obsolete-pending-reveal" });
     await card.getByRole("heading", { name: "Ещё имя" }).waitFor();
     await page.waitForTimeout(100);
     assert.equal(await card.locator("textarea").count(), 0);
@@ -1808,7 +2139,7 @@ async function verifyStatePages(browser, origin) {
   await installApi(page, async (route, pathname) => {
     if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
     if (pathname.endsWith("/me")) return responseJson(route, me);
-    if (pathname.endsWith("/subscriptions") || pathname.endsWith("/profiles")) return responseJson(route, []);
+    if (pathname.endsWith("/subscriptions") || pathname.endsWith("/v2/devices")) return responseJson(route, []);
     return responseJson(route, {}, 404);
   });
   await page.goto(`${origin}/cabinet/`);
@@ -1843,7 +2174,7 @@ async function verifyPlatformAwareUnauthenticatedStates(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
       if (pathname.endsWith("/connection")) return responseJson(route, {}, 401);
       return responseJson(route, {}, 404);
     });
@@ -1871,7 +2202,7 @@ async function verifyMountedFragmentPreservation(browser, origin) {
       if (pathname.endsWith("/auth/mini-app")) return responseJson(route, me);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions);
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles);
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles);
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/${scenario.hash}`);
@@ -1902,7 +2233,7 @@ async function verifyTelegramSafeAreaGeometry(browser, origin) {
       if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
       if (pathname.endsWith("/me")) return responseJson(route, me);
       if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions.slice(0, 1));
-      if (pathname.endsWith("/profiles")) return responseJson(route, profiles.slice(0, 1));
+      if (pathname.endsWith("/v2/devices")) return responseJson(route, profiles.slice(0, 1));
       return responseJson(route, {}, 404);
     });
     await page.goto(`${origin}/cabinet/`);
@@ -2032,7 +2363,7 @@ async function verifyLongStatusLensStates(browser, origin) {
         if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
         if (pathname.endsWith("/me")) return responseJson(route, me);
         if (pathname.endsWith("/subscriptions")) return responseJson(route, fixture.subscriptions);
-        if (pathname.endsWith("/profiles")) return responseJson(route, []);
+        if (pathname.endsWith("/v2/devices")) return responseJson(route, []);
         if (pathname.endsWith("/plans")) return responseJson(route, []);
         return responseJson(route, {}, 404);
       }, { trial: fixture.trial });
@@ -2102,7 +2433,7 @@ async function captureResponsiveMatrix(browser, origin) {
     if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
     if (pathname.endsWith("/me")) return responseJson(route, me);
     if (pathname.endsWith("/subscriptions")) return responseJson(route, subscriptions);
-    if (pathname.endsWith("/profiles") && request.method() === "GET") return responseJson(route, profiles);
+    if (pathname.endsWith("/v2/devices") && request.method() === "GET") return responseJson(route, profiles);
     if (pathname.endsWith("/plans")) return responseJson(route, []);
     return responseJson(route, {}, 404);
   });
@@ -2383,7 +2714,7 @@ async function verifyRealSdkCacheCleanup(browser, origin) {
     if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
     if (pathname.endsWith("/auth/mini-app")) return responseJson(route, { display_name: "Synthetic QA", csrf_token: "csrf-qa" });
     if (pathname.endsWith("/me")) return responseJson(route, { display_name: "Synthetic QA", csrf_token: "csrf-qa" });
-    if (pathname.endsWith("/subscriptions") || pathname.endsWith("/profiles")) return responseJson(route, []);
+    if (pathname.endsWith("/subscriptions") || pathname.endsWith("/v2/devices")) return responseJson(route, []);
     return responseJson(route, {}, 404);
   });
   const signed = "query_id=synthetic-qa&user=%7B%22id%22%3A1%7D&auth_date=1&hash=synthetic";
@@ -2420,7 +2751,7 @@ async function verifyTelegramSdkOutageResilience(browser, origin) {
       return responseJson(route, { display_name: "Synthetic QA", csrf_token: "csrf-qa" });
     }
     if (pathname.endsWith("/me")) return responseJson(route, { display_name: "Synthetic QA", csrf_token: "csrf-qa" });
-    if (pathname.endsWith("/subscriptions") || pathname.endsWith("/profiles") || pathname.endsWith("/plans")) {
+    if (pathname.endsWith("/subscriptions") || pathname.endsWith("/v2/devices") || pathname.endsWith("/plans")) {
       return responseJson(route, []);
     }
     return responseJson(route, {}, 404);
@@ -2451,6 +2782,11 @@ const browser = await chromium.launch({
 });
 
 try {
+  await verifyDeviceLocations(browser, server.origin);
+  await verifyDeviceLocationEdges(browser, server.origin);
+  if (process.argv.includes("--device-locations-only")) {
+    console.log("Device locations browser QA passed.");
+  } else {
   await verifyFullPortal(browser, server.origin);
   await verifyInitialPortalStates(browser, server.origin);
   await verifyLegacyPlansRoute(browser, server.origin);
@@ -2471,6 +2807,7 @@ try {
   const sdkResult = await verifyRealSdkCacheCleanup(browser, server.origin);
   console.log(`Portal browser QA passed. accessibility=${JSON.stringify(accessibilityAuditCounts)} Screenshots: ${outputRoot}`);
   console.log(`Official SDK cache spot-check: ${sdkResult}`);
+  }
 } finally {
   await browser.close();
   await server.close();

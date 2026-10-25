@@ -7,19 +7,19 @@ import {
   loadConnectionUri,
 } from "../src/vpn-portal/connection.ts";
 
-test("loadConnectionUri returns the connection URI without exposing response details", async () => {
-  const originalConnection = portalApi.connection;
-  portalApi.connection = async (profileId) => ({ uri: `vless://profile-${profileId}` });
+test("loadConnectionUri returns the stable device subscription, never its direct credential", async () => {
+  const originalConnection = portalApi.deviceConnection;
+  portalApi.deviceConnection = async (deviceId) => ({ subscription_url: `https://vpn.example/subscription/device-${deviceId}`, direct_uri: "vless://must-not-import" });
   try {
-    assert.equal(await loadConnectionUri(21), "vless://profile-21");
+    assert.equal(await loadConnectionUri(121), "https://vpn.example/subscription/device-121");
   } finally {
-    portalApi.connection = originalConnection;
+    portalApi.deviceConnection = originalConnection;
   }
 });
 
 test("loadConnectionUri rejects an empty connection URI", async () => {
-  const originalConnection = portalApi.connection;
-  portalApi.connection = async () => ({ uri: "" });
+  const originalConnection = portalApi.deviceConnection;
+  portalApi.deviceConnection = async () => ({ subscription_url: "", direct_uri: "vless://not-a-fallback" });
   try {
     await assert.rejects(
       () => loadConnectionUri(21),
@@ -28,7 +28,7 @@ test("loadConnectionUri rejects an empty connection URI", async () => {
         && error.message === "Ссылка подключения недоступна.",
     );
   } finally {
-    portalApi.connection = originalConnection;
+    portalApi.deviceConnection = originalConnection;
   }
 });
 

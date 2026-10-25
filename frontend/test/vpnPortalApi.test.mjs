@@ -62,15 +62,49 @@ test("exports only the typed portal client and safe error class", () => {
     "activateTrial",
     "config",
     "connection",
+    "deviceConnection",
+    "deviceLocations",
+    "devices",
     "loginMiniApp",
     "logout",
     "me",
     "plans",
     "profiles",
     "rename",
+    "renameDevice",
+    "selectDeviceLocation",
     "subscriptions",
     "trial",
   ]);
+});
+
+test("logical device routes keep ids, safe metadata, and CSRF bodies separate from legacy profiles", async () => {
+  const device = { id: 121, legacy_profile_id: 21, subscription_id: 11, display_name: "Телефон", state: "active", can_connect: true };
+  const locations = { current: { endpoint_id: 7, name: "Германия", country_code: "DE", is_published: true }, pending_endpoint_id: null, selection_state: "ready", available: [] };
+  const connection = { subscription_url: "https://vpn.example/subscription/private", direct_uri: "vless://private" };
+  const calls = installFetchRecorder([[device], locations, locations, connection, device]);
+  const restoreStorage = forbidBrowserStorage();
+  try {
+    assert.deepEqual(await portalApi.devices(), [device]);
+    assert.deepEqual(await portalApi.deviceLocations(121), locations);
+    assert.deepEqual(await portalApi.selectDeviceLocation(121, 8, "csrf-device"), locations);
+    assert.deepEqual(await portalApi.deviceConnection(121), connection);
+    assert.deepEqual(await portalApi.renameDevice(121, "Телефон", "csrf-device"), device);
+  } finally { restoreStorage(); }
+  assert.deepEqual(calls.map((call) => call.url), [
+    "/api/vpn-portal/v2/devices", "/api/vpn-portal/v2/devices/121/locations",
+    "/api/vpn-portal/v2/devices/121/location", "/api/vpn-portal/v2/devices/121/connection",
+    "/api/vpn-portal/v2/devices/121",
+  ]);
+  assert.equal(calls[2].init.method, "POST");
+  assert.equal(calls[2].init.body, JSON.stringify({ endpoint_id: 8 }));
+  assert.equal(calls[4].init.method, "PATCH");
+  assert.equal(calls[4].init.body, JSON.stringify({ display_name: "Телефон" }));
+  for (const [index, call] of calls.entries()) {
+    assert.equal(call.init.credentials, "same-origin");
+    assert.equal(call.init.cache, "no-store");
+    assert.equal(headerValue(call.init.headers, "X-CSRF-Token"), [2, 4].includes(index) ? "csrf-device" : null);
+  }
 });
 
 test("portal reads use only the customer namespace and omit CSRF headers", async () => {

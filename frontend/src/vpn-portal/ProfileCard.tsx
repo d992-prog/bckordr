@@ -3,21 +3,24 @@ import { useEffect, useRef, useState } from "react";
 import { PortalError, portalApi } from "./api";
 import type { SessionGeneration } from "./bootstrap";
 import { copyConnectionUri, loadConnectionUri } from "./connection";
+import DeviceLocationPicker from "./DeviceLocationPicker";
 import { createQrDataUrl } from "./qr";
-import type { PortalProfile } from "./types";
+import type { PortalDevice } from "./types";
 import { stateLabel } from "./view";
 
 interface ProfileCardProps {
-  profile: PortalProfile;
+  profile: PortalDevice;
   subscriptionLabel: string;
   csrfToken: string;
   sessionGeneration: SessionGeneration;
-  onProfileChange: (profile: PortalProfile) => void;
+  onProfileChange: (profile: PortalDevice) => void;
   onUnauthorized: () => void;
   connectionVersion: number;
   renamePending: boolean;
   onRenameStart: (profileId: number) => void;
   onRenameSettled: (profileId: number) => void;
+  onLocationMutationStart: () => void;
+  onLocationReady: () => void;
 }
 
 type ConnectionMessage = { kind: "success" | "error"; text: string };
@@ -39,6 +42,8 @@ export default function ProfileCard({
   renamePending,
   onRenameStart,
   onRenameSettled,
+  onLocationMutationStart,
+  onLocationReady,
 }: ProfileCardProps) {
   const [connectionUri, setConnectionUri] = useState<string | null>(null);
   const [connectionBusy, setConnectionBusy] = useState(false);
@@ -53,6 +58,8 @@ export default function ProfileCard({
   const connectionEpoch = useRef(0);
   const qrRequestInFlight = useRef(false);
   const renameEpoch = useRef(0);
+
+  useEffect(() => () => { connectionEpoch.current += 1; }, [profile.id, sessionGeneration]);
 
   useEffect(() => {
     setRenameValue(profile.display_name);
@@ -184,7 +191,7 @@ export default function ProfileCard({
     setRenameBusy(true);
     setRenameError("");
     try {
-      const updated = await portalApi.rename(profile.id, displayName, csrfToken);
+      const updated = await portalApi.renameDevice(profile.id, displayName, csrfToken);
       if (!sessionGeneration.isCurrent(generation) || renameEpoch.current !== epoch) {
         return;
       }
@@ -264,6 +271,16 @@ export default function ProfileCard({
           {renamePending ? "Переименование…" : "Переименовать"}
         </button>
       )}
+
+      <DeviceLocationPicker
+        deviceId={profile.id}
+        csrfToken={csrfToken}
+        sessionGeneration={sessionGeneration}
+        onUnauthorized={onUnauthorized}
+        onMutationStart={onLocationMutationStart}
+        onReady={onLocationReady}
+        disabled={isRenaming || renameBusy || renamePending || profile.state !== "active"}
+      />
 
       <div className="connection-box">
         {connectionUri === null ? (

@@ -19,7 +19,7 @@ import type {
   PortalConfig,
   PortalMe,
   PortalPlan,
-  PortalProfile,
+  PortalDevice,
   PortalSubscription,
   PortalTrial,
 } from "./types";
@@ -37,7 +37,7 @@ function isUnauthorized(error: unknown): boolean {
 }
 
 function profileSubscriptionLabel(
-  profile: PortalProfile,
+  profile: PortalDevice,
   subscriptions: PortalSubscription[],
 ): string {
   const subscription = subscriptions.find((item) => item.id === profile.subscription_id);
@@ -86,15 +86,17 @@ interface DataSectionProps {
 }
 
 interface ProfilesSectionProps extends DataSectionProps {
-  profiles: PortalProfile[];
+  profiles: PortalDevice[];
   subscriptions: PortalSubscription[];
   csrfToken: string;
   sessionGeneration: SessionGeneration;
   onUnauthorized: () => void;
-  onProfileChange: (profile: PortalProfile) => void;
+  onProfileChange: (profile: PortalDevice) => void;
   profileOperations: Record<number, ProfileOperation>;
   onRenameStart: (profileId: number) => void;
   onRenameSettled: (profileId: number) => void;
+  onLocationMutationStart: () => void;
+  onLocationReady: () => void;
 }
 
 interface ProfileOperation {
@@ -163,6 +165,8 @@ function ProfilesSection(props: ProfilesSectionProps) {
             renamePending={operation.renamePending}
             onRenameStart={props.onRenameStart}
             onRenameSettled={props.onRenameSettled}
+            onLocationMutationStart={props.onLocationMutationStart}
+            onLocationReady={props.onLocationReady}
           />
           );
         })}
@@ -224,7 +228,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const [plansBusy, setPlansBusy] = useState(false);
   const [plansError, setPlansError] = useState("");
   const [subscriptions, setSubscriptions] = useState<PortalSubscription[]>([]);
-  const [profiles, setProfiles] = useState<PortalProfile[]>([]);
+  const [profiles, setProfiles] = useState<PortalDevice[]>([]);
   const [trial, setTrial] = useState<PortalTrial | null>(null);
   const [trialBusy, setTrialBusy] = useState(false);
   const [trialError, setTrialError] = useState("");
@@ -271,6 +275,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   }
 
   function setProfileRenamePending(profileId: number, renamePending: boolean): void {
+    if (renamePending) invalidateDeviceLoad();
     setProfileOperations((current) => {
       const operation = current[profileId] ?? { connectionVersion: 0, renamePending: false };
       return {
@@ -281,6 +286,11 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
         },
       };
     });
+  }
+
+  function invalidateDeviceLoad(): void {
+    dataLoadEpoch.current += 1;
+    setDataBusy(false);
   }
 
   async function loadPlans(): Promise<void> {
@@ -334,7 +344,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
       const [nextTrial, nextSubscriptions, nextProfiles] = await Promise.all([
         observe(portalApi.trial()),
         observe(portalApi.subscriptions()),
-        observe(portalApi.profiles()),
+        observe(portalApi.devices()),
       ]);
       if (!isCurrentLoad()) {
         return;
@@ -670,7 +680,10 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
               profileOperations={profileOperations}
               onRenameStart={(profileId) => setProfileRenamePending(profileId, true)}
               onRenameSettled={(profileId) => setProfileRenamePending(profileId, false)}
+              onLocationMutationStart={invalidateDeviceLoad}
+              onLocationReady={() => void loadPrivateData(true)}
               onProfileChange={(updated) => {
+                invalidateDeviceLoad();
                 setProfiles((current) => current.map((item) => item.id === updated.id ? updated : item));
               }}
             />

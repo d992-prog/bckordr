@@ -1,6 +1,9 @@
 import type {
   PortalConfig,
   PortalConnection,
+  PortalDevice,
+  PortalDeviceConnection,
+  PortalDeviceLocations,
   PortalMe,
   PortalPlan,
   PortalProfile,
@@ -76,6 +79,23 @@ export const portalApi = {
   plans: () => portalRequest<PortalPlan[]>("/plans"),
   subscriptions: () => portalRequest<PortalSubscription[]>("/subscriptions"),
   profiles: () => portalRequest<PortalProfile[]>("/profiles"),
+  devices: () => portalRequest<PortalDevice[]>("/v2/devices"),
+  deviceLocations: (id: number) =>
+    portalRequest<PortalDeviceLocations>(`/v2/devices/${id}/locations`),
+  selectDeviceLocation: (id: number, endpointId: number, csrf: string) =>
+    portalRequest<PortalDeviceLocations>(`/v2/devices/${id}/location`, {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrf },
+      body: JSON.stringify({ endpoint_id: endpointId }),
+    }),
+  deviceConnection: (id: number) =>
+    portalRequest<PortalDeviceConnection>(`/v2/devices/${id}/connection`),
+  renameDevice: (id: number, displayName: string, csrf: string) =>
+    portalRequest<PortalDevice>(`/v2/devices/${id}`, {
+      method: "PATCH",
+      headers: { "X-CSRF-Token": csrf },
+      body: JSON.stringify({ display_name: displayName }),
+    }),
   trial: () => portalRequest<PortalTrial>("/trial"),
   activateTrial: (csrf: string) =>
     portalRequest<PortalTrial>("/trial/activate", {

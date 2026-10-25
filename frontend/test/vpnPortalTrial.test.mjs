@@ -111,7 +111,7 @@ test("portal loads, activates and bounds trial polling through the session gener
 
   assert.match(source, /portalApi\.trial\(\)/);
   assert.match(source, /portalApi\.subscriptions\(\)/);
-  assert.match(source, /portalApi\.profiles\(\)/);
+  assert.match(source, /portalApi\.devices\(\)/);
   assert.match(source, /portalApi\.activateTrial\(me\.csrf_token\)/);
   assert.match(source, /setTrial\(activatedTrial\)/);
   assert.match(source, /nextTrialPoll\(/);

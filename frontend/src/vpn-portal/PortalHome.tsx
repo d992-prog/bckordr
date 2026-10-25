@@ -7,14 +7,14 @@ import { DataError } from "./DataError";
 import { buildPortalHomeView } from "./homeView";
 import PlanCatalog from "./PlanCatalog";
 import TrialCard from "./TrialCard";
-import type { PortalPlan, PortalProfile, PortalSubscription, PortalTrial } from "./types";
+import type { PortalDevice, PortalPlan, PortalSubscription, PortalTrial } from "./types";
 import { portalDate, stateLabel } from "./view";
 
 interface PortalHomeProps {
   busy: boolean;
   error: string;
   subscriptions: PortalSubscription[];
-  profiles: PortalProfile[];
+  profiles: PortalDevice[];
   plans: PortalPlan[];
   plansBusy: boolean;
   plansError: string;

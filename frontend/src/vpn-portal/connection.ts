@@ -2,11 +2,11 @@
 import { PortalError, portalApi } from "./api.ts";
 
 export async function loadConnectionUri(profileId: number): Promise<string> {
-  const result = await portalApi.connection(profileId);
-  if (!result.uri) {
+  const result = await portalApi.deviceConnection(profileId);
+  if (!result.subscription_url) {
     throw new PortalError(0, "Ссылка подключения недоступна.");
   }
-  return result.uri;
+  return result.subscription_url;
 }
 
 export async function copyConnectionUri(uri: string): Promise<void> {

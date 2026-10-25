@@ -577,6 +577,7 @@ body {
   border-top: 1px solid var(--vx-border);
 }
 .veltrix-portal .connection-uri,
+.veltrix-portal .device-location-picker select,
 .veltrix-portal .rename-form input {
   width: 100%;
   min-width: 0;
@@ -602,6 +603,17 @@ body {
 .veltrix-portal .rename-form {
   display: grid;
   gap: 10px;
+}
+.veltrix-portal .device-location-picker {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--vx-border);
+}
+.veltrix-portal .device-location-picker select {
+  min-height: 48px;
+  font: inherit;
 }
 .veltrix-portal .message {
   margin: 0;

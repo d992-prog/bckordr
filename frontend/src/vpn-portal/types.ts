@@ -63,3 +63,26 @@ export interface PortalProfile {
 export interface PortalConnection {
   uri: string;
 }
+
+export interface PortalDevice extends PortalProfile {
+  legacy_profile_id: number | null;
+}
+
+export interface PortalDeviceLocation {
+  endpoint_id: number;
+  name: string;
+  country_code: string | null;
+  is_published: boolean;
+}
+
+export interface PortalDeviceLocations {
+  current: PortalDeviceLocation | null;
+  pending_endpoint_id: number | null;
+  selection_state: "ready" | "preparing" | "failed" | "verification_required" | "unavailable";
+  available: PortalDeviceLocation[];
+}
+
+export interface PortalDeviceConnection {
+  subscription_url: string;
+  direct_uri: string;
+}
