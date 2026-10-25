@@ -265,6 +265,78 @@ async function verifyDeviceLocations(browser, origin) {
   await context.close();
 }
 
+async function verifyInitialDeviceLocationStates(browser, origin) {
+  const a = { endpoint_id: 7, name: "Германия", country_code: "DE", is_published: true };
+  const b = { endpoint_id: 8, name: "Нидерланды", country_code: "NL", is_published: true };
+  const device = { ...profiles[0], id: 121, legacy_profile_id: 21, can_connect: false };
+  for (const scenario of [
+    { state: "pending_sync", selection: "preparing", pollToReady: true },
+    { state: "sync_failed", selection: "failed" },
+    { state: "unavailable", selection: "unavailable" },
+    { state: "revoked", selection: "unavailable", blocked: true },
+    { state: "active", selection: "unavailable", blocked: true, subscriptionState: "expired" },
+  ]) {
+    const { context, page } = await newPortalPage(browser);
+    let gets = 0;
+    let posts = 0;
+    let deviceLoads = 0;
+    await installApi(page, (route, pathname, request) => {
+      if (pathname.endsWith("/config")) return responseJson(route, portalConfig);
+      if (pathname.endsWith("/me")) return responseJson(route, me);
+      if (pathname.endsWith("/subscriptions")) return responseJson(route, [{ ...subscriptions[0], state: scenario.subscriptionState || "active" }]);
+      if (pathname.endsWith("/plans")) return responseJson(route, []);
+      if (pathname.endsWith("/v2/devices")) {
+        deviceLoads += 1;
+        const ready = scenario.pollToReady && gets >= 2;
+        return responseJson(route, [{ ...device, state: ready ? "active" : scenario.state, can_connect: ready }]);
+      }
+      if (pathname.endsWith("/locations")) {
+        gets += 1;
+        const ready = scenario.pollToReady && gets >= 2;
+        return responseJson(route, {
+          current: ready ? a : null, pending_endpoint_id: ready ? null : 7,
+          selection_state: ready ? "ready" : scenario.selection, available: scenario.blocked ? [] : [a, b],
+        });
+      }
+      if (pathname.endsWith("/location") && request.method() === "POST") {
+        posts += 1;
+        assert.deepEqual(request.postDataJSON(), { endpoint_id: 8 });
+        return responseJson(route, { current: null, pending_endpoint_id: 8, selection_state: "preparing", available: [a, b] }, 202);
+      }
+      return responseJson(route, {}, 404);
+    }, { locations: null });
+    await page.goto(`${origin}/cabinet/#profiles`);
+    const card = page.locator(".profile-card");
+    const select = card.getByLabel("Сервер");
+    await card.locator(".device-location-picker [role]").filter({ hasText: /Готовим подключение|Не удалось подготовить|Сейчас нет доступного/ }).waitFor();
+    assert.equal(await card.getByRole("button", { name: "Показать ссылку" }).isDisabled(), true, "no usable current credential means copying stays blocked");
+    assert.equal(await select.isDisabled(), Boolean(scenario.blocked), `${scenario.state}: server-authorized choices do not depend on current credential readiness`);
+    if (scenario.blocked) {
+      assert.equal(await card.getByRole("button", { name: "Выбрать сервер" }).isDisabled(), true);
+      await card.locator("form.device-location-picker").evaluate((form) => form.requestSubmit());
+      assert.equal(posts, 0, "revoked or expired access cannot submit without an available endpoint");
+    } else if (scenario.pollToReady) {
+      assert.equal(await card.getByRole("button", { name: "Обновить статус", exact: true }).isDisabled(), false);
+      await card.getByText("Текущий сервер: DE · Германия", { exact: true }).waitFor({ timeout: 5000 });
+      await page.waitForFunction(() => ![...document.querySelectorAll("button")].find((button) => button.textContent === "Показать ссылку")?.disabled);
+      assert.equal(gets, 2, "initial preparation polls without an active A credential");
+      assert.equal(deviceLoads, 2, "initial ready promotion refreshes parent connectability");
+    } else {
+      await select.selectOption("8");
+      await card.getByRole("button", { name: "Выбрать сервер" }).click();
+      await card.getByText("Готовим подключение. Текущий сервер остаётся доступен.").waitFor();
+      assert.equal(posts, 1, "another country can be selected after initial failure or unavailability");
+      assert.equal(await select.isDisabled(), false);
+      await card.getByRole("button", { name: "Переименовать" }).click();
+      assert.equal(await select.isDisabled(), true, "renaming still blocks the picker");
+      assert.equal(await card.getByRole("button", { name: "Обновить статус", exact: true }).isDisabled(), true);
+      await card.getByRole("button", { name: "Отмена", exact: true }).click();
+      assert.equal(await select.isDisabled(), false);
+    }
+    await context.close();
+  }
+}
+
 async function verifyDeviceLocationEdges(browser, origin) {
   const a = { endpoint_id: 7, name: "Германия", country_code: "DE", is_published: true };
   const b = { endpoint_id: 8, name: "Нидерланды", country_code: "NL", is_published: true };
@@ -2782,6 +2854,7 @@ const browser = await chromium.launch({
 });
 
 try {
+  await verifyInitialDeviceLocationStates(browser, server.origin);
   await verifyDeviceLocations(browser, server.origin);
   await verifyDeviceLocationEdges(browser, server.origin);
   if (process.argv.includes("--device-locations-only")) {

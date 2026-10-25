@@ -279,7 +279,7 @@ export default function ProfileCard({
         onUnauthorized={onUnauthorized}
         onMutationStart={onLocationMutationStart}
         onReady={onLocationReady}
-        disabled={isRenaming || renameBusy || renamePending || profile.state !== "active"}
+        disabled={isRenaming || renameBusy || renamePending}
       />
 
       <div className="connection-box">
