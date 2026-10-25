@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 import sys
 import time
@@ -32,12 +33,14 @@ from app.services.vpn_node_entrypoint import (
 from app.services.vpn_node_usage import (
     MAX_OBSERVATION_SECONDS,
     MAX_USAGE_REQUEST_BYTES,
+    MAX_USAGE_SOURCES,
     KeyUsage,
     UsageReceipt,
     UsageRequest,
     _fail,
     _integer,
     _require,
+    _source,
     parse_node_usage_request,
     serialize_node_usage_receipt,
     serialize_node_usage_request,
@@ -60,6 +63,8 @@ _EXECUTABLE = Path("/usr/local/x-ui/bin/xray-linux-amd64")
 _CONFIG = Path("/usr/local/x-ui/bin/config.json")
 _INVENTORY_LIMIT = 10_000
 _PARAMETER_BATCH = 128
+# shortcut: source probes cover at most 64 VLESS inbounds; paginate before raising this bound
+_SOURCE_TAG_LIMIT = 64
 
 
 def _runtime_identity(deadline: float) -> tuple:
@@ -204,6 +209,184 @@ def _counter_rows(
     return rows
 
 
+def _source_command(command: str, argument: str, port: int, deadline: float) -> dict:
+    raw = runtime._run(
+        [
+            str(_EXECUTABLE),
+            "api",
+            command,
+            f"--server=127.0.0.1:{port}",
+            "--timeout=3",
+            argument,
+        ],
+        min(deadline, time.monotonic() + 3),
+    )
+    return runtime._json_object(raw)
+
+
+def _source_listener(port: int, deadline: float) -> tuple:
+    process = runtime._process(_EXECUTABLE, deadline)
+    listeners = []
+    for name in ("tcp", "tcp6"):
+        try:
+            raw = runtime._read(process / f"net/{name}", deadline)
+        except FileNotFoundError:
+            continue
+        for line in raw.decode("ascii").splitlines()[1:]:
+            runtime._remaining(deadline)
+            fields = line.split()
+            _require(len(fields) >= 10)
+            address, number = fields[1].split(":")
+            if int(number, 16) == port and fields[3] == "0A":
+                _require(runtime._proc_address(address).is_loopback)
+                _require(fields[9].isdigit() and int(fields[9]) > 0)
+                listeners.append((address, fields[9]))
+    _require(listeners)
+    return tuple(sorted(listeners))
+
+
+def _source_users(
+    inbounds: list[dict], config: dict, port: int, deadline: float
+) -> dict:
+    tags = {
+        row["id"]: row.get("tag") for row in inbounds if row.get("protocol") == "vless"
+    }
+    _require(
+        0 < len(tags) <= _SOURCE_TAG_LIMIT
+        and all(
+            type(tag) is str and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tag)
+            for tag in tags.values()
+        )
+        and len(set(tags.values())) == len(tags)
+        and {
+            row.get("tag")
+            for row in config["inbounds"]
+            if isinstance(row, dict) and row.get("protocol") == "vless"
+        }
+        <= set(tags.values())
+    )
+    users, uuids = {}, set()
+    for inbound_id, tag in tags.items():
+        value = _source_command("inbounduser", f"-tag={tag}", port, deadline)
+        _require(set(value) <= {"users"})
+        rows = value.get("users", [])
+        _require(type(rows) is list and len(rows) <= _INVENTORY_LIMIT - len(users))
+        for row in rows:
+            _require(isinstance(row, dict) and runtime._email(row.get("email")))
+            account, level = row.get("account"), row.get("level", 0)
+            _require(
+                isinstance(account, dict)
+                and account.get("_TypedMessage_") == "xray.proxy.vless.Account"
+                and _integer(level)
+                and level <= 2**32 - 1
+            )
+            uid = _uuid(account.get("id"))
+            email, normalized = row["email"], runtime._normalized(uid)
+            _require(email.lower() not in users and normalized not in uuids)
+            users[email.lower()] = (inbound_id, uid, email, level)
+            uuids.add(normalized)
+    return users
+
+
+def _online_sources(value: dict) -> dict:
+    _require(set(value) <= {"users"})
+    rows = value.get("users", [])
+    _require(type(rows) is list and len(rows) <= _INVENTORY_LIMIT)
+    result = {}
+    for row in rows:
+        _require(
+            isinstance(row, dict)
+            and set(row) <= {"email", "ips"}
+            and runtime._email(row.get("email"))
+        )
+        email, ips = row["email"], row.get("ips", [])
+        _require(email.lower() not in result)
+        _require(type(ips) is list and len(ips) <= MAX_USAGE_SOURCES)
+        sources = []
+        for item in ips:
+            _require(
+                isinstance(item, dict)
+                and set(item) <= {"ip", "lastSeen"}
+                and _source(item.get("ip"))
+            )
+            seen = item.get("lastSeen", "0")
+            if type(seen) is str:
+                _require(re.fullmatch(r"0|[1-9][0-9]{0,18}", seen))
+                seen = int(seen)
+            _require(_integer(seen) and item["ip"] not in sources)
+            sources.append(item["ip"])
+        result[email.lower()] = (email, tuple(sources))
+    return result
+
+
+def _source_samples(
+    request: UsageRequest,
+    matched: set[int],
+    inbounds: list[dict],
+    config_hash: bytes,
+    deadline: float,
+) -> dict[int, tuple[str, tuple[str, ...]]]:
+    unavailable = {
+        identity.access_key_id: ("unavailable", ()) for identity in request.identities
+    }
+    try:
+        raw = runtime._read(_CONFIG, deadline)
+        _require(hashlib.sha256(raw).digest() == config_hash)
+        config = runtime._json_object(raw)
+        api, policy = config.get("api"), config.get("policy")
+        if not (
+            isinstance(config.get("stats"), dict)
+            and isinstance(api, dict)
+            and isinstance(api.get("services"), list)
+            and "StatsService" in api["services"]
+            and isinstance(policy, dict)
+            and isinstance(policy.get("levels"), dict)
+        ):
+            return {key: ("unsupported", ()) for key in unavailable}
+        api_rows = [
+            row
+            for row in config["inbounds"]
+            if isinstance(row, dict) and row.get("tag") == api.get("tag")
+        ]
+        _require(
+            len(api_rows) == 1
+            and api_rows[0].get("listen") == "127.0.0.1"
+            and runtime._port(api_rows[0].get("port"))
+        )
+        port = api_rows[0]["port"]
+        listener = _source_listener(port, deadline)
+        users = _source_users(inbounds, config, port, deadline)
+        online = _online_sources(
+            _source_command("statsonlineiplist", "-all", port, deadline)
+        )
+        _require(_source_listener(port, deadline) == listener)
+        for identity in request.identities:
+            user = users.get(identity.client_email.lower())
+            if (
+                identity.access_key_id not in matched
+                or user is None
+                or user[:3]
+                != (
+                    identity.inbound_id,
+                    UUID(identity.client_uuid),
+                    identity.client_email,
+                )
+            ):
+                continue
+            level = policy["levels"].get(str(user[3]))
+            if not isinstance(level, dict) or level.get("statsUserOnline") is not True:
+                unavailable[identity.access_key_id] = ("unsupported", ())
+                continue
+            sample = online.get(identity.client_email.lower())
+            if sample is None:
+                unavailable[identity.access_key_id] = ("ok", ())
+            elif sample[0] == identity.client_email:
+                unavailable[identity.access_key_id] = ("ok", sample[1])
+        return unavailable
+    except Exception:  # noqa: BLE001 - source failures never discard measured traffic
+        return unavailable
+
+
 def observe_node_usage(
     panel: NodePanelSession,
     *,
@@ -239,6 +422,7 @@ def observe_node_usage(
             inbounds, panel.request("GET", "panel/api/clients/list"), request
         )
         counters = _counter_rows(connection, request, deadline)
+        sources = _source_samples(request, matched, inbounds, before[3], deadline)
         record_counts = defaultdict(int)
         for values in counters.values():
             for row in values:
@@ -264,8 +448,7 @@ def observe_node_usage(
                         row[4],
                         row[2],
                         row[3],
-                        "unsupported",
-                        (),
+                        *sources[identity.access_key_id],
                     )
                 )
             else:
@@ -277,8 +460,7 @@ def observe_node_usage(
                         None,
                         None,
                         None,
-                        "unsupported",
-                        (),
+                        *sources[identity.access_key_id],
                     )
                 )
         connection.close()

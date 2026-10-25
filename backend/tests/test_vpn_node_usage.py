@@ -242,7 +242,13 @@ def node(tmp_path, entry, monkeypatch):
         }
         for index, uid in enumerate(UIDS)
     ]
-    state = {"database": path, "events": [], "clients": clients, "drift": False}
+    state = {
+        "database": path,
+        "events": [],
+        "clients": clients,
+        "drift": False,
+        "runtime_identity": entry._runtime_identity,
+    }
     state["inbounds"] = [
         {
             "id": 7,
@@ -276,9 +282,15 @@ def node(tmp_path, entry, monkeypatch):
     def identity(*_args, **_kwargs):
         nonlocal counter
         counter += 1
-        return ("b" * 64, 123 + (state["drift"] and counter > 1))
+        return (
+            "b" * 64,
+            123 + (state["drift"] and counter > 1),
+            None,
+            hashlib.sha256(b"{}").digest(),
+        )
 
     monkeypatch.setattr(entry, "_runtime_identity", identity)
+    monkeypatch.setattr(entry.runtime, "_read", lambda *_: b"{}")
     # Windows has no Unix owners; production validation is separately exercised.
     monkeypatch.setattr(entry, "_validate_private_regular_file", lambda path: None)
     return state
@@ -485,6 +497,7 @@ def process(entry, monkeypatch, tmp_path):
         pid / "cmdline": f"{executable}\0run\0-config\0{config}\0".encode(),
         pid
         / "net/tcp": b"header\n 0: 0100007F:F545 00000000:0000 0A 0:0 0:0 0 0 0 789\n",
+        pid / "net/tcp6": b"header\n",
         proc / "sys/kernel/random/boot_id": b"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\n",
     }
     links = {pid / "exe": str(executable), pid / "fd/3": "socket:[789]"}
@@ -578,6 +591,323 @@ def test_runtime_config_or_boot_drift_changes_identity(entry, process):
         b"bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"
     )
     assert entry._runtime_identity(time.monotonic() + 5)[0] != first[0]
+
+
+@pytest.fixture
+def source_node(entry, node, process, monkeypatch):
+    monkeypatch.setattr(entry, "_runtime_identity", node["runtime_identity"])
+    node["inbounds"][0]["tag"] = "public"
+    process["value"].update(
+        stats={},
+        policy={
+            "levels": {"1": {"statsUserOnline": True}, "2": {"statsUserOnline": True}}
+        },
+    )
+    process["value"]["api"]["services"].append("StatsService")
+    users = [
+        {
+            "email": row["email"],
+            "level": index + 1,
+            "account": {
+                "_TypedMessage_": "xray.proxy.vless.Account",
+                "id": row["uuid"],
+            },
+        }
+        for index, row in enumerate(node["clients"])
+    ]
+    state = {
+        **node,
+        "process": process,
+        "runtime_users": {"public": users},
+        "online": {"users": []},
+        "cli_error": False,
+        "after_online": None,
+    }
+
+    def run(argv, deadline):
+        assert deadline > time.monotonic()
+        process["calls"].append(argv)
+        if argv[1:] == ["version"]:
+            return b"Xray 26.9.9\n"
+        assert argv[:2] == [str(process["executable"]), "api"]
+        assert argv[3:5] == ["--server=127.0.0.1:62789", "--timeout=3"]
+        if argv[2] == "inbounduser":
+            return encoded({"users": state["runtime_users"][argv[-1][5:]]})
+        assert argv[2] == "statsonlineiplist" and argv[5:] == ["-all"]
+        if state["cli_error"]:
+            raise ValueError("unsupported CLI private@example.test 203.0.113.1")
+        if state["after_online"] is not None:
+            state["after_online"]()
+        return (
+            state["online"]
+            if type(state["online"]) is bytes
+            else encoded(state["online"])
+        )
+
+    monkeypatch.setattr(entry.runtime, "_run", run)
+    return state
+
+
+def source_observe(entry, usage, state):
+    process = state["process"]
+    process["data"][process["config"]] = encoded(process["value"])
+    return observe(entry, usage, state)
+
+
+def test_online_sources_require_real_runtime_level_and_complete_probe(
+    entry, usage, source_node
+):
+    source_node["online"] = {
+        "users": [
+            {
+                "email": "managed-0@example.test",
+                "ips": [
+                    {"ip": "203.0.113.1", "lastSeen": "1800000000"},
+                    {"ip": "::ffff:192.0.2.9", "lastSeen": "1800000000"},
+                    {"ip": "[2001:db8::1]", "lastSeen": "1800000000"},
+                    {"ip": "2001:db8::2", "lastSeen": "1800000000"},
+                ],
+            },
+            {
+                "email": "unrelated",
+                "ips": [{"ip": "192.0.2.7", "lastSeen": "1800000000"}],
+            },
+        ]
+    }
+    result = source_observe(entry, usage, source_node)
+    assert result.keys[0].source_state == "ok"
+    assert result.keys[0].sources == (
+        "203.0.113.1",
+        "::ffff:192.0.2.9",
+        "[2001:db8::1]",
+        "2001:db8::2",
+    )
+    assert result.keys[1].source_state == "ok" and result.keys[1].sources == ()
+    assert result.keys[0].upload_bytes == 100
+    calls = source_node["process"]["calls"]
+    assert [row[2] for row in calls if len(row) > 2] == [
+        "inbounduser",
+        "statsonlineiplist",
+    ]
+    assert not any(
+        "reset" in arg or "include-traffic" in arg for row in calls for arg in row
+    )
+
+
+@pytest.mark.parametrize("empty", [{}, {"users": []}])
+def test_policy_enabled_complete_empty_online_list_is_measured_empty(
+    entry, usage, source_node, empty
+):
+    source_node["online"] = empty
+    assert [
+        (key.source_state, key.sources)
+        for key in source_observe(entry, usage, source_node).keys
+    ] == [("ok", ()), ("ok", ())]
+
+
+@pytest.mark.parametrize(
+    "missing", ["stats", "service", "policy", "runtime_level", "false", "boolean"]
+)
+def test_missing_source_prerequisite_never_becomes_empty_sources(
+    entry, usage, source_node, missing
+):
+    value = source_node["process"]["value"]
+    if missing == "stats":
+        value.pop("stats")
+    elif missing == "service":
+        value["api"]["services"].remove("StatsService")
+    elif missing == "policy":
+        value.pop("policy")
+    elif missing == "runtime_level":
+        source_node["runtime_users"]["public"][0]["level"] = 9
+    else:
+        value["policy"]["levels"]["1"]["statsUserOnline"] = (
+            False if missing == "false" else 1
+        )
+    result = source_observe(entry, usage, source_node)
+    assert result.keys[0].source_state == "unsupported" and result.keys[0].sources == ()
+    assert result.keys[0].upload_bytes == 100
+
+
+def test_source_policy_uses_default_runtime_level_only_when_omitted(
+    entry, usage, source_node
+):
+    source_node["runtime_users"]["public"][0].pop("level")
+    source_node["process"]["value"]["policy"]["levels"]["0"] = {"statsUserOnline": True}
+    assert source_observe(entry, usage, source_node).keys[0].source_state == "ok"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "cli",
+        "json",
+        "oversize",
+        "duplicate_user",
+        "email_case",
+        "duplicate_ip",
+        "invalid_ip",
+        "port",
+        "zone",
+        "too_many_ips",
+        "missing_runtime",
+        "runtime_alias",
+        "runtime_bool_level",
+        "wrong_runtime_tag",
+    ],
+)
+def test_source_errors_are_unavailable_without_losing_traffic(
+    entry, usage, source_node, bad
+):
+    first = source_node["runtime_users"]["public"][0]
+    row = {
+        "email": first["email"],
+        "ips": [{"ip": "203.0.113.1", "lastSeen": "1800000000"}],
+    }
+    source_node["online"] = {"users": [row]}
+    if bad == "cli":
+        source_node["cli_error"] = True
+    elif bad == "json":
+        source_node["online"] = b'{"users":[],"users":[]}'
+    elif bad == "oversize":
+        source_node["online"] = b" " * (2 * 1024 * 1024 + 1)
+    elif bad in ("duplicate_user", "email_case"):
+        source_node["online"]["users"].append(
+            dict(
+                row,
+                email=first["email"].upper() if bad == "email_case" else first["email"],
+            )
+        )
+    elif bad == "duplicate_ip":
+        row["ips"] *= 2
+    elif bad in ("invalid_ip", "port", "zone"):
+        row["ips"][0]["ip"] = {
+            "invalid_ip": "hostname",
+            "port": "192.0.2.1:443",
+            "zone": "fe80::1%eth0",
+        }[bad]
+    elif bad == "too_many_ips":
+        row["ips"] = [
+            {"ip": f"192.0.2.{i}", "lastSeen": "1800000000"} for i in range(65)
+        ]
+    elif bad == "missing_runtime":
+        source_node["runtime_users"]["public"].pop(0)
+    elif bad == "runtime_alias":
+        first["account"]["id"] = "11111111-2222-ffff-8444-555555555555"
+    elif bad == "runtime_bool_level":
+        first["level"] = True
+    else:
+        source_node["inbounds"].append(
+            dict(source_node["inbounds"][0], id=8, tag="other")
+        )
+        with sqlite3.connect(source_node["database"]) as db:
+            db.execute("INSERT INTO inbounds VALUES (8)")
+        source_node["inbounds"][-1]["settings"] = {"clients": []}
+        source_node["runtime_users"]["public"].pop(0)
+        source_node["runtime_users"]["other"] = [first]
+    result = source_observe(entry, usage, source_node)
+    assert result.keys[0].source_state == "unavailable" and result.keys[0].sources == ()
+    assert result.keys[0].upload_bytes == 100
+
+
+@pytest.mark.parametrize("drift", ["config", "process"])
+def test_online_probe_drift_invalidates_entire_receipt(
+    entry, usage, source_node, drift
+):
+    process = source_node["process"]
+
+    def change():
+        if drift == "config":
+            process["data"][process["config"]] = encoded(
+                {**process["value"], "changed": True}
+            )
+        else:
+            process["data"][process["pid"] / "stat"] = (
+                b"123 (xray) S " + b"0 " * 18 + b"999 0\n"
+            )
+
+    source_node["after_online"] = change
+    with pytest.raises(usage.VpnNodeUsageError):
+        source_observe(entry, usage, source_node)
+
+
+@pytest.mark.parametrize("during_probe", [False, True])
+def test_source_api_with_additional_public_listener_is_unavailable(
+    entry, usage, source_node, during_probe
+):
+    process = source_node["process"]
+
+    def expose():
+        process["data"][process["pid"] / "net/tcp6"] = (
+            b"header\n 0: 00000000000000000000000000000000:F545 00000000000000000000000000000000:0000 0A 0:0 0:0 0 0 0 888\n"
+        )
+
+    if during_probe:
+        source_node["after_online"] = expose
+    else:
+        expose()
+    result = source_observe(entry, usage, source_node)
+    assert all(
+        key.source_state == "unavailable" and key.sources == () for key in result.keys
+    )
+    assert result.keys[0].upload_bytes == 100
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "duplicate_runtime",
+        "duplicate_tag",
+        "invalid_tag",
+        "tag_limit",
+        "user_limit",
+        "last_seen",
+        "stats_shape",
+    ],
+)
+def test_source_inventory_and_output_limits_are_fail_closed(
+    entry, usage, source_node, bad
+):
+    if bad == "duplicate_runtime":
+        source_node["runtime_users"]["public"].append(
+            dict(source_node["runtime_users"]["public"][0])
+        )
+    elif bad in ("duplicate_tag", "invalid_tag", "tag_limit"):
+        rows = 64 if bad == "tag_limit" else 1
+        for index in range(rows):
+            tag = (
+                "public"
+                if bad == "duplicate_tag"
+                else "bad/tag"
+                if bad == "invalid_tag"
+                else f"other-{index}"
+            )
+            source_node["inbounds"].append(
+                {
+                    "id": 8 + index,
+                    "protocol": "vless",
+                    "tag": tag,
+                    "settings": {"clients": []},
+                }
+            )
+            with sqlite3.connect(source_node["database"]) as db:
+                db.execute("INSERT INTO inbounds VALUES (?)", (8 + index,))
+    elif bad == "user_limit":
+        source_node["online"] = {"users": [{}] * 10001}
+    elif bad == "last_seen":
+        source_node["online"] = {
+            "users": [
+                {
+                    "email": "managed-0@example.test",
+                    "ips": [{"ip": "203.0.113.1", "lastSeen": True}],
+                }
+            ]
+        }
+    else:
+        source_node["online"] = {"users": {}}
+    assert (
+        source_observe(entry, usage, source_node).keys[0].source_state == "unavailable"
+    )
 
 
 def test_root_entrypoint_contains_errors_without_output(entry, usage, monkeypatch):
@@ -738,17 +1068,26 @@ def test_isolated_bundle_observes_fake_node_without_site_packages(tmp_path, node
     bundle = tmp_path / "node.pyz"
     build_node_bundle(Path(__file__).resolve().parents[1], bundle)
     script = f"""
-import json, sys, time
+import hashlib, json, sys, time
 from pathlib import Path
 sys.path.insert(0, {str(bundle)!r})
 from app.services import vpn_node_usage as usage, vpn_node_usage_entrypoint as entry
 now = time.time_ns() // 1_000_000
 minute = now // 60_000 * 60_000
 # A fixed injected clock keeps this protocol test independent of wall-clock minute position.
-entry._runtime_identity = lambda deadline: ('a' * 64, 123)
+config_raw = json.dumps({{'stats': {{}}, 'policy': {{'levels': {{'1': {{'statsUserOnline': True}}}}}}, 'api': {{'tag': 'api', 'services': ['HandlerService', 'StatsService']}}, 'inbounds': [{{'tag': 'api', 'listen': '127.0.0.1', 'port': 62789}}]}}).encode()
+entry._runtime_identity = lambda deadline: ('a' * 64, 123, None, hashlib.sha256(config_raw).digest())
+entry.runtime._read = lambda path, deadline: config_raw
 entry._validate_private_regular_file = lambda path: None
 inbounds = {node["inbounds"]!r}
 clients = {node["clients"]!r}
+inbounds[0]['tag'] = 'public'
+entry._source_listener = lambda port, deadline: ('loopback',)
+def run(argv, deadline):
+    if argv[2] == 'inbounduser':
+        return json.dumps({{'users': [{{'email': row['email'], 'level': 1, 'account': {{'_TypedMessage_': 'xray.proxy.vless.Account', 'id': row['uuid']}}}} for row in clients]}}).encode()
+    return b'{{}}'
+entry.runtime._run = run
 class Panel:
     def request(self, method, route):
         assert method == 'GET'
@@ -760,7 +1099,7 @@ request = usage.UsageRequest(1, {POLL!r}, minute, tuple(
     for i, uid in enumerate({UIDS!r})))
 result = entry.observe_node_usage(Panel(), request=request, database_path=Path({str(node["database"])!r}), now_ms=lambda: minute + 10)
 assert [(key.upload_bytes, key.download_bytes) for key in result.keys] == [(100, 200), (300, 400)]
-assert all(key.source_state == 'unsupported' for key in result.keys)
+assert all(key.source_state == 'ok' and not key.sources for key in result.keys)
 print('usage-observation-ok')
 """
     result = subprocess.run(
