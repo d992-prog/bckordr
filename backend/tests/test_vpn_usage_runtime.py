@@ -26,6 +26,7 @@ def fixed_clock(monkeypatch):
 
     # Collector tests do not need a SQLite connection cancelled while it is opening.
     monkeypatch.setattr(runtime_module, "cleanup_usage_retention", isolated_cleanup)
+    monkeypatch.setattr(runtime_module, "expire_abuse_windows", isolated_cleanup)
 
 
 @pytest_asyncio.fixture
