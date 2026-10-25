@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from sqlalchemy import delete, or_, select, tuple_
 
+from app.core.config import get_settings
 from app.db import models
 from app.db.base import utcnow
 from app.services.vpn_endpoint_types import (
@@ -43,6 +44,7 @@ from app.services.vpn_node_usage import (
     serialize_node_usage_receipt,
     serialize_node_usage_request,
 )
+from app.services.vpn_usage_sources import prepare_source_samples
 from app.services.vpn_xray_runtime import _email, _normalized
 
 USAGE_LEASE_SECONDS = 45
@@ -339,6 +341,7 @@ async def apply_usage_poll(
     now: datetime,
     error_code: str | None = None,
     deadline: float | None = None,
+    source_secret: str | None = None,
 ) -> bool:
     started = monotonic()
     current = _current(now)
@@ -353,6 +356,17 @@ async def apply_usage_poll(
             )
         except Exception:  # noqa: BLE001 - do not retain raw node receipt details
             receipt, error_code = None, "vpn_usage_receipt_invalid"
+        else:
+            if source_secret is None:
+                try:
+                    source_secret = get_settings().session_secret_key
+                except Exception:  # noqa: BLE001 - source configuration cannot discard traffic
+                    source_secret = ""
+            receipt, source_samples = prepare_source_samples(
+                receipt,
+                {binding[0]: binding[3] for binding in claim.bindings},
+                source_secret,
+            )
     async with session_factory() as db, db.begin():
         # FK inserts need key-share locks; take them before worker like control staging.
         bound_key_ids = tuple(binding[0] for binding in claim.bindings)
@@ -419,6 +433,15 @@ async def apply_usage_poll(
                     )
                 )
             }
+            previous_sources = {
+                sample.access_key_id: sample
+                for sample in await db.scalars(
+                    select(models.VpnKeySourceSample)
+                    .where(models.VpnKeySourceSample.access_key_id.in_(key_ids))
+                    .order_by(models.VpnKeySourceSample.access_key_id)
+                    .with_for_update()
+                )
+            }
         # Include pool/SQL waits in the supplied clock before the first write.
         finished = monotonic()
         current += timedelta(seconds=max(0.0, finished - started))
@@ -441,6 +464,34 @@ async def apply_usage_poll(
             _failure(poll, error_code or "vpn_usage_unavailable")
             return True
         complete = len(claim.bindings) == len(receipt.keys)
+        source_complete = complete
+        minute = datetime.fromtimestamp(receipt.minute_ms / 1000, UTC)
+        for key in receipt.keys:
+            previous_source = previous_sources.get(key.access_key_id)
+            if (
+                previous_source is not None
+                and _as_utc(previous_source.observed_at) >= observed
+            ):
+                source_complete = False
+                continue
+            evidence = source_samples[key.access_key_id]
+            values = {
+                "worker_id": worker.id,
+                "minute_at": minute,
+                "observed_at": observed,
+                "state": evidence.state,
+                "key_epoch": evidence.key_epoch,
+                "source_hashes": None
+                if evidence.source_hashes is None
+                else list(evidence.source_hashes),
+            }
+            if previous_source is None:
+                db.add(
+                    models.VpnKeySourceSample(access_key_id=key.access_key_id, **values)
+                )
+            else:
+                for name, value in values.items():
+                    setattr(previous_source, name, value)
         overflow = False
         for key in receipt.keys:
             if key.traffic_state != "ok":
@@ -518,7 +569,14 @@ async def apply_usage_poll(
             if any(key.traffic_state == "ok" for key in receipt.keys)
             else "unavailable"
         )
-        poll.source_state = "unsupported"
+        source_states = {sample.state for sample in source_samples.values()}
+        poll.source_state = (
+            "unavailable"
+            if not source_complete or "unavailable" in source_states
+            else "unsupported"
+            if "unsupported" in source_states
+            else "ok"
+        )
         poll.protocol_version = 1
         return True
 

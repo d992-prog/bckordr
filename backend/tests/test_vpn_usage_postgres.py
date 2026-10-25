@@ -503,18 +503,9 @@ async def test_retention_skips_busy_rows_without_deleting_traffic_baselines(
     assert await usage.apply_usage_poll(pg_factory, pending, receipt(pending), now=NOW)
     expired = NOW - timedelta(days=91)
     async with pg_factory() as db:
-        db.add_all(
-            models.VpnKeySourceSample(
-                access_key_id=key_id,
-                worker_id=worker_id,
-                minute_at=expired,
-                observed_at=expired,
-                state="unsupported",
-                key_epoch=None,
-                source_hashes=None,
-            )
-            for key_id in keys
-        )
+        for key_id in keys:
+            source = await db.get(models.VpnKeySourceSample, key_id)
+            source.minute_at = source.observed_at = expired
         db.add(
             models.VpnUsageHour(
                 access_key_id=keys[0],
@@ -548,3 +539,65 @@ async def test_retention_skips_busy_rows_without_deleting_traffic_baselines(
         assert len((await db.scalars(select(models.VpnKeyUsageSample))).all()) == 2
         assert await db.scalar(select(models.VpnKeySourceSample)) is None
         assert await db.scalar(select(models.VpnUsageHour)) is None
+
+
+@pytest.mark.asyncio
+async def test_apply_source_prefetch_prevents_retention_from_losing_valid_traffic(
+    pg_factory,
+):
+    worker_id, _, _ = await seed(pg_factory)
+    pending = await claim(usage, pg_factory)
+    assert await usage.apply_usage_poll(pg_factory, pending, receipt(pending), now=NOW)
+    async with pg_factory() as db:
+        for source in await db.scalars(select(models.VpnKeySourceSample)):
+            source.observed_at = NOW - timedelta(days=2)
+        await db.commit()
+    later = NOW + timedelta(minutes=1)
+    pending = await claim(usage, pg_factory, now=later)
+    prefetched, continue_apply = asyncio.Event(), asyncio.Event()
+
+    class PausedSourceSession(AsyncSession):
+        async def scalars(self, statement, **kwargs):
+            rows = await super().scalars(statement, **kwargs)
+            if statement.column_descriptions[0]["entity"] is models.VpnKeySourceSample:
+                prefetched.set()
+                await continue_apply.wait()
+            return rows
+
+    paused_factory = async_sessionmaker(
+        pg_factory.kw["bind"],
+        class_=PausedSourceSession,
+        expire_on_commit=False,
+    )
+    apply_task = asyncio.create_task(
+        usage.apply_usage_poll(
+            paused_factory,
+            pending,
+            receipt(pending, up=150, down=390),
+            now=later,
+        )
+    )
+    try:
+        await asyncio.wait_for(prefetched.wait(), 3)
+        assert (
+            await asyncio.wait_for(
+                usage.cleanup_usage_retention(pg_factory, now=later), 1
+            )
+            == 0
+        )
+        continue_apply.set()
+        assert await asyncio.wait_for(apply_task, 3)
+        async with pg_factory() as db:
+            assert len((await db.scalars(select(models.VpnKeySourceSample))).all()) == 2
+            assert len((await db.scalars(select(models.VpnKeyUsageSample))).all()) == 2
+            hours = (await db.scalars(select(models.VpnUsageHour))).all()
+            assert sum(row.upload_bytes for row in hours) == 100
+            assert sum(row.download_bytes for row in hours) == 180
+            assert (
+                await db.get(models.VpnNodeUsagePoll, worker_id)
+            ).traffic_state == "ok"
+    finally:
+        continue_apply.set()
+        if not apply_task.done():
+            apply_task.cancel()
+        await asyncio.gather(apply_task, return_exceptions=True)

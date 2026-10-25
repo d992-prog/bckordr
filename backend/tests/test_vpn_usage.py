@@ -569,7 +569,7 @@ async def test_unknown_receipt_and_raw_sources_never_persist_credentials(
     persisted = "".join(parameters)
     assert "203.0.113.77" not in persisted and "managed-" not in persisted
     assert "4333-8444" not in persisted and "private" not in persisted
-    assert (await poll(factory, worker_id)).source_state == "unsupported"
+    assert (await poll(factory, worker_id)).source_state == "unavailable"
 
 
 @pytest.mark.asyncio
@@ -780,6 +780,7 @@ async def test_apply_locks_all_bound_key_references_before_worker_and_poll(
         (models.VpnAccessKey, True, True, True),
         (models.WorkerNode, False, False, True),
         (models.VpnNodeUsagePoll, False, False, True),
+        (models.VpnKeySourceSample, False, False, False),
     ]
 
 
@@ -862,7 +863,7 @@ async def test_cleanup_expires_only_old_hours_and_sources_and_preserves_baseline
             )
         for key_id, age in zip(keys, (timedelta(days=1, seconds=1), timedelta(days=1))):
             observed = NOW - age
-            db.add(
+            await db.merge(
                 models.VpnKeySourceSample(
                     access_key_id=key_id,
                     worker_id=worker_id,
