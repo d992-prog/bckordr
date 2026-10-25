@@ -3,12 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
-from app.db.models import VpnAccessKey, VpnCustomer, VpnSubscription
-from app.services.vpn_devices import stage_device_revoke
+from app.db.models import VpnAccessKey, VpnCustomer
+from app.services.vpn_devices import lock_customer_devices, stage_device_revoke
 
 
 ARCHIVABLE_SUBSCRIPTION_STATUSES = ("active", "trial")
@@ -39,40 +38,13 @@ async def stage_vpn_customer_archive(
     now: datetime | None = None,
 ) -> StagedVpnCustomerArchive:
     changed_at = now or utcnow()
-    customer = await session.scalar(
-        select(VpnCustomer).where(VpnCustomer.id == customer_id).with_for_update()
-    )
+    customer, subscriptions, all_keys = await lock_customer_devices(session, customer_id)
     if customer is None:
         raise VpnCustomerArchiveNotFoundError("VPN customer not found")
     if customer.status == "archived":
         raise VpnCustomerArchiveConflictError("VPN customer is already archived")
 
-    subscriptions = list(
-        (
-            await session.scalars(
-                select(VpnSubscription)
-                .where(VpnSubscription.customer_id == customer_id)
-                .order_by(VpnSubscription.id)
-                .with_for_update()
-            )
-        ).all()
-    )
-    subscription_ids = [subscription.id for subscription in subscriptions]
-    access_keys: list[VpnAccessKey] = []
-    if subscription_ids:
-        access_keys = list(
-            (
-                await session.scalars(
-                    select(VpnAccessKey)
-                    .where(
-                        VpnAccessKey.subscription_id.in_(subscription_ids),
-                        VpnAccessKey.status.in_(REVOKABLE_KEY_STATUSES),
-                    )
-                    .order_by(VpnAccessKey.id.asc())
-                    .with_for_update()
-                )
-            ).all()
-        )
+    access_keys = [key for key in all_keys if key.status in REVOKABLE_KEY_STATUSES]
 
     customer.status = "archived"
     customer.updated_at = changed_at
@@ -82,7 +54,7 @@ async def stage_vpn_customer_archive(
             subscription.status = "disabled"
             subscription.updated_at = changed_at
             disabled_count += 1
-    for access_key in access_keys:
+    for access_key in all_keys:
         await stage_device_revoke(session, access_key, now=changed_at)
 
     return StagedVpnCustomerArchive(

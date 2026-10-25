@@ -82,10 +82,8 @@ def test_public_trial_settings_default_off(monkeypatch: pytest.MonkeyPatch) -> N
 def test_public_trial_upgrade_statements_are_registered() -> None:
     statements = getattr(migrations, "VPN_PUBLIC_TRIAL_MIGRATIONS", ())
     assert statements
-    assert (
-        migrations.MIGRATIONS[-len(VPN_ENDPOINT_MIGRATIONS) - 1 : -1]
-        == VPN_ENDPOINT_MIGRATIONS
-    )
+    start = migrations.MIGRATIONS.index(VPN_ENDPOINT_MIGRATIONS[0])
+    assert migrations.MIGRATIONS[start:start + len(VPN_ENDPOINT_MIGRATIONS)] == VPN_ENDPOINT_MIGRATIONS
     sql = "\n".join(statements)
     assert "ADD COLUMN IF NOT EXISTS trial_started_at TIMESTAMPTZ" in sql
     assert "ix_vpn_customers_trial_started_at" in sql

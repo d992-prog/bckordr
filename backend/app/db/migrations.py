@@ -580,7 +580,10 @@ MIGRATIONS = (
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_zone ON zone_scan_candidates(zone)",
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_lifecycle_stage ON zone_scan_candidates(lifecycle_stage)",
     "CREATE INDEX IF NOT EXISTS ix_zone_scan_candidates_discovery_domain_id ON zone_scan_candidates(discovery_domain_id)",
-) + VPN_PLAN_CATALOG_MIGRATIONS + VPN_PUBLIC_TRIAL_MIGRATIONS + VPN_ENDPOINT_MIGRATIONS + (
+) + VPN_PLAN_CATALOG_MIGRATIONS + VPN_PUBLIC_TRIAL_MIGRATIONS + VPN_ENDPOINT_MIGRATIONS
+
+
+VPN_FRIEND_INVITATION_MIGRATIONS = (
     """
     CREATE TABLE IF NOT EXISTS vpn_friend_invitations (
         slot SMALLINT PRIMARY KEY,
@@ -604,7 +607,7 @@ MIGRATIONS = (
 )
 
 
-MIGRATIONS += VPN_DEVICE_MIGRATIONS
+MIGRATIONS += VPN_FRIEND_INVITATION_MIGRATIONS + VPN_DEVICE_MIGRATIONS
 
 
 async def run_startup_migrations(engine: AsyncEngine) -> None:

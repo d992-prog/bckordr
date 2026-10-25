@@ -73,13 +73,11 @@ async def stage_subscription_update(
     subscription.updated_at = now
     if not remote_policy_changed:
         return
-    keys = (await db.scalars(
-        select(VpnAccessKey).where(
-            VpnAccessKey.subscription_id == subscription.id,
-            VpnAccessKey.status.in_(DEVICE_SLOT_STATUSES),
-        ).order_by(VpnAccessKey.id).with_for_update()
-    )).all()
     action = subscription_key_action(subscription, customer, now)
+    query = select(VpnAccessKey).where(VpnAccessKey.subscription_id == subscription.id)
+    if action != "revoke":
+        query = query.where(VpnAccessKey.status.in_(DEVICE_SLOT_STATUSES))
+    keys = (await db.scalars(query.order_by(VpnAccessKey.id).with_for_update())).all()
     for key in keys:
         if action == "revoke":
             await stage_device_revoke(db, key, now=now)

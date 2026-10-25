@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.config import Settings
 from app.db.base import Base
-from app.db.migrations import MIGRATIONS
+from app.db.migrations import MIGRATIONS, VPN_FRIEND_INVITATION_MIGRATIONS as FRIEND_INVITATION_MIGRATIONS
 from app.db.models import VpnFriendInvitation
 from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
 
@@ -23,10 +23,7 @@ from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
 TEST_DATABASE_NAME = "veltrix_portal_test"
 TEST_DATABASE_HOST = "127.0.0.1"
 UNSAFE_DATABASE_URL_ERROR = "unsafe VPN_PORTAL_TEST_PG_URL"
-FRIEND_INVITATION_MIGRATIONS = MIGRATIONS[-1:]
-PRE_INVITATION_MIGRATIONS = MIGRATIONS[
-    -len(VPN_ENDPOINT_MIGRATIONS) - 1 : -1
-]
+PRE_INVITATION_MIGRATIONS = VPN_ENDPOINT_MIGRATIONS
 
 
 @dataclass(frozen=True)
@@ -250,6 +247,8 @@ def test_friend_beta_and_dispatcher_default_off() -> None:
 def test_invitation_migration_follows_endpoint_schema_with_exact_contract() -> None:
     assert PRE_INVITATION_MIGRATIONS == VPN_ENDPOINT_MIGRATIONS
     assert len(FRIEND_INVITATION_MIGRATIONS) == 1
+    start = MIGRATIONS.index(FRIEND_INVITATION_MIGRATIONS[0])
+    assert MIGRATIONS[start:start + len(FRIEND_INVITATION_MIGRATIONS)] == FRIEND_INVITATION_MIGRATIONS
 
     statement = " ".join(FRIEND_INVITATION_MIGRATIONS[0].split())
     assert statement.startswith("CREATE TABLE IF NOT EXISTS vpn_friend_invitations")

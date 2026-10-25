@@ -3940,6 +3940,9 @@ async def archive_vpn_customer(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     for access_key in staged.access_keys:
+        if access_key.endpoint_id is not None:
+            await _execute_requested_vpn_revoke(db, access_key, None)
+            continue
         worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
         if worker is None and not access_key.config_uri:
             access_key.status = "revoked"
@@ -3960,7 +3963,7 @@ async def archive_vpn_customer(
                 )
                 continue
             worker = locked_worker
-        await revoke_vpn_access_key(db, access_key, worker=worker)
+        await _execute_requested_vpn_revoke(db, access_key, worker)
 
     revoked_keys = sum(key.status == "revoked" for key in staged.access_keys)
     pending_revoke_keys = sum(key.status != "revoked" for key in staged.access_keys)
@@ -4172,6 +4175,19 @@ async def _reject_vpn_revoke_during_attack(
     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=active_attack_reason)
 
 
+async def _execute_requested_vpn_revoke(
+    db: AsyncSession, access_key: VpnAccessKey, worker: WorkerNode | None,
+) -> None:
+    if access_key.endpoint_id is None:
+        await revoke_vpn_access_key(db, access_key, worker=worker)
+        return
+    await db.flush()
+    try:
+        await stage_vpn_control_operation(db, access_key.id, "revoke")
+    except VpnControlIntentError as exc:
+        access_key.last_error = exc.code
+
+
 @router.post("/vpn/access-keys", response_model=VpnAccessKeyResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(serialize_vpn_mutation)])
 async def create_vpn_access_key(
     payload: VpnAccessKeyCreateRequest,
@@ -4185,14 +4201,10 @@ async def create_vpn_access_key(
     )
     if customer_id is None:
         raise HTTPException(status_code=404, detail="VPN subscription not found")
-    customer = await db.scalar(
-        select(VpnCustomer)
-        .where(VpnCustomer.id == customer_id)
-        .with_for_update()
-    )
+    customer, subscriptions, _ = await lock_customer_devices(db, customer_id)
     if customer is None:
         raise HTTPException(status_code=404, detail="VPN customer not found")
-    subscription = await lock_vpn_subscription(db, payload.subscription_id)
+    subscription = next((item for item in subscriptions if item.id == payload.subscription_id), None)
     if subscription is None:
         raise HTTPException(status_code=404, detail="VPN subscription not found")
     if subscription.customer_id != customer_id:
@@ -4354,7 +4366,7 @@ async def revoke_existing_vpn_access_key(
     await stage_device_revoke(db, access_key)
     worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
     await _reject_vpn_revoke_during_attack(db, access_key, worker)
-    await revoke_vpn_access_key(db, access_key, worker=worker)
+    await _execute_requested_vpn_revoke(db, access_key, worker)
     await add_audit_log(
         db,
         actor_user_id=admin.id,
@@ -4409,7 +4421,7 @@ async def delete_vpn_access_key(
     await stage_device_revoke(db, access_key)
     worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
     await _reject_vpn_revoke_during_attack(db, access_key, worker)
-    await revoke_vpn_access_key(db, access_key, worker=worker)
+    await _execute_requested_vpn_revoke(db, access_key, worker)
     await add_audit_log(
         db,
         actor_user_id=admin.id,

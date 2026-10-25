@@ -1225,6 +1225,13 @@ async def provision_vpn_access_key(
     subscription: VpnSubscription | None = None,
     worker: WorkerNode | None = None,
 ) -> VpnAccessKey:
+    from app.services.vpn_devices import checked_device
+
+    device = await checked_device(db, access_key)
+    if access_key.revoke_requested_at is not None or (device is not None and device.revoke_requested_at is not None):
+        if access_key.status != "revoked":
+            access_key.status = "pending_revoke"
+        return access_key
     now = utcnow()
     subscription = subscription or await db.get(VpnSubscription, access_key.subscription_id)
     worker = worker or (await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None)
@@ -1275,7 +1282,7 @@ async def provision_vpn_access_key(
         protocol=access_key.protocol or "vless",
         expires_at=subscription.expires_at,
         traffic_limit_gb=subscription.traffic_limit_gb,
-        max_devices=subscription.max_devices,
+        max_devices=1,
     )
     command = build_vpn_client_provision_command(worker, payload)
     try:

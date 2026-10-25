@@ -520,7 +520,11 @@ async def test_rename_owns_and_locks_profile_allows_inactive_and_changes_only_na
         if "from vpn_access_keys join vpn_subscriptions" in statement
     )
     assert "vpn_subscriptions.customer_id =" in lock_query
-    assert lock_query.endswith("for update of vpn_access_keys")
+    locks = [statement for statement in statements if "for update" in statement]
+    assert "from vpn_customers" in locks[0]
+    assert "from vpn_subscriptions" in locks[1]
+    assert "from vpn_access_keys" in locks[2]
+    assert "order by vpn_access_keys.id" in locks[2]
 
     async with session_factory() as session:
         key = await session.get(VpnAccessKey, ids.key_ids[2])

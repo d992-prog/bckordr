@@ -375,7 +375,12 @@ async def stage_vpn_control_operation(
             )
         ).all()
 
+    from app.services.vpn_devices import checked_device, stage_device_revoke
+
+    device = await checked_device(db, access_key)
     sticky_revoke = (
+        (device is not None and device.revoke_requested_at is not None)
+        or
         access_key.revoke_requested_at is not None
         or access_key.revoked_at is not None
         or access_key.status in {"pending_revoke", "revoked"}
@@ -396,6 +401,9 @@ async def stage_vpn_control_operation(
                 "revoke": "vpn_control_policy_requires_revoke",
             }[desired]
         )
+
+    if action == "revoke":
+        await stage_device_revoke(db, access_key, now=current)
 
     current_operation = next(
         (

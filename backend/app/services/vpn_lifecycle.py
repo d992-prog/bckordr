@@ -14,7 +14,6 @@ from app.services.vpn_policy import (
     count_device_slots,
     evaluate_vpn_node,
     lock_vpn_worker,
-    lock_vpn_subscription,
     select_vpn_node,
     validate_subscription_access,
 )
@@ -29,6 +28,7 @@ from app.services.vpn_control_intents import (
     stage_vpn_control_operation,
 )
 from app.services.vpn_mutations import vpn_mutation_lock
+from app.services.vpn_devices import checked_device, lock_key_device_context, stage_device_revoke
 from app.services.vpn_subscription_sync import RESTORABLE_KEY_STATUSES, subscription_key_action
 
 
@@ -347,15 +347,22 @@ async def _run_vpn_lifecycle_maintenance(
             await db.commit()
             continue
 
-        subscription = await lock_vpn_subscription(db, subscription.id)
-        await db.refresh(access_key)
-        if subscription is None or access_key.status == "revoked":
+        access_key = await lock_key_device_context(db, access_key.id)
+        if access_key is None or access_key.status == "revoked":
+            continue
+        subscription = await db.get(VpnSubscription, access_key.subscription_id)
+        if subscription is None:
             continue
         customer = await db.get(VpnCustomer, subscription.customer_id)
+        device = await checked_device(db, access_key)
         action = (
-            "revoke" if access_key.status == "pending_revoke"
+            "revoke" if access_key.status == "pending_revoke" or (
+                device is not None and device.revoke_requested_at is not None
+            )
             else subscription_key_action(subscription, customer, current_time)
         )
+        if action == "revoke":
+            await stage_device_revoke(db, access_key, now=current_time)
         result["checked_keys"] += 1
         worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
         try:

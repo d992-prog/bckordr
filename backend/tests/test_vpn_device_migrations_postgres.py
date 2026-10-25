@@ -46,7 +46,7 @@ async def legacy_schema(engine, *, metadata_first=False):
                      expires_at, issued_at, created_at, updated_at, revoked_at)
                 VALUES (:id, :sub, :uuid, :uri, :name, :status,
                         '2028-01-01', '2026-01-01', '2026-01-01', '2026-02-01',
-                        CASE WHEN :status = 'revoked' THEN '2026-02-01'::timestamptz ELSE NULL END)
+                        CASE WHEN CAST(:status AS VARCHAR(32)) = 'revoked' THEN '2026-02-01'::timestamptz ELSE NULL END)
             """), {"id": key_id, "sub": sub_id, "status": status, "name": name,
                    "uuid": f"00000000-0000-4000-8000-{key_id:012d}",
                    "uri": f"vless://safe-fake-{key_id}@vpn.example:443#unchanged"})
@@ -121,3 +121,26 @@ async def test_fresh_metadata_migration_catalog_matches_model(postgres_schema):
         assert all(constraints.count(name) == 1 for name in expected)
         indexes = set((await connection.execute(text("SELECT indexname FROM pg_indexes WHERE schemaname=current_schema()"))).scalars())
         assert {"ix_vpn_devices_subscription_id", "ix_vpn_access_keys_device_id"} <= indexes
+
+
+@pytest.mark.asyncio
+async def test_constraint_names_in_other_schema_do_not_suppress_device_constraints(postgres_schema):
+    await legacy_schema(postgres_schema.engine)
+    decoy_schema = postgres_schema.name + "_decoy"
+    async with postgres_schema.engine.begin() as connection:
+        await connection.execute(text(f'CREATE SCHEMA "{decoy_schema}"'))
+        await connection.execute(text(f'''CREATE TABLE "{decoy_schema}".decoy (
+            value INTEGER,
+            CONSTRAINT fk_vpn_access_key_device_subscription CHECK (value > 0),
+            CONSTRAINT uq_vpn_access_key_device_endpoint CHECK (value < 10)
+        )'''))
+    try:
+        await migrate(postgres_schema.engine)
+        async with postgres_schema.engine.connect() as connection:
+            assert set((await connection.execute(text("""
+                SELECT conname FROM pg_constraint WHERE conrelid='vpn_access_keys'::regclass
+                AND conname IN ('fk_vpn_access_key_device_subscription','uq_vpn_access_key_device_endpoint')
+            """))).scalars()) == {"fk_vpn_access_key_device_subscription", "uq_vpn_access_key_device_endpoint"}
+    finally:
+        async with postgres_schema.engine.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA "{decoy_schema}" CASCADE'))
