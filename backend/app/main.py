@@ -5,10 +5,11 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
-from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import api_router
 from app.core.config import get_settings
@@ -89,6 +90,14 @@ def create_app() -> FastAPI:
         PortalHttpMiddleware,
         portal_prefix=settings.api_prefix.rstrip("/") + "/vpn-portal",
     )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def scoped_http_exception_handler(request, exc):
+        response = await http_exception_handler(request, exc)
+        broadcast_prefix = settings.api_prefix.rstrip("/") + "/control/vpn/broadcasts"
+        if request.url.path == broadcast_prefix or request.url.path.startswith(broadcast_prefix + "/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def scoped_request_validation_handler(request, exc):

@@ -82,18 +82,22 @@ async def test_news_requires_admin_for_reads_and_mutations(env):
         ("POST", "", {"body": "Новость"}),
         ("GET", "/1", None),
     ]:
-        assert (
-            await env.client.request(method, BASE + path, headers=ORIGIN, json=body)
-        ).status_code == 401
+        response = await env.client.request(
+            method, BASE + path, headers=ORIGIN, json=body
+        )
+        assert response.status_code == 401
+        assert response.headers["cache-control"] == "no-store"
 
     async def ordinary_user():
         return SimpleNamespace(id=2, role="user")
 
     env.app.dependency_overrides[get_current_user] = ordinary_user
-    assert (await env.client.get(BASE + "/config")).status_code == 403
-    assert (
-        await env.client.post(BASE, headers=ORIGIN, json={"body": "Новость"})
-    ).status_code == 403
+    for response in (
+        await env.client.get(BASE + "/config"),
+        await env.client.post(BASE, headers=ORIGIN, json={"body": "Новость"}),
+    ):
+        assert response.status_code == 403
+        assert response.headers["cache-control"] == "no-store"
 
 
 @pytest.mark.asyncio
