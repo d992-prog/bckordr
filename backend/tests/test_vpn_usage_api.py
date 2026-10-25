@@ -209,6 +209,25 @@ async def test_days_and_pagination_are_literal_bounded_and_exclusive(env):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("value", [2**31, 2**63])
+async def test_report_identifiers_are_bounded_before_database_queries(env, value):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=env.app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        assert (await client.get(NODES, params={"after_id": value})).status_code == 422
+        assert (await client.get(CUSTOMER.format(value))).status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_reports_do_not_cache_private_traffic(env):
+    ids = await seed(env)
+    for path in (NODES, CUSTOMER.format(ids.customer), CUSTOMER.format(999999)):
+        response = await env.client.get(path)
+        assert response.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
 async def test_baseline_is_not_measured_zero_and_no_data_does_not_leak_secrets(env):
     ids = await seed(env)
     row = (await env.client.get(NODES)).json()[0]
