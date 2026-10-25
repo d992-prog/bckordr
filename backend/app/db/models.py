@@ -1580,3 +1580,114 @@ class AttackEvent(Base):
     attack_run: Mapped[AttackRun | None] = relationship()
     domain: Mapped[DropDomain | None] = relationship()
     worker: Mapped[WorkerNode | None] = relationship()
+
+
+class VpnNodeUsagePoll(Base):
+    __tablename__ = "vpn_node_usage_polls"
+    __table_args__ = (
+        CheckConstraint("traffic_state IN ('ok','partial','unavailable')", name="ck_vpn_usage_poll_traffic"),
+        CheckConstraint("source_state IN ('ok','unsupported','unavailable')", name="ck_vpn_usage_poll_source"),
+        CheckConstraint("protocol_version IS NULL OR protocol_version = 1", name="ck_vpn_usage_poll_protocol"),
+        CheckConstraint("(claim_token IS NULL) = (lease_until IS NULL)", name="ck_vpn_usage_poll_claim"),
+    )
+
+    worker_id: Mapped[int] = mapped_column(ForeignKey("worker_nodes.id", ondelete="RESTRICT"), primary_key=True)
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    traffic_state: Mapped[str] = mapped_column(String(16), default="unavailable", server_default="unavailable")
+    source_state: Mapped[str] = mapped_column(String(16), default="unavailable", server_default="unavailable")
+    protocol_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class VpnKeyUsageSample(Base):
+    __tablename__ = "vpn_key_usage_samples"
+    __table_args__ = (
+        CheckConstraint("record_id BETWEEN 1 AND 9223372036854775807", name="ck_vpn_usage_sample_record"),
+        CheckConstraint("reset_count BETWEEN 0 AND 9223372036854775807", name="ck_vpn_usage_sample_reset"),
+        CheckConstraint("upload_bytes BETWEEN 0 AND 9223372036854775807", name="ck_vpn_usage_sample_upload"),
+        CheckConstraint("download_bytes BETWEEN 0 AND 9223372036854775807", name="ck_vpn_usage_sample_download"),
+    )
+
+    access_key_id: Mapped[int] = mapped_column(ForeignKey("vpn_access_keys.id", ondelete="RESTRICT"), primary_key=True)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("worker_nodes.id", ondelete="RESTRICT"))
+    sampled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    counter_epoch: Mapped[str] = mapped_column(String(64))
+    record_id: Mapped[int] = mapped_column(BigInteger)
+    reset_count: Mapped[int] = mapped_column(BigInteger)
+    upload_bytes: Mapped[int] = mapped_column(BigInteger)
+    download_bytes: Mapped[int] = mapped_column(BigInteger)
+
+
+class VpnUsageHour(Base):
+    __tablename__ = "vpn_usage_hours"
+    __table_args__ = (
+        CheckConstraint("upload_bytes BETWEEN 0 AND 9223372036854775807", name="ck_vpn_usage_hour_upload"),
+        CheckConstraint("download_bytes BETWEEN 0 AND 9223372036854775807", name="ck_vpn_usage_hour_download"),
+        CheckConstraint("sample_count BETWEEN 1 AND 9223372036854775807", name="ck_vpn_usage_hour_count"),
+        CheckConstraint("last_sample_at > first_sample_at", name="ck_vpn_usage_hour_interval"),
+        Index("ix_vpn_usage_hours_hour_start", "hour_start"),
+    )
+
+    access_key_id: Mapped[int] = mapped_column(ForeignKey("vpn_access_keys.id", ondelete="RESTRICT"), primary_key=True)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("worker_nodes.id", ondelete="RESTRICT"), primary_key=True)
+    hour_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    upload_bytes: Mapped[int] = mapped_column(BigInteger)
+    download_bytes: Mapped[int] = mapped_column(BigInteger)
+    sample_count: Mapped[int] = mapped_column(BigInteger)
+    first_sample_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_sample_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class VpnKeySourceSample(Base):
+    __tablename__ = "vpn_key_source_samples"
+    __table_args__ = (
+        CheckConstraint("state IN ('ok','unsupported','unavailable')", name="ck_vpn_source_sample_state"),
+        Index("ix_vpn_key_source_samples_observed_at", "observed_at"),
+    )
+
+    access_key_id: Mapped[int] = mapped_column(ForeignKey("vpn_access_keys.id", ondelete="RESTRICT"), primary_key=True)
+    worker_id: Mapped[int] = mapped_column(ForeignKey("worker_nodes.id", ondelete="RESTRICT"))
+    minute_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(String(16))
+    key_epoch: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source_hashes: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+
+class VpnDeviceAbuseState(Base):
+    __tablename__ = "vpn_device_abuse_state"
+    __table_args__ = (
+        CheckConstraint("consecutive_windows BETWEEN 0 AND 5", name="ck_vpn_abuse_state_windows"),
+        CheckConstraint("last_source_count IS NULL OR last_source_count >= 0", name="ck_vpn_abuse_state_count"),
+        CheckConstraint("coverage IN ('ok','collecting','unsupported','unavailable')", name="ck_vpn_abuse_state_coverage"),
+    )
+
+    device_id: Mapped[int] = mapped_column(ForeignKey("vpn_devices.id", ondelete="RESTRICT"), primary_key=True)
+    last_minute_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consecutive_windows: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_source_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    coverage: Mapped[str] = mapped_column(String(16), default="unavailable", server_default="unavailable")
+    key_epoch: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+
+class VpnAbuseIncident(Base):
+    __tablename__ = "vpn_abuse_incidents"
+    __table_args__ = (
+        CheckConstraint("peak_source_count > 2", name="ck_vpn_abuse_incident_peak"),
+        Index("uq_vpn_abuse_incidents_open_device", "device_id", unique=True,
+              postgresql_where=text("acknowledged_at IS NULL"), sqlite_where=text("acknowledged_at IS NULL")),
+        Index("ix_vpn_abuse_incidents_last_observed_at", "last_observed_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("vpn_devices.id", ondelete="RESTRICT"))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    peak_source_count: Mapped[int] = mapped_column(Integer)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
