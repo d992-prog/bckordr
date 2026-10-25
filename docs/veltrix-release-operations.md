@@ -217,3 +217,105 @@ Rollback never enables payment or public trial and never rewrites VPN client
 identities. If the chosen application revision cannot read the current additive
 schema, restore its matching validated database instead of editing production
 rows by hand.
+
+## Device, location and telemetry release
+
+Back up and rehearse the additive device/invitation/usage/news migrations before
+updating the controller. Existing key IDs, credentials and direct links remain
+unchanged. Every existing key receives a logical-device parent; switching country
+inside that device does not reserve another subscription device slot. A prepared
+country still consumes capacity on its node. Existing per-remote-key traffic
+limits are not an aggregate cross-country quota.
+
+Endpoints are hidden from new public allocation by default after migration.
+Intentionally set their client-facing names, two-letter country codes and
+publication flags in the node panel before admitting new users. Hiding an endpoint
+does not revoke issued keys. New nodes still require verified SSH pins, healthy
+verified endpoints and available capacity; never publish or trust a node merely
+to bypass an admission error. Invitations are individually single-use, without
+the old ten-invitation cap; activation and granted access remain seven days each.
+
+Keep both optional background send/collection gates off during deployment:
+
+```dotenv
+VPN_USAGE_ENABLED=false
+VPN_BROADCASTS_ENABLED=false
+```
+
+The stable device subscription feed and source pseudonyms require a persistent,
+non-default `SESSION_SECRET_KEY` of at least 32 characters. Do not rotate that
+secret during this release: existing subscription URLs depend on it. Check the
+token-redacting Nginx portal locations before exposing subscription feeds. Import
+and refresh a device subscription in Happ/Hiddify before public rollout.
+
+Update the read-only usage zipapp through the normal digest-verified node update
+mechanism; do not patch each node independently. Only then opt into collection.
+The collector does not enable Xray statistics, open its API or restart services.
+Source data remains unknown when the installed binary/configuration cannot prove
+support. An old bundle is not interpreted as zero usage. Collection runs once per
+UTC minute within its allowed clock-skew window, with four concurrent readers and
+a 35-second deadline; batches cap at 2048 managed credentials per node. Expand bounded pagination before
+raising that cap or increasing fleet size beyond the observed collection budget.
+
+Traffic begins with a baseline, so historical usage and unmeasured gaps cannot be
+reconstructed. Hourly aggregates are retained for 90 days; interval deltas belong
+to the ending UTC hour. Reports conservatively show partial coverage rather than
+claim uninterrupted data from sample counts. CPU load, RAM and occupied profile
+capacity are separate metrics, not bandwidth measurements.
+
+Source snapshots contain device-scoped HMAC pseudonyms, never raw IPs. IPv4-mapped
+addresses are normalized and IPv6 is grouped by /64. Expired snapshots are removed
+after 24 hours in bounded batches; DB-only retention continues even when collection
+or SSH configuration is disabled. Incidents require five complete same-minute
+windows across every non-revoked child credential. They are review signals, not
+physical-device counts or automatic bans. Acknowledgement never revokes access;
+use the existing device-aware customer workflow for an explicit revocation.
+
+## News activation
+
+Do not enable news merely because the UI renders. Historical webhook records have
+no bot identity: first establish that this deployment's entire history belongs to
+the configured single VPN bot. Then run the explicit provenance-checked registry
+CLI under the same service environment, supplying only that public numeric bot ID:
+
+```bash
+python -m app.cli.vpn_bot_chats --confirmed-deployment-bot-id CONFIRMED_BOT_ID
+```
+
+This command performs a read-only `getMe`, backfills validated private chats and
+sends no messages. Never put the bot token on the command line. Unknown history
+and a changed bot ID keep confirmation/sending blocked; browser login alone does
+not subscribe a user to news. After registry verification, enable
+`VPN_BROADCASTS_ENABLED` separately. Real news still requires an administrator's
+saved draft, fresh preview and explicit confirmation in the panel.
+
+Cancellation stops queued work but cannot recall messages or guarantee that an
+already-started send stops. Uncertain delivery means Telegram may have delivered
+the message; it is terminal and is never blindly retried. Do not manufacture a
+production test campaign to verify installation. Use synthetic HTTP/registry data
+and the isolated PostgreSQL concurrency suite for that check.
+
+### 2026-10-25 pre-deployment evidence
+
+The synthetic PostgreSQL suites exercised migrations and concurrent allocation,
+usage, source review and news delivery without real sends. A fresh full backup
+was also created by the configured backup service. On the same controller, a
+separate Unix-socket-only PostgreSQL restored the full schema and all real VPN
+tables with their foreign-key dependency closure (18 tables, about 2.6 MiB).
+The unrelated large domain dataset was intentionally excluded from this rehearsal
+to preserve disk headroom; this was not a full-data restore of that subsystem.
+
+The new metadata/startup migration and its repeated execution passed against
+that protected copy. Hash comparisons of every original column in keys,
+subscriptions, customers, invitations and endpoints confirmed unchanged rows and
+credentials; every key acquired its valid logical-device parent. Both temporary
+PostgreSQL clusters and their source copies were then stopped and removed.
+The full production backup was retained. No working schema was changed by these
+rehearsals.
+
+The owner subsequently authorized deployment, runner-only updates without
+Xray/3x-UI restarts, and publication of Netherlands (`worker-2`), Germany
+(`autonomous-blush`) and Poland (`polish-server`). `original-coffee-octopus`
+remains unpublished until actual VPN installation and verification. Historical
+VPN bot provenance was explicitly confirmed; registry backfill itself sends no
+messages.
