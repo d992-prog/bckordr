@@ -317,6 +317,108 @@ async def test_network_observation_holds_no_worker_customer_subscription_or_key_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("interval", ["first_baseline", "new_hour"])
+async def test_usage_foreign_key_writes_do_not_deadlock_control_key_then_worker_locks(
+    pg_factory, interval
+):
+    from app.services.vpn_control_intents import stage_vpn_control_operation
+
+    worker_id, endpoint_id, keys = await seed(pg_factory)
+    async with pg_factory() as db:
+        (await db.get(models.VpnEndpoint, endpoint_id)).status = "disabled"
+        await db.commit()
+    at = NOW
+    if interval == "new_hour":
+        first = await claim(usage, pg_factory, NOW + timedelta(minutes=59))
+        assert await usage.apply_usage_poll(
+            pg_factory,
+            first,
+            receipt(first),
+            now=NOW + timedelta(minutes=59, seconds=1),
+        )
+        at = NOW + timedelta(hours=1)
+    pending = await claim(usage, pg_factory, at)
+    keys_locked, allow_stage_worker = asyncio.Event(), asyncio.Event()
+    usage_worker_locked, continue_usage = asyncio.Event(), asyncio.Event()
+
+    class StagingSession(AsyncSession):
+        async def scalar(self, statement, **kwargs):
+            if (
+                statement._for_update_arg is not None
+                and statement.column_descriptions[0]["entity"] is models.WorkerNode
+            ):
+                keys_locked.set()
+                await allow_stage_worker.wait()
+            return await super().scalar(statement, **kwargs)
+
+    class ApplyingSession(AsyncSession):
+        async def scalar(self, statement, **kwargs):
+            result = await super().scalar(statement, **kwargs)
+            if (
+                result is not None
+                and statement._for_update_arg is not None
+                and statement.column_descriptions[0]["entity"] is models.WorkerNode
+            ):
+                usage_worker_locked.set()
+                await continue_usage.wait()
+            return result
+
+    staging_factory = async_sessionmaker(
+        pg_factory.kw["bind"], class_=StagingSession, expire_on_commit=False
+    )
+    applying_factory = async_sessionmaker(
+        pg_factory.kw["bind"], class_=ApplyingSession, expire_on_commit=False
+    )
+
+    async def stage():
+        async with staging_factory() as db, db.begin():
+            operation = await stage_vpn_control_operation(db, keys[0], "revoke", now=at)
+            return operation.action
+
+    stage_task = asyncio.create_task(stage())
+    apply_task, worker_signal = None, None
+    try:
+        await asyncio.wait_for(keys_locked.wait(), 2)
+        apply_task = asyncio.create_task(
+            usage.apply_usage_poll(
+                applying_factory,
+                pending,
+                receipt(pending, up=150, down=390),
+                now=at + timedelta(seconds=1),
+            )
+        )
+        worker_signal = asyncio.create_task(usage_worker_locked.wait())
+        finished, _ = await asyncio.wait(
+            {apply_task, worker_signal}, timeout=2, return_when=asyncio.FIRST_COMPLETED
+        )
+        assert finished
+        allow_stage_worker.set()
+        continue_usage.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(apply_task, stage_task, return_exceptions=True), 5
+        )
+        assert results == [False, "revoke"]
+        async with pg_factory() as db:
+            samples = (await db.scalars(select(models.VpnKeyUsageSample))).all()
+            assert len(samples) == (2 if interval == "new_hour" else 0)
+            assert all(sample.upload_bytes == 100 for sample in samples)
+            assert await db.scalar(select(models.VpnUsageHour)) is None
+            assert (
+                await db.get(models.VpnNodeUsagePoll, worker_id)
+            ).claim_token == pending.claim_token
+    finally:
+        allow_stage_worker.set()
+        continue_usage.set()
+        tasks = [
+            task for task in (stage_task, apply_task, worker_signal) if task is not None
+        ]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_usage_foreign_keys_restrict_and_open_incidents_are_unique(pg_factory):
     from sqlalchemy.exc import IntegrityError
 

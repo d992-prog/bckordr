@@ -734,6 +734,57 @@ async def test_receipt_freshness_expires_during_connection_wait_before_lease(
 
 
 @pytest.mark.asyncio
+async def test_apply_locks_all_bound_key_references_before_worker_and_poll(
+    usage, factory
+):
+    await seed(factory, unverified=True)
+    pending = await claim(usage, factory)
+    locked = []
+
+    class RecordingSession(AsyncSession):
+        def record(self, statement):
+            lock = statement._for_update_arg
+            if lock is not None:
+                locked.append(
+                    (
+                        statement.column_descriptions[0]["entity"],
+                        lock.read,
+                        lock.key_share,
+                        lock.skip_locked,
+                    )
+                )
+
+        async def scalar(self, statement, **kwargs):
+            self.record(statement)
+            return await super().scalar(statement, **kwargs)
+
+        async def scalars(self, statement, **kwargs):
+            self.record(statement)
+            result = await super().scalars(statement, **kwargs)
+            if (
+                statement._for_update_arg is not None
+                and statement.column_descriptions[0]["entity"] is models.VpnAccessKey
+            ):
+                rows = list(result)
+                assert rows == [binding[0] for binding in pending.bindings]
+                assert len(rows) == 2 and len(pending.request.identities) == 1
+                return rows
+            return result
+
+    recording_factory = async_sessionmaker(
+        factory.kw["bind"], class_=RecordingSession, expire_on_commit=False
+    )
+    assert await usage.apply_usage_poll(
+        recording_factory, pending, receipt(pending), now=NOW + timedelta(seconds=1)
+    )
+    assert locked == [
+        (models.VpnAccessKey, True, True, True),
+        (models.WorkerNode, False, False, True),
+        (models.VpnNodeUsagePoll, False, False, True),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_collect_commits_claim_before_network_and_only_apply_uses_new_session(
     usage, factory
 ):
