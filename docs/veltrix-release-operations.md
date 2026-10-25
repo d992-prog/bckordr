@@ -319,3 +319,42 @@ Xray/3x-UI restarts, and publication of Netherlands (`worker-2`), Germany
 remains unpublished until actual VPN installation and verification. Historical
 VPN bot provenance was explicitly confirmed; registry backfill itself sends no
 messages.
+
+### Production cutover and runner compatibility
+
+The controller was updated through `ecddb25`, followed by token compatibility fix
+`01bd9e0`. The working additive migration preserved hashes of all original columns
+in the five checked VPN tables and completed device parents without changing
+existing credentials. Netherlands, Germany and Poland are published; the
+uninstalled `original-coffee-octopus` remains hidden. The restored registry has
+nine distinct private chats; the number of accepted historical updates is not a
+recipient count. No production news campaign or delivery was created.
+
+The first Netherlands runner acceptance exposed a legacy token file without a
+trailing LF. The common reader now accepts the same valid token with no LF or
+exactly one LF, retaining strict syntax and the 4096-byte content bound. The
+updater accepts the optional 4097th framing byte. All readers and all four bundle
+manifests use the shared parser; working token files were not rewritten.
+
+All three runner-only updates then passed full health receipts, protected-file
+identity comparisons and unchanged Xray process/start-time checks for that update.
+The original first-attempt Xray snapshot was memory-only; do not claim a persisted
+before/after comparison for that earlier attempt. Both optional feature flags are
+now enabled with the owner's explicit approval, including separate approval for
+news activation. Payment remains disabled and no news was sent.
+
+The live collector produced baseline samples and hourly deltas after activation.
+Netherlands and Poland reported traffic/source coverage as available. Germany's
+aggregate was partial: source evidence was available for all four active keys,
+while one old revoked key was unavailable. Read-only source API/configuration
+checks passed; do not weaken identity checks or count the unavailable historical
+key as evidence of no sharing. The hidden, uninstalled worker 12 has no verified
+usage binding, as expected. Pre-activation traffic cannot be reconstructed.
+
+Keep the private controller rollback material in
+`/var/lib/veltrix-releases/operations-20261025-ecddb25` and the retained full backup.
+On Netherlands, the normal `.previous` runner is the intermediate `ecddb25`
+artifact that rejects its legacy token. The pre-release active runner is preserved
+instead at
+`/opt/veltrix-vpn/current/archive-token-compat-20261025-a/vpn-node.pyz.previous`.
+Do not blindly use the normal `.previous` as a known-good Netherlands rollback.
