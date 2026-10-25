@@ -966,6 +966,9 @@ async def test_public_config_is_safe_fail_closed_and_never_cors_enabled(portal_a
         "login_path": "/api/vpn-portal/auth/telegram/start",
         "bot_url": None,
         "support_text": "Обратитесь к администратору VPN.",
+        "support_url": None,
+        "notice": None,
+        "reminders_enabled": False,
     }
     assert response.headers["cache-control"] == "no-store"
     assert "access-control-allow-origin" not in response.headers

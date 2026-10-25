@@ -24,6 +24,7 @@ from app.services.vpn_bot_chats import (
     record_private_bot_chat,
 )
 from app.services.vpn_bot_delivery import require_delivered, send_gated_payload
+from app.services.vpn_cabinet_settings import get_cabinet_settings
 from app.services.vpn_customer_view import (
     MissingCustomerProfile,
     UnavailableCustomerConnection,
@@ -405,7 +406,8 @@ async def render_customer_response(
     settings: Settings,
 ) -> str:
     if command == "support":
-        return settings.vpn_support_text
+        contact = (await get_cabinet_settings(session)).support_contact
+        return settings.vpn_support_text + (f"\n{contact}" if contact else "")
     if customer.status != "active":
         return "VPN-профиль отключён. Выберите «Помощь» для связи с администратором."
 

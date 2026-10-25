@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import UTC, datetime
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
+from app.db.base import utcnow
 from app.db.models import VpnCustomer, VpnPlan
 from app.db.session import get_db
+from app.schemas.vpn_cabinet import PortalUsageResponse
 from app.schemas.vpn_portal import (
     MiniAppLogin,
     PortalConnection,
@@ -22,6 +25,7 @@ from app.schemas.vpn_portal import (
     RenamePortalProfile,
     PortalDevice, PortalDeviceConnection, PortalDeviceLocations, SelectPortalDeviceLocation,
 )
+from app.services.vpn_cabinet_settings import get_cabinet_settings
 from app.services.vpn_devices import MissingCustomerDevice, lock_owned_device, rename_device, select_device_location
 from app.services.vpn_device_view import (
     customer_device, customer_device_connection, customer_device_locations, list_customer_devices,
@@ -69,6 +73,7 @@ from app.services.vpn_public_trial import (
 )
 from app.services.vpn_friend_invitations import BOT_USERNAME
 from app.services.vpn_telegram_identity import TelegramIdentity, resolve_telegram_customer
+from app.services.vpn_usage_reports import get_customer_usage
 
 
 router = APIRouter(prefix="/vpn-portal", tags=["vpn-portal"])
@@ -142,8 +147,11 @@ def _bot_url(settings: Settings) -> str | None:
 
 
 @router.get("/config")
-async def config(request: Request) -> dict[str, object]:
+async def config(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, object]:
     capabilities = portal_capabilities(_settings(request))
+    cabinet = await get_cabinet_settings(db)
+    now = utcnow()
+    notice = cabinet.notice
     return {
         **capabilities,
         "login_path": (
@@ -153,12 +161,36 @@ async def config(request: Request) -> dict[str, object]:
         ),
         "bot_url": _bot_url(_settings(request)),
         "support_text": _settings(request).vpn_support_text,
+        "support_url": cabinet.support_contact,
+        "notice": (
+            notice.model_dump(mode="json")
+            if notice is not None and notice.starts_at <= now < notice.ends_at
+            else None
+        ),
+        "reminders_enabled": cabinet.reminders_enabled,
     }
 
 
 @router.get("/me", response_model=PortalMe)
 async def me(principal: PortalPrincipal = Depends(current_customer)) -> PortalMe:
     return _portal_me(principal)
+
+
+@router.get("/usage", response_model=PortalUsageResponse)
+async def usage(
+    response: Response,
+    principal: PortalPrincipal = Depends(current_customer),
+    db: AsyncSession = Depends(get_db),
+    days: Literal["1", "7", "30"] = Query(default="1"),
+) -> PortalUsageResponse:
+    response.headers["Cache-Control"] = "no-store"
+    report = await get_customer_usage(db, principal.customer.id, days=int(days), now=utcnow())
+    if report is None:
+        raise HTTPException(
+            status_code=404, detail="customer_usage_unavailable",
+            headers={"Cache-Control": "no-store"},
+        )
+    return PortalUsageResponse.model_validate(report.model_dump(exclude={"customer_id"}))
 
 
 @router.get("/plans", response_model=list[PortalPlan])
