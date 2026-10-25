@@ -477,3 +477,26 @@ async def test_target_binding_change_while_waiting_fails_without_extending_worke
     with pytest.raises(ValueError, match="customer_device_endpoint_unavailable"):
         await lock_device_targets(env.db, [env.key], endpoint_id=env.endpoints[1].id)
     assert workers == expected_workers
+
+
+@pytest.mark.asyncio
+async def test_archive_cannot_confirm_existing_revoke_of_an_unbound_remote_identity(location_env):
+    from types import SimpleNamespace
+    from app.api.routes.control import archive_vpn_customer
+
+    env = location_env
+    env.key.worker_id, env.key.endpoint_id, env.key.config_uri = None, None, None
+    env.db.add(models.User(id=1, username="safe-fake-archive", password_hash="safe-fake", role="admin"))
+    await env.db.commit()
+    operation = await service().request_device_operation(
+        env.db, customer_id=env.customer.id, device_id=env.device.id, action="revoke",
+        request_id=uuid4(), settings=env.settings, now=NOW,
+    )
+    await env.db.commit()
+    assert operation.stage == "failed" and env.key.external_uuid is not None
+    response = await archive_vpn_customer(env.customer.id, env.db, SimpleNamespace(id=1))
+    await resume(env)
+    assert operation.stage == "failed" and operation.finished_at is None
+    assert env.key.status == "pending_revoke" and env.key.revoked_at is None
+    assert response.revoked_keys == 0 and response.pending_revoke_keys == 1
+    assert await count_device_slots(env.db, env.subscription.id) == 1
