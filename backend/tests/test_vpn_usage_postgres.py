@@ -228,6 +228,11 @@ async def test_apply_rechecks_lease_after_waiting_for_the_connection_pool(
                 requested.set()
             return await super().scalar(statement, **kwargs)
 
+        async def scalars(self, statement, **kwargs):
+            if statement._for_update_arg is not None:
+                requested.set()
+            return await super().scalars(statement, **kwargs)
+
     engine = create_async_engine(
         postgres_schema.engine.url,
         pool_size=1,
@@ -416,6 +421,33 @@ async def test_usage_foreign_key_writes_do_not_deadlock_control_key_then_worker_
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_busy_unverified_child_prevents_partial_key_prelocks_from_applying(
+    pg_factory,
+):
+    worker_id, _, keys = await seed(pg_factory, unverified=True)
+    pending = await claim(usage, pg_factory)
+    assert len(pending.bindings) == 2 and len(pending.request.identities) == 1
+    async with pg_factory() as owner, owner.begin():
+        await owner.scalar(
+            select(models.VpnAccessKey)
+            .where(models.VpnAccessKey.id == keys[0])
+            .with_for_update()
+        )
+        assert not await asyncio.wait_for(
+            usage.apply_usage_poll(
+                pg_factory, pending, receipt(pending), now=NOW + timedelta(seconds=1)
+            ),
+            1,
+        )
+    async with pg_factory() as db:
+        assert (
+            await db.get(models.VpnNodeUsagePoll, worker_id)
+        ).claim_token == pending.claim_token
+        assert await db.scalar(select(models.VpnKeyUsageSample)) is None
+        assert await db.scalar(select(models.VpnUsageHour)) is None
 
 
 @pytest.mark.asyncio

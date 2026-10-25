@@ -765,10 +765,9 @@ async def test_apply_locks_all_bound_key_references_before_worker_and_poll(
                 statement._for_update_arg is not None
                 and statement.column_descriptions[0]["entity"] is models.VpnAccessKey
             ):
-                rows = list(result)
-                assert rows == [binding[0] for binding in pending.bindings]
-                assert len(rows) == 2 and len(pending.request.identities) == 1
-                return rows
+                key_ids = [binding[0] for binding in pending.bindings]
+                assert key_ids in statement.compile().params.values()
+                assert len(key_ids) == 2 and len(pending.request.identities) == 1
             return result
 
     recording_factory = async_sessionmaker(

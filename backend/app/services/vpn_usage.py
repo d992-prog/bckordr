@@ -350,6 +350,18 @@ async def apply_usage_poll(
         except Exception:  # noqa: BLE001 - do not retain raw node receipt details
             receipt, error_code = None, "vpn_usage_receipt_invalid"
     async with session_factory() as db, db.begin():
+        # FK inserts need key-share locks; take them before worker like control staging.
+        bound_key_ids = tuple(binding[0] for binding in claim.bindings)
+        referenced_key_ids = tuple(
+            await db.scalars(
+                select(models.VpnAccessKey.id)
+                .where(models.VpnAccessKey.id.in_(bound_key_ids))
+                .order_by(models.VpnAccessKey.id)
+                .with_for_update(read=True, key_share=True, skip_locked=True)
+            )
+        )
+        if referenced_key_ids != bound_key_ids:
+            return False
         worker = await db.scalar(
             select(models.WorkerNode)
             .where(models.WorkerNode.id == claim.worker_id)
