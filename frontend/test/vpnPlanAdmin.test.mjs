@@ -48,7 +48,7 @@ test("admin plan form and table manage public visibility without a second editor
 test("publication mutation acquires a synchronous lock before its first await", async () => {
   const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   const handler = source.match(
-    /async function toggleVpnPlanPublication[\s\S]*?\n  }\n\n  async function runVpnLifecycleMaintenance/,
+    /async function toggleVpnPlanPublication[\s\S]*?\r?\n  }\r?\n\r?\n  async function runVpnLifecycleMaintenance/,
   )?.[0] ?? "";
 
   assert.match(
@@ -64,7 +64,7 @@ test("publication mutation acquires a synchronous lock before its first await", 
 test("publication reload failures reach the error path before a success toast", async () => {
   const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
   const handler = source.match(
-    /async function toggleVpnPlanPublication[\s\S]*?\n  }\n\n  async function runVpnLifecycleMaintenance/,
+    /async function toggleVpnPlanPublication[\s\S]*?\r?\n  }\r?\n\r?\n  async function runVpnLifecycleMaintenance/,
   )?.[0] ?? "";
 
   assert.match(

@@ -756,6 +756,7 @@ button:disabled {
   user-select: all;
 }
 
+.vpn-node-trust textarea,
 .vpn-node-test-profile textarea {
   width: 100%;
   max-width: 100%;

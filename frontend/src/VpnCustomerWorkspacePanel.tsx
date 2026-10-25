@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   api,
@@ -15,6 +15,7 @@ import {
   applyAccessKeyDisplay,
   calculateExtendedExpiration,
   classifyVpnCustomer,
+  countReservedVpnDeviceSlots,
   customerStatusOptions,
   filterVpnCustomers,
   nextAccessKeyEditorAfterRename,
@@ -22,6 +23,7 @@ import {
   selectPrimarySubscription,
   saveSubscriptionAndRequestSync,
   saveAccessKeyDisplayName,
+  vpnProfileIssueError,
   type VpnCustomerFilter,
   type VpnCustomerOperationalStatus,
 } from "./vpnCustomerWorkspace";
@@ -294,6 +296,10 @@ export function VpnCustomerWorkspace({
   const [creatingKeyForSubscriptionId, setCreatingKeyForSubscriptionId] = useState<
     number | null
   >(null);
+  const [accessKeyIssueError, setAccessKeyIssueError] = useState<string | null>(null);
+  const [createdAccessKeys, setCreatedAccessKeys] = useState<VpnAccessKey[]>([]);
+  const creatingAccessKeyRef = useRef(false);
+  const accessKeyFormVersionRef = useRef(0);
   const [expandedKeyIds, setExpandedKeyIds] = useState<Set<number>>(() => new Set());
   const [editingAccessKeyId, setEditingAccessKeyId] = useState<number | null>(null);
   const [accessKeyName, setAccessKeyName] = useState("");
@@ -321,15 +327,16 @@ export function VpnCustomerWorkspace({
     () => new Set(selectedSubscriptions.map((subscription) => subscription.id)),
     [selectedSubscriptions],
   );
+  // shortcut: counts use the loaded list of up to 1,000 profiles; use server totals when pagination is added.
   const selectedAccessKeys = useMemo(
     () =>
-      accessKeys
+      [...accessKeys, ...createdAccessKeys.filter((created) => !accessKeys.some((key) => key.id === created.id))]
         .filter((accessKey) => selectedSubscriptionIds.has(accessKey.subscription_id))
         .map((accessKey) => {
           const display = accessKeyDisplayOverrides.get(accessKey.id);
           return display ? applyAccessKeyDisplay(accessKey, display) : accessKey;
         }),
-    [accessKeys, accessKeyDisplayOverrides, selectedSubscriptionIds],
+    [accessKeys, createdAccessKeys, accessKeyDisplayOverrides, selectedSubscriptionIds],
   );
   const planMap = useMemo(() => new Map(plans.map((plan) => [plan.id, plan])), [plans]);
   const workerMap = useMemo(
@@ -359,7 +366,14 @@ export function VpnCustomerWorkspace({
     setAccessKeyDisplayOverrides((current) =>
       reconcileAccessKeyDisplayOverrides(current, accessKeys),
     );
+    setCreatedAccessKeys((current) => current.filter((created) => !accessKeys.some((key) => key.id === created.id)));
   }, [accessKeys]);
+
+  useEffect(() => {
+    accessKeyFormVersionRef.current += 1;
+    setCreatingKeyForSubscriptionId(null);
+    setAccessKeyIssueError(null);
+  }, [selectedCustomerId]);
 
   useEffect(() => {
     const usableSlots = new Set(
@@ -739,40 +753,68 @@ export function VpnCustomerWorkspace({
   }
 
   function beginAccessKeyCreate(subscription: VpnSubscription) {
+    accessKeyFormVersionRef.current += 1;
     setAccessKeyForm(EMPTY_ACCESS_KEY_FORM);
+    setAccessKeyIssueError(null);
     setCreatingKeyForSubscriptionId(subscription.id);
   }
 
   async function saveAccessKey(event: FormEvent) {
     event.preventDefault();
-    if (!creatingKeyForSubscriptionId) {
+    if (!creatingKeyForSubscriptionId || creatingAccessKeyRef.current) {
       return;
     }
-    setBusyAction(`key-create-${creatingKeyForSubscriptionId}`);
+    const subscription = selectedSubscriptions.find((item) => item.id === creatingKeyForSubscriptionId);
+    if (!subscription) {
+      return;
+    }
+    if (countReservedVpnDeviceSlots(selectedAccessKeys, subscription.id) >= subscription.max_devices) {
+      setAccessKeyIssueError(vpnProfileIssueError("VPN device limit reached"));
+      return;
+    }
+    creatingAccessKeyRef.current = true;
+    const formVersion = accessKeyFormVersionRef.current;
+    setAccessKeyIssueError(null);
+    setBusyAction(`key-create-${subscription.id}`);
     try {
-      const accessKey = await api.createVpnAccessKey({
-        subscription_id: creatingKeyForSubscriptionId,
-        worker_id: optionalNumber(accessKeyForm.workerId),
-        protocol: accessKeyForm.protocol,
-        display_name: accessKeyForm.displayName.trim(),
-      });
-      await reload();
-      setCreatingKeyForSubscriptionId(null);
-      setAccessKeyForm(EMPTY_ACCESS_KEY_FORM);
+      let accessKey: VpnAccessKey;
+      try {
+        accessKey = await api.createVpnAccessKey({
+          subscription_id: subscription.id,
+          worker_id: optionalNumber(accessKeyForm.workerId),
+          protocol: accessKeyForm.protocol,
+          display_name: accessKeyForm.displayName.trim(),
+        });
+      } catch (error) {
+        if (accessKeyFormVersionRef.current === formVersion) {
+          setAccessKeyIssueError(vpnProfileIssueError(error));
+        }
+        return;
+      }
+      setCreatedAccessKeys((current) => [...current, accessKey]);
+      if (accessKeyFormVersionRef.current === formVersion) {
+        setCreatingKeyForSubscriptionId(null);
+        setAccessKeyForm(EMPTY_ACCESS_KEY_FORM);
+      }
       const accessReady = accessKey.status === "active" && Boolean(accessKey.config_uri);
+      const savedMessage = accessReady
+        ? `VPN доступ выдан для подписки #${subscription.id}`
+        : `Профиль сохранён для подписки #${subscription.id}. Статус: ${accessKeyStatusLabel(accessKey.status)}`;
+      let refreshed = true;
+      try {
+        await reload();
+      } catch {
+        refreshed = false;
+      }
       notify(
-        accessReady ? "success" : "error",
-        accessReady
-          ? "VPN доступ выдан"
-          : accessKey.last_error || "VPN‑профиль сохранён и ожидает выдачи",
-      );
-    } catch (error) {
-      notify(
-        "error",
-        error instanceof Error ? error.message : "Не удалось создать VPN‑профиль",
+        refreshed && accessReady ? "success" : "error",
+        refreshed
+          ? savedMessage
+          : `${savedMessage}. Список не обновился. Обновите страницу, чтобы проверить состояние профиля`,
       );
     } finally {
-      setBusyAction(null);
+      creatingAccessKeyRef.current = false;
+      setBusyAction((current) => current === `key-create-${subscription.id}` ? null : current);
     }
   }
 
@@ -1261,9 +1303,23 @@ export function VpnCustomerWorkspace({
   }
 
   function renderAccessKeyForm(subscription: VpnSubscription) {
+    const usedDeviceSlots = countReservedVpnDeviceSlots(selectedAccessKeys, subscription.id);
+    const deviceLimitReached = usedDeviceSlots >= subscription.max_devices;
     return (
       <form className="form vpn-inline-form" onSubmit={saveAccessKey}>
         <h4>Новый VPN‑профиль для подписки #{subscription.id}</h4>
+        <p className="muted">Занято мест для устройств: {usedDeviceSlots} из {subscription.max_devices}</p>
+        <p className="muted">
+          Приостановленные профили и профили с ошибкой тоже занимают места. Место освободится после завершения отзыва профиля
+        </p>
+        {accessKeyIssueError || deviceLimitReached ? (
+          <div role="alert">
+            <p>{accessKeyIssueError ?? vpnProfileIssueError("VPN device limit reached")}</p>
+            <button type="button" className="ghost" onClick={() => beginSubscriptionEdit(subscription)}>
+              Изменить лимит подписки
+            </button>
+          </div>
+        ) : null}
         <div className="form two-columns">
           <label>
             <span>VPN‑нода</span>
@@ -1318,14 +1374,18 @@ export function VpnCustomerWorkspace({
         <div className="actions">
           <button
             type="submit"
-            disabled={busyAction === `key-create-${subscription.id}`}
+            disabled={deviceLimitReached || creatingAccessKeyRef.current}
           >
             Выдать профиль
           </button>
           <button
             type="button"
             className="ghost"
-            onClick={() => setCreatingKeyForSubscriptionId(null)}
+            onClick={() => {
+              accessKeyFormVersionRef.current += 1;
+              setCreatingKeyForSubscriptionId(null);
+              setAccessKeyIssueError(null);
+            }}
           >
             Отмена
           </button>
@@ -1668,6 +1728,7 @@ export function VpnCustomerWorkspace({
                     (accessKey) => accessKey.subscription_id === subscription.id,
                   );
                   const subscriptionBusy = busyAction === `subscription-${subscription.id}`;
+                  const usedDeviceSlots = countReservedVpnDeviceSlots(selectedAccessKeys, subscription.id);
                   const isUsable = ["active", "trial"].includes(subscription.status);
                   return (
                     <article key={subscription.id} className="vpn-subscription-card">
@@ -1696,7 +1757,7 @@ export function VpnCustomerWorkspace({
                         </div>
                         <div>
                           <span className="muted">Устройств</span>
-                          <strong>{subscription.max_devices}</strong>
+                          <strong>{usedDeviceSlots} из {subscription.max_devices}</strong>
                         </div>
                         <div>
                           <span className="muted">Заметки</span>

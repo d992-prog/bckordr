@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import { api } from "../src/api.ts";
+import * as onboarding from "../src/vpnNodeOnboarding.ts";
 import {
   createVpnNodeOnboardingActionGuard,
   createVpnNodeOnboardingRequestGate,
@@ -29,7 +30,7 @@ test("VPN node onboarding maps every state to the exact operator copy", () => {
   ]);
   assert.deepEqual(onboardingPresentation("needs_trust"), [
     "Подтвердить SSH‑ключ",
-    "Сверьте fingerprint в панели хостинга.",
+    "Сверьте отпечаток SSH‑ключа через консоль сервера в панели хостинга.",
   ]);
   assert.deepEqual(onboardingPresentation("ready_to_start"), [
     "Настроить VPN‑ноду",
@@ -158,6 +159,30 @@ test("trust confirmation belongs only to the fingerprint that was checked", () =
   assert.equal(isVpnNodeFingerprintConfirmed("SHA256:first", "SHA256:changed"), false);
   assert.equal(isVpnNodeFingerprintConfirmed(null, "SHA256:first"), false);
   assert.equal(isVpnNodeFingerprintConfirmed("SHA256:first", null), false);
+});
+
+test("SSH fingerprint command reads the Ed25519 public key and requests SHA256", () => {
+  assert.equal(
+    onboarding.SSH_FINGERPRINT_COMMAND,
+    "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256",
+  );
+});
+
+test("SSH trust explains the hosting-console comparison and why confirmation is disabled", async () => {
+  const source = await readFile(new URL("../src/VpnNodeOnboardingPanel.tsx", import.meta.url), "utf8");
+  assert.match(source, /Откройте консоль выбранного сервера в панели хостинга/);
+  assert.match(source, /value=\{SSH_FINGERPRINT_COMMAND\}/);
+  assert.match(source, /await copyVpnNodeTestProfile\(SSH_FINGERPRINT_COMMAND\)/);
+  assert.match(source, /Скопировать команду/);
+  assert.match(source, /Сравните значение SHA256:[\s\S]*?отпечатком ниже/);
+  assert.match(source, /Отпечатки совпадают/);
+  assert.match(source, /id=\{trustHintId\}/);
+  assert.match(source, /aria-describedby=\{status\.state === "needs_trust" \? trustHintId : undefined\}/);
+  assert.match(source, /Сначала сверьте отпечатки/);
+  assert.match(source, /Отпечаток сервера не получен/);
+  assert.match(source, /isVpnNodeFingerprintConfirmed\(confirmedFingerprint, fingerprint\)/);
+  assert.match(source, /api\.trustVpnNode\(worker\.id, \{ fingerprint \}\)/);
+  assert.doesNotMatch(source, /Fingerprint совпадает/);
 });
 
 test("temporary profile survives only while onboarding awaits a real-device test", () => {

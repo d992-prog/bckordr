@@ -12,6 +12,9 @@ export type VpnCustomerOperationalStatus = Exclude<VpnCustomerFilter, "all">;
 const USABLE_SUBSCRIPTION_STATUSES = new Set(["active", "trial"]);
 const SUSPENDED_SUBSCRIPTION_STATUSES = new Set(["disabled", "cancelled", "expired"]);
 const EXPIRING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const RESERVED_DEVICE_SLOT_STATUSES = new Set([
+  "pending_sync", "syncing", "active", "pending_revoke", "pending_suspend", "suspended", "failed",
+]);
 const ACCESS_KEY_STATUS_LABELS: Record<string, string> = {
   pending_sync: "ожидает синхронизации",
   syncing: "синхронизируется",
@@ -25,6 +28,23 @@ const ACCESS_KEY_STATUS_LABELS: Record<string, string> = {
 
 export function accessKeyStatusLabel(status: string) {
   return ACCESS_KEY_STATUS_LABELS[status] ?? status;
+}
+
+export function countReservedVpnDeviceSlots(
+  keys: ReadonlyArray<{ subscription_id: number; status: string }>,
+  subscriptionId: number,
+) {
+  return keys.filter((key) => (
+    key.subscription_id === subscriptionId && RESERVED_DEVICE_SLOT_STATUSES.has(key.status)
+  )).length;
+}
+
+export function vpnProfileIssueError(error: unknown) {
+  const message = error instanceof Error ? error.message : error;
+  if (message === "VPN device limit reached") {
+    return "Достигнут лимит устройств. Измените лимит подписки или отзовите ненужный профиль";
+  }
+  return "Не удалось выдать VPN‑профиль. Обновите список профилей перед повторной попыткой";
 }
 
 export async function saveSubscriptionAndRequestSync(

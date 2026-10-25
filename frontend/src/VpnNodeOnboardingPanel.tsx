@@ -8,6 +8,7 @@ import {
   onboardingErrorMessage,
   onboardingPresentation,
   reconcileVpnNodeTestProfileUri,
+  SSH_FINGERPRINT_COMMAND,
   vpnNodeOnboardingSetupAction,
   type VpnNodeOnboardingWorker,
 } from "./vpnNodeOnboarding";
@@ -118,6 +119,15 @@ export function VpnNodeOnboardingPanel({
     );
   };
 
+  const copyFingerprintCommand = async () => {
+    setError(null);
+    setMessage(
+      await copyVpnNodeTestProfile(SSH_FINGERPRINT_COMMAND)
+        ? "Команда скопирована. Выполните ее в консоли сервера в панели хостинга"
+        : "Не удалось скопировать автоматически. Скопируйте команду из поля",
+    );
+  };
+
   const confirmTest = async () => {
     await run(() => api.confirmVpnNodeOnboarding(worker.id, { confirmed: true }));
   };
@@ -207,6 +217,7 @@ export function VpnNodeOnboardingPanel({
 
   const [title, description] = onboardingPresentation(status.state);
   const fingerprint = status.fingerprint;
+  const trustHintId = `vpn-node-trust-hint-${worker.id}`;
   const isProgressing = status.state === "queued" || status.state === "running";
   const canTrust = status.state === "needs_trust"
     && isVpnNodeFingerprintConfirmed(confirmedFingerprint, fingerprint);
@@ -233,7 +244,19 @@ export function VpnNodeOnboardingPanel({
 
       {status.state === "needs_trust" && status.fingerprint ? (
         <div className="vpn-node-trust">
-          <span>Fingerprint Ed25519</span>
+          <ol>
+            <li>Откройте консоль выбранного сервера в панели хостинга</li>
+            <li>Выполните команду ниже</li>
+            <li>Сравните значение SHA256: в результате команды с отпечатком ниже</li>
+          </ol>
+          <label>
+            <span>Команда для консоли сервера</span>
+            <textarea readOnly spellCheck={false} rows={2} value={SSH_FINGERPRINT_COMMAND} />
+          </label>
+          <button type="button" className="ghost" onClick={() => void copyFingerprintCommand()} disabled={busy}>
+            Скопировать команду
+          </button>
+          <span>Обнаруженный отпечаток Ed25519</span>
           <code>{status.fingerprint}</code>
           <label className="inline-check">
             <input
@@ -241,9 +264,17 @@ export function VpnNodeOnboardingPanel({
               checked={isVpnNodeFingerprintConfirmed(confirmedFingerprint, status.fingerprint)}
               onChange={(event) => setConfirmedFingerprint(event.target.checked ? status.fingerprint ?? null : null)}
             />
-            <span>Fingerprint совпадает с панелью хостинга</span>
+            <span>Отпечатки совпадают</span>
           </label>
         </div>
+      ) : null}
+
+      {status.state === "needs_trust" ? (
+        <p id={trustHintId} className="muted">
+          {fingerprint
+            ? "Сначала сверьте отпечатки и отметьте «Отпечатки совпадают». Если они различаются, не подтверждайте SSH‑ключ"
+            : "Отпечаток сервера не получен. Повторите проверку сервера"}
+        </p>
       ) : null}
 
       {showMainAction ? (
@@ -251,6 +282,7 @@ export function VpnNodeOnboardingPanel({
           type="button"
           className="vpn-node-onboarding-primary"
           onClick={runPrimaryAction}
+          aria-describedby={status.state === "needs_trust" ? trustHintId : undefined}
           disabled={busy || isProgressing || (status.state === "needs_trust" && !canTrust)}
         >
           {busy ? "Подождите…" : title}

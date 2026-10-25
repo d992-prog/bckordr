@@ -1,3 +1,5 @@
+export const SSH_FINGERPRINT_COMMAND = "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256";
+
 export type VpnNodeOnboardingState =
   | "needs_preflight"
   | "needs_trust"
@@ -108,7 +110,7 @@ export function reconcileVpnNodeTestProfileUri(
 
 const ONBOARDING_PRESENTATIONS = {
   needs_preflight: ["Проверить сервер", "Проверяем только настройки и SSH‑ключ."],
-  needs_trust: ["Подтвердить SSH‑ключ", "Сверьте fingerprint в панели хостинга."],
+  needs_trust: ["Подтвердить SSH‑ключ", "Сверьте отпечаток SSH‑ключа через консоль сервера в панели хостинга."],
   ready_to_start: ["Настроить VPN‑ноду", "Установим защищённое подключение на TCP 443."],
   queued: ["Настройка в очереди", "Можно закрыть страницу — работа продолжится."],
   running: ["Настраиваем VPN‑ноду…", "Не выключайте сервер."],

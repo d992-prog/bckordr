@@ -16,6 +16,7 @@ import {
   shouldApplyLoadGeneration,
 } from "../src/vpnCustomerWorkspace.ts";
 import { readFile } from "node:fs/promises";
+import * as workspace from "../src/vpnCustomerWorkspace.ts";
 
 const now = new Date("2026-09-20T12:00:00.000Z");
 const customers = [
@@ -158,6 +159,75 @@ test("shows access-key states in operator-friendly language", () => {
   assert.equal(accessKeyStatusLabel("pending_revoke"), "ожидает отзыва");
   assert.equal(accessKeyStatusLabel("active"), "активен");
   assert.equal(accessKeyStatusLabel("custom"), "custom");
+});
+
+test("device slots match backend reservations, including suspended and uncertain profiles", () => {
+  assert.equal(typeof workspace.countReservedVpnDeviceSlots, "function");
+  const reservedStatuses = [
+    "pending_sync", "syncing", "active", "pending_revoke", "pending_suspend", "suspended", "failed",
+  ];
+  const keys = Object.freeze([
+    ...reservedStatuses.map((status) => Object.freeze({ subscription_id: 10, status })),
+    { subscription_id: 10, status: "revoked" },
+    { subscription_id: 10, status: "unknown" },
+    { subscription_id: 20, status: "active" },
+  ]);
+  assert.equal(workspace.countReservedVpnDeviceSlots(keys, 10), 7);
+  assert.equal(workspace.countReservedVpnDeviceSlots(keys, 20), 1);
+  assert.equal(workspace.countReservedVpnDeviceSlots(keys, 30), 0);
+  assert.equal(workspace.countReservedVpnDeviceSlots([], 10), 0);
+  for (const status of reservedStatuses) {
+    assert.equal(workspace.countReservedVpnDeviceSlots([{ subscription_id: 10, status }], 10), 1, status);
+  }
+});
+
+test("profile issuance errors use bounded Russian recovery copy and never echo backend details", () => {
+  assert.equal(typeof workspace.vpnProfileIssueError, "function");
+  const limitMessage = "Достигнут лимит устройств. Измените лимит подписки или отзовите ненужный профиль";
+  assert.equal(workspace.vpnProfileIssueError(new Error("VPN device limit reached")), limitMessage);
+  assert.equal(workspace.vpnProfileIssueError("VPN device limit reached"), limitMessage);
+  const fallback = "Не удалось выдать VPN‑профиль. Обновите список профилей перед повторной попыткой";
+  for (const error of [
+    new Error("private_key=secret vless://sensitive"), "unexpected backend detail", null,
+    { message: "secret" }, "__proto__", "constructor", undefined,
+  ]) {
+    assert.equal(workspace.vpnProfileIssueError(error), fallback);
+  }
+});
+
+test("profile issue form shows occupied slots and a local recovery action without raising the limit", async () => {
+  const source = await readFile(new URL("../src/VpnCustomerWorkspacePanel.tsx", import.meta.url), "utf8");
+  const form = source.match(/function renderAccessKeyForm\([\s\S]*?\r?\n  function renderAccessKey\(/)?.[0] ?? "";
+  assert.match(source, /const usedDeviceSlots = countReservedVpnDeviceSlots\(selectedAccessKeys, subscription\.id\)/);
+  assert.match(source, /\{usedDeviceSlots\} из \{subscription\.max_devices\}/);
+  assert.match(form, /role="alert"/);
+  assert.match(form, /accessKeyIssueError/);
+  assert.match(form, /usedDeviceSlots >= subscription\.max_devices/);
+  assert.match(form, /disabled=\{[^}]*deviceLimitReached/);
+  assert.match(form, /onClick=\{\(\) => beginSubscriptionEdit\(subscription\)\}/);
+  assert.match(form, /Изменить лимит подписки/);
+  assert.match(form, /Приостановленные профили и профили с ошибкой тоже занимают места/);
+  const begin = source.match(/function beginAccessKeyCreate\([\s\S]*?\r?\n  async function saveAccessKey/)?.[0] ?? "";
+  assert.doesNotMatch(begin, /max_devices|updateVpnSubscription/);
+  const openButton = source.match(/onClick=\{\(\) => beginAccessKeyCreate\(subscription\)\}[\s\S]*?>[\s\S]*?Выдать новый профиль/)?.[0];
+  assert.ok(openButton, "the explanation must stay accessible when slots are full");
+});
+
+test("profile creation guards duplicate calls and separates a saved profile from a failed refresh", async () => {
+  const source = await readFile(new URL("../src/VpnCustomerWorkspacePanel.tsx", import.meta.url), "utf8");
+  const save = source.match(/async function saveAccessKey\([\s\S]*?\r?\n  async function retryAccessKeyProvision/)?.[0] ?? "";
+  assert.match(save, /creatingAccessKeyRef\.current/);
+  assert.ok(save.indexOf("creatingAccessKeyRef.current = true") < save.indexOf("await api.createVpnAccessKey"));
+  assert.match(save, /countReservedVpnDeviceSlots\(selectedAccessKeys, subscription\.id\) >= subscription\.max_devices/);
+  assert.match(save, /setAccessKeyIssueError\(vpnProfileIssueError\(error\)\)/);
+  assert.match(save, /setCreatedAccessKeys\(/);
+  assert.match(save, /accessKeyFormVersionRef\.current === formVersion/);
+  assert.ok(save.indexOf("setCreatingKeyForSubscriptionId(null)") < save.indexOf("await reload()"));
+  assert.match(save, /try \{\s*await reload\(\);\s*\} catch \{/);
+  assert.match(save, /Профиль сохранён/);
+  assert.match(save, /Обновите страницу/);
+  assert.doesNotMatch(save, /error\.message|accessKey\.last_error/);
+  assert.match(source, /\.\.\.createdAccessKeys\.filter\(/);
 });
 
 test("a saved subscription survives a failed immediate sync request", async () => {
@@ -592,7 +662,7 @@ test("VPN node removal uses an accessible confirmation and preserves the mutatio
   assert.match(source, /loadAll\(\{ silent: true, throwOnError: true \}\)/);
   assert.match(source, /Нода удалена, но список не удалось обновить/);
   const deleteFunction = source.match(
-    /async function deleteWorkerNode\(worker: WorkerNode\) \{[\s\S]*?\n  \}\n\n  function focusVpnNodesAfterDeletion/,
+    /async function deleteWorkerNode\(worker: WorkerNode\) \{[\s\S]*?\r?\n  \}\r?\n\r?\n  function focusVpnNodesAfterDeletion/,
   )?.[0];
   assert.ok(deleteFunction, "the node deletion helper must remain directly inspectable");
   assert.ok(
