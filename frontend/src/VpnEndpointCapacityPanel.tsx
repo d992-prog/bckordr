@@ -1,7 +1,7 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { api, VpnEndpointCapacity } from "./api";
-import { validateVpnEndpointCapacity } from "./vpnEndpointCapacity";
+import { applyVpnEndpointCapacityUpdate, applyVpnEndpointPublicationUpdate, validateVpnEndpointCapacity } from "./vpnEndpointCapacity";
 
 type Props = {
   endpoints: VpnEndpointCapacity[];
@@ -21,13 +21,18 @@ function CapacityRow({ endpoint, onUpdated }: { endpoint: VpnEndpointCapacity } 
   const [publicationError, setPublicationError] = useState<string | null>(null);
   const [publicationMessage, setPublicationMessage] = useState<string | null>(null);
   const requestRef = useRef<object | null>(null);
+  const latestEndpointRef = useRef(endpoint);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    latestEndpointRef.current = endpoint;
+  }, [endpoint]);
+
+  useLayoutEffect(() => {
     requestRef.current = null;
     setSaving(false);
     setPublishing(false);
     return () => { requestRef.current = null; };
-  }, [endpoint]);
+  }, [endpoint.endpoint_id, endpoint.worker_id]);
 
   useEffect(() => {
     setMaximum(endpoint.max_active_profiles?.toString() ?? "");
@@ -56,7 +61,7 @@ function CapacityRow({ endpoint, onUpdated }: { endpoint: VpnEndpointCapacity } 
       setSaving(true);
       const updated = await api.updateVpnEndpointCapacity(endpoint.endpoint_id, payload);
       if (requestRef.current !== request) return;
-      onUpdated(updated);
+      onUpdated(applyVpnEndpointCapacityUpdate(latestEndpointRef.current, updated, endpoint));
       setMessage("Лимиты сохранены.");
     } catch (caught) {
       if (requestRef.current !== request) return;
@@ -91,7 +96,7 @@ function CapacityRow({ endpoint, onUpdated }: { endpoint: VpnEndpointCapacity } 
       setPublicName(updated.public_name ?? "");
       setCountryCode(updated.country_code ?? "");
       setPublished(updated.is_published);
-      onUpdated(updated);
+      onUpdated(applyVpnEndpointPublicationUpdate(latestEndpointRef.current, updated, endpoint));
       setPublicationMessage("Публикация сохранена.");
     } catch (caught) {
       if (requestRef.current !== request) return;

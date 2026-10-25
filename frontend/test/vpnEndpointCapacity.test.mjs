@@ -3,10 +3,47 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
 import { api } from "../src/api.ts";
+import * as endpointCapacity from "../src/vpnEndpointCapacity.ts";
 import {
   replaceVpnEndpointCapacity,
   validateVpnEndpointCapacity,
 } from "../src/vpnEndpointCapacity.ts";
+
+test("capacity saves retain newer publication, health and occupancy from a refreshed row", () => {
+  assert.equal(typeof endpointCapacity.applyVpnEndpointCapacityUpdate, "function");
+  const current = { endpoint_id: 7, worker_id: 3, status: "maintenance", occupied_profiles: 8,
+    max_active_profiles: 20, capacity_warning_percent: 80, is_published: true, public_name: "Новое имя", country_code: "NL" };
+  const response = { ...current, status: "ready", occupied_profiles: 2, public_name: "Старое имя", country_code: "DE",
+    is_published: false, max_active_profiles: 30, capacity_warning_percent: 70 };
+  assert.deepEqual(endpointCapacity.applyVpnEndpointCapacityUpdate(current, response, { ...current }), {
+    ...current, max_active_profiles: 30, capacity_warning_percent: 70,
+  });
+});
+
+test("publication saves retain newer capacity, health and occupancy from a refreshed row", () => {
+  assert.equal(typeof endpointCapacity.applyVpnEndpointPublicationUpdate, "function");
+  const current = { endpoint_id: 7, worker_id: 3, status: "maintenance", occupied_profiles: 8,
+    max_active_profiles: 50, capacity_warning_percent: 90, is_published: false, public_name: null, country_code: null };
+  const response = { ...current, status: "ready", occupied_profiles: 2, max_active_profiles: 10, capacity_warning_percent: 80,
+    is_published: true, public_name: "Германия", country_code: "DE" };
+  assert.deepEqual(endpointCapacity.applyVpnEndpointPublicationUpdate(current, response, { ...current }), {
+    ...current, is_published: true, public_name: "Германия", country_code: "DE",
+  });
+});
+
+test("without an intervening refresh both save replies apply their fresh full snapshot", () => {
+  const original = { endpoint_id: 7, worker_id: 3, status: "ready", occupied_profiles: 2,
+    max_active_profiles: 50, capacity_warning_percent: 80, is_published: false, public_name: null, country_code: null };
+  const saved = { ...original, status: "maintenance", occupied_profiles: 8, public_name: "Германия", country_code: "DE" };
+  assert.equal(endpointCapacity.applyVpnEndpointCapacityUpdate(original, saved, original), saved);
+  assert.equal(endpointCapacity.applyVpnEndpointPublicationUpdate(original, saved, original), saved);
+});
+
+test("row mutation lifetime follows endpoint identity rather than each polling snapshot", async () => {
+  const source = (await readFile(new URL("../src/VpnEndpointCapacityPanel.tsx", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+  assert.match(source, /requestRef\.current = null;[\s\S]*?\}, \[endpoint\.endpoint_id, endpoint\.worker_id\]\)/);
+  assert.doesNotMatch(source, /requestRef\.current = null;[^]*?return \(\) => \{ requestRef\.current = null; \};\n  \}, \[endpoint\]\)/);
+});
 
 const originalFetch = globalThis.fetch;
 

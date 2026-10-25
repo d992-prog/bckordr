@@ -621,6 +621,9 @@ try {
     const heldUsage = [];
     const publications = [];
     const heldPublications = [];
+    const capacityRequests = [];
+    const heldCapacities = [];
+    let holdCapacity = false;
     let releaseProfile;
     const cappedKeys = Array.from({ length: 1000 }, (_, index) => ({ ...fixtureKeys()[0], id: 21 + index, config_uri: null }));
     await operations.route("**/api/**", async (route) => {
@@ -666,7 +669,11 @@ try {
       }
       if (request.method() === "PATCH" && pathname.endsWith("/capacity")) {
         const payload = request.postDataJSON();
+        capacityRequests.push(payload);
         assert.deepEqual(Object.keys(payload).sort(), ["capacity_warning_percent", "max_active_profiles"]);
+        if (holdCapacity) return new Promise((resolve) => heldCapacities.push(async (body, status = 200) => {
+          await json(route, body, status); resolve();
+        }));
         capacity = { ...capacity, ...payload };
         return json(route, capacity);
       }
@@ -836,6 +843,55 @@ try {
       await publication.getByRole("status").waitFor();
       assert.equal(await publication.getByLabel("Показывать клиентам", { exact: true }).isChecked(), false);
       assert.equal(await card.locator(".status").textContent(), "unhealthy", "hiding must not alter health");
+      for (const action of ["publication", "capacity"]) {
+        for (const outcome of ["success", "error"]) {
+          const form = card.locator("form").nth(action === "capacity" ? 0 : 1);
+          const captured = { ...capacity };
+          const patch = action === "capacity"
+            ? { max_active_profiles: capacity.max_active_profiles + 1, capacity_warning_percent: 75 }
+            : { is_published: !capacity.is_published, public_name: `Сервер ${outcome}`, country_code: "DE" };
+          if (action === "capacity") {
+            holdCapacity = true;
+            await form.getByRole("spinbutton", { name: /Лимит профилей/ }).fill(String(patch.max_active_profiles));
+            await form.getByRole("spinbutton", { name: /Порог предупреждения/ }).fill(String(patch.capacity_warning_percent));
+          } else {
+            await form.getByLabel("Название для клиентов", { exact: true }).fill(patch.public_name);
+            await form.getByLabel("Код страны", { exact: true }).fill(patch.country_code);
+            await form.getByLabel("Показывать клиентам", { exact: true }).setChecked(patch.is_published);
+          }
+          const held = action === "capacity" ? heldCapacities : heldPublications;
+          const requests = action === "capacity" ? capacityRequests : publications;
+          const before = requests.length;
+          await form.getByRole("button", { name: action === "capacity" ? "Сохранить лимиты" : "Сохранить публикацию", exact: true }).click();
+          await until(() => held.length === 1, `${action}/${outcome} response was not held`);
+          await refresh();
+          assert.equal(await card.getByRole("checkbox").isDisabled(), true,
+            `${action}/${outcome}: identical-row refresh must retain the mutation lock`);
+          await form.evaluate((element) => {
+            element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+            element.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          });
+          assert.equal(requests.length, before + 1, `${action}/${outcome}: refresh must not allow a second mutation`);
+          capacity = { ...capacity, status: "maintenance", occupied_profiles: capacity.occupied_profiles + 1,
+            ...(action === "publication" ? { max_active_profiles: capacity.max_active_profiles + 5 }
+              : { public_name: "Обновлено другим администратором", country_code: "NL" }) };
+          await refresh();
+          assert.equal(await card.getByRole("checkbox").isDisabled(), true,
+            `${action}/${outcome}: health refresh must retain the mutation lock`);
+          if (outcome === "success") capacity = { ...capacity, ...patch };
+          await held.shift()(outcome === "success" ? { ...captured, ...patch }
+            : { detail: "Сохранение временно недоступно" }, outcome === "success" ? 200 : 503);
+          await form.getByRole(outcome === "success" ? "status" : "alert").waitFor();
+          assert.equal(await card.getByRole("checkbox").isDisabled(), false);
+          assert.equal(await card.locator(".status").textContent(), "maintenance",
+            `${action}/${outcome}: late replies must preserve newer health`);
+          assert.equal(await card.getByRole("spinbutton", { name: /Лимит профилей/ }).inputValue(),
+            String(outcome === "error" && action === "capacity" ? patch.max_active_profiles : capacity.max_active_profiles));
+          assert.equal(await publication.getByLabel("Название для клиентов", { exact: true }).inputValue(),
+            outcome === "error" && action === "publication" ? patch.public_name : capacity.public_name);
+          holdCapacity = false;
+        }
+      }
       await publication.getByLabel("Код страны", { exact: true }).focus();
       await operations.keyboard.press("Tab");
       assert.equal(await publication.getByLabel("Показывать клиентам", { exact: true }).evaluate((element) =>

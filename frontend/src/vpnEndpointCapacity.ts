@@ -26,3 +26,13 @@ export function replaceVpnEndpointCapacity<T extends { endpoint_id: number }>(
 ): T[] {
   return rows.map((row) => row.endpoint_id === updated.endpoint_id ? updated : row);
 }
+
+export function applyVpnEndpointCapacityUpdate(current: VpnEndpointCapacity, updated: VpnEndpointCapacity, startedFrom: VpnEndpointCapacity): VpnEndpointCapacity {
+  if (current === startedFrom) return updated;
+  return { ...current, max_active_profiles: updated.max_active_profiles, capacity_warning_percent: updated.capacity_warning_percent };
+}
+
+export function applyVpnEndpointPublicationUpdate(current: VpnEndpointCapacity, updated: VpnEndpointCapacity, startedFrom: VpnEndpointCapacity): VpnEndpointCapacity {
+  if (current === startedFrom) return updated;
+  return { ...current, is_published: updated.is_published, public_name: updated.public_name, country_code: updated.country_code };
+}
