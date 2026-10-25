@@ -529,15 +529,15 @@ async def test_key_creation_queries_customer_before_subscription_and_worker_lock
 async def test_key_creation_rejects_subscription_that_changed_customer(
     issuance_env, monkeypatch
 ) -> None:
-    original_lock = control.lock_vpn_subscription
+    original_lock = control.lock_customer_devices
 
-    async def changed_lock(session, subscription_id):
-        subscription = await original_lock(session, subscription_id)
-        assert subscription is not None
+    async def changed_lock(session, customer_id):
+        customer, subscriptions, keys = await original_lock(session, customer_id)
+        subscription = next(item for item in subscriptions if item.id == issuance_env.ids.first_subscription)
         subscription.customer_id = issuance_env.ids.other_customer
-        return subscription
+        return customer, subscriptions, keys
 
-    monkeypatch.setattr(control, "lock_vpn_subscription", changed_lock)
+    monkeypatch.setattr(control, "lock_customer_devices", changed_lock)
     response = await issuance_env.client.post(
         "/control/vpn/access-keys",
         json={
