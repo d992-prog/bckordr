@@ -601,6 +601,24 @@ class VpnEndpointCapacityUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class VpnEndpointPublicationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_published: bool
+    public_name: str
+    country_code: str = Field(pattern=r"^[A-Z]{2}$")
+
+    @field_validator("public_name")
+    @classmethod
+    def validate_public_name(cls, value: str) -> str:
+        return validate_display_name(value)
+
+    @field_validator("country_code", mode="before")
+    @classmethod
+    def normalize_country_code(cls, value: object) -> object:
+        return value.strip().upper() if isinstance(value, str) else value
+
+
 class VpnEndpointCapacityResponse(BaseModel):
     endpoint_id: int
     worker_id: int
@@ -609,6 +627,9 @@ class VpnEndpointCapacityResponse(BaseModel):
     occupied_profiles: int
     max_active_profiles: int | None
     capacity_warning_percent: int
+    is_published: bool
+    public_name: str | None
+    country_code: str | None
 
 
 class VpnReleaseCheckResponse(BaseModel):

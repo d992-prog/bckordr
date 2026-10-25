@@ -114,6 +114,7 @@ from app.schemas.control import (
     VpnCustomerUpdateRequest,
     VpnEndpointCapacityResponse,
     VpnEndpointCapacityUpdateRequest,
+    VpnEndpointPublicationUpdateRequest,
     VpnEndpointExternalVerificationRequest,
     VpnEndpointExternalVerificationResponse,
     VpnFriendInvitationIssuedResponse,
@@ -2962,6 +2963,9 @@ def _vpn_endpoint_capacity_response(
         occupied_profiles=occupied_profiles,
         max_active_profiles=endpoint.max_active_profiles,
         capacity_warning_percent=endpoint.capacity_warning_percent,
+        is_published=endpoint.is_published,
+        public_name=endpoint.public_name,
+        country_code=endpoint.country_code,
     )
 
 
@@ -3040,6 +3044,52 @@ async def update_vpn_endpoint_capacity(
             f"endpoint_id={endpoint.id} max_active_profiles={limit} "
             f"capacity_warning_percent={payload.capacity_warning_percent}"
         ),
+    )
+    await db.commit()
+    return _vpn_endpoint_capacity_response(endpoint, occupied_profiles)
+
+
+@router.patch(
+    "/vpn/endpoints/{endpoint_id}/publication",
+    response_model=VpnEndpointCapacityResponse,
+)
+async def update_vpn_endpoint_publication(
+    endpoint_id: int,
+    payload: VpnEndpointPublicationUpdateRequest,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    admin: Annotated[User, Depends(require_admin)],
+) -> VpnEndpointCapacityResponse:
+    _require_same_origin(request)
+    worker_id = await db.scalar(select(VpnEndpoint.worker_id).where(VpnEndpoint.id == endpoint_id))
+    if worker_id is None:
+        raise HTTPException(status_code=404, detail="VPN endpoint not found")
+    worker = await db.scalar(
+        select(WorkerNode).where(WorkerNode.id == worker_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    endpoint = await db.scalar(
+        select(VpnEndpoint).where(VpnEndpoint.id == endpoint_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    if endpoint is None:
+        raise HTTPException(status_code=404, detail="VPN endpoint not found")
+    if worker is None or endpoint.worker_id != worker_id:
+        raise HTTPException(status_code=409, detail="VPN endpoint worker changed")
+    endpoint.is_published = payload.is_published
+    endpoint.public_name = payload.public_name
+    endpoint.country_code = payload.country_code
+    endpoint.updated_at = utcnow()
+    occupied_profiles = int(await db.scalar(
+        select(func.count(VpnAccessKey.id)).where(
+            VpnAccessKey.endpoint_id == endpoint.id,
+            VpnAccessKey.status.in_(NODE_CAPACITY_STATUSES),
+        )
+    ) or 0)
+    await add_audit_log(
+        db, actor_user_id=admin.id, target_user_id=None,
+        action="vpn_endpoint_publication_update",
+        details=f"endpoint_id={endpoint.id} published={int(payload.is_published)}",
     )
     await db.commit()
     return _vpn_endpoint_capacity_response(endpoint, occupied_profiles)

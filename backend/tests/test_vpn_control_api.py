@@ -260,6 +260,9 @@ async def test_vpn_endpoint_capacity_api_is_grouped_safe_and_audited():
                 "occupied_profiles": 2,
                 "max_active_profiles": 10,
                 "capacity_warning_percent": 80,
+                "is_published": False,
+                "public_name": None,
+                "country_code": None,
             },
             {
                 "endpoint_id": second_id,
@@ -269,6 +272,9 @@ async def test_vpn_endpoint_capacity_api_is_grouped_safe_and_audited():
                 "occupied_profiles": 0,
                 "max_active_profiles": None,
                 "capacity_warning_percent": 90,
+                "is_published": False,
+                "public_name": None,
+                "country_code": None,
             },
         ]
         serialized = listed.text
@@ -299,6 +305,9 @@ async def test_vpn_endpoint_capacity_api_is_grouped_safe_and_audited():
             "occupied_profiles": 2,
             "max_active_profiles": 50,
             "capacity_warning_percent": 75,
+            "is_published": False,
+            "public_name": None,
+            "country_code": None,
         }
 
         unlimited = await client.patch(

@@ -91,3 +91,10 @@ VPN_DEVICE_MIGRATIONS = (
     $$
     """,
 )
+
+
+VPN_ENDPOINT_PUBLICATION_MIGRATIONS = (
+    "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS is_published BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS public_name VARCHAR(64) NULL",
+    "ALTER TABLE vpn_endpoints ADD COLUMN IF NOT EXISTS country_code VARCHAR(2) NULL",
+)

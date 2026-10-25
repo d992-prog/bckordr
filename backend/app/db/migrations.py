@@ -1,9 +1,11 @@
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.db.vpn_device_migrations import (
+    VPN_DEVICE_MIGRATIONS,
+    VPN_ENDPOINT_PUBLICATION_MIGRATIONS,
+)
 from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
-from app.db.vpn_device_migrations import VPN_DEVICE_MIGRATIONS
-
 
 VPN_PLAN_CATALOG_MIGRATIONS = (
     "ALTER TABLE vpn_plans ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT false",
@@ -636,6 +638,7 @@ VPN_UNLIMITED_INVITATION_MIGRATIONS = (
 
 
 MIGRATIONS += VPN_FRIEND_INVITATION_MIGRATIONS + VPN_DEVICE_MIGRATIONS + VPN_UNLIMITED_INVITATION_MIGRATIONS
+MIGRATIONS += VPN_ENDPOINT_PUBLICATION_MIGRATIONS
 
 
 async def run_startup_migrations(engine: AsyncEngine) -> None:
