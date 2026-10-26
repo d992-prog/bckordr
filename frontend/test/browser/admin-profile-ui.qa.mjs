@@ -292,6 +292,10 @@ try {
   const assertVisibleVpnInteractiveTraversal = async (targetPage, label) => {
     const audit = await targetPage.locator(".vpn-admin-shell").evaluate((root, auditLabel) => {
       const isVisible = (element) => {
+        if (element.checkVisibility && !element.checkVisibility()) return false;
+        for (let current=element;current&&root.contains(current);current=current.parentElement) {
+          if (current!==element&&current.matches("details:not([open])")&&!current.querySelector(":scope > summary")?.contains(element)) return false;
+        }
         const style = getComputedStyle(element);
         const box = element.getBoundingClientRect();
         return style.display !== "none" && style.visibility !== "hidden"
@@ -417,9 +421,11 @@ try {
       const root = document.querySelector(".vpn-admin-shell");
       if (!(root instanceof HTMLElement)) throw new Error("missing VPN admin shell");
       const isVisible = (element) => {
+        if (element.checkVisibility && !element.checkVisibility()) return false;
         const style = getComputedStyle(element);
         const box = element.getBoundingClientRect();
         for (let current = element; current && root.contains(current); current = current.parentElement) {
+          if (current !== element && current.matches("details:not([open])") && !current.querySelector(":scope > summary")?.contains(element)) return false;
           const currentStyle = getComputedStyle(current);
           const currentBox = current.getBoundingClientRect();
           const visuallyHidden = currentStyle.position === "absolute"
@@ -429,6 +435,11 @@ try {
         }
         return box.width > 0 && box.height > 0;
       };
+      const probe=document.createElement("details"),summary=document.createElement("summary"),button=document.createElement("button");
+      summary.textContent="Visibility probe";button.textContent="Hidden control";button.style.cssText="display:block;width:100px;height:44px";
+      probe.append(summary,button);root.append(probe);
+      const closed=isVisible(button);probe.open=true;const opened=isVisible(button);probe.remove();
+      if(closed||!opened)throw new Error(`native details visibility guard: closed=${closed}, open=${opened}`);
       const values = [root, ...root.querySelectorAll("*")]
         .filter((element) => element instanceof HTMLElement && isVisible(element))
         .map((element) => {
@@ -444,9 +455,11 @@ try {
     await targetPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const result = await targetPage.locator(".vpn-admin-shell").evaluate((root) => {
       const isVisible = (element) => {
+        if (element.checkVisibility && !element.checkVisibility()) return false;
         const style = getComputedStyle(element);
         const box = element.getBoundingClientRect();
         for (let current = element; current && root.contains(current); current = current.parentElement) {
+          if (current !== element && current.matches("details:not([open])") && !current.querySelector(":scope > summary")?.contains(element)) return false;
           const currentStyle = getComputedStyle(current);
           const currentBox = current.getBoundingClientRect();
           const visuallyHidden = currentStyle.position === "absolute"
@@ -613,7 +626,14 @@ try {
       `${label}: the full URI must stay out of console output`);
   };
 
-  if (process.argv.includes("--cabinet-settings-only")) {
+  if (process.argv.includes("--visibility-only")) {
+    for(const fallback of [false,true]){
+      await page.setContent('<style>:focus-visible{outline:3px solid #0b57d0;outline-offset:3px}</style><main class="vpn-admin-shell"><details><summary>Native disclosure</summary><button style="display:block;width:100px;height:44px">Hidden action</button></details><button>Visible action</button></main>');
+      if(fallback)await page.evaluate(()=>Object.defineProperty(Element.prototype,"checkVisibility",{value:undefined,configurable:true}));
+      await assertAdminTwoHundredPercentTextReflow(page,"native-details-regression-"+(fallback?"fallback":"native"));
+    }
+    console.log("PASS: closed details excluded and open details included by native rendered-visibility guard");
+  } else if (process.argv.includes("--cabinet-settings-only")) {
     const cabinet = await browser.newPage({ viewport: { width: 1280, height: 1000 }, timezoneId: "Europe/Moscow" });
     cabinet.setDefaultTimeout(10000);
     const cabinetErrors = [];

@@ -1418,6 +1418,127 @@ async function verifyDeviceJournalBoundaries(browser, origin) {
   }
 }
 
+async function verifyPortalTextContrast(browser, origin) {
+  const country={endpoint_id:7,name:"Германия",country_code:"DE",is_published:true};
+  for(const colorScheme of ["light","dark"]){
+    const {context,page}=await newPortalPage(browser,{colorScheme});
+    await installApi(page,async(route,pathname)=>{
+      if(pathname.endsWith("/config"))return responseJson(route,portalConfig);
+      if(pathname.endsWith("/me"))return responseJson(route,me);
+      if(pathname.endsWith("/plans"))return responseJson(route,[]);
+      if(pathname.endsWith("/subscriptions"))return responseJson(route,subscriptions.slice(0,1));
+      if(pathname.endsWith("/v2/devices"))return responseJson(route,profiles.slice(0,1));
+      if(pathname.endsWith("/connection"))return responseJson(route,{subscription_url:"https://vpn.example/subscription/contrast"});
+      return responseJson(route,{},404);
+    },{locations:{current:country,pending_endpoint_id:null,selection_state:"ready",available:[country]}});
+    const audit=async(selector)=>{
+      const values=await page.locator(selector).evaluateAll(elements=>{
+        const canvas=document.createElement("canvas");canvas.width=canvas.height=1;const context=canvas.getContext("2d");
+        const rgba=value=>{context.clearRect(0,0,1,1);context.fillStyle=value;context.fillRect(0,0,1,1);return [...context.getImageData(0,0,1,1).data].map((value,i)=>i===3?value/255:value);};
+        const luminance=rgb=>rgb.slice(0,3).map(value=>value/255).map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4).reduce((sum,value,i)=>sum+value*[.2126,.7152,.0722][i],0);
+        const contrast=(a,b)=>(Math.max(luminance(a),luminance(b))+.05)/(Math.min(luminance(a),luminance(b))+.05);
+        return elements.map(element=>{
+          const chain=[];for(let current=element;current;current=current.parentElement)chain.unshift(current);
+          let ground=[255,255,255];
+          for(const current of chain){const color=rgba(getComputedStyle(current).backgroundColor);ground=ground.map((value,i)=>color[i]*color[3]+value*(1-color[3]));}
+          const style=getComputedStyle(element);
+          return {label:element.textContent?.trim(),ratio:contrast(rgba(style.color),ground),ground,focus:element.matches(":focus-visible"),outline:style.outlineStyle!=="none"&&parseFloat(style.outlineWidth)>=2,focusRatio:contrast(rgba(style.outlineColor),ground)};
+        });
+      });
+      assert.ok(values.length>0,"expected contextual link samples: "+selector);
+      assert.ok(values.every(value=>value.ratio>=4.5),colorScheme+" contextual text contrast below AA: "+JSON.stringify(values));
+      return values;
+    };
+    await page.goto(origin+"/cabinet/#home");await page.locator(".cabinet-download").waitFor();
+    await page.waitForFunction(()=>document.querySelector(".cabinet-import")?.disabled===false);
+    await assertPrimaryActionContrast(page);
+    await audit('.cabinet-download,.portal-nav a[aria-current="page"]');
+    await page.keyboard.press("Tab");await page.locator('.portal-nav a[aria-current="page"]').focus();
+    const focused=await audit('.portal-nav a[aria-current="page"]');
+    assert.ok(focused.every(value=>value.focus&&value.outline&&value.focusRatio>=3),"selected navigation must retain visible contextual focus");
+    await page.locator('.portal-nav a[href="#help"]').click();await page.locator(".portal-help .steps a").first().waitFor();
+    await audit('.portal-help .steps a,.portal-nav a[aria-current="page"]');
+    await page.locator('.portal-nav a[href="#account"]').click();await page.locator('.portal-account nav[aria-label="Документы"] a').first().waitFor();
+    await audit('.portal-account nav[aria-label="Документы"] a,.portal-nav a[aria-current="page"]');
+    await context.close();
+  }
+}
+
+async function verifyFinisherFixes(browser, origin) {
+  for(const width of [320,390])for(const scale of [1,2]){
+    const {context,page}=await newPortalPage(browser,{viewport:{width,height:844}});
+    await installApi(page,async(route,pathname)=>{
+      if(pathname.endsWith("/config"))return responseJson(route,portalConfig);
+      if(pathname.endsWith("/me"))return responseJson(route,me);
+      if(pathname.endsWith("/plans"))return responseJson(route,[]);
+      if(pathname.endsWith("/subscriptions"))return responseJson(route,subscriptions.slice(0,1));
+      if(pathname.endsWith("/v2/devices"))return responseJson(route,profiles.slice(0,1));
+      if(pathname.endsWith("/connection"))return responseJson(route,{subscription_url:"https://vpn.example/subscription/finisher"});
+      return responseJson(route,{},404);
+    });
+    await page.goto(origin+"/cabinet/#home");
+    await page.locator(".cabinet-traffic-label").first().waitFor();
+    assert.match(await page.locator(".cabinet-traffic-label").first().innerText(),/^Трафик аккаунта за/);
+    const fragmented=await page.locator(".cabinet-traffic-label").first().evaluate(label=>{
+      const text=label.firstChild,broken=[];
+      for(const word of text.textContent.matchAll(/\p{L}+/gu)){
+        const range=document.createRange();range.setStart(text,word.index);range.setEnd(text,word.index+word[0].length);
+        if(new Set([...range.getClientRects()].map(box=>Math.round(box.top))).size>1)broken.push(word[0]);
+      }
+      return broken;
+    });
+    assert.deepEqual(fragmented,[],"account traffic scope must wrap between words, not inside them");
+    await page.locator('.portal-nav a[href="#devices"]').click();
+    await page.locator(".profile-card__heading h3").waitFor();await page.evaluate(()=>document.fonts.ready);
+    if(scale===2)await applyTwoHundredPercentTextScaling(page);
+    const gap=await page.locator(".profile-card__heading").evaluate(heading=>{
+      const content=heading.firstElementChild,last=content.lastElementChild,status=heading.lastElementChild;
+      return {unused:content.getBoundingClientRect().bottom-last.getBoundingClientRect().bottom,statusGap:status.getBoundingClientRect().top-last.getBoundingClientRect().bottom};
+    });
+    assert.ok(gap.unused<=16&&gap.statusGap<=32,`${width}px/${scale}x profile heading has an artificial vertical flex gap: ${JSON.stringify(gap)}`);
+    await page.locator('.portal-nav a[href="#home"]').click();
+    await page.locator(".cabinet-traffic-label").first().waitFor();
+    assert.match(await page.locator(".cabinet-traffic-label").first().innerText(),/^Трафик аккаунта за/);
+    await assertShortLabelsStayWhole(page,"finisher-traffic-"+width+"-"+scale);
+    await context.close();
+  }
+}
+
+async function verifySubscriptionChoices(browser, origin) {
+  for(const sameExpiry of [false,true]){
+    const {context,page}=await newPortalPage(browser,{viewport:{width:320,height:844}});
+    const choices=[{...subscriptions[0],profiles_used:0},{...subscriptions[0],id:13,profiles_used:0,expires_at:sameExpiry?subscriptions[0].expires_at:"2027-02-09T00:00:00Z"}],posts=[];
+    const country={endpoint_id:7,name:"Германия",country_code:"DE",is_published:true};
+    await installApi(page,async(route,pathname,request)=>{
+      if(pathname.endsWith("/config"))return responseJson(route,portalConfig);
+      if(pathname.endsWith("/me"))return responseJson(route,me);
+      if(pathname.endsWith("/plans"))return responseJson(route,[]);
+      if(pathname.endsWith("/subscriptions"))return responseJson(route,choices);
+      if(pathname.endsWith("/v2/locations"))return responseJson(route,[country]);
+      if(pathname.endsWith("/v2/devices")){
+        if(request.method()==="GET")return responseJson(route,[]);
+        posts.push(request.postDataJSON());return responseJson(route,{},422);
+      }
+      return responseJson(route,{},404);
+    },{locations:null});
+    await page.goto(origin+"/cabinet/#devices");
+    await page.getByRole("button",{name:"Добавить устройство",exact:true}).click();
+    const form=page.locator("#add-device"),select=form.getByLabel("Подписка");
+    const labels=await select.locator('option:not([value=""])').allTextContents();
+    assert.notEqual(labels[0],labels[1],"same counts and even identical expiry must retain a human subscription identity");
+    assert.match(labels[0],/6 января 2027/);assert.match(labels[1],sameExpiry?/6 января 2027/:/9 февраля 2027/);
+    await form.getByLabel("Название устройства").fill("Телефон");
+    for(const choice of choices){
+      await select.selectOption(String(choice.id));await form.getByLabel("Страна").selectOption("7");
+      await form.locator(".device-create__subscription").getByText(new RegExp(String(choice.id))).waitFor();
+      await form.getByRole("button",{name:"Добавить устройство",exact:true}).click();
+      await form.getByRole("alert").waitFor();
+    }
+    assert.deepEqual(posts.map(payload=>payload.subscription_id),[11,13]);
+    await context.close();
+  }
+}
+
 async function verifyPreferenceSaveAcrossSections(browser, origin) {
   for (const logout of [false,true]) {
     const {context,page}=await newPortalPage(browser);
@@ -2882,7 +3003,7 @@ const browser = await chromium.launch({
 
 try {
   const locationCases = [verifyInitialDeviceLocationStates, verifyDeviceLocations, verifyDeviceLocationEdges];
-  const cabinetCases = [verifyCabinetOperations, verifyHomeCountryPreparation, verifyCountryGenerationScope, verifyCabinetCreation, verifyDeviceRequestJournal, verifyDeviceJournalBoundaries, verifyCabinetPreferencesUsageNotice, verifyPreferenceSaveAcrossSections];
+  const cabinetCases = [verifyCabinetOperations, verifyHomeCountryPreparation, verifyCountryGenerationScope, verifyCabinetCreation, verifyDeviceRequestJournal, verifyDeviceJournalBoundaries, verifyCabinetPreferencesUsageNotice, verifyPreferenceSaveAcrossSections, verifyFinisherFixes, verifySubscriptionChoices,verifyPortalTextContrast];
   const allCases = [
     ...cabinetCases, ...locationCases, verifyFullPortal, verifyInitialPortalStates,
     verifyLegacyPlansRoute, verifyPublicTrialFlow, verifyMiniAppStates, verifyIOSGestureBoundCopy,
@@ -2896,6 +3017,9 @@ try {
     : process.argv.includes("--country-generation-only") ? [verifyCountryGenerationScope]
     : process.argv.includes("--preferences-race-only") ? [verifyPreferenceSaveAcrossSections]
     : process.argv.includes("--journal-only") ? [verifyDeviceRequestJournal, verifyDeviceJournalBoundaries]
+    : process.argv.includes("--finisher-fixes-only") ? [verifyFinisherFixes,verifySubscriptionChoices,verifyPortalTextContrast]
+    : process.argv.includes("--text-contrast-only") ? [verifyPortalTextContrast]
+    : process.argv.includes("--subscription-choices-only") ? [verifySubscriptionChoices]
     : process.argv.includes("--device-locations-only") ? locationCases
     : process.argv.includes("--responsive-only") ? [captureResponsiveMatrix]
     : allCases;

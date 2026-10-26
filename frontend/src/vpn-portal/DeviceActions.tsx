@@ -4,6 +4,7 @@ import { PortalError, portalApi } from "./api";
 import type { SessionGeneration } from "./bootstrap";
 import { operationLabel, type DeviceIntent, type DeviceRequestState } from "./deviceOperations";
 import type { PortalDevice, PortalDeviceLocation, PortalSubscription } from "./types";
+import { portalDate } from "./view";
 
 export interface DeviceDraft { display_name: string; subscription_id: number; endpoint_id: number; }
 
@@ -40,6 +41,7 @@ export function DeviceCreateForm({ draft, onDraft, subscriptions, request, sessi
   const epoch = useRef(0);
   const pending = Boolean(request && !request.definitive);
   const full = !selected || selected.profiles_used >= selected.profile_limit;
+  const subscriptionLabel = (item: PortalSubscription) => `№ ${item.id} · ${item.expires_at === null ? portalDate(null) : `до ${portalDate(item.expires_at)}`}`;
   useEffect(() => {
     const generation = sessionGeneration.current(); const current = ++epoch.current;
     const isCurrent = () => epoch.current === current && sessionGeneration.isCurrent(generation);
@@ -65,7 +67,8 @@ export function DeviceCreateForm({ draft, onDraft, subscriptions, request, sessi
     {request && <OperationStatus request={request} onRetry={() => onSubmit(request.intent)} onRefresh={() => onRefresh("create")} />}
     <form onSubmit={(event) => { event.preventDefault(); submit(); }}>
       <label>Название устройства<input value={draft.display_name} maxLength={64} disabled={pending} onChange={(event) => onDraft({...draft,display_name:event.target.value})} required /></label>
-      <label>Подписка<select value={selected?.id ?? ""} disabled={pending || choices.length === 0} onChange={(event) => onDraft({...draft,subscription_id:Number(event.target.value),endpoint_id:0})}><option value="">Выберите подписку</option>{choices.map((item) => <option key={item.id} value={item.id}>Veltrix VPN · {item.profiles_used} из {item.profile_limit} мест занято</option>)}</select></label>
+      <label>Подписка<select value={selected?.id ?? ""} disabled={pending || choices.length === 0} onChange={(event) => onDraft({...draft,subscription_id:Number(event.target.value),endpoint_id:0})}><option value="">Выберите подписку</option>{choices.map((item) => <option key={item.id} value={item.id}>{subscriptionLabel(item)}</option>)}</select></label>
+      {selected && <p className="hint device-create__subscription">Подписка {subscriptionLabel(selected)}</p>}
       {selected ? <p className="hint">Занято мест: {selected.profiles_used} из {selected.profile_limit}{full ? ". Все места заняты" : ""}</p> : <p className="hint">{choices.length ? "Выберите действующую подписку" : "Нет действующей подписки для нового устройства"}</p>}
       <label>Страна<select value={locations.some((item) => item.endpoint_id === draft.endpoint_id) ? draft.endpoint_id : ""} disabled={pending || busy || !locations.length} onChange={(event) => onDraft({...draft,endpoint_id:Number(event.target.value)})}><option value="">{busy ? "Загружаем страны…" : "Выберите страну"}</option>{locations.map((item) => <option key={item.endpoint_id} value={item.endpoint_id}>{item.name}</option>)}</select></label>
       {!busy && selected && locations.length === 0 && !error && <p className="hint">Доступных стран пока нет. Обновите список позже</p>}

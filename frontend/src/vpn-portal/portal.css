@@ -809,6 +809,15 @@ html.portal-compat-lite .veltrix-portal .cabinet-import { transition: none; }
 .veltrix-portal .portal-cabinet .cabinet-navigation a { font-size: .625rem; }
 .veltrix-portal .profile-card__heading { flex-wrap: wrap; }
 .veltrix-portal .profile-card__heading > div { min-width: 0; flex: 1 1 10em; }
+@media (max-width: 639px) {
+  .veltrix-portal .profile-card__heading > div { flex-basis: auto; }
+}
+@media (prefers-color-scheme: light) {
+  .veltrix-portal a,
+  .veltrix-portal .steps a,
+  .veltrix-portal .hint a,
+  .veltrix-portal .portal-nav a[aria-current="page"] { color: var(--portal-label-blue); }
+}
 .veltrix-portal .portal-section,
 .veltrix-portal .portal-account { padding-top: 12px; }
 .veltrix-portal .section-heading h1,
