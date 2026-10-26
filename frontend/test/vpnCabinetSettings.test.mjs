@@ -34,6 +34,18 @@ test("cabinet draft starts from server gates, allows null support/notice, and re
   assert.equal(cabinetSettingsDraft({ ...settings, reminders_enabled: true }).remindersEnabled, true);
 });
 
+test("support contact rejects reserved Telegram actions case-insensitively before sending settings", async () => {
+  const { cabinetSettingsDraft, cabinetSettingsPayload } = await helpers();
+  const draft = cabinetSettingsDraft(settings);
+  const actions = ["addemoji", "addlist", "addstickers", "addstyle", "addtheme", "auction", "auth", "boost", "call", "confirmphone", "contact", "giftcode", "invoice", "joinchat", "login", "newbot", "oauth", "proxy", "setlanguage", "share", "socks"];
+  for (const action of actions) {
+    for (const supportContact of [`@${action.toUpperCase()}`, `https://t.me/${action}`]) {
+      assert.throws(() => cabinetSettingsPayload({ ...draft, supportContact }, 4), /Контакт поддержки/, supportContact);
+    }
+  }
+  assert.equal(cabinetSettingsPayload({ ...draft, supportContact: "@joinchat_support" }, 4).support_contact, "@joinchat_support");
+});
+
 test("notice validation preserves literal Unicode text with code point limits and rejects invalid windows", async () => {
   const { cabinetSettingsDraft, cabinetSettingsPayload } = await helpers();
   assert.equal(typeof cabinetSettingsPayload, "function");

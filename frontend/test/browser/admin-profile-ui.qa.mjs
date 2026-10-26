@@ -647,6 +647,7 @@ try {
       const payload = request.postDataJSON();
       assert.deepEqual(Object.keys(payload).sort(), ["notice", "reminders_enabled", "revision", "support_contact"]);
       mutations.push(payload);
+      if (/(?:\/|@)joinchat$/i.test(payload.support_contact ?? "")) return json(route, { detail: "vpn_cabinet_support_contact_invalid" }, 422);
       if (holdPut) { holdPut = false; heldPuts.push(route); return; }
       if (saveFailure) {
         const failure = saveFailure; saveFailure = "";
@@ -685,6 +686,20 @@ try {
       await panel.getByLabel("Конец показа", { exact: true }).fill("2026-10-26T11:00");
       await panel.getByLabel("Напоминания в Telegram", { exact: true }).check();
       assert.equal(mutations.length, 0, "field edits are not saves");
+      for (const contact of ["https://t.me/joinchat", "@JOInchat"]) {
+        await panel.getByLabel("Контакт поддержки", { exact: true }).fill(contact);
+        await save().click();
+        await settle();
+        assert.equal(mutations.length, 0, "reserved Telegram actions are rejected before PUT");
+        await panel.getByRole("alert").filter({ hasText: "Контакт поддержки" }).waitFor();
+        assert.equal(await panel.getByLabel("Контакт поддержки", { exact: true }).isEditable(), true, "local validation must leave the draft editable");
+        assert.equal(await panel.getByLabel("Объявление в кабинете", { exact: true }).isChecked(), true, "local validation must preserve the notice switch");
+        assert.equal(await panel.locator("#vpn-cabinet-body").inputValue(), "Обычный текст\n😀", "unrelated draft text is retained");
+        assert.equal(await panel.locator("#vpn-cabinet-body").isEditable(), true);
+        assert.equal(await panel.getByLabel("Напоминания в Telegram", { exact: true }).isChecked(), true);
+        assert.equal(await reload().count(), 0, "no discard/recovery flow is required for a local error");
+      }
+      await panel.getByLabel("Контакт поддержки", { exact: true }).fill("@support_test");
       await save().evaluate((button) => { button.click(); button.click(); });
       await panel.getByRole("status").filter({ hasText: "Настройки сохранены" }).waitFor();
       assert.equal(mutations.length, 1, "same-tick double save is guarded");

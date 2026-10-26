@@ -1,5 +1,11 @@
 import type { VpnCabinetSettings } from "./api";
 
+const TELEGRAM_ACTION_PATHS = new Set([
+  "addemoji", "addlist", "addstickers", "addstyle", "addtheme", "auction", "auth",
+  "boost", "call", "confirmphone", "contact", "giftcode", "invoice", "joinchat",
+  "login", "newbot", "oauth", "proxy", "setlanguage", "share", "socks",
+]);
+
 export type CabinetSettingsDraft = {
   supportContact: string;
   noticeEnabled: boolean;
@@ -44,7 +50,8 @@ function noticeDateTime(local: string, original?: string): string {
 
 export function cabinetSettingsPayload(draft: CabinetSettingsDraft, revision: number): VpnCabinetSettings {
   const support = draft.supportContact.trim();
-  if (support && !/^(?:@|https:\/\/t\.me\/)[A-Za-z][A-Za-z0-9_]{4,31}$/.test(support)) {
+  const username = /^(?:@|https:\/\/t\.me\/)([A-Za-z][A-Za-z0-9_]{4,31})$/.exec(support)?.[1];
+  if (support && (!username || TELEGRAM_ACTION_PATHS.has(username.toLowerCase()))) {
     throw new Error("Контакт поддержки: @username или https://t.me/username");
   }
   let notice: VpnCabinetSettings["notice"] = null;
