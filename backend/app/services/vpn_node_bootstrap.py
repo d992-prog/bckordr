@@ -10,6 +10,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import signal
 import sqlite3
 import stat
@@ -1281,7 +1282,7 @@ def build_vpn_node_bootstrap_bundle(
     panel_url: str,
 ) -> str:
     """Build a deterministic stdlib-only zipapp for one reviewed node."""
-    from app.services.vpn_xui_node_http import NodePanelError
+    from app.services.vpn_xui_node_http import NodePanelError, validate_panel_url
     from app.services.worker_maintenance import (
         XUI_VERSION,
         _build_vpn_install_command,
@@ -1303,6 +1304,7 @@ def build_vpn_node_bootstrap_bundle(
         ):
             _fail()
         _validate_panel_url(panel_url)
+        address = validate_panel_url(panel_url)
         members = []
         for name in _BUNDLE_MEMBERS:
             raw = (source_root / name).read_bytes()
@@ -1311,7 +1313,11 @@ def build_vpn_node_bootstrap_bundle(
         main = _main_source(
             worker_id=worker_id,
             panel_url=panel_url,
-            install_command=_build_vpn_install_command(),
+            install_command=(
+                f"XUI_PANEL_PORT={address.port} "
+                f"XUI_WEB_BASE_PATH={shlex.quote(address.base_path)} "
+                + _build_vpn_install_command()
+            ),
             xui_version=XUI_VERSION,
             stop_command=_build_xui_stop_command(),
             start_command=XUI_START_COMMAND,
