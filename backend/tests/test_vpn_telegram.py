@@ -1372,6 +1372,22 @@ async def test_support_returns_configured_text(telegram_app):
 
 
 @pytest.mark.asyncio
+async def test_support_uses_cabinet_contact_without_exposing_internal_settings(telegram_app):
+    from app.schemas.vpn_cabinet import CabinetSettings
+    from app.services.vpn_cabinet_settings import update_cabinet_settings
+
+    async with telegram_app.session_factory() as db:
+        await update_cabinet_settings(db, CabinetSettings(support_contact="@veltrix_support"), now=utcnow())
+        await db.commit()
+    response = await telegram_app.client.post(
+        "/vpn-telegram/webhook/correct", headers=webhook_headers(),
+        json=telegram_message(16, 21005, "/support"),
+    )
+    assert response.status_code == 200
+    assert telegram_app.delivered[-1]["text"] == telegram_app.settings.vpn_support_text + "\nhttps://t.me/veltrix_support"
+
+
+@pytest.mark.asyncio
 async def test_webhook_rejects_wrong_header_secret(telegram_app):
     response = await telegram_app.client.post(
         "/vpn-telegram/webhook/correct",

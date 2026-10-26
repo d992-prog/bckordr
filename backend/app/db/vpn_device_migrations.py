@@ -35,7 +35,9 @@ VPN_DEVICE_MIGRATIONS = (
                 REFERENCES vpn_devices(id, subscription_id) ON DELETE RESTRICT;
         END IF;
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='vpn_access_keys'::regclass
-                       AND conname='uq_vpn_access_key_device_endpoint') THEN
+                       AND conname='uq_vpn_access_key_device_endpoint')
+           AND NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='vpn_access_keys'::regclass
+                           AND attname='credential_generation' AND NOT attisdropped) THEN
             ALTER TABLE vpn_access_keys ADD CONSTRAINT uq_vpn_access_key_device_endpoint
                 UNIQUE (device_id, endpoint_id);
         END IF;

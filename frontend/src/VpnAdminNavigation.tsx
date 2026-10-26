@@ -11,6 +11,7 @@ const VPN_ADMIN_SECTIONS: ReadonlyArray<{
   { key: "plans", href: "#vpn/plans", label: "Тарифы" },
   { key: "events", href: "#vpn/events", label: "События" },
   { key: "broadcasts", href: "#vpn/broadcasts", label: "Рассылки" },
+  { key: "cabinet", href: "#vpn/cabinet", label: "Кабинет" },
 ];
 
 export function VpnAdminNavigation({ activeSection }: { activeSection: VpnAdminSection }) {

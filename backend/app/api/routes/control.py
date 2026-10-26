@@ -3999,7 +3999,7 @@ async def archive_vpn_customer(
             await _execute_requested_vpn_revoke(db, access_key, None)
             continue
         worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
-        if worker is None and not access_key.config_uri:
+        if worker is None and not access_key.config_uri and not access_key.external_uuid:
             access_key.status = "revoked"
             access_key.revoked_at = utcnow()
             access_key.last_error = None

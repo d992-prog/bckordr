@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
@@ -13,6 +13,8 @@ from app.db.models import (
     AttackRun,
     VpnAccessKey,
     VpnCustomer,
+    VpnDevice,
+    VpnDeviceOperation,
     VpnEndpoint,
     VpnSubscription,
     WorkerMaintenanceJob,
@@ -105,16 +107,17 @@ async def count_device_slots(
     *,
     exclude_key_id: int | None = None,
 ) -> int:
-    query = select(VpnAccessKey.device_id).where(
+    query = select(VpnAccessKey.device_id,
+                   case((VpnAccessKey.device_id.is_(None), VpnAccessKey.id), else_=None).label("legacy_id")).where(
         VpnAccessKey.subscription_id == subscription_id,
         VpnAccessKey.status.in_(DEVICE_SLOT_STATUSES),
     )
     if exclude_key_id is not None:
         query = query.where(VpnAccessKey.id != exclude_key_id)
-    groups = query.group_by(
-        VpnAccessKey.device_id,
-        case((VpnAccessKey.device_id.is_(None), VpnAccessKey.id), else_=None),
-    ).subquery()
+    reservations = select(VpnDevice.id, literal(None)).join(
+        VpnDeviceOperation, VpnDeviceOperation.device_id == VpnDevice.id,
+    ).where(VpnDevice.subscription_id == subscription_id, VpnDeviceOperation.finished_at.is_(None))
+    groups = query.union(reservations).subquery()
     return int(await session.scalar(select(func.count()).select_from(groups)) or 0)
 
 

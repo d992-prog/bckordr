@@ -32,6 +32,16 @@ test("loadConnectionUri rejects an empty connection URI", async () => {
   }
 });
 
+test("loadConnectionUri rejects a non-HTTPS subscription instead of exposing a direct credential", async () => {
+  const originalConnection = portalApi.deviceConnection;
+  try {
+    for (const subscription_url of ["vless://private", "https://user:private@vpn.example/feed", "https://vpn.example/feed#private"]) {
+      portalApi.deviceConnection = async () => ({ subscription_url, direct_uri: "vless://private" });
+      await assert.rejects(() => loadConnectionUri(21), (error) => error instanceof PortalError && error.status === 0 && !error.message.includes("private"));
+    }
+  } finally { portalApi.deviceConnection = originalConnection; }
+});
+
 test("copyConnectionUri copies before an iOS user gesture expires", async () => {
   const clipboardDescriptor = Object.getOwnPropertyDescriptor(globalThis.navigator, "clipboard");
   const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");

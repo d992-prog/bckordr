@@ -1,0 +1,379 @@
+{
+  "regions": [
+    {
+      "id": "atmosphere",
+      "kind": "texture",
+      "box": {
+        "x": 0.5744431418522861,
+        "y": 0,
+        "w": 0.10550996483001172,
+        "h": 0.07049891540130152
+      },
+      "note": "Clean pearl-blue background sample, no foreground; reuse existing atmospheric texture."
+    },
+    {
+      "id": "brand-mark",
+      "kind": "plate",
+      "box": {
+        "x": 0.04689331770222743,
+        "y": 0.01735357917570499,
+        "w": 0.10316529894490035,
+        "h": 0.04338394793926247
+      },
+      "note": "Existing three-petal optical Veltrix brand mark, no header lettering."
+    },
+    {
+      "id": "brand-name",
+      "kind": "text",
+      "box": {
+        "x": 0.16295427901524032,
+        "y": 0.03253796095444685,
+        "w": 0.3106682297772567,
+        "h": 0.0227765726681128
+      },
+      "note": "Veltrix VPN wordmark in the existing sans voice."
+    },
+    {
+      "id": "account-action",
+      "kind": "control",
+      "box": {
+        "x": 0.8534583821805393,
+        "y": 0.01843817787418655,
+        "w": 0.10668229777256741,
+        "h": 0.04880694143167028
+      },
+      "note": "Small circular account control labelled Elo; no invented dropdown."
+    },
+    {
+      "id": "access-surface",
+      "kind": "chrome",
+      "box": {
+        "x": 0.04572098475967175,
+        "y": 0.0797180043383948,
+        "w": 0.9085580304806565,
+        "h": 0.2158351409978308
+      },
+      "note": "One matte rounded overview card surface; its text has separate regions."
+    },
+    {
+      "id": "access-icon",
+      "kind": "control",
+      "box": {
+        "x": 0.0914419695193435,
+        "y": 0.09978308026030369,
+        "w": 0.06447831184056271,
+        "h": 0.02982646420824295
+      },
+      "note": "Small mint status dot, no tunnel or online claim."
+    },
+    {
+      "id": "access-title",
+      "kind": "text",
+      "box": {
+        "x": 0.17233294255568582,
+        "y": 0.10357917570498916,
+        "w": 0.4349355216881594,
+        "h": 0.026030368763557483
+      },
+      "note": "Access state heading Доступ активен."
+    },
+    {
+      "id": "access-expiry",
+      "kind": "text",
+      "box": {
+        "x": 0.17233294255568582,
+        "y": 0.13665943600867678,
+        "w": 0.3821805392731536,
+        "h": 0.01789587852494577
+      },
+      "note": "Single-line access expiry date replaced by live subscription date."
+    },
+    {
+      "id": "overview-rule",
+      "kind": "chrome",
+      "box": {
+        "x": 0.09261430246189918,
+        "y": 0.17136659436008678,
+        "w": 0.8171160609613131,
+        "h": 0.0021691973969631237
+      },
+      "note": "Quiet horizontal divider within overview."
+    },
+    {
+      "id": "traffic-label",
+      "kind": "text",
+      "box": {
+        "x": 0.09378663540445487,
+        "y": 0.19143167028199568,
+        "w": 0.3305978898007034,
+        "h": 0.015184381778741865
+      },
+      "note": "Трафик за 7 дней period label."
+    },
+    {
+      "id": "traffic-value",
+      "kind": "text",
+      "box": {
+        "x": 0.09378663540445487,
+        "y": 0.21637744034707157,
+        "w": 0.06213364595545135,
+        "h": 0.01735357917570499
+      },
+      "note": "Measured traffic value; dash means no measurement, not zero."
+    },
+    {
+      "id": "traffic-hint",
+      "kind": "text",
+      "box": {
+        "x": 0.09378663540445487,
+        "y": 0.2418655097613883,
+        "w": 0.3786635404454865,
+        "h": 0.02928416485900217
+      },
+      "note": "Two-line missing-measurement explanation."
+    },
+    {
+      "id": "slot-label",
+      "kind": "text",
+      "box": {
+        "x": 0.5849941383352872,
+        "y": 0.19143167028199568,
+        "w": 0.20867526377491208,
+        "h": 0.015184381778741865
+      },
+      "note": "Устройства logical-slot label."
+    },
+    {
+      "id": "slot-value",
+      "kind": "text",
+      "box": {
+        "x": 0.5849941383352872,
+        "y": 0.21691973969631237,
+        "w": 0.16647127784290738,
+        "h": 0.01789587852494577
+      },
+      "note": "Actual occupied slots 1 из 3, not a physical hardware detection."
+    },
+    {
+      "id": "connection-surface",
+      "kind": "chrome",
+      "box": {
+        "x": 0.04572098475967175,
+        "y": 0.3123644251626898,
+        "w": 0.9085580304806565,
+        "h": 0.4029284164859002
+      },
+      "note": "Undivided matte connection card backing; each control and text is separately measured.",
+      "container": true
+    },
+    {
+      "id": "connect-title",
+      "kind": "text",
+      "box": {
+        "x": 0.09378663540445487,
+        "y": 0.3362255965292842,
+        "w": 0.44196951934349354,
+        "h": 0.021691973969631236
+      },
+      "note": "Подключить VPN section heading."
+    },
+    {
+      "id": "platform-iphone",
+      "kind": "control",
+      "box": {
+        "x": 0.0984759671746776,
+        "y": 0.3747288503253796,
+        "w": 0.2696365767878077,
+        "h": 0.045010845986984814
+      },
+      "note": "Selected iPhone platform chip, blue fill and white label."
+    },
+    {
+      "id": "platform-android",
+      "kind": "control",
+      "box": {
+        "x": 0.38335287221570924,
+        "y": 0.3747288503253796,
+        "w": 0.2708089097303634,
+        "h": 0.045010845986984814
+      },
+      "note": "Android platform chip, subdued icon and label."
+    },
+    {
+      "id": "platform-windows",
+      "kind": "control",
+      "box": {
+        "x": 0.6635404454865181,
+        "y": 0.3747288503253796,
+        "w": 0.2473622508792497,
+        "h": 0.045010845986984814
+      },
+      "note": "Windows platform chip; macOS and Linux remain reachable in shipped selector."
+    },
+    {
+      "id": "app-row",
+      "kind": "control",
+      "box": {
+        "x": 0.09261430246189918,
+        "y": 0.43329718004338397,
+        "w": 0.8171160609613131,
+        "h": 0.0911062906724512
+      },
+      "note": "Happ application row and platform detail; omit the generated wrong Veltrix app icon as explicitly corrected."
+    },
+    {
+      "id": "import-action",
+      "kind": "control",
+      "box": {
+        "x": 0.09261430246189918,
+        "y": 0.5336225596529284,
+        "w": 0.8171160609613131,
+        "h": 0.057483731019522775
+      },
+      "note": "Single blue primary action Открыть в Happ, round ends and right arrow."
+    },
+    {
+      "id": "copy-action",
+      "kind": "control",
+      "box": {
+        "x": 0.09261430246189918,
+        "y": 0.6030368763557483,
+        "w": 0.3950762016412661,
+        "h": 0.05422993492407809
+      },
+      "note": "Secondary Скопировать action with link icon."
+    },
+    {
+      "id": "qr-action",
+      "kind": "control",
+      "box": {
+        "x": 0.5146541617819461,
+        "y": 0.6030368763557483,
+        "w": 0.3950762016412661,
+        "h": 0.05422993492407809
+      },
+      "note": "Secondary QR-код action."
+    },
+    {
+      "id": "download-action",
+      "kind": "control",
+      "box": {
+        "x": 0.39976553341148885,
+        "y": 0.6735357917570499,
+        "w": 0.22157092614302462,
+        "h": 0.016268980477223426
+      },
+      "note": "Скачать Happ text link; shipped target has 44px touch area."
+    },
+    {
+      "id": "devices-surface",
+      "kind": "chrome",
+      "box": {
+        "x": 0.04572098475967175,
+        "y": 0.732646420824295,
+        "w": 0.9085580304806565,
+        "h": 0.19956616052060738
+      },
+      "note": "One matte devices list surface, separate rows and heading."
+    },
+    {
+      "id": "devices-title",
+      "kind": "text",
+      "box": {
+        "x": 0.09261430246189918,
+        "y": 0.7510845986984815,
+        "w": 0.3212192262602579,
+        "h": 0.0227765726681128
+      },
+      "note": "Устройства section heading."
+    },
+    {
+      "id": "add-device-action",
+      "kind": "control",
+      "box": {
+        "x": 0.7221570926143025,
+        "y": 0.75,
+        "w": 0.19343493552168817,
+        "h": 0.0227765726681128
+      },
+      "note": "Добавить action beside device heading."
+    },
+    {
+      "id": "device-row",
+      "kind": "control",
+      "box": {
+        "x": 0.09261430246189918,
+        "y": 0.7874186550976139,
+        "w": 0.8171160609613131,
+        "h": 0.07049891540130152
+      },
+      "note": "Device row Мой компьютер, Германия, laptop line icon and chevron."
+    },
+    {
+      "id": "help-row",
+      "kind": "control",
+      "box": {
+        "x": 0.09261430246189918,
+        "y": 0.8595444685466378,
+        "w": 0.8171160609613131,
+        "h": 0.056941431670282
+      },
+      "note": "Инструкция и помощь row with document line icon."
+    },
+    {
+      "id": "navigation",
+      "kind": "chrome",
+      "box": {
+        "x": 0,
+        "y": 0.9316702819956616,
+        "w": 1,
+        "h": 0.06832971800433839
+      },
+      "note": "Four-cell floating safe-area glass navigation backing."
+    },
+    {
+      "id": "nav-home",
+      "kind": "control",
+      "box": {
+        "x": 0.004689331770222743,
+        "y": 0.9354663774403471,
+        "w": 0.246189917936694,
+        "h": 0.06236442516268981
+      },
+      "note": "Главная active navigation cell, white inset and blue icon/type."
+    },
+    {
+      "id": "nav-devices",
+      "kind": "control",
+      "box": {
+        "x": 0.25908558030480655,
+        "y": 0.9354663774403471,
+        "w": 0.246189917936694,
+        "h": 0.06236442516268981
+      },
+      "note": "Устройства navigation cell."
+    },
+    {
+      "id": "nav-help",
+      "kind": "control",
+      "box": {
+        "x": 0.5087924970691676,
+        "y": 0.9354663774403471,
+        "w": 0.24267291910902697,
+        "h": 0.06236442516268981
+      },
+      "note": "Помощь navigation cell."
+    },
+    {
+      "id": "nav-account",
+      "kind": "control",
+      "box": {
+        "x": 0.7561547479484173,
+        "y": 0.9354663774403471,
+        "w": 0.2403282532239156,
+        "h": 0.06236442516268981
+      },
+      "note": "Аккаунт navigation cell."
+    }
+  ]
+}

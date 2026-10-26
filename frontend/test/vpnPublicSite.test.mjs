@@ -8,6 +8,7 @@ const cssUrl = new URL("../src/vpn-site/site.css", import.meta.url);
 const typesUrl = new URL("../src/vpn-portal/types.ts", import.meta.url);
 const portalUrl = new URL("../src/vpn-portal/Portal.tsx", import.meta.url);
 const portalAccountUrl = new URL("../src/vpn-portal/PortalAccount.tsx", import.meta.url);
+const clientsUrl = new URL("../src/vpn-portal/clientApps.ts", import.meta.url);
 
 test("public VPN HTML is a local Russian entry with safe metadata", async () => {
   const html = await readFile(htmlUrl, "utf8");
@@ -63,11 +64,12 @@ test("public site loads only safe public APIs with independent retry states", as
 });
 
 test("public site contains honest product, trial, support, privacy, and terms copy", async () => {
-  const [source, css, portal, account] = await Promise.all([
+  const [source, css, portal, account, clients] = await Promise.all([
     readFile(siteUrl, "utf8"),
     readFile(cssUrl, "utf8"),
     readFile(portalUrl, "utf8"),
     readFile(portalAccountUrl, "utf8"),
+    readFile(clientsUrl, "utf8"),
   ]);
 
   for (const required of [
@@ -100,9 +102,9 @@ test("public site contains honest product, trial, support, privacy, and terms co
   assert.match(account, /href="\/vpn\/#privacy"/);
   assert.match(account, /href="\/vpn\/#terms"/);
   assert.match(portal, /bootstrapResult\.config\?\.support_text/);
-  assert.match(portal, /iPhone[\s\S]*Happ/);
-  assert.match(portal, /Android[\s\S]*Happ/);
-  assert.match(portal, /Windows[\s\S]*Hiddify[\s\S]*macOS[\s\S]*Hiddify[\s\S]*Linux[\s\S]*Hiddify/);
+  assert.match(clients, /iPhone[\s\S]*Happ/);
+  assert.match(clients, /Android[\s\S]*Happ/);
+  assert.match(clients, /Windows[\s\S]*Hiddify[\s\S]*macOS[\s\S]*Hiddify[\s\S]*Linux[\s\S]*Hiddify/);
 });
 
 test("trial plan keeps trial copy when the bot link is unavailable", async () => {

@@ -40,6 +40,8 @@ from app.services.notifier import TelegramNotifier
 from app.services.vpn_abuse import expire_abuse_windows
 from app.services.vpn_bot_chats import registry_state
 from app.services.vpn_broadcasts import dispatch_next_broadcast_delivery
+from app.services.vpn_cabinet_settings import get_reminders_enabled_at
+from app.services.vpn_expiry_reminders import dispatch_next_expiry_reminder
 from app.services.vpn_control_dispatcher import dispatch_next_vpn_control_operation
 from app.services.vpn_fleet_health import probe_next_vpn_endpoint
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
@@ -93,6 +95,9 @@ class ControlRuntimeOrchestrator:
         vpn_broadcast_dispatcher: Callable[..., Awaitable[bool]] = (
             dispatch_next_broadcast_delivery
         ),
+        vpn_expiry_reminder_dispatcher: Callable[..., Awaitable[bool]] = (
+            dispatch_next_expiry_reminder
+        ),
         vpn_usage_collector: Callable[..., Awaitable[bool]] = collect_usage_poll,
     ) -> None:
         self._session_factory = session_factory
@@ -134,6 +139,7 @@ class ControlRuntimeOrchestrator:
         )
         self._vpn_ready_sender = vpn_ready_sender
         self._vpn_broadcast_dispatcher = vpn_broadcast_dispatcher
+        self._vpn_expiry_reminder_dispatcher = vpn_expiry_reminder_dispatcher
         self._vpn_usage_collector = vpn_usage_collector
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -146,6 +152,7 @@ class ControlRuntimeOrchestrator:
         self._detached_vpn_fleet_health_probes: set[asyncio.Task[bool]] = set()
         self._vpn_ready_notification_task: asyncio.Task[None] | None = None
         self._vpn_broadcast_task: asyncio.Task[None] | None = None
+        self._vpn_expiry_reminder_task: asyncio.Task[None] | None = None
         self._vpn_usage_tasks: set[asyncio.Task[None]] = set()
         self._vpn_usage_cleanup_task: asyncio.Task[None] | None = None
         self._last_vpn_usage_at = None
@@ -224,6 +231,15 @@ class ControlRuntimeOrchestrator:
             except asyncio.CancelledError:
                 pass
         self._vpn_broadcast_task = None
+        reminder_task = self._vpn_expiry_reminder_task
+        if reminder_task is not None:
+            if not reminder_task.done():
+                reminder_task.cancel()
+            try:
+                await reminder_task
+            except asyncio.CancelledError:
+                pass
+        self._vpn_expiry_reminder_task = None
         if usage_tasks:
             await asyncio.gather(*usage_tasks, return_exceptions=True)
         self._vpn_usage_tasks.clear()
@@ -248,6 +264,7 @@ class ControlRuntimeOrchestrator:
         start_vpn_lifecycle = False
         start_vpn_control_dispatch = False
         start_vpn_broadcasts = False
+        start_vpn_expiry_reminders = False
         lifecycle_now = None
         async with self._session_factory() as session:
             now = utcnow()
@@ -377,6 +394,12 @@ class ControlRuntimeOrchestrator:
                 and (self._vpn_broadcast_task is None or self._vpn_broadcast_task.done())
             ):
                 start_vpn_broadcasts = await registry_state(session, self._settings) == "ready"
+            if (
+                self._settings is not None
+                and (self._vpn_expiry_reminder_task is None or self._vpn_expiry_reminder_task.done())
+                and await get_reminders_enabled_at(session) is not None
+            ):
+                start_vpn_expiry_reminders = await registry_state(session, self._settings) == "ready"
             await session.commit()
         self._start_vpn_fleet_health(now)
         self._start_vpn_usage(now)
@@ -385,6 +408,12 @@ class ControlRuntimeOrchestrator:
                 self._vpn_control_database = self._vpn_control_database_factory(self._settings)
             self._vpn_broadcast_task = asyncio.create_task(
                 self._run_vpn_broadcasts(), name="vpn-broadcast-dispatch",
+            )
+        if start_vpn_expiry_reminders and not self._stop_event.is_set():
+            if self._vpn_control_database is None:
+                self._vpn_control_database = self._vpn_control_database_factory(self._settings)
+            self._vpn_expiry_reminder_task = asyncio.create_task(
+                self._run_vpn_expiry_reminders(), name="vpn-expiry-reminders",
             )
         if start_vpn_lifecycle:
             self._vpn_lifecycle_task = asyncio.create_task(
@@ -705,6 +734,24 @@ class ControlRuntimeOrchestrator:
             raise
         except Exception:  # noqa: BLE001 - isolate news failures without logging their content
             logger.error("VPN broadcast dispatch failed")
+
+    async def _run_vpn_expiry_reminders(self) -> None:
+        assert self._settings is not None and self._vpn_control_database is not None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 1
+        try:
+            for _ in range(20):
+                if self._stop_event.is_set() or loop.time() >= deadline:
+                    break
+                if not await self._vpn_expiry_reminder_dispatcher(
+                    self._vpn_control_database.session_factory, self._settings,
+                ):
+                    break
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - never log recipients or message content
+            logger.error("VPN expiry reminder dispatch failed")
 
     async def _run_vpn_ready_notification(self) -> None:
         assert self._settings is not None

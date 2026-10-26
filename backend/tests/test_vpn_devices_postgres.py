@@ -72,6 +72,17 @@ async def wait_for_blocker(engine, waiter_pid, holder_pid, task):
 @pytest.mark.asyncio
 async def test_two_creators_one_remaining_device_slot_have_one_winner(postgres_schema, monkeypatch):
     factory = await seed(postgres_schema)
+    from test_vpn_public_trial import worker as ready_worker
+
+    async with factory() as db:
+        node = ready_worker("safe-fake-create", vpn_last_checked_at=utcnow())
+        db.add(node)
+        await db.flush()
+        db.add(VpnEndpoint(worker_id=node.id, inbound_id=1, public_host="vpn.example", port=443,
+                           security="reality", transport="raw", status="ready", verified_at=utcnow(),
+                           max_active_profiles=10, is_published=True, server_name="cdn.example",
+                           public_key="A" * 43, short_id="aabbccdd", fingerprint="chrome", flow="xtls-rprx-vision"))
+        await db.commit()
     entered, release = asyncio.Event(), asyncio.Event()
     original = control._validate_vpn_key_issue
     async with factory() as first, factory() as second:

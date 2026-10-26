@@ -7,30 +7,30 @@ related_targets: ["frontend/src/vpn-portal/portal.css","frontend/src/vpn-site/ma
 
 # Veltrix VPN customer surfaces
 
-Scope: redesign `/cabinet/` first, then extend the same world to `/vpn/` and the VPN-only admin areas. Mode: Operate for cabinet/admin, Persuade for public site.
+Scope: compact customer cabinet refresh on the existing backend; operator settings join the established VPN admin world. Public marketing layout is unchanged. Mode: Operate.
 
-Audience: nontechnical Russian-speaking users arriving from Telegram; secondary audience is the service operator. User job: understand whether access is ready and open, copy, or learn how to use the profile. Primary action: `Открыть профиль`. Proof is existing subscription/profile/trial state from the API. Never claim an active tunnel, speed, stability, scale, or purchase capability without evidence.
+Audience: nontechnical Russian-speaking users arriving from Telegram; secondary audience is the service operator. User job: see access, connect a device with Happ/Hiddify, choose country and manage their devices. Primary action: open the chosen VPN application with a prepared subscription. Proof is owned subscription/device state and measured traffic. Never infer an active tunnel, speed or successful app import from a browser tap.
 
-Chosen direction: Liquid Glass with one expressive glass object per client viewport and matte data sheets; admin is the denser operational translation. Approved comp: `.impeccable/mocks/portal-liquid-glass-c.png`. The memorable moment is the large asymmetric status lens with the primary action crossing its lower edge. The generated logo is a direction only; ship a recognizable three-lens flat SVG source plus optical large-format treatment.
+Chosen direction: retain Veltrix Liquid Glass identity and three-lens logo, replace the oversized status lens with Mikan-inspired compact task composition. Approved 2026-10-26: variant 3, `.impeccable/mocks/cabinet-refresh-c.png`; variants 1 and 2 remain unapproved comparisons. Memorable moment: quiet unified access/usage sheet followed by a clear blue app-import action; glass is navigation chrome, not a competing hero. The comp's Veltrix logo beside Happ is a generation error, not a third-party app mark; omit it there. Dates, names, counts and traffic are live, never literal samples.
 
-Constraints: preserve API/session/CSRF/generation behavior; no payment; protect connection URIs; responsive Telegram safe areas; WCAG AA; reduced motion; graceful no-blur fallback; no new UI framework. Comp literals such as the sample date are replaced by real data. Unresolved: typeface and raster plate boundaries are selected by measured comp tooling.
+Constraints: preserve API/session/CSRF/generation and iOS copy behavior; no payment; protect credentials; Telegram safe areas, keyboard/44px controls, AA contrast, reduced motion and no-blur fallback; no new UI framework. All five device classes remain reachable even where the comp shows only three platform chips. Support is operator-configured, nullable and never invented. Keep old hash links working.
 
 ## Direction contract
 
 **THESIS**
-Veltrix turns technical VPN access into one calm, obvious next step and rejects the category-default shield, world map, speed gauge, and power-button dashboard.
+Veltrix puts access, connection and devices in a compact task sheet instead of a decorative VPN hero, map or fake power-button dashboard.
 
 **OWN-WORLD**
-Pearl-blue light field, deep navy ink, blue/mint/lilac spectrum, one optical status lens, glass controls, matte information sheets, and a recognizable three-lens mark.
+Pearl-blue light, deep navy system sans, blue/mint/lilac spectrum, compact white matte sheets, blue primary action, glass navigation and the existing three-lens mark.
 
 **STORY**
-The user understands whether a profile is ready, sees the access term, then opens the profile, copies its link, or reads the relevant instruction. The operator sees the same states in a denser working form.
+Read access and actual usage, choose platform and ready device, open Happ/Hiddify or use copy/QR, then manage devices or open contextual help. Country changes consume no extra device slot.
 
 **FIRST VIEWPORT**
-At 390 px: compact brand row; a large asymmetric status lens; a blue `Открыть профиль` control crossing its lower edge; matte quick actions; factual access card; `Главная / Профили / Аккаунт` glass navigation inside the safe area.
+At 390 px: compact brand row; one access/expiry sheet with usage and occupied slots; matte connection card with platform chips, one blue app-import button and copy/QR; device list with add action; four-cell safe-area glass navigation. Progressive disclosure keeps destructive actions off the home summary. Desktop uses an overview/connection grid, not a stretched phone column.
 
 **FORM**
-Impeccable pick Liquid Glass; selected composition three, `Статус и действия`; seed `1a448fec`; approved comp `.impeccable/mocks/portal-liquid-glass-c.png`.
+User-pinned Veltrix world and Mikan task density, composition 3 `Сводка, подключение, устройства`; direction key `veltrix-cabinet-refresh`; approved comp `.impeccable/mocks/cabinet-refresh-c.png`. The user explicitly replaced the old giant-lens composition, not the brand. On 2026-10-26 the user separately confirmed: «Да: портретный макет обязателен для телефона; для ПК допускаю отдельную двухколоночную компоновку (рекомендую)». Exact portrait placement binds the phone; desktop is the approved native two-column adaptation.
 
 **FINISH**
 unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance

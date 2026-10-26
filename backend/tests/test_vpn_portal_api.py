@@ -380,6 +380,43 @@ async def portal_app(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_preferences_are_owned_read_only_no_store_and_strict(portal_app):
+    client = portal_app.client
+    assert (await client.get("/api/vpn-portal/preferences")).status_code == 401
+    client.cookies.set(SESSION_COOKIE, portal_app.ids.alice_raw)
+    before = await client.get("/api/vpn-portal/preferences")
+    assert before.status_code == 200
+    assert before.json() == {"expiry_reminders": True}
+    assert before.headers["cache-control"] == "no-store"
+    headers = {"origin": PORTAL_ORIGIN, "x-csrf-token": csrf_token(portal_app.ids.alice_raw)}
+    for body in ({"expiry_reminders": "false"}, {"expiry_reminders": 0}, {"expiry_reminders": False, "customer_id": portal_app.ids.bob}, {}):
+        assert (await client.patch("/api/vpn-portal/preferences", headers=headers, json=body)).status_code == 422
+    for rejected in ({}, {**headers, "origin": "https://foreign.example"}):
+        assert (await client.patch("/api/vpn-portal/preferences", headers=rejected, json={"expiry_reminders": False})).status_code == 403
+    saved = await client.patch("/api/vpn-portal/preferences", headers=headers, json={"expiry_reminders": False})
+    assert saved.status_code == 200 and saved.json() == {"expiry_reminders": False}
+    assert saved.headers["cache-control"] == "no-store"
+    async with portal_app.factory() as db:
+        assert (await db.get(VpnCustomer, portal_app.ids.alice)).expiry_reminders is False
+        assert (await db.get(VpnCustomer, portal_app.ids.bob)).expiry_reminders is True
+
+
+@pytest.mark.asyncio
+async def test_preferences_reject_principal_revoked_after_request_authentication(portal_app):
+    from app.services.vpn_portal_auth import lookup_session
+    async with portal_app.factory() as db:
+        stale = await lookup_session(db, portal_app.ids.alice_raw, portal_app.settings)
+        await db.execute(update(VpnCustomerSession).where(VpnCustomerSession.customer_id == portal_app.ids.alice).values(revoked_at=utcnow()))
+        await db.commit()
+    portal_app.app.dependency_overrides[current_customer] = lambda: stale
+    headers = {"origin": PORTAL_ORIGIN, "x-csrf-token": csrf_token(portal_app.ids.alice_raw)}
+    response = await portal_app.client.patch("/api/vpn-portal/preferences", headers=headers, json={"expiry_reminders": False})
+    assert response.status_code == 401
+    async with portal_app.factory() as db:
+        assert (await db.get(VpnCustomer, portal_app.ids.alice)).expiry_reminders is True
+
+
+@pytest.mark.asyncio
 async def test_anonymous_plan_catalog_is_safe_filtered_ordered_and_flag_independent(portal_app):
     async with portal_app.factory() as session:
         trial = VpnPlan(
@@ -966,6 +1003,9 @@ async def test_public_config_is_safe_fail_closed_and_never_cors_enabled(portal_a
         "login_path": "/api/vpn-portal/auth/telegram/start",
         "bot_url": None,
         "support_text": "Обратитесь к администратору VPN.",
+        "support_url": None,
+        "notice": None,
+        "reminders_enabled": False,
     }
     assert response.headers["cache-control"] == "no-store"
     assert "access-control-allow-origin" not in response.headers

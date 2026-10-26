@@ -1,13 +1,14 @@
-export type PortalSection = "home" | "profiles" | "account";
+export type PortalSection = "home" | "devices" | "help" | "account";
 
 const PORTAL_SECTIONS = new Map<string, PortalSection>([
   ["home", "home"],
   ["subscription", "home"],
   ["plans", "home"],
-  ["profiles", "profiles"],
-  ["connect", "profiles"],
+  ["devices", "devices"],
+  ["profiles", "devices"],
+  ["connect", "home"],
   ["account", "account"],
-  ["help", "account"],
+  ["help", "help"],
 ]);
 
 export function portalSectionFromHash(hash: string): PortalSection {

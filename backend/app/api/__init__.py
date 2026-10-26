@@ -9,6 +9,7 @@ from app.api.routes.vpn_telegram import router as vpn_telegram_router
 from app.api.routes.vpn_portal import router as vpn_portal_router
 from app.api.routes.vpn_usage import router as vpn_usage_router
 from app.api.routes.vpn_broadcasts import router as vpn_broadcasts_router
+from app.api.routes.vpn_cabinet import router as vpn_cabinet_router
 from app.api.routes.worker_runtime import router as worker_runtime_router
 
 
@@ -21,5 +22,6 @@ api_router.include_router(vpn_portal_router)
 api_router.include_router(vpn_usage_router)
 api_router.include_router(vpn_abuse_router)
 api_router.include_router(vpn_broadcasts_router)
+api_router.include_router(vpn_cabinet_router)
 api_router.include_router(worker_runtime_router)
 api_router.include_router(health_router)

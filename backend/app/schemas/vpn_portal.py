@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from app.services.vpn_display import validate_display_name
 
@@ -11,6 +12,12 @@ from app.services.vpn_display import validate_display_name
 class PortalMe(BaseModel):
     display_name: str
     csrf_token: str
+
+
+class PortalPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expiry_reminders: StrictBool
 
 
 class PortalPlan(BaseModel):
@@ -57,8 +64,54 @@ class PortalConnection(BaseModel):
     uri: str
 
 
+class PortalDeviceOperation(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    request_id: UUID
+    device_id: int
+    action: Literal["create", "revoke", "replace"]
+    stage: Literal["revoking", "provisioning", "completed", "failed", "uncertain"]
+    credential_generation: int
+    endpoint_id: int | None
+    public_error: str | None
+    created_at: datetime
+    updated_at: datetime
+    finished_at: datetime | None
+
+    @field_validator("created_at", "updated_at", "finished_at")
+    @classmethod
+    def utc_timestamp(cls, value: datetime | None) -> datetime | None:
+        return value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value
+
+
 class PortalDevice(PortalProfile):
     legacy_profile_id: int | None
+    credential_generation: int = 0
+    operation: PortalDeviceOperation | None = None
+
+
+class PortalDeviceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+
+    @field_validator("request_id")
+    @classmethod
+    def nonzero_request(cls, value: UUID) -> UUID:
+        if value.int == 0:
+            raise ValueError("customer_device_request_invalid")
+        return value
+
+
+class CreatePortalDevice(PortalDeviceRequest):
+    subscription_id: int = Field(gt=0, le=2**31 - 1)
+    endpoint_id: int = Field(gt=0, le=2**31 - 1)
+    display_name: str
+
+    @field_validator("display_name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return validate_display_name(value)
 
 
 class PortalDeviceLocation(BaseModel):

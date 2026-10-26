@@ -6,6 +6,7 @@
 // Publication/device usage: node test/browser/admin-profile-ui.qa.mjs --admin-operations-only.
 // Measured traffic: node test/browser/admin-profile-ui.qa.mjs --usage-only.
 // Plain-text news: node test/browser/admin-profile-ui.qa.mjs --broadcasts-only.
+// Cabinet operator settings: node test/browser/admin-profile-ui.qa.mjs --cabinet-settings-only.
 // Uses existing PLAYWRIGHT_MODULE_PATH / CHROMIUM_EXECUTABLE_PATH overrides when needed.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -291,6 +292,10 @@ try {
   const assertVisibleVpnInteractiveTraversal = async (targetPage, label) => {
     const audit = await targetPage.locator(".vpn-admin-shell").evaluate((root, auditLabel) => {
       const isVisible = (element) => {
+        if (element.checkVisibility && !element.checkVisibility()) return false;
+        for (let current=element;current&&root.contains(current);current=current.parentElement) {
+          if (current!==element&&current.matches("details:not([open])")&&!current.querySelector(":scope > summary")?.contains(element)) return false;
+        }
         const style = getComputedStyle(element);
         const box = element.getBoundingClientRect();
         return style.display !== "none" && style.visibility !== "hidden"
@@ -416,9 +421,11 @@ try {
       const root = document.querySelector(".vpn-admin-shell");
       if (!(root instanceof HTMLElement)) throw new Error("missing VPN admin shell");
       const isVisible = (element) => {
+        if (element.checkVisibility && !element.checkVisibility()) return false;
         const style = getComputedStyle(element);
         const box = element.getBoundingClientRect();
         for (let current = element; current && root.contains(current); current = current.parentElement) {
+          if (current !== element && current.matches("details:not([open])") && !current.querySelector(":scope > summary")?.contains(element)) return false;
           const currentStyle = getComputedStyle(current);
           const currentBox = current.getBoundingClientRect();
           const visuallyHidden = currentStyle.position === "absolute"
@@ -428,6 +435,11 @@ try {
         }
         return box.width > 0 && box.height > 0;
       };
+      const probe=document.createElement("details"),summary=document.createElement("summary"),button=document.createElement("button");
+      summary.textContent="Visibility probe";button.textContent="Hidden control";button.style.cssText="display:block;width:100px;height:44px";
+      probe.append(summary,button);root.append(probe);
+      const closed=isVisible(button);probe.open=true;const opened=isVisible(button);probe.remove();
+      if(closed||!opened)throw new Error(`native details visibility guard: closed=${closed}, open=${opened}`);
       const values = [root, ...root.querySelectorAll("*")]
         .filter((element) => element instanceof HTMLElement && isVisible(element))
         .map((element) => {
@@ -443,9 +455,11 @@ try {
     await targetPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const result = await targetPage.locator(".vpn-admin-shell").evaluate((root) => {
       const isVisible = (element) => {
+        if (element.checkVisibility && !element.checkVisibility()) return false;
         const style = getComputedStyle(element);
         const box = element.getBoundingClientRect();
         for (let current = element; current && root.contains(current); current = current.parentElement) {
+          if (current !== element && current.matches("details:not([open])") && !current.querySelector(":scope > summary")?.contains(element)) return false;
           const currentStyle = getComputedStyle(current);
           const currentBox = current.getBoundingClientRect();
           const visuallyHidden = currentStyle.position === "absolute"
@@ -612,7 +626,181 @@ try {
       `${label}: the full URI must stay out of console output`);
   };
 
-  if (process.argv.includes("--abuse-only")) {
+  if (process.argv.includes("--visibility-only")) {
+    for(const fallback of [false,true]){
+      await page.setContent('<style>:focus-visible{outline:3px solid #0b57d0;outline-offset:3px}</style><main class="vpn-admin-shell"><details><summary>Native disclosure</summary><button style="display:block;width:100px;height:44px">Hidden action</button></details><button>Visible action</button></main>');
+      if(fallback)await page.evaluate(()=>Object.defineProperty(Element.prototype,"checkVisibility",{value:undefined,configurable:true}));
+      await assertAdminTwoHundredPercentTextReflow(page,"native-details-regression-"+(fallback?"fallback":"native"));
+    }
+    console.log("PASS: closed details excluded and open details included by native rendered-visibility guard");
+  } else if (process.argv.includes("--cabinet-settings-only")) {
+    const cabinet = await browser.newPage({ viewport: { width: 1280, height: 1000 }, timezoneId: "Europe/Moscow" });
+    cabinet.setDefaultTimeout(10000);
+    const cabinetErrors = [];
+    cabinet.on("pageerror", (error) => cabinetErrors.push(error.message));
+    const endpoint = "/api/control/vpn/cabinet-settings";
+    let current = { revision: 0, support_contact: null, notice: null, reminders_enabled: false };
+    let sessionId = 1;
+    let gets = 0;
+    let saveFailure = "";
+    let holdGet = false;
+    let holdPut = false;
+    const heldGets = [];
+    const heldPuts = [];
+    const mutations = [];
+    const session = () => ({ has_feature_access: true, user: { id: sessionId, username: `synthetic-admin-${sessionId}`, role: "owner", status: "active", language: "ru", ...timestamps } });
+    await cabinet.route("**/api/**", async (route) => {
+      const request = route.request();
+      const pathname = new URL(request.url()).pathname;
+      if (pathname === "/api/auth/me" || pathname === "/api/auth/login") return json(route, session());
+      if (pathname === "/api/auth/logout") return json(route, {});
+      if (pathname !== endpoint) {
+        assert.equal(request.method(), "GET", `settings must never send or create a campaign: ${pathname}`);
+        return handleApiRoute(route);
+      }
+      if (request.method() === "GET") {
+        gets += 1;
+        if (holdGet) { holdGet = false; heldGets.push(route); return; }
+        return json(route, current);
+      }
+      assert.equal(request.method(), "PUT");
+      const payload = request.postDataJSON();
+      assert.deepEqual(Object.keys(payload).sort(), ["notice", "reminders_enabled", "revision", "support_contact"]);
+      mutations.push(payload);
+      if (/(?:\/|@)joinchat$/i.test(payload.support_contact ?? "")) return json(route, { detail: "vpn_cabinet_support_contact_invalid" }, 422);
+      if (holdPut) { holdPut = false; heldPuts.push(route); return; }
+      if (saveFailure) {
+        const failure = saveFailure; saveFailure = "";
+        return json(route, { detail: failure }, failure === "vpn_cabinet_settings_revision_conflict" ? 409 : 503);
+      }
+      assert.equal(payload.revision, current.revision);
+      current = { ...payload, revision: payload.revision + 1, support_contact: payload.support_contact?.replace(/^@/, "https://t.me/") ?? null };
+      return json(route, current);
+    });
+    const panel = cabinet.locator(".vpn-cabinet-settings-panel");
+    const save = () => panel.getByRole("button", { name: "Сохранить настройки", exact: true });
+    const reload = () => panel.getByRole("button", { name: "Отбросить изменения и загрузить настройки", exact: true });
+    const active = () => cabinet.locator('.vpn-admin-nav a[href="#vpn/cabinet"]').click();
+    const leave = () => cabinet.locator('.vpn-admin-nav a[href="#vpn/plans"]').click();
+    const settle = () => cabinet.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const signIn = async () => {
+      const form = cabinet.locator("form").filter({ has: cabinet.getByRole("button", { name: "Войти", exact: true }) });
+      await form.getByLabel("Логин", { exact: true }).fill("synthetic-admin");
+      await form.getByLabel("Пароль", { exact: true }).fill("synthetic-password");
+      await cabinet.getByRole("button", { name: "Войти", exact: true }).click();
+      await panel.getByLabel("Контакт поддержки", { exact: true }).waitFor();
+    };
+    try {
+      await cabinet.goto(`${appUrl}#vpn/plans`);
+      await cabinet.locator('.vpn-admin-nav a[href="#vpn/plans"][aria-current="page"]').waitFor();
+      assert.equal(gets, 0, "inactive settings must not load");
+      await active();
+      await panel.getByLabel("Контакт поддержки", { exact: true }).waitFor({ timeout: 3000 });
+      assert.equal(mutations.length, 0, "mount must never save or enable reminders");
+      assert.equal(await panel.getByLabel("Напоминания в Telegram", { exact: true }).isChecked(), false);
+      await panel.getByLabel("Контакт поддержки", { exact: true }).fill("@support_test");
+      await panel.getByLabel("Объявление в кабинете", { exact: true }).check();
+      await panel.getByLabel("Заголовок объявления", { exact: true }).fill("<b>Обновление</b>");
+      await panel.getByLabel("Текст объявления", { exact: true }).fill("Обычный текст\n😀");
+      await panel.getByLabel("Начало показа", { exact: true }).fill("2026-10-26T10:00");
+      await panel.getByLabel("Конец показа", { exact: true }).fill("2026-10-26T11:00");
+      await panel.getByLabel("Напоминания в Telegram", { exact: true }).check();
+      assert.equal(mutations.length, 0, "field edits are not saves");
+      for (const contact of ["https://t.me/joinchat", "@JOInchat"]) {
+        await panel.getByLabel("Контакт поддержки", { exact: true }).fill(contact);
+        await save().click();
+        await settle();
+        assert.equal(mutations.length, 0, "reserved Telegram actions are rejected before PUT");
+        await panel.getByRole("alert").filter({ hasText: "Контакт поддержки" }).waitFor();
+        assert.equal(await panel.getByLabel("Контакт поддержки", { exact: true }).isEditable(), true, "local validation must leave the draft editable");
+        assert.equal(await panel.getByLabel("Объявление в кабинете", { exact: true }).isChecked(), true, "local validation must preserve the notice switch");
+        assert.equal(await panel.locator("#vpn-cabinet-body").inputValue(), "Обычный текст\n😀", "unrelated draft text is retained");
+        assert.equal(await panel.locator("#vpn-cabinet-body").isEditable(), true);
+        assert.equal(await panel.getByLabel("Напоминания в Telegram", { exact: true }).isChecked(), true);
+        assert.equal(await reload().count(), 0, "no discard/recovery flow is required for a local error");
+      }
+      await panel.getByLabel("Контакт поддержки", { exact: true }).fill("@support_test");
+      await save().evaluate((button) => { button.click(); button.click(); });
+      await panel.getByRole("status").filter({ hasText: "Настройки сохранены" }).waitFor();
+      assert.equal(mutations.length, 1, "same-tick double save is guarded");
+      assert.deepEqual(mutations[0], { revision: 0, support_contact: "@support_test", reminders_enabled: true, notice: { title: "<b>Обновление</b>", body: "Обычный текст\n😀", starts_at: "2026-10-26T07:00:00.000Z", ends_at: "2026-10-26T08:00:00.000Z" } });
+      assert.equal(await panel.getByLabel("Контакт поддержки", { exact: true }).inputValue(), "https://t.me/support_test", "canonical server values replace the saved draft");
+      assert.equal(await panel.getByLabel("Начало показа", { exact: true }).inputValue(), "2026-10-26T10:00", "server UTC is shown in local time");
+      assert.equal(await panel.locator("b").count(), 0, "notice is plain text");
+      await panel.getByText(/не отправляет сообщение/).waitFor();
+      await panel.getByText(/будущих событий/).waitFor();
+      for (const width of [1280, 390]) {
+        await cabinet.setViewportSize({ width, height: 1000 });
+        await panel.scrollIntoViewIfNeeded();
+        assert.equal(await cabinet.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, "settings must not overflow horizontally");
+        assert.equal(await save().evaluate((button) => button.getBoundingClientRect().height >= 44), true);
+        await panel.locator("#vpn-cabinet-support").focus();
+        assert.equal(await panel.locator("#vpn-cabinet-support").evaluate((input) => getComputedStyle(input).outlineStyle !== "none"), true);
+        await cabinet.evaluate(async () => {
+          await document.fonts.ready;
+          document.activeElement?.blur();
+          window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        });
+        await cabinet.screenshot({ path: path.join(output, `admin-cabinet-settings-${width}.png`), fullPage: true });
+      }
+      await cabinet.setViewportSize({ width: 1280, height: 1000 });
+      await panel.getByLabel("Контакт поддержки", { exact: true }).fill("@unsaved_draft");
+      current = { ...current, revision: 9, support_contact: "https://t.me/fresh_server" };
+      saveFailure = "vpn_cabinet_settings_revision_conflict";
+      const getsBeforeConflict = gets;
+      await save().click();
+      await panel.getByRole("alert").filter({ hasText: /изменил|изменены/ }).waitFor();
+      assert.equal(await panel.getByLabel("Контакт поддержки", { exact: true }).inputValue(), "@unsaved_draft");
+      assert.equal(await save().isDisabled(), true, "conflict cannot blind-resave");
+      assert.equal(gets, getsBeforeConflict, "conflict does not silently reload or replace the draft");
+      await reload().click();
+      await cabinet.waitForFunction(() => document.querySelector("#vpn-cabinet-support")?.value === "https://t.me/fresh_server");
+      await panel.getByLabel("Контакт поддержки", { exact: true }).fill("");
+      await panel.getByLabel("Объявление в кабинете", { exact: true }).uncheck();
+      await panel.getByLabel("Напоминания в Telegram", { exact: true }).uncheck();
+      saveFailure = "<html>private upstream details</html>";
+      await save().click();
+      await panel.getByRole("alert").waitFor();
+      assert.equal(await save().isDisabled(), true, "uncertain save requires explicit state check");
+      assert.equal((await panel.innerText()).includes("private upstream"), false);
+      await reload().click();
+      await cabinet.waitForFunction(() => document.querySelector("#vpn-cabinet-support")?.value === "https://t.me/fresh_server");
+      await panel.getByLabel("Контакт поддержки", { exact: true }).fill("");
+      await panel.getByLabel("Объявление в кабинете", { exact: true }).uncheck();
+      await panel.getByLabel("Напоминания в Telegram", { exact: true }).uncheck();
+      await save().click();
+      await panel.getByRole("status").filter({ hasText: "Настройки сохранены" }).waitFor();
+      assert.deepEqual(mutations.at(-1), { revision: 9, support_contact: null, notice: null, reminders_enabled: false });
+
+      // Old GET and PUT responses must not cross an unmount or another admin login.
+      for (const kind of ["GET", "PUT"]) {
+        if (kind === "GET") { await leave(); holdGet = true; await active(); await until(() => heldGets.length === 1, "old GET not held"); }
+        else { await panel.getByLabel("Контакт поддержки", { exact: true }).fill("@old_admin"); holdPut = true; await save().click(); await until(() => heldPuts.length === 1, "old PUT not held"); }
+        await leave();
+        current = { ...current, revision: current.revision + 1, support_contact: "https://t.me/section_current" };
+        await active();
+        await cabinet.waitForFunction(() => document.querySelector("#vpn-cabinet-support")?.value === "https://t.me/section_current");
+        await json((kind === "GET" ? heldGets : heldPuts).shift(), { ...current, support_contact: "https://t.me/stale_reply" });
+        await settle();
+        assert.equal(await panel.getByLabel("Контакт поддержки", { exact: true }).inputValue(), "https://t.me/section_current");
+
+        if (kind === "GET") { await leave(); holdGet = true; await active(); await until(() => heldGets.length === 1, "session GET not held"); }
+        else { holdPut = true; await save().click(); await until(() => heldPuts.length === 1, "session PUT not held"); }
+        await cabinet.getByRole("button", { name: "Выйти", exact: true }).click();
+        await cabinet.getByRole("heading", { name: "Вход", exact: true }).waitFor();
+        sessionId += 1;
+        current = { ...current, revision: current.revision + 1, support_contact: "https://t.me/next_admin" };
+        await signIn();
+        await json((kind === "GET" ? heldGets : heldPuts).shift(), { ...current, support_contact: "https://t.me/old_admin_reply" });
+        await settle();
+        assert.equal(await panel.getByLabel("Контакт поддержки", { exact: true }).inputValue(), "https://t.me/next_admin");
+        assert.equal(await save().isDisabled(), false);
+      }
+      assert.deepEqual(cabinetErrors, []);
+      console.log(`PASS: cabinet settings explicit whole PUT/gate/no sends, no save on mount, local dates, canonical response, duplicate save, 409/unknown recovery, late GET/PUT across sections and admin sessions; captures: ${output}`);
+    } finally { await cabinet.close(); }
+  } else if (process.argv.includes("--abuse-only")) {
     const review = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
     review.setDefaultTimeout(10000);
     const reviewErrors = [];
@@ -2642,6 +2830,10 @@ try {
   const mobileNodeBounds = await mobileNodeRow.boundingBox();
   assert.ok(mobileNodeBounds.x >= 0 && mobileNodeBounds.x + mobileNodeBounds.width <= 390,
     "the first mobile node card must fit the viewport");
+  const mobileDiagnostics = mobileNodeRow.locator("summary").filter({ hasText: "Диагностика" });
+  await mobileDiagnostics.click();
+  assert.equal(await mobileDiagnostics.evaluate((element) => element.closest("details").open), true,
+    "mobile node diagnostics must be expanded before auditing all maintenance actions");
   const mobileNodeActions = mobileNodeRow.getByRole("button");
   assert.ok(await mobileNodeActions.count() >= 7, "all important node operations must remain visible on mobile");
   for (let index = 0; index < await mobileNodeActions.count(); index += 1) {

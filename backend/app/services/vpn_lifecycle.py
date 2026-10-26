@@ -7,6 +7,7 @@ import json
 from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
 from app.db.base import utcnow
 from app.db.models import VpnAccessKey, VpnCustomer, VpnNodeEvent, VpnSubscription, WorkerNode
 from app.services.app_settings import VPN_LIFECYCLE_LAST_RESULT_KEY, set_app_setting
@@ -96,7 +97,7 @@ async def _process_revoke(
     pending = "pending_suspend" if suspend else "pending_revoke"
     operation = "suspension" if suspend else "revoke"
     if access_key.worker_id is None:
-        if not access_key.config_uri:
+        if not access_key.config_uri and (suspend or not access_key.external_uuid):
             access_key.status = completed
             if not suspend:
                 access_key.revoked_at = current_time
@@ -221,7 +222,11 @@ async def _run_vpn_lifecycle_maintenance(
     current_time: datetime,
     batch_size: int,
     key_timeout_seconds: float,
+    settings: Settings | None = None,
 ) -> dict[str, int | str]:
+    from app.services.vpn_device_operations import replacement_for_old_key, resume_device_operations
+
+    await resume_device_operations(db, settings=settings, now=current_time, batch_size=batch_size)
     result = _new_result(current_time)
     expired_subscription_ids = (
         await db.scalars(
@@ -311,20 +316,38 @@ async def _run_vpn_lifecycle_maintenance(
     rows = [*revoke_rows, *provision_rows]
 
     for access_key, subscription in rows:
+        # Candidate policy can change while another tick holds the owner lock.
+        access_key = await lock_key_device_context(db, access_key.id)
+        if access_key is None or access_key.status == "revoked":
+            continue
+        subscription = await db.get(VpnSubscription, access_key.subscription_id)
+        if subscription is None:
+            continue
+        customer = await db.get(VpnCustomer, subscription.customer_id)
+        device = await checked_device(db, access_key)
+        policy_action = subscription_key_action(subscription, customer, current_time)
+        action = "revoke" if (
+            access_key.status == "pending_revoke" or access_key.revoke_requested_at is not None
+            or (device is not None and device.revoke_requested_at is not None)
+        ) else policy_action
+        replacement = await replacement_for_old_key(db, device, access_key) if (
+            action == "revoke" and policy_action != "revoke"
+        ) else None
+        if (device is not None and access_key.credential_generation != device.credential_generation
+                and device.revoke_requested_at is None and policy_action != "revoke" and replacement is None):
+            continue
+        if (action, access_key.status) in {("sync", "active"), ("suspend", "suspended")}:
+            continue
         if access_key.endpoint_id is not None:
-            customer = await db.get(VpnCustomer, subscription.customer_id)
-            policy_action = (
-                "revoke" if access_key.status == "pending_revoke"
-                else subscription_key_action(subscription, customer, current_time)
-            )
-            action = "provision" if policy_action == "sync" else policy_action
+            control_action = "provision" if action == "sync" else action
             result["checked_keys"] += 1
             try:
                 await stage_vpn_control_operation(
                     db,
                     access_key.id,
-                    action,
+                    control_action,
                     now=current_time,
+                    device_operation_id=replacement.id if replacement else None,
                 )
             except VpnControlIntentError as exc:
                 if exc.code not in {
@@ -337,7 +360,7 @@ async def _run_vpn_lifecycle_maintenance(
                     "provision": "pending_sync_keys",
                     "suspend": "pending_suspend_keys",
                     "revoke": "pending_revoke_keys",
-                }[action]
+                }[control_action]
             ] += 1
             await set_app_setting(
                 db,
@@ -347,22 +370,9 @@ async def _run_vpn_lifecycle_maintenance(
             await db.commit()
             continue
 
-        access_key = await lock_key_device_context(db, access_key.id)
-        if access_key is None or access_key.status == "revoked":
-            continue
-        subscription = await db.get(VpnSubscription, access_key.subscription_id)
-        if subscription is None:
-            continue
-        customer = await db.get(VpnCustomer, subscription.customer_id)
-        device = await checked_device(db, access_key)
-        action = (
-            "revoke" if access_key.status == "pending_revoke" or (
-                device is not None and device.revoke_requested_at is not None
-            )
-            else subscription_key_action(subscription, customer, current_time)
-        )
         if action == "revoke":
-            await stage_device_revoke(db, access_key, now=current_time)
+            if replacement is None:
+                await stage_device_revoke(db, access_key, now=current_time)
         result["checked_keys"] += 1
         worker = await db.get(WorkerNode, access_key.worker_id) if access_key.worker_id else None
         try:
@@ -414,6 +424,7 @@ async def _run_vpn_lifecycle_maintenance(
         json.dumps(result, ensure_ascii=False, separators=(",", ":")),
     )
     await db.commit()
+    await resume_device_operations(db, settings=settings, now=current_time, batch_size=batch_size)
     return result
 
 
@@ -423,6 +434,7 @@ async def run_vpn_lifecycle_maintenance(
     now: datetime | None = None,
     batch_size: int = 50,
     key_timeout_seconds: float = 30.0,
+    settings: Settings | None = None,
 ) -> dict[str, int | str]:
     async with vpn_mutation_lock():
         current_time = _as_utc(now or utcnow())
@@ -432,4 +444,5 @@ async def run_vpn_lifecycle_maintenance(
             current_time=current_time,
             batch_size=max(1, batch_size),
             key_timeout_seconds=max(0.01, key_timeout_seconds),
+            settings=settings,
         )

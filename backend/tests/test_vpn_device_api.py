@@ -28,6 +28,14 @@ ORIGIN = "https://portal.example"
 @pytest_asyncio.fixture
 async def device_api(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    @event.listens_for(engine.sync_engine, "connect")
+    def explicit_transactions(connection, _record):
+        connection.isolation_level = None
+
+    @event.listens_for(engine.sync_engine, "begin")
+    def begin_transaction(connection):
+        connection.exec_driver_sql("BEGIN")
+
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -74,11 +82,39 @@ async def test_v2_lists_one_logical_device_without_secrets_or_get_writes(device_
     assert response.status_code == locations.status_code == 200
     assert response.json() == [{"id": env.ids.device, "subscription_id": env.ids.subscription,
                                 "display_name": "Phone", "state": "active", "can_connect": True,
-                                "legacy_profile_id": env.ids.key}]
+                                "legacy_profile_id": env.ids.key, "credential_generation": 0, "operation": None}]
     assert not mutations
     text = response.text + locations.text
     assert "vless://" not in text and "subscription/" not in text and "private-" not in text
     assert locations.json()["current"]["endpoint_id"] == env.ids.endpoints[0]
+
+
+@pytest.mark.asyncio
+async def test_portal_usage_is_owned_read_only_and_keeps_unknown_measurements(device_api):
+    env = device_api
+    mutations = []
+    def capture(_conn, statement, *_args):
+        if any(getattr(statement, flag, False) for flag in ("is_insert", "is_update", "is_delete")):
+            mutations.append(statement)
+    event.listen(env.sessions.kw["bind"].sync_engine, "before_execute", capture)
+    try:
+        response = await env.client.get("/api/vpn-portal/usage?days=7&customer_id=999999")
+    finally:
+        event.remove(env.sessions.kw["bind"].sync_engine, "before_execute", capture)
+    assert response.status_code == 200
+    result = response.json()
+    assert set(result) == {"upload_bytes", "download_bytes", "measured_since", "last_sample_at", "coverage", "days", "devices"}
+    assert result["days"] == 7
+    assert result["upload_bytes"] is None and result["download_bytes"] is None
+    assert result["coverage"] == "none"
+    assert [row["device_id"] for row in result["devices"]] == [env.ids.device]
+    assert response.headers["cache-control"] == "no-store"
+    assert not mutations
+    assert "customer_id" not in response.text and "vless://" not in response.text
+    for days in ("0", "2", "31", "1.0", "abc"):
+        assert (await env.client.get(f"/api/vpn-portal/usage?days={days}")).status_code == 422
+    env.client.cookies.clear()
+    assert (await env.client.get("/api/vpn-portal/usage")).status_code == 401
 
 
 @pytest.mark.asyncio

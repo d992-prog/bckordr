@@ -22,6 +22,7 @@ const incident = (id, acknowledged_at = null) => ({
 
 async function componentSource() {
   return readFile(new URL("../src/VpnAbusePanel.tsx", import.meta.url), "utf8")
+    .then((source) => source.replace(/\r\n/g, "\n"))
     .catch((error) => error.code === "ENOENT" ? "" : Promise.reject(error));
 }
 

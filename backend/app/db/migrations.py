@@ -6,8 +6,10 @@ from app.db.vpn_device_migrations import (
     VPN_DEVICE_MIGRATIONS,
     VPN_ENDPOINT_PUBLICATION_MIGRATIONS,
 )
+from app.db.vpn_device_operations_migrations import VPN_DEVICE_OPERATIONS_MIGRATIONS
 from app.db.vpn_endpoint_migrations import VPN_ENDPOINT_MIGRATIONS
 from app.db.vpn_usage_migrations import VPN_USAGE_MIGRATIONS
+from app.db.vpn_reminder_migrations import VPN_REMINDER_MIGRATIONS
 
 VPN_PLAN_CATALOG_MIGRATIONS = (
     "ALTER TABLE vpn_plans ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT false",
@@ -644,6 +646,8 @@ MIGRATIONS += VPN_ENDPOINT_PUBLICATION_MIGRATIONS
 MIGRATIONS += VPN_BOT_CHAT_MIGRATIONS
 MIGRATIONS += VPN_BROADCAST_MIGRATIONS
 MIGRATIONS += VPN_USAGE_MIGRATIONS
+MIGRATIONS += VPN_DEVICE_OPERATIONS_MIGRATIONS
+MIGRATIONS += VPN_REMINDER_MIGRATIONS
 
 
 async def run_startup_migrations(engine: AsyncEngine) -> None:

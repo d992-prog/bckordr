@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { PortalError, portalApi } from "./api";
 import type { SessionGeneration } from "./bootstrap";
 import { copyConnectionUri, loadConnectionUri } from "./connection";
 import DeviceLocationPicker from "./DeviceLocationPicker";
+import { DeviceActions } from "./DeviceActions";
+import type { DeviceIntent, DeviceRequestState } from "./deviceOperations";
+import { PortalUsage, type PortalUsageProps } from "./PortalUsage";
 import { createQrDataUrl } from "./qr";
 import type { PortalDevice } from "./types";
 import { stateLabel } from "./view";
@@ -21,6 +24,15 @@ interface ProfileCardProps {
   onRenameSettled: (profileId: number) => void;
   onLocationMutationStart: () => void;
   onLocationReady: () => void;
+  onLocationStateChange: (pending: boolean) => void;
+  locationPending: boolean;
+  operationPending: boolean;
+  operationRequest: DeviceRequestState | null;
+  operationRequestKey: string;
+  onDeviceAction: (intent: DeviceIntent, key?: string) => void;
+  onRefreshOperation: (key: string) => void;
+  onConnect: () => void;
+  usage: PortalUsageProps;
 }
 
 type ConnectionMessage = { kind: "success" | "error"; text: string };
@@ -44,6 +56,15 @@ export default function ProfileCard({
   onRenameSettled,
   onLocationMutationStart,
   onLocationReady,
+  onLocationStateChange,
+  locationPending,
+  operationPending,
+  operationRequest,
+  operationRequestKey,
+  onDeviceAction,
+  onRefreshOperation,
+  onConnect,
+  usage,
 }: ProfileCardProps) {
   const [connectionUri, setConnectionUri] = useState<string | null>(null);
   const [connectionBusy, setConnectionBusy] = useState(false);
@@ -59,13 +80,13 @@ export default function ProfileCard({
   const qrRequestInFlight = useRef(false);
   const renameEpoch = useRef(0);
 
-  useEffect(() => () => { connectionEpoch.current += 1; }, [profile.id, sessionGeneration]);
+  useLayoutEffect(() => () => { connectionEpoch.current += 1; }, [profile.id, sessionGeneration]);
 
   useEffect(() => {
     setRenameValue(profile.display_name);
   }, [profile.display_name]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     connectionEpoch.current += 1;
     setConnectionUri(null);
     setConnectionBusy(false);
@@ -74,9 +95,9 @@ export default function ProfileCard({
     setQrDataUrl(null);
     setQrBusy(false);
     setQrError("");
-  }, [connectionVersion]);
+  }, [profile.id, connectionVersion, profile.credential_generation, profile.can_connect, profile.state, operationPending, locationPending]);
 
-  const canReveal = profile.state === "active" && profile.can_connect;
+  const canReveal = profile.state === "active" && profile.can_connect && !operationPending && !locationPending;
   const unavailableHint = profile.state === "active" && !profile.can_connect
     ? "Ссылка пока недоступна. Попробуйте через несколько минут"
     : profile.state !== "active"
@@ -118,7 +139,7 @@ export default function ProfileCard({
   }
 
   async function copyConnection(): Promise<void> {
-    if (connectionUri === null) {
+    if (connectionUri === null || !canReveal || renamePending) {
       return;
     }
     const generation = sessionGeneration.current();
@@ -141,7 +162,7 @@ export default function ProfileCard({
   }
 
   async function showQrCode(): Promise<void> {
-    if (connectionUri === null || qrRequestInFlight.current) {
+    if (connectionUri === null || !canReveal || renamePending || qrRequestInFlight.current) {
       return;
     }
     const generation = sessionGeneration.current();
@@ -235,7 +256,6 @@ export default function ProfileCard({
     <article className="profile-card">
       <div className="profile-card__heading">
         <div>
-          <p className="eyebrow">Профиль</p>
           <h3>{profile.display_name}</h3>
           <p className="profile-card__subscription">{subscriptionLabel}</p>
         </div>
@@ -245,6 +265,7 @@ export default function ProfileCard({
       </div>
 
       {unavailableHint && <p className="hint">{unavailableHint}</p>}
+      {canReveal && <a className="button button--primary" href="#connect" onClick={onConnect}>Подключить</a>}
 
       {isRenaming ? (
         <div className="rename-form">
@@ -267,19 +288,21 @@ export default function ProfileCard({
           </div>
         </div>
       ) : (
-        <button type="button" className="button button--ghost" disabled={renamePending} onClick={beginRename}>
+        <button type="button" className="button button--ghost" disabled={renamePending || operationPending || locationPending} onClick={beginRename}>
           {renamePending ? "Переименование…" : "Переименовать"}
         </button>
       )}
 
       <DeviceLocationPicker
         deviceId={profile.id}
+        credentialGeneration={profile.credential_generation}
         csrfToken={csrfToken}
         sessionGeneration={sessionGeneration}
         onUnauthorized={onUnauthorized}
         onMutationStart={onLocationMutationStart}
         onReady={onLocationReady}
-        disabled={isRenaming || renameBusy || renamePending}
+        onStateChange={onLocationStateChange}
+        disabled={isRenaming || renameBusy || renamePending || operationPending}
       />
 
       <div className="connection-box">
@@ -336,6 +359,8 @@ export default function ProfileCard({
           </p>
         )}
       </div>
+      <PortalUsage {...usage} deviceId={profile.id} />
+      <DeviceActions device={profile} request={operationRequest} requestKey={operationRequestKey} disabled={isRenaming || renameBusy || renamePending || locationPending} onSubmit={onDeviceAction} onRefresh={onRefreshOperation} />
     </article>
   );
 }

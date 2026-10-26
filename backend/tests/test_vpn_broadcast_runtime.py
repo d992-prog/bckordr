@@ -119,3 +119,72 @@ async def test_one_background_sender_does_not_block_orchestration_and_shutdown_a
     assert len(calls) == 1
     await asyncio.wait_for(orchestrator.shutdown(), 5)
     assert stopped.is_set() and orchestrator._vpn_broadcast_task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled,news,expected", [(False, True, 0), (True, False, 20)])
+async def test_reminders_have_independent_operator_gate_and_bounded_turn(runtime_database, enabled, news, expected):
+    from test_vpn_expiry_reminders import gate
+    factory, _ = runtime_database
+    async with factory() as db:
+        db.add(AppSetting(key=REGISTRY_BOT_KEY, value="111"))
+        await db.commit()
+        await gate(db, enabled)
+    calls = []
+    news_calls = []
+    async def news_dispatch(*_args):
+        news_calls.append(True)
+        return False
+    async def dispatch(*_args):
+        calls.append(True)
+        return True
+    orchestrator = ControlRuntimeOrchestrator(
+        factory,
+        settings=_runtime_settings(VPN_BROADCASTS_ENABLED=news, VPN_TELEGRAM_BOT_TOKEN="111:synthetic-only", VPN_CONTROL_DISPATCH_ENABLED=False),
+        vpn_control_database_factory=lambda _: SimpleNamespace(engine=_FakeDedicatedEngine(), session_factory=factory),
+        vpn_broadcast_dispatcher=news_dispatch,
+        vpn_expiry_reminder_dispatcher=dispatch,
+    )
+    await orchestrator.run_cycle()
+    if orchestrator._vpn_expiry_reminder_task is not None:
+        await orchestrator._vpn_expiry_reminder_task
+    if orchestrator._vpn_broadcast_task is not None:
+        await orchestrator._vpn_broadcast_task
+    await orchestrator.shutdown()
+    assert len(calls) == expected
+    assert orchestrator._vpn_broadcast_dispatcher is news_dispatch
+    assert news_calls == ([True] if news else [])
+
+
+@pytest.mark.asyncio
+async def test_reminder_task_is_cancelled_and_awaited_on_shutdown(runtime_database):
+    from test_vpn_expiry_reminders import gate
+    factory, _ = runtime_database
+    async with factory() as db:
+        db.add(AppSetting(key=REGISTRY_BOT_KEY, value="111"))
+        await db.commit()
+        await gate(db, True)
+    started, stopped = asyncio.Event(), asyncio.Event()
+    news_calls = []
+    async def news_dispatch(*_args):
+        news_calls.append(True)
+        return False
+    async def dispatch(*_args):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+    orchestrator = ControlRuntimeOrchestrator(
+        factory, settings=_runtime_settings(VPN_BROADCASTS_ENABLED=False, VPN_TELEGRAM_BOT_TOKEN="111:synthetic-only", VPN_CONTROL_DISPATCH_ENABLED=False),
+        vpn_control_database_factory=lambda _: SimpleNamespace(engine=_FakeDedicatedEngine(), session_factory=factory),
+        vpn_broadcast_dispatcher=news_dispatch,
+        vpn_expiry_reminder_dispatcher=dispatch,
+    )
+    await orchestrator.run_cycle()
+    await asyncio.wait_for(started.wait(), 5)
+    await orchestrator.run_cycle()
+    await asyncio.wait_for(orchestrator.shutdown(), 5)
+    assert stopped.is_set() and orchestrator._vpn_expiry_reminder_task is None
+    assert orchestrator._vpn_broadcast_dispatcher is news_dispatch
+    assert news_calls == []

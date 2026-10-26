@@ -81,6 +81,7 @@ async def subscription_connection_uri(
                     VpnAccessKey.id == VpnDevice.preferred_key_id,
                     VpnAccessKey.device_id == VpnDevice.id,
                     VpnAccessKey.subscription_id == VpnDevice.subscription_id,
+                    VpnAccessKey.credential_generation == VpnDevice.credential_generation,
                 ),
             )
             .where(VpnDevice.id == device_id, VpnDevice.token_generation == generation)

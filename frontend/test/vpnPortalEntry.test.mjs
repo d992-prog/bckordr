@@ -34,45 +34,22 @@ test("Vite declares admin, cabinet, and public VPN pages with URL-based paths", 
   assert.ok(frontendRoot.endsWith("frontend\\") || frontendRoot.endsWith("frontend/"));
 });
 
-test("mobile cabinet header and buttons can shrink without horizontal overflow", async () => {
+test("mobile cabinet has native brand flow and shrinking controls", async () => {
   const css = await readFile(cssUrl, "utf8");
-
-  assert.match(
-    css,
-    /\.veltrix-portal \.button\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/,
-  );
-  assert.match(
-    css,
-    /@media \(max-width:\s*639px\)\s*\{[\s\S]*?\.veltrix-portal \.portal-header\s*\{[^}]*flex-wrap:\s*wrap;/,
-  );
-  assert.match(
-    css,
-    /@media \(max-width:\s*639px\)\s*\{[\s\S]*?\.veltrix-portal \.account\s*\{[^}]*max-width:\s*100%;/,
-  );
+  assert.match(css, /\.veltrix-portal \.button\s*\{[^}]*max-width:\s*100%;[^}]*min-width:\s*0;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/);
+  assert.match(css, /\.cabinet-brand\s*\{[^}]*display:\s*block;[^}]*min-height:/s);
+  assert.match(css, /\.cabinet-brand strong\s*\{[^}]*position:\s*static/s);
+  assert.match(css, /\.cabinet-platforms\s*\{[^}]*flex-wrap:\s*wrap/s);
 });
 
-test("wide cabinet uses a native two-column layout and compact navigation", async () => {
+test("wide cabinet uses a native overview and connection grid, without scaling content", async () => {
   const css = await readFile(cssUrl, "utf8");
-
-  assert.match(
-    css,
-    /@media \(min-width:\s*1200px\)\s*\{[\s\S]*?--portal-nav-height:\s*76px;/,
-  );
-  assert.match(css, /@media \(min-width:\s*760px\) and \(max-width:\s*1199px\) and \(min-height:\s*1200px\)/);
-  assert.match(
-    css,
-    /@media \(min-width:\s*1200px\)\s*\{[\s\S]*?\.veltrix-portal \.portal-home\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1\.75fr\)\s+minmax\(400px,\s*1fr\);/,
-  );
-  assert.match(
-    css,
-    /@media \(min-width:\s*1200px\)\s*\{[\s\S]*?\.veltrix-portal \.portal-nav\s*\{[^}]*width:\s*min\(720px,\s*calc\(100vw - 64px\)\);/,
-  );
-  const wideRules = css.slice(css.indexOf("@media (min-width: 1200px)"), css.indexOf("@media (prefers-color-scheme: dark)"));
-  assert.doesNotMatch(wideRules, /\bzoom\s*:/);
-  assert.doesNotMatch(wideRules, /scale\s*\(/);
-  assert.doesNotMatch(wideRules, /translate(?:X|Y)?\s*\(/);
-  assert.doesNotMatch(wideRules, /nth-child/);
-  assert.doesNotMatch(wideRules, /84px|font-size:\s*38px/);
+  const wide = css.slice(css.indexOf("@media (min-width: 900px)"));
+  assert.match(wide, /\.cabinet-home\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(0,\s*1\.15fr\)/s);
+  assert.match(wide, /\.cabinet-devices-preview\s*\{[^}]*grid-column:\s*1;/s);
+  assert.match(wide, /\.cabinet-navigation\s*\{[^}]*max-width:\s*720px/s);
+  assert.doesNotMatch(wide, /\bzoom\s*:|scale\s*\(/);
+  assert.doesNotMatch(css, /portal-status-lens|\.portal-home\s*\{/);
 });
 
 test("portal brand styles have one CSS ownership path", async () => {
@@ -89,17 +66,17 @@ test("portal brand styles have one CSS ownership path", async () => {
 });
 
 test("portal loading and connection outcomes use one correctly typed live region", async () => {
-  const [portal, home, profile, css] = await Promise.all([
+  const [portal, connection, profile, css] = await Promise.all([
     readFile(portalUrl, "utf8"),
-    readFile(new URL("../src/vpn-portal/PortalHome.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/vpn-portal/ConnectDevice.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/vpn-portal/ProfileCard.tsx", import.meta.url), "utf8"),
     readFile(cssUrl, "utf8"),
   ]);
 
   assert.match(portal, /props\.busy && <p className="card" role="status">Загружаем профили…<\/p>/);
   assert.match(portal, /bootstrapResult === null[\s\S]*role="status"[\s\S]*Загружаем личный кабинет…/);
-  assert.match(home, /type CopyMessage = \{ kind: "success" \| "error"; text: string \}/);
-  assert.match(home, /role=\{copyMessage\.kind === "error" \? "alert" : "status"\}/);
+  assert.match(connection, /type ConnectionMessage = \{ kind: "success" \| "error"; text: string \}/);
+  assert.match(connection, /role=\{message\.kind === "error" \? "alert" : "status"\}/);
   assert.match(profile, /type ConnectionMessage = \{ kind: "success" \| "error"; text: string \}/);
   assert.match(profile, /role=\{connectionMessage\.kind === "error" \? "alert" : "status"\}/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?html\s*\{\s*scroll-behavior:\s*auto;/);

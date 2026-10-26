@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
 from app.db.models import VpnAccessKey, VpnCustomer
-from app.services.vpn_devices import lock_customer_devices, stage_device_revoke
+from app.services.vpn_devices import lock_customer_devices, lock_device_targets, stage_device_revoke
 
 
 ARCHIVABLE_SUBSCRIPTION_STATUSES = ("active", "trial")
@@ -56,6 +56,12 @@ async def stage_vpn_customer_archive(
             disabled_count += 1
     for access_key in all_keys:
         await stage_device_revoke(session, access_key, now=changed_at)
+
+    await session.flush()
+    try:
+        await lock_device_targets(session, access_keys)
+    except ValueError:
+        raise VpnCustomerArchiveConflictError("VPN endpoint binding changed; retry archive") from None
 
     return StagedVpnCustomerArchive(
         customer=customer,

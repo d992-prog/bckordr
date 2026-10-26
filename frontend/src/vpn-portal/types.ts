@@ -5,6 +5,9 @@ export interface PortalConfig {
   login_path: string | null;
   bot_url: string | null;
   support_text: string;
+  support_url: string | null;
+  notice: { title: string; body: string; starts_at: string; ends_at: string } | null;
+  reminders_enabled: boolean;
 }
 
 export interface PortalMe {
@@ -66,6 +69,46 @@ export interface PortalConnection {
 
 export interface PortalDevice extends PortalProfile {
   legacy_profile_id: number | null;
+  credential_generation: number;
+  operation: PortalDeviceOperation | null;
+}
+
+export interface PortalDeviceOperation {
+  id: string;
+  request_id: string;
+  device_id: number;
+  action: "create" | "revoke" | "replace";
+  stage: "revoking" | "provisioning" | "completed" | "failed" | "uncertain";
+  credential_generation: number;
+  endpoint_id: number | null;
+  public_error: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+export type PortalUsageDays = 1 | 7 | 30;
+
+export interface PortalUsageTotals {
+  upload_bytes: number | null;
+  download_bytes: number | null;
+  measured_since: string | null;
+  last_sample_at: string | null;
+  coverage: "none" | "partial" | "current" | "stale" | "unavailable";
+}
+
+export interface PortalUsage extends PortalUsageTotals {
+  days: PortalUsageDays;
+  devices: Array<PortalUsageTotals & { device_id: number; display_name: string }>;
+}
+
+export interface PortalPreferences { expiry_reminders: boolean; }
+
+export interface CreatePortalDevice {
+  request_id: string;
+  subscription_id: number;
+  endpoint_id: number;
+  display_name: string;
 }
 
 export interface PortalDeviceLocation {
