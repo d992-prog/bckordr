@@ -88,7 +88,7 @@ export class DeviceOperationRequests {
     this.starting(intent);
     return this.request(key,entry,()=>intent.action === "create"
       ? portalApi.createDevice({subscription_id:intent.subscription_id,endpoint_id:intent.endpoint_id,display_name:intent.display_name,request_id:entry.requestId},csrf)
-      : intent.action === "revoke" ? portalApi.revokeDevice(intent.deviceId,entry.requestId,csrf) : portalApi.replaceDevice(intent.deviceId,entry.requestId,csrf));
+      : intent.action === "revoke" ? portalApi.revokeDevice(intent.deviceId,entry.requestId,csrf) : portalApi.replaceDevice(intent.deviceId,entry.requestId,csrf), Boolean(previous && !previous.definitive));
   }
   async refresh(key: string): Promise<PortalDeviceOperation | null> {
     const entry = this.entries[key];
@@ -96,7 +96,7 @@ export class DeviceOperationRequests {
     this.put(key,{...entry,busy:true,error:""});
     return this.request(key,entry,()=>portalApi.deviceOperation(entry.operation!.id));
   }
-  private async request(key: string, entry: DeviceRequestState, load: () => Promise<PortalDeviceOperation>): Promise<PortalDeviceOperation | null> {
+  private async request(key: string, entry: DeviceRequestState, load: () => Promise<PortalDeviceOperation>, unresolvedReplay = false): Promise<PortalDeviceOperation | null> {
     const generation = this.session.current(); const epoch = this.epoch;
     const isCurrent = () => this.session.isCurrent(generation) && this.epoch === epoch && this.entries[key]?.requestId === entry.requestId;
     try {
@@ -108,7 +108,8 @@ export class DeviceOperationRequests {
     } catch (error) {
       if (!isCurrent()) return null;
       if (error instanceof PortalError && error.status === 401) { this.unauthorized(); return null; }
-      const definitive = !entry.operation && error instanceof PortalError && error.status >= 400 && error.status < 500;
+      // A rejected replay cannot settle an earlier submission whose response was lost.
+      const definitive = !unresolvedReplay && !entry.operation && error instanceof PortalError && error.status >= 400 && error.status < 500;
       this.put(key,{...entry,busy:false,definitive,error:error instanceof PortalError && error.status !== 0 ? error.message : "Результат запроса неизвестен. Повторите проверку с теми же данными"});
       return null;
     }

@@ -76,6 +76,59 @@ test("creation retries preserve the exact payload and reject edits after an unkn
   } finally {portalApi.createDevice=original;}
 });
 
+for (const action of ["create", "revoke", "replace"]) {
+  test(`${action} retains an unresolved UUID after a timeout and rejected replay`, async () => {
+    const method = action === "create" ? "createDevice" : action === "revoke" ? "revokeDevice" : "replaceDevice";
+    const original = portalApi[method];
+    const uuids = [];
+    const submitted = action === "create"
+      ? {action,subscription_id:11,endpoint_id:7,display_name:"Телефон"}
+      : {action,deviceId:21};
+    portalApi[method] = async (payload, uuid) => {
+      const request = action === "create" ? payload.request_id : uuid;
+      uuids.push(request);
+      if (uuids.length === 1) throw new PortalError(0,"network timeout");
+      if (uuids.length === 2) throw new PortalError(429,"rate limited");
+      return operation(request,{action,stage:"completed",finished_at:"2026-10-26T00:01:00Z"});
+    };
+    try {
+      const requests = new module.DeviceOperationRequests(new SessionGeneration(),()=>{},()=>{},()=>{});
+      const key = module.operationKey(submitted);
+      await requests.submit(submitted,"csrf");
+      await requests.submit(submitted,"csrf");
+      assert.equal(requests.entries[key].definitive,false,"rejected replay cannot settle the first unknown submission");
+      if (action === "create") {
+        await requests.submit({...submitted,display_name:"Другое имя"},"csrf");
+        assert.equal(uuids.length,2,"the unresolved payload cannot be replaced after a rejected replay");
+      }
+      await requests.submit(submitted,"csrf");
+      assert.equal(uuids.length,3);
+      assert.deepEqual(uuids,[uuids[0],uuids[0],uuids[0]]);
+      assert.equal(requests.entries[key].definitive,true,"an authoritative completed operation settles the submission");
+    } finally { portalApi[method] = original; }
+  });
+}
+
+test("an initial definitive validation rejection allows an edited payload with a fresh UUID", async () => {
+  const original = portalApi.createDevice;
+  const payloads = [];
+  portalApi.createDevice = async (payload) => {
+    payloads.push(payload);
+    if (payloads.length === 1) throw new PortalError(422,"invalid country");
+    return operation(payload.request_id,{action:"create",stage:"completed",finished_at:"2026-10-26T00:01:00Z"});
+  };
+  try {
+    const requests = new module.DeviceOperationRequests(new SessionGeneration(),()=>{},()=>{},()=>{});
+    const create = {action:"create",subscription_id:11,endpoint_id:7,display_name:"Телефон"};
+    await requests.submit(create,"csrf");
+    assert.equal(requests.entries.create.definitive,true);
+    await requests.submit({...create,endpoint_id:8},"csrf");
+    assert.equal(payloads.length,2);
+    assert.notEqual(payloads[0].request_id,payloads[1].request_id);
+    assert.equal(payloads[1].endpoint_id,8);
+  } finally { portalApi.createDevice = original; }
+});
+
 test("UUID fallback uses cryptographic random bytes and produces a version-four identifier", () => {
   assert.equal(typeof module.operationRequestId,"function");
   let called=0;
