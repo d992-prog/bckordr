@@ -11,6 +11,10 @@ from typing import ClassVar
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
 from app.db.base import Base
 from app.db.models import (
     VpnAccessKey,
@@ -34,9 +38,6 @@ from app.services.vpn_fleet_health import (
 from app.services.vpn_node_health import VpnNodeHealthReceipt, VpnNodeHealthRequest
 from app.services.vpn_node_transport import VpnNodeTransportError
 from app.services.vpn_policy import VPN_MUTATION_ACTIONS
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 NOW = datetime(2026, 9, 24, 12, tzinfo=UTC)
 PUBLIC_KEY = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
@@ -365,12 +366,15 @@ async def test_probe_skips_ineligible_workers_and_endpoints(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["staged", "ready", "draining"])
+@pytest.mark.parametrize("runtime_status", ["awaiting_test", "ready", "error"])
 async def test_probe_accepts_every_non_disabled_endpoint_status(
     session_factory,
     status: str,
+    runtime_status: str,
 ) -> None:
-    await seed_endpoint(
+    worker_id, endpoint_id = await seed_endpoint(
         session_factory,
+        worker_changes={"vpn_runtime_status": runtime_status},
         endpoint_changes={"status": status, "verified_at": None if status == "staged" else NOW},
     )
     calls: list[VpnNodeHealthRequest] = []
@@ -383,6 +387,13 @@ async def test_probe_accepts_every_non_disabled_endpoint_status(
         now=lambda: NOW,
     ) is True
     assert len(calls) == 1
+    async with session_factory() as session:
+        node = await session.get(WorkerNode, worker_id)
+        target = await session.get(VpnEndpoint, endpoint_id)
+        assert node.vpn_runtime_status == ("awaiting_test" if status == "staged" else "ready")
+        assert node.vpn_last_error is None
+        assert target.status == status
+        assert target.external_verified_at is None
 
 
 @pytest.mark.asyncio

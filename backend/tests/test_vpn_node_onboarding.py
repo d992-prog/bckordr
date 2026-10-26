@@ -1684,8 +1684,9 @@ async def test_test_profile_foreign_client_reconciles_without_duplication(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fleet_probe", [False, True])
 async def test_confirm_cleans_promotes_health_checks_and_hashes_only_admin_attestation(
-    sessions, tmp_path, monkeypatch
+    sessions, tmp_path, monkeypatch, fleet_probe
 ) -> None:
     from app.services import vpn_node_onboarding as onboarding
 
@@ -1729,6 +1730,18 @@ async def test_confirm_cleans_promotes_health_checks_and_hashes_only_admin_attes
             known_hosts_path=known_hosts,
         )
         await session.commit()
+
+    if fleet_probe:
+        from app.services.vpn_fleet_health import probe_next_vpn_endpoint
+
+        assert await probe_next_vpn_endpoint(
+            sessions,
+            known_hosts,
+            snapshot_loader=lambda *_: object(),
+            transport=health,
+            now=lambda: ACCEPTANCE_NOW,
+        ) is True
+        health_requests.clear()
 
     requests.clear()
     async with sessions() as session:
