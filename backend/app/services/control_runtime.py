@@ -43,7 +43,7 @@ from app.services.vpn_broadcasts import dispatch_next_broadcast_delivery
 from app.services.vpn_cabinet_settings import get_reminders_enabled_at
 from app.services.vpn_expiry_reminders import dispatch_next_expiry_reminder
 from app.services.vpn_control_dispatcher import dispatch_next_vpn_control_operation
-from app.services.vpn_fleet_health import probe_next_vpn_endpoint
+from app.services.vpn_fleet_health import probe_vpn_fleet
 from app.services.vpn_lifecycle import run_vpn_lifecycle_maintenance
 from app.services.vpn_node_transport import (
     VpnNodeTransportError,
@@ -89,7 +89,7 @@ class ControlRuntimeOrchestrator:
             load_transport_snapshot
         ),
         vpn_fleet_health_probe: Callable[..., Awaitable[bool]] = (
-            probe_next_vpn_endpoint
+            probe_vpn_fleet
         ),
         vpn_ready_sender: ReadyNoticeSender = send_telegram_message,
         vpn_broadcast_dispatcher: Callable[..., Awaitable[bool]] = (

@@ -823,3 +823,196 @@ async def test_probe_cancellation_rolls_back_and_releases_without_an_event(
         assert node.vpn_last_error == "old-safe-code"
         assert target.health_checked_at is None
         assert await session.scalar(select(VpnNodeEvent)) is None
+
+
+def test_fleet_pass_is_the_scheduled_runtime_default() -> None:
+    import inspect
+
+    from app.services import vpn_fleet_health
+    from app.services.control_runtime import ControlRuntimeOrchestrator
+
+    default = inspect.signature(ControlRuntimeOrchestrator).parameters[
+        "vpn_fleet_health_probe"
+    ].default
+    assert default is getattr(vpn_fleet_health, "probe_vpn_fleet", None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("node_count", [4, 12])
+async def test_fleet_pass_keeps_every_country_available_across_refreshes(
+    session_factory, node_count: int,
+) -> None:
+    from app.services import vpn_fleet_health
+    from app.services.vpn_policy import select_public_vpn_endpoint
+
+    endpoint_ids = []
+    for index in range(node_count):
+        _, endpoint_id = await seed_endpoint(
+            session_factory,
+            name=f"country-{index}",
+            endpoint_changes={"is_published": True, "max_active_profiles": 20},
+        )
+        endpoint_ids.append(endpoint_id)
+    calls: list[int] = []
+    current = [NOW]
+
+    async def transport(_snapshot, request, *, now_ms):
+        assert request.checked_at_ms == now_ms == int(current[0].timestamp() * 1000)
+        calls.append(request.target.endpoint_id)
+        return VpnNodeHealthReceipt("healthy", None, "running")
+
+    for cycle in range(4):
+        current[0] = NOW + timedelta(seconds=cycle * 120)
+        calls.clear()
+        assert await asyncio.wait_for(
+            vpn_fleet_health.probe_vpn_fleet(
+                session_factory, KNOWN_HOSTS,
+                snapshot_loader=lambda *_: object(), transport=transport,
+                now=lambda: current[0],
+            ), timeout=10,
+        ) is True
+        assert calls == endpoint_ids
+        for offset in (0, 60, 119):
+            async with session_factory() as session:
+                for endpoint_id in endpoint_ids:
+                    selected = await select_public_vpn_endpoint(
+                        session, endpoint_id=endpoint_id,
+                        now=current[0] + timedelta(seconds=offset),
+                        health_max_age_seconds=300,
+                    )
+                    assert selected is not None
+        calls.clear()
+        assert await vpn_fleet_health.probe_vpn_fleet(
+            session_factory, KNOWN_HOSTS,
+            snapshot_loader=lambda *_: object(), transport=transport,
+            now=lambda: current[0],
+        ) is False
+        assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("previous_check", "expected"),
+    [(None, True), (NOW - timedelta(microseconds=1), True), (NOW, False),
+     (NOW + timedelta(seconds=1), False)],
+)
+async def test_fleet_pass_watermark_excludes_already_attempted_endpoints(
+    session_factory, previous_check: datetime | None, expected: bool,
+) -> None:
+    await seed_endpoint(session_factory, endpoint_changes={"health_checked_at": previous_check})
+    calls: list[VpnNodeHealthRequest] = []
+    assert await probe_next_vpn_endpoint(
+        session_factory, KNOWN_HOSTS,
+        snapshot_loader=lambda *_: object(), transport=healthy_transport(calls),
+        now=lambda: NOW, checked_before=NOW,
+    ) is expected
+    assert len(calls) == int(expected)
+
+
+@pytest.mark.asyncio
+async def test_fleet_pass_continues_after_unhealthy_node_without_hiding_failure(
+    session_factory,
+) -> None:
+    from app.services import vpn_fleet_health
+    from app.services.vpn_policy import select_public_vpn_endpoint
+
+    endpoint_ids = []
+    for index in range(2):
+        _, endpoint_id = await seed_endpoint(
+            session_factory, name=f"failure-{index}",
+            endpoint_changes={"is_published": True, "max_active_profiles": 20},
+        )
+        endpoint_ids.append(endpoint_id)
+    calls: list[int] = []
+
+    async def transport(_snapshot, request, *, now_ms):
+        calls.append(request.target.endpoint_id)
+        if request.target.endpoint_id == endpoint_ids[0]:
+            raise VpnNodeTransportError("private transport detail")
+        return VpnNodeHealthReceipt("healthy", None, "running")
+
+    assert await vpn_fleet_health.probe_vpn_fleet(
+        session_factory, KNOWN_HOSTS,
+        snapshot_loader=lambda *_: object(), transport=transport, now=lambda: NOW,
+    ) is True
+    assert calls == endpoint_ids
+    async with session_factory() as session:
+        failed = await session.get(VpnEndpoint, endpoint_ids[0])
+        assert failed.last_error_code == "vpn_node_health_transport_failed"
+        assert as_utc(failed.health_checked_at) == NOW
+        for index, endpoint_id in enumerate(endpoint_ids):
+            selected = await select_public_vpn_endpoint(
+                session, endpoint_id=endpoint_id, now=NOW, health_max_age_seconds=300,
+            )
+            assert (selected is not None) is (index == 1)
+
+
+@pytest.mark.asyncio
+async def test_fleet_pass_cancellation_preserves_committed_nodes_and_releases_lease(
+    session_factory,
+) -> None:
+    from app.services import vpn_fleet_health
+
+    endpoints = [await seed_endpoint(session_factory, name=f"cancel-{index}") for index in range(2)]
+    started = asyncio.Event()
+
+    async def transport(_snapshot, request, *, now_ms):
+        if request.target.endpoint_id == endpoints[1][1]:
+            started.set()
+            await asyncio.Event().wait()
+        return VpnNodeHealthReceipt("healthy", None, "running")
+
+    task = asyncio.create_task(vpn_fleet_health.probe_vpn_fleet(
+        session_factory, KNOWN_HOSTS,
+        snapshot_loader=lambda *_: object(), transport=transport, now=lambda: NOW,
+    ))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    async with session_factory() as session:
+        first = await session.get(VpnEndpoint, endpoints[0][1])
+        second = await session.get(VpnEndpoint, endpoints[1][1])
+        assert as_utc(first.health_checked_at) == NOW
+        assert second.health_checked_at is None
+    calls: list[VpnNodeHealthRequest] = []
+    assert await vpn_fleet_health.probe_vpn_fleet(
+        session_factory, KNOWN_HOSTS,
+        snapshot_loader=lambda *_: object(), transport=healthy_transport(calls), now=lambda: NOW,
+    ) is True
+    assert [request.target.endpoint_id for request in calls] == [endpoints[1][1]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["checked", "disabled", "busy"])
+async def test_fleet_pass_retries_when_candidate_changes_while_locking(
+    session_factory, change: str,
+) -> None:
+    from app.services import vpn_fleet_health
+
+    endpoints = [await seed_endpoint(session_factory, name=f"race-{index}") for index in range(4)]
+    worker_id, endpoint_id = endpoints[0]
+
+    async def change_candidate(_session):
+        async with session_factory() as concurrent:
+            if change == "checked":
+                await concurrent.execute(update(VpnEndpoint).where(
+                    VpnEndpoint.id == endpoint_id,
+                ).values(health_checked_at=NOW))
+            elif change == "disabled":
+                await concurrent.execute(update(WorkerNode).where(
+                    WorkerNode.id == worker_id,
+                ).values(is_enabled=False))
+            else:
+                concurrent.add(WorkerMaintenanceJob(
+                    worker_id=worker_id, action="vpn_check", status="queued",
+                ))
+            await concurrent.commit()
+
+    RecordingSession.on_worker_lock = change_candidate
+    calls: list[VpnNodeHealthRequest] = []
+    assert await vpn_fleet_health.probe_vpn_fleet(
+        session_factory, KNOWN_HOSTS,
+        snapshot_loader=lambda *_: object(), transport=healthy_transport(calls), now=lambda: NOW,
+    ) is True
+    assert [request.target.endpoint_id for request in calls] == [item[1] for item in endpoints[1:]]
