@@ -1299,6 +1299,125 @@ async function verifyCabinetCreation(browser, origin) {
   await context.close();
 }
 
+async function verifyDeviceRequestJournal(browser, origin) {
+  const {context,page}=await newPortalPage(browser);
+  const posts=[],canonical=new Map();
+  const country={endpoint_id:7,name:"Германия",country_code:"DE",is_published:true};
+  let held;
+  await installApi(page,async(route,pathname,request)=>{
+    if(pathname.endsWith("/config"))return responseJson(route,portalConfig);
+    if(pathname.endsWith("/me"))return responseJson(route,me);
+    if(pathname.endsWith("/plans"))return responseJson(route,[]);
+    if(pathname.endsWith("/subscriptions"))return responseJson(route,[{...subscriptions[0],profiles_used:canonical.size}]);
+    if(pathname.endsWith("/v2/locations"))return responseJson(route,[country]);
+    if(pathname.endsWith("/v2/devices")){
+      if(request.method()==="GET")return responseJson(route,[...canonical.values()]);
+      posts.push(request.postDataJSON());
+      if(posts.length===1){held=route;return;}
+      // The first transaction commits only now: bootstrap GET really saw no row.
+      for(const payload of posts){if(!canonical.has(payload.request_id)){
+        const id=31+canonical.size;
+        canonical.set(payload.request_id,{...profiles[0],id,display_name:payload.display_name,operation:operationFixture(payload.request_id,"create",{device_id:id,stage:"completed",credential_generation:1,finished_at:"2026-10-26T00:01:00Z"})});
+      }}
+      return responseJson(route,canonical.get(posts.at(-1).request_id).operation,200);
+    }
+    return responseJson(route,{},404);
+  },{locations:null});
+  await page.goto(origin+"/cabinet/#devices");
+  await page.getByRole("button",{name:"Добавить устройство",exact:true}).click();
+  const form=page.locator("#add-device");
+  await form.getByLabel("Название устройства").fill("Ноутбук");
+  await form.getByLabel("Страна").selectOption("7");
+  await form.getByRole("button",{name:"Добавить устройство",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector("#add-device input")?.disabled===true);
+  assert.ok(held);assert.equal(canonical.size,0);
+  await page.reload();
+  await page.getByRole("button",{name:"Добавить устройство",exact:true}).click();
+  // Exercise the old implementation as well: without a journal this is a fresh form.
+  if(!await form.getByLabel("Название устройства").isDisabled()){
+    await form.getByLabel("Название устройства").fill("Ноутбук");
+    await form.getByLabel("Страна").selectOption("7");
+    await form.getByRole("button",{name:"Добавить устройство",exact:true}).click();
+  }else await form.getByRole("button",{name:"Повторить запрос",exact:true}).click();
+  await page.locator(".profile-card").first().waitFor();
+  assert.equal(posts.length,2);assert.deepEqual(posts[0],posts[1],"reload before first commit must replay the original UUID and exact intent");
+  assert.equal(canonical.size,1,"one canonical device despite the original transaction committing late");
+  assert.equal(await page.evaluate(()=>sessionStorage.getItem("veltrix.device-requests.v1")),null);
+  await held.abort().catch(()=>{});
+  await context.close();
+}
+
+async function verifyDeviceJournalBoundaries(browser, origin) {
+  const key="veltrix.device-requests.v1",privateMarker="must-not-render-storage-material";
+  const scope=Buffer.from(await crypto.subtle.digest("SHA-256",new TextEncoder().encode("veltrix-device-requests-v1:"+me.csrf_token))).toString("hex");
+  for(const mode of ["session","logout","unauthorized","malformed","read-failure","write-failure"]){
+    const {context,page,diagnostics}=await newPortalPage(browser,{captureClipboard:true});
+    const posts=[],country={endpoint_id:7,name:"Германия",country_code:"DE",is_published:true};
+    let currentMe=me;
+    if(["malformed","read-failure","write-failure"].includes(mode))await page.addInitScript(({mode,key,raw,privateMarker})=>{
+      if(mode==="malformed")sessionStorage.setItem(key,raw);
+      else{
+        const method=mode==="read-failure"?"getItem":"setItem",original=Storage.prototype[method];
+        Storage.prototype[method]=function(name,...args){if(name===key)throw new Error(privateMarker);return original.call(this,name,...args);};
+      }
+    },{mode,key,privateMarker,raw:JSON.stringify({version:1,scope,requests:[{key:"__proto__",requestId:privateMarker,intent:{subscription_url:privateMarker}}]})});
+    await installApi(page,async(route,pathname,request)=>{
+      if(pathname.endsWith("/config"))return responseJson(route,portalConfig);
+      if(pathname.endsWith("/me"))return responseJson(route,currentMe);
+      if(pathname.endsWith("/plans"))return responseJson(route,[]);
+      if(pathname.endsWith("/subscriptions"))return responseJson(route,subscriptions.slice(0,1));
+      if(pathname.endsWith("/v2/locations"))return responseJson(route,[country]);
+      if(pathname.endsWith("/locations"))return responseJson(route,{current:country,pending_endpoint_id:null,selection_state:"ready",available:[country]});
+      if(pathname.endsWith("/connection"))return responseJson(route,{subscription_url:"https://vpn.example/subscription/journal-read-only"});
+      if(pathname.endsWith("/logout"))return responseJson(route,{logged_out:true});
+      if(pathname.endsWith("/v2/devices")){
+        if(request.method()==="GET")return responseJson(route,profiles.slice(0,1));
+        posts.push(request.postDataJSON());
+        return mode==="unauthorized"?responseJson(route,{},401):route.abort("failed");
+      }
+      return responseJson(route,{},404);
+    },{locations:null});
+    await page.goto(origin+"/cabinet/#devices");
+    await page.getByRole("button",{name:"Добавить устройство",exact:true}).click();
+    const form=page.locator("#add-device");
+    await form.getByLabel("Название устройства").fill("Ноутбук");
+    await form.getByLabel("Страна").selectOption("7");
+    await form.getByRole("button",{name:"Добавить устройство",exact:true}).click();
+    if(mode==="unauthorized"){
+      await page.getByRole("heading",{name:"Сессия завершена",exact:true}).waitFor();
+      assert.equal(await page.evaluate(key=>sessionStorage.getItem(key),key),null);
+    }else if(mode==="session"||mode==="logout"){
+      await form.getByText(/Результат запроса неизвестен/).waitFor();
+      const raw=await page.evaluate(key=>sessionStorage.getItem(key),key);
+      assert.ok(raw.includes(posts[0].request_id));assert.equal(raw.includes(me.csrf_token),false);
+      assert.equal(raw.includes("subscription_url"),false);assert.equal(raw.includes("credential_generation"),false);
+      if(mode==="logout"){
+        await page.locator('.portal-nav a[href="#account"]').click();
+        await page.getByRole("button",{name:"Выйти",exact:true}).click();
+        await page.getByRole("heading",{name:"Вы вышли из аккаунта",exact:true}).waitFor();
+        assert.equal(await page.evaluate(key=>sessionStorage.getItem(key),key),null);
+      }else{
+        currentMe={...me,csrf_token:"another-authenticated-session"};
+        await page.reload();
+        await page.getByRole("button",{name:"Добавить устройство",exact:true}).click();
+        assert.equal(await form.getByLabel("Название устройства").inputValue(),"");
+        assert.equal(await form.getByLabel("Название устройства").isDisabled(),false);
+        assert.equal(await page.evaluate(key=>sessionStorage.getItem(key),key),null,"another session cannot adopt an unresolved identity");
+      }
+    }else{
+      await form.getByRole("alert").filter({hasText:"Не удалось сохранить запрос"}).waitFor();
+      assert.equal(posts.length,0,"storage failures must not silently dispatch an unsafe POST");
+      await assertSecretAbsent(page,diagnostics,privateMarker);
+      await page.locator('.portal-nav a[href="#home"]').click();
+      const copy=page.getByRole("button",{name:"Скопировать",exact:true});
+      await page.waitForFunction(()=>[...document.querySelectorAll("button")].some(button=>button.textContent==="Скопировать"&&!button.disabled));
+      await copy.click();
+      assert.deepEqual(await page.evaluate(()=>window.__portalClipboardWrites),["https://vpn.example/subscription/journal-read-only"],"existing connect/copy remains usable when mutations are blocked");
+    }
+    await context.close();
+  }
+}
+
 async function verifyPreferenceSaveAcrossSections(browser, origin) {
   for (const logout of [false,true]) {
     const {context,page}=await newPortalPage(browser);
@@ -2763,7 +2882,7 @@ const browser = await chromium.launch({
 
 try {
   const locationCases = [verifyInitialDeviceLocationStates, verifyDeviceLocations, verifyDeviceLocationEdges];
-  const cabinetCases = [verifyCabinetOperations, verifyHomeCountryPreparation, verifyCountryGenerationScope, verifyCabinetCreation, verifyCabinetPreferencesUsageNotice, verifyPreferenceSaveAcrossSections];
+  const cabinetCases = [verifyCabinetOperations, verifyHomeCountryPreparation, verifyCountryGenerationScope, verifyCabinetCreation, verifyDeviceRequestJournal, verifyDeviceJournalBoundaries, verifyCabinetPreferencesUsageNotice, verifyPreferenceSaveAcrossSections];
   const allCases = [
     ...cabinetCases, ...locationCases, verifyFullPortal, verifyInitialPortalStates,
     verifyLegacyPlansRoute, verifyPublicTrialFlow, verifyMiniAppStates, verifyIOSGestureBoundCopy,
@@ -2776,6 +2895,7 @@ try {
     : process.argv.includes("--country-preparation-only") ? [verifyHomeCountryPreparation]
     : process.argv.includes("--country-generation-only") ? [verifyCountryGenerationScope]
     : process.argv.includes("--preferences-race-only") ? [verifyPreferenceSaveAcrossSections]
+    : process.argv.includes("--journal-only") ? [verifyDeviceRequestJournal, verifyDeviceJournalBoundaries]
     : process.argv.includes("--device-locations-only") ? locationCases
     : process.argv.includes("--responsive-only") ? [captureResponsiveMatrix]
     : allCases;

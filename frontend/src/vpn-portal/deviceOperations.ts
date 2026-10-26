@@ -1,5 +1,7 @@
 // @ts-expect-error Node's strip-types runner requires the source extension.
 import { portalApi, PortalError } from "./api.ts";
+// @ts-expect-error Node's strip-types runner requires the source extension.
+import { DeviceOperationJournal } from "./deviceOperationJournal.ts";
 import type { SessionGeneration } from "./bootstrap";
 import type { PortalDevice, PortalDeviceOperation } from "./types";
 
@@ -58,23 +60,44 @@ export class DeviceOperationRequests {
   private unauthorized: () => void;
   private starting: (intent: DeviceIntent) => void;
   private epoch = 0;
+  private journal: DeviceOperationJournal;
 
-  constructor(session: SessionGeneration, changed: (entries: Record<string, DeviceRequestState>) => void, unauthorized: () => void, starting: (intent: DeviceIntent) => void) {
+  constructor(session: SessionGeneration, changed: (entries: Record<string, DeviceRequestState>) => void, unauthorized: () => void, starting: (intent: DeviceIntent) => void, storage?: () => Pick<Storage, "getItem" | "setItem" | "removeItem">) {
     this.session = session; this.changed = changed; this.unauthorized = unauthorized; this.starting = starting;
+    this.journal = new DeviceOperationJournal(storage);
+  }
+  async initialize(csrf: string): Promise<void> {
+    const epoch = ++this.epoch; const generation = this.session.current();
+    const current = () => this.epoch === epoch && this.session.isCurrent(generation);
+    this.entries = {}; this.changed(this.entries);
+    try {
+      const records = await this.journal.bind(csrf,current);
+      if (!current()) return;
+      for (const record of records) this.put(record.key,{intent:record.intent,requestId:record.requestId,operation:null,busy:false,definitive:false,error:"Результат запроса неизвестен. Повторите проверку с теми же данными"});
+    } catch { /* A bounded action error is shown on submit; reading and connecting still work. */ }
   }
   private put(key: string, entry: DeviceRequestState): void { this.entries = { ...this.entries, [key]: entry }; this.changed(this.entries); }
-  clear(): void { this.epoch += 1; this.entries = {}; this.changed(this.entries); }
+  clear(): void { this.epoch += 1; this.journal.clear(); this.entries = {}; this.changed(this.entries); }
   dismiss(key: string): void { if (this.entries[key]?.definitive) { const next = {...this.entries}; delete next[key]; this.entries = next; this.changed(next); } }
   pendingFor(id: number): boolean { return Object.values(this.entries).some((entry) => !entry.definitive && (entry.intent.action !== "create" ? entry.intent.deviceId === id : entry.operation?.device_id === id)); }
   restore(devices: PortalDevice[]): void {
     for (const device of devices) {
       const operation = device.operation;
-      if (!operation || operationFinished(operation)) continue;
+      if (!operation) continue;
+      const recovered = Object.entries(this.entries).find(([,entry])=>entry.requestId === operation.request_id);
+      if (recovered) {
+        const [key,entry] = recovered;
+        if (entry.busy || entry.definitive || operation.action !== entry.intent.action || (entry.intent.action !== "create" && entry.intent.deviceId !== operation.device_id)) continue;
+        this.put(key,{...entry,operation,definitive:operationFinished(operation),error:""});
+        continue;
+      }
+      if (operationFinished(operation)) continue;
       const intent: DeviceIntent = operation.action === "create" ? {action:"create",subscription_id:device.subscription_id,endpoint_id:operation.endpoint_id ?? 0,display_name:device.display_name} : {action:operation.action,deviceId:device.id};
       const basicKey = operationKey(intent);
       const key = operation.action === "create" && this.entries[basicKey] && this.entries[basicKey].requestId !== operation.request_id ? `create:${device.id}` : basicKey;
       if (!this.entries[key]) this.put(key, {intent,requestId:operation.request_id,operation,busy:false,definitive:false,error:""});
     }
+    this.journal.write(this.entries);
   }
   async submit(intent: DeviceIntent, csrf: string, key = operationKey(intent)): Promise<PortalDeviceOperation | null> {
     const previous = this.entries[key];
@@ -84,6 +107,10 @@ export class DeviceOperationRequests {
       this.put(key, {...previous,error:"Сначала проверьте результат предыдущего запроса"}); return null;
     }
     const entry: DeviceRequestState = previous && !previous.definitive ? {...previous,busy:true,error:""} : {intent,requestId:operationRequestId(),operation:null,busy:true,definitive:false,error:""};
+    if (!this.journal.write({...this.entries,[key]:entry})) {
+      this.put(key,{...entry,busy:false,definitive:previous?.definitive ?? !previous,error:"Не удалось сохранить запрос на этом устройстве. Войдите заново и повторите попытку"});
+      return null;
+    }
     this.put(key,entry);
     this.starting(intent);
     return this.request(key,entry,()=>intent.action === "create"
@@ -104,6 +131,7 @@ export class DeviceOperationRequests {
       if (!isCurrent()) return null;
       if (operation.request_id !== entry.requestId || operation.action !== entry.intent.action || (entry.intent.action !== "create" && operation.device_id !== entry.intent.deviceId)) throw new PortalError(0,"Не удалось проверить результат действия");
       this.put(key,{...entry,operation,busy:false,definitive:operationFinished(operation),error:""});
+      this.journal.write(this.entries);
       return operation;
     } catch (error) {
       if (!isCurrent()) return null;
@@ -111,6 +139,7 @@ export class DeviceOperationRequests {
       // A rejected replay cannot settle an earlier submission whose response was lost.
       const definitive = !unresolvedReplay && !entry.operation && error instanceof PortalError && error.status >= 400 && error.status < 500;
       this.put(key,{...entry,busy:false,definitive,error:error instanceof PortalError && error.status !== 0 ? error.message : "Результат запроса неизвестен. Повторите проверку с теми же данными"});
+      this.journal.write(this.entries);
       return null;
     }
   }

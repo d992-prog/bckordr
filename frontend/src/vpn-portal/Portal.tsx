@@ -504,10 +504,13 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
 
   useEffect(() => {
     let active = true;
-    void bootstrap(launch).then((result) => {
+    void bootstrap(launch).then(async (result) => {
       if (!active) {
         return;
       }
+      if (result.kind === "ready") await operationRequests.initialize(result.me.csrf_token);
+      else if (["login-required", "reopen-mini-app", "account-switch", "cookie-unavailable"].includes(result.kind)) operationRequests.clear();
+      if (!active) return;
       setBootstrapResult(result);
       if (result.kind === "ready") {
         setMe(result.me);
