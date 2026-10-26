@@ -1,4 +1,4 @@
-export type VpnAdminSection = "overview" | "customers" | "nodes" | "plans" | "events" | "broadcasts";
+export type VpnAdminSection = "overview" | "customers" | "nodes" | "plans" | "events" | "broadcasts" | "cabinet";
 
 const SECTION_KEYS = new Set<VpnAdminSection>([
   "overview",
@@ -7,6 +7,7 @@ const SECTION_KEYS = new Set<VpnAdminSection>([
   "plans",
   "events",
   "broadcasts",
+  "cabinet",
 ]);
 
 function hashSegments(hash: string): string[] {

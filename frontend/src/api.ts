@@ -507,6 +507,12 @@ export type VpnSubscriptionDeviceUsage = {
 };
 
 export type VpnUsageDays = 1 | 7 | 30;
+export type VpnCabinetSettings = {
+  revision: number;
+  support_contact: string | null;
+  notice: { title: string; body: string; starts_at: string; ends_at: string } | null;
+  reminders_enabled: boolean;
+};
 export type VpnBroadcastConfig = {
   enabled: boolean;
   registry_state: "ready" | "history_unverified" | "bot_changed" | "unconfigured";
@@ -1197,6 +1203,8 @@ export const api = {
   getVpnAbuseDeviceContext: (deviceId: number, customerId: number) =>
     request<VpnAbuseDeviceContext>(`/control/vpn/abuse/devices/${deviceId}/context?customer_id=${customerId}`, { cache: "no-store" }),
   getVpnBroadcastConfig: () => request<VpnBroadcastConfig>("/control/vpn/broadcasts/config", { cache: "no-store" }),
+  getVpnCabinetSettings: () => request<VpnCabinetSettings>("/control/vpn/cabinet-settings", { cache: "no-store" }),
+  updateVpnCabinetSettings: (payload: VpnCabinetSettings) => request<VpnCabinetSettings>("/control/vpn/cabinet-settings", { method: "PUT", cache: "no-store", body: JSON.stringify(payload) }),
   getVpnBroadcasts: (options?: { beforeId?: number }) => request<VpnBroadcastSummary[]>(`/control/vpn/broadcasts?limit=50${options?.beforeId === undefined ? "" : `&before_id=${options.beforeId}`}`, { cache: "no-store" }),
   getVpnBroadcast: (id: number) => request<VpnBroadcastDetail>(`/control/vpn/broadcasts/${id}`, { cache: "no-store" }),
   createVpnBroadcast: (body: string) => request<VpnBroadcastDetail>("/control/vpn/broadcasts", { method: "POST", cache: "no-store", body: JSON.stringify({ body }) }),
