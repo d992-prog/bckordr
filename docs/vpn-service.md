@@ -6,6 +6,33 @@ The service supports manually created plans and subscriptions, automatic lifecyc
 
 The Telegram bot supports `/start`, `/status`, `/keys`, and `/support`. A VPN URI is a credential: only use the bot in a private chat, protect the webhook with both configured secrets, and never paste a URI into logs or public channels.
 
+## Cabinet refresh preparation (not a deployment record)
+
+The `codex/veltrix-cabinet-refresh` branch extends the existing backend; it does
+not replace the VPN runtime or enable payments. Customer-owned device creation,
+revocation and credential replacement use persistent request IDs and the
+existing control queue. A country change consumes no additional device slot.
+An unfinished or uncertain remote revocation does not release a slot or permit
+replacement credentials to be issued. Existing keys are preserved unless their
+owner or an operator explicitly requests a lifecycle change.
+
+Cabinet support, a time-bounded plain-text notice and the reminder operator gate
+share the revisioned `/api/control/vpn/cabinet-settings` setting. An empty support
+contact publishes no support link; an in-app notice is not a Telegram campaign.
+Automatic expiry reminders start disabled. A customer's enabled preference
+alone cannot activate delivery. Reminder verification uses synthetic recipients
+and senders, never a real bot send.
+
+The owned usage endpoint reports measured account/device traffic for 1, 7 or 30
+days. Missing measurements remain unknown, not zero. These reports are not a
+synchronized remaining-traffic balance across countries and cannot determine
+whether an external VPN application is connected.
+
+See the [customer portal runbook](vpn-customer-portal-runbook.md) for exact API
+contracts, operation recovery and generation-aware migration/rollback limits.
+Production installation and a closed-copy migration rehearsal require separate
+approval; this branch's synthetic PostgreSQL checks do not authorize either.
+
 ## Public Trial Release Candidate (Disabled)
 
 The public seven-day trial is implemented but is not enabled for production.
