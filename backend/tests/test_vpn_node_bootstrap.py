@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import inspect
 import json
 import os
+import shlex
 import sqlite3
 import stat
 import subprocess
@@ -103,7 +105,10 @@ def test_bootstrap_bundle_is_deterministic_and_imports_in_isolated_python(
     with zipfile.ZipFile(first) as archive:
         main = archive.read("__main__.py").decode("ascii")
         assert "app/services/vpn_node_token.py" in archive.namelist()
-    assert repr(_build_vpn_install_command()) in main
+    assert repr(
+        "XUI_PANEL_PORT=2053 XUI_WEB_BASE_PATH=/panel/ "
+        + _build_vpn_install_command()
+    ) in main
     assert repr(_build_xui_stop_command()) in main
     assert repr(XUI_START_COMMAND) in main
     assert repr(_build_vpn_ready_command()) in main
@@ -121,6 +126,42 @@ def test_bootstrap_bundle_is_deterministic_and_imports_in_isolated_python(
     assert probe.returncode == 0
     assert probe.stdout == BOOTSTRAP_IMPORT_SENTINEL
     assert probe.stderr == b""
+
+
+@pytest.mark.parametrize(
+    ("panel_url", "port", "base_path"),
+    (
+        ("http://127.0.0.1:2053/panel/", "2053", "/panel/"),
+        ("http://127.0.0.1:28989/custom-panel/", "28989", "/custom-panel/"),
+        ("http://127.0.0.1/panel/", "80", "/panel/"),
+    ),
+)
+def test_bootstrap_installer_receives_requested_panel_location(
+    tmp_path: Path, panel_url: str, port: str, base_path: str
+) -> None:
+    bundle = tmp_path / "bootstrap.pyz"
+    build_vpn_node_bootstrap_bundle(
+        BACKEND, bundle, worker_id=12, panel_url=panel_url
+    )
+    with zipfile.ZipFile(bundle) as archive:
+        tree = ast.parse(archive.read("__main__.py"))
+    invocation = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_runtime_main"
+    )
+    parameters = {
+        keyword.arg: ast.literal_eval(keyword.value)
+        for keyword in invocation.keywords
+    }
+    command = shlex.split(parameters["install_command"])
+
+    assert parameters["panel_url"] == panel_url
+    assert command[:2] == [
+        f"XUI_PANEL_PORT={port}", f"XUI_WEB_BASE_PATH={base_path}"
+    ]
+    assert command[2:] == shlex.split(_build_vpn_install_command())
 
 
 def test_bootstrap_receipt_is_frozen_and_contains_only_public_fields() -> None:
