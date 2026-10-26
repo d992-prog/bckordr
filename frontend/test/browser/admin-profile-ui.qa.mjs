@@ -2830,6 +2830,10 @@ try {
   const mobileNodeBounds = await mobileNodeRow.boundingBox();
   assert.ok(mobileNodeBounds.x >= 0 && mobileNodeBounds.x + mobileNodeBounds.width <= 390,
     "the first mobile node card must fit the viewport");
+  const mobileDiagnostics = mobileNodeRow.locator("summary").filter({ hasText: "Диагностика" });
+  await mobileDiagnostics.click();
+  assert.equal(await mobileDiagnostics.evaluate((element) => element.closest("details").open), true,
+    "mobile node diagnostics must be expanded before auditing all maintenance actions");
   const mobileNodeActions = mobileNodeRow.getByRole("button");
   assert.ok(await mobileNodeActions.count() >= 7, "all important node operations must remain visible on mobile");
   for (let index = 0; index < await mobileNodeActions.count(); index += 1) {
