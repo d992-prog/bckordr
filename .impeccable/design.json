@@ -1,84 +1,482 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-04T06:02:55.0982009Z",
+  "generatedAt": "2026-10-26T09:45:00.000Z",
   "title": "Design System: Veltrix VPN",
   "extensions": {
     "colorMeta": {
-      "pearl": { "role": "neutral", "displayName": "Pearl Blue", "canonical": "#eef4fa" },
-      "ink": { "role": "neutral", "displayName": "Deep Ink", "canonical": "#101c2c" },
-      "blue": { "role": "primary", "displayName": "Signal Blue", "canonical": "#256dff" },
-      "mint": { "role": "secondary", "displayName": "Optical Mint", "canonical": "#72e2c0" },
-      "lilac": { "role": "tertiary", "displayName": "Lens Lilac", "canonical": "#c6b7ff" }
+      "pearl": {
+        "role": "neutral",
+        "displayName": "Pearl Blue",
+        "canonical": "#eef4fa",
+        "tonalRamp": [
+          "oklch(15.00% 0.0103 247.93)",
+          "oklch(26.43% 0.0103 247.93)",
+          "oklch(37.86% 0.0103 247.93)",
+          "oklch(49.29% 0.0103 247.93)",
+          "oklch(60.71% 0.0103 247.93)",
+          "oklch(72.14% 0.0103 247.93)",
+          "oklch(83.57% 0.0103 247.93)",
+          "oklch(95.00% 0.0103 247.93)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Deep Ink",
+        "canonical": "#101c2c",
+        "tonalRamp": [
+          "oklch(15.00% 0.0358 255.93)",
+          "oklch(26.43% 0.0358 255.93)",
+          "oklch(37.86% 0.0358 255.93)",
+          "oklch(49.29% 0.0358 255.93)",
+          "oklch(60.71% 0.0358 255.93)",
+          "oklch(72.14% 0.0358 255.93)",
+          "oklch(83.57% 0.0358 255.93)",
+          "oklch(95.00% 0.0358 255.93)"
+        ]
+      },
+      "blue": {
+        "role": "primary",
+        "displayName": "Signal Blue",
+        "canonical": "#256dff",
+        "tonalRamp": [
+          "oklch(15.00% 0.2286 262.23)",
+          "oklch(26.43% 0.2286 262.23)",
+          "oklch(37.86% 0.2286 262.23)",
+          "oklch(49.29% 0.2286 262.23)",
+          "oklch(60.71% 0.2286 262.23)",
+          "oklch(72.14% 0.2286 262.23)",
+          "oklch(83.57% 0.2286 262.23)",
+          "oklch(95.00% 0.2286 262.23)"
+        ]
+      },
+      "label-blue": {
+        "role": "primary",
+        "displayName": "Readable Text Blue",
+        "canonical": "#1557c8",
+        "tonalRamp": [
+          "oklch(15.00% 0.1876 260.82)",
+          "oklch(26.43% 0.1876 260.82)",
+          "oklch(37.86% 0.1876 260.82)",
+          "oklch(49.29% 0.1876 260.82)",
+          "oklch(60.71% 0.1876 260.82)",
+          "oklch(72.14% 0.1876 260.82)",
+          "oklch(83.57% 0.1876 260.82)",
+          "oklch(95.00% 0.1876 260.82)"
+        ]
+      },
+      "mint": {
+        "role": "secondary",
+        "displayName": "Optical Mint",
+        "canonical": "#72e2c0",
+        "tonalRamp": [
+          "oklch(15.00% 0.1148 171.26)",
+          "oklch(26.43% 0.1148 171.26)",
+          "oklch(37.86% 0.1148 171.26)",
+          "oklch(49.29% 0.1148 171.26)",
+          "oklch(60.71% 0.1148 171.26)",
+          "oklch(72.14% 0.1148 171.26)",
+          "oklch(83.57% 0.1148 171.26)",
+          "oklch(95.00% 0.1148 171.26)"
+        ]
+      },
+      "lilac": {
+        "role": "tertiary",
+        "displayName": "Lens Lilac",
+        "canonical": "#c6b7ff",
+        "tonalRamp": [
+          "oklch(15.00% 0.1011 293.60)",
+          "oklch(26.43% 0.1011 293.60)",
+          "oklch(37.86% 0.1011 293.60)",
+          "oklch(49.29% 0.1011 293.60)",
+          "oklch(60.71% 0.1011 293.60)",
+          "oklch(72.14% 0.1011 293.60)",
+          "oklch(83.57% 0.1011 293.60)",
+          "oklch(95.00% 0.1011 293.60)"
+        ]
+      },
+      "focus": {
+        "role": "primary",
+        "displayName": "Focus Blue",
+        "canonical": "#0b57d0",
+        "tonalRamp": [
+          "oklch(15.00% 0.1992 260.60)",
+          "oklch(26.43% 0.1992 260.60)",
+          "oklch(37.86% 0.1992 260.60)",
+          "oklch(49.29% 0.1992 260.60)",
+          "oklch(60.71% 0.1992 260.60)",
+          "oklch(72.14% 0.1992 260.60)",
+          "oklch(83.57% 0.1992 260.60)",
+          "oklch(95.00% 0.1992 260.60)"
+        ]
+      },
+      "action": {
+        "role": "primary",
+        "displayName": "Action Blue",
+        "canonical": "#246cf8",
+        "tonalRamp": [
+          "oklch(15.00% 0.2213 261.88)",
+          "oklch(26.43% 0.2213 261.88)",
+          "oklch(37.86% 0.2213 261.88)",
+          "oklch(49.29% 0.2213 261.88)",
+          "oklch(60.71% 0.2213 261.88)",
+          "oklch(72.14% 0.2213 261.88)",
+          "oklch(83.57% 0.2213 261.88)",
+          "oklch(95.00% 0.2213 261.88)"
+        ]
+      },
+      "action-hover": {
+        "role": "primary",
+        "displayName": "Pressed Action Blue",
+        "canonical": "#1f5bc9",
+        "tonalRamp": [
+          "oklch(15.00% 0.1822 261.30)",
+          "oklch(26.43% 0.1822 261.30)",
+          "oklch(37.86% 0.1822 261.30)",
+          "oklch(49.29% 0.1822 261.30)",
+          "oklch(60.71% 0.1822 261.30)",
+          "oklch(72.14% 0.1822 261.30)",
+          "oklch(83.57% 0.1822 261.30)",
+          "oklch(95.00% 0.1822 261.30)"
+        ]
+      },
+      "success": {
+        "role": "secondary",
+        "displayName": "Ready Green",
+        "canonical": "#0d6a56",
+        "tonalRamp": [
+          "oklch(15.00% 0.0863 173.10)",
+          "oklch(26.43% 0.0863 173.10)",
+          "oklch(37.86% 0.0863 173.10)",
+          "oklch(49.29% 0.0863 173.10)",
+          "oklch(60.71% 0.0863 173.10)",
+          "oklch(72.14% 0.0863 173.10)",
+          "oklch(83.57% 0.0863 173.10)",
+          "oklch(95.00% 0.0863 173.10)"
+        ]
+      },
+      "warning": {
+        "role": "secondary",
+        "displayName": "Warning Amber",
+        "canonical": "#805500",
+        "tonalRamp": [
+          "oklch(15.00% 0.1022 75.12)",
+          "oklch(26.43% 0.1022 75.12)",
+          "oklch(37.86% 0.1022 75.12)",
+          "oklch(49.29% 0.1022 75.12)",
+          "oklch(60.71% 0.1022 75.12)",
+          "oklch(72.14% 0.1022 75.12)",
+          "oklch(83.57% 0.1022 75.12)",
+          "oklch(95.00% 0.1022 75.12)"
+        ]
+      },
+      "danger": {
+        "role": "secondary",
+        "displayName": "Danger Red",
+        "canonical": "#a52c41",
+        "tonalRamp": [
+          "oklch(15.00% 0.1564 15.52)",
+          "oklch(26.43% 0.1564 15.52)",
+          "oklch(37.86% 0.1564 15.52)",
+          "oklch(49.29% 0.1564 15.52)",
+          "oklch(60.71% 0.1564 15.52)",
+          "oklch(72.14% 0.1564 15.52)",
+          "oklch(83.57% 0.1564 15.52)",
+          "oklch(95.00% 0.1564 15.52)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted Ink",
+        "canonical": "#62728c",
+        "tonalRamp": [
+          "oklch(15.00% 0.0451 260.06)",
+          "oklch(26.43% 0.0451 260.06)",
+          "oklch(37.86% 0.0451 260.06)",
+          "oklch(49.29% 0.0451 260.06)",
+          "oklch(60.71% 0.0451 260.06)",
+          "oklch(72.14% 0.0451 260.06)",
+          "oklch(83.57% 0.0451 260.06)",
+          "oklch(95.00% 0.0451 260.06)"
+        ]
+      },
+      "dark-ground": {
+        "role": "neutral",
+        "displayName": "Dark Ground",
+        "canonical": "#07111e",
+        "tonalRamp": [
+          "oklch(15.00% 0.0312 254.87)",
+          "oklch(26.43% 0.0312 254.87)",
+          "oklch(37.86% 0.0312 254.87)",
+          "oklch(49.29% 0.0312 254.87)",
+          "oklch(60.71% 0.0312 254.87)",
+          "oklch(72.14% 0.0312 254.87)",
+          "oklch(83.57% 0.0312 254.87)",
+          "oklch(95.00% 0.0312 254.87)"
+        ]
+      },
+      "dark-ink": {
+        "role": "neutral",
+        "displayName": "Dark Ink",
+        "canonical": "#f4f8ff",
+        "tonalRamp": [
+          "oklch(15.00% 0.0103 261.79)",
+          "oklch(26.43% 0.0103 261.79)",
+          "oklch(37.86% 0.0103 261.79)",
+          "oklch(49.29% 0.0103 261.79)",
+          "oklch(60.71% 0.0103 261.79)",
+          "oklch(72.14% 0.0103 261.79)",
+          "oklch(83.57% 0.0103 261.79)",
+          "oklch(95.00% 0.0103 261.79)"
+        ]
+      },
+      "cabinet-sheet": {
+        "role": "neutral",
+        "displayName": "Matte Cabinet Sheet",
+        "canonical": "rgba(255, 255, 255, 0.92)",
+        "tonalRamp": [
+          "oklch(15.00% 0.0000 89.88)",
+          "oklch(26.43% 0.0000 89.88)",
+          "oklch(37.86% 0.0000 89.88)",
+          "oklch(49.29% 0.0000 89.88)",
+          "oklch(60.71% 0.0000 89.88)",
+          "oklch(72.14% 0.0000 89.88)",
+          "oklch(83.57% 0.0000 89.88)",
+          "oklch(95.00% 0.0000 89.88)"
+        ]
+      },
+      "cabinet-well": {
+        "role": "neutral",
+        "displayName": "Cool Inset",
+        "canonical": "#f0f4fb",
+        "tonalRamp": [
+          "oklch(15.00% 0.0103 261.79)",
+          "oklch(26.43% 0.0103 261.79)",
+          "oklch(37.86% 0.0103 261.79)",
+          "oklch(49.29% 0.0103 261.79)",
+          "oklch(60.71% 0.0103 261.79)",
+          "oklch(72.14% 0.0103 261.79)",
+          "oklch(83.57% 0.0103 261.79)",
+          "oklch(95.00% 0.0103 261.79)"
+        ]
+      },
+      "cabinet-dark-sheet": {
+        "role": "neutral",
+        "displayName": "Dark Cabinet Sheet",
+        "canonical": "#0d1d2f",
+        "tonalRamp": [
+          "oklch(15.00% 0.0415 252.60)",
+          "oklch(26.43% 0.0415 252.60)",
+          "oklch(37.86% 0.0415 252.60)",
+          "oklch(49.29% 0.0415 252.60)",
+          "oklch(60.71% 0.0415 252.60)",
+          "oklch(72.14% 0.0415 252.60)",
+          "oklch(83.57% 0.0415 252.60)",
+          "oklch(95.00% 0.0415 252.60)"
+        ]
+      },
+      "cabinet-dark-well": {
+        "role": "neutral",
+        "displayName": "Dark Inset",
+        "canonical": "#172e48",
+        "tonalRamp": [
+          "oklch(15.00% 0.0559 252.78)",
+          "oklch(26.43% 0.0559 252.78)",
+          "oklch(37.86% 0.0559 252.78)",
+          "oklch(49.29% 0.0559 252.78)",
+          "oklch(60.71% 0.0559 252.78)",
+          "oklch(72.14% 0.0559 252.78)",
+          "oklch(83.57% 0.0559 252.78)",
+          "oklch(95.00% 0.0559 252.78)"
+        ]
+      }
     },
     "typographyMeta": {
-      "display": { "displayName": "Optical Display", "purpose": "Brand, hero and section headings; Moderustic only when locally available." },
-      "body": { "displayName": "System Body", "purpose": "Instructions, data, forms and dense administration." }
+      "display": {
+        "displayName": "Compact Access Heading",
+        "purpose": "Состояние доступа на главной; Moderustic используется только при локальной доступности"
+      },
+      "title": {
+        "displayName": "Cabinet Card Title",
+        "purpose": "Названия компактных карточек подключения и устройств"
+      },
+      "section-title": {
+        "displayName": "Cabinet Section Title",
+        "purpose": "Заголовки разделов устройств, помощи и аккаунта"
+      },
+      "body": {
+        "displayName": "System Body",
+        "purpose": "Инструкции, данные и формы кабинета; системный текст сохраняет масштаб пользователя"
+      }
     },
     "shadows": [
-      { "name": "glass-float", "value": "0 18px 48px rgba(37, 109, 255, 0.13)", "purpose": "Functional glass controls and navigation." },
-      { "name": "action-lift", "value": "0 18px 36px rgba(37, 109, 255, 0.24)", "purpose": "Primary portal action." }
+      {
+        "name": "glass-float",
+        "value": "0 18px 48px rgba(37, 109, 255, 0.13)",
+        "purpose": "Функциональное стекло навигации и управления"
+      },
+      {
+        "name": "glass-dark",
+        "value": "0 18px 48px rgba(0, 0, 0, 0.32)",
+        "purpose": "Навигационное стекло темной темы"
+      },
+      {
+        "name": "data-card",
+        "value": "0 16px 38px rgba(31, 75, 134, 0.07)",
+        "purpose": "Общие карточки данных; компактные карточки главной остаются без тени"
+      },
+      {
+        "name": "import-press",
+        "value": "inset 0 2px 0 rgba(0, 0, 0, .18)",
+        "purpose": "Нажатие на основную кнопку импорта"
+      }
     ],
     "motion": [
-      { "name": "lens-arrival", "value": "560ms cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "One-shot status-lens saturation and brightness settling." },
-      { "name": "control-feedback", "value": "160ms ease", "purpose": "Short hover and press feedback; disabled under reduced motion." }
+      {
+        "name": "control-feedback",
+        "value": "160ms ease",
+        "purpose": "Короткий отклик общих кнопок; reduced motion сокращает его до 0.01ms"
+      },
+      {
+        "name": "import-feedback",
+        "value": "160ms ease-out",
+        "purpose": "Смена заливки и внутренней тени импорта; отключена в reduced motion и iOS lite"
+      }
     ],
     "breakpoints": [
-      { "name": "narrow", "value": "350px" },
-      { "name": "mobile", "value": "639px" },
-      { "name": "grid", "value": "640px" },
-      { "name": "portrait-comp", "value": "760px" },
-      { "name": "wide", "value": "1200px" }
+      {
+        "name": "narrow",
+        "value": "350px"
+      },
+      {
+        "name": "mobile-max",
+        "value": "639px"
+      },
+      {
+        "name": "grid",
+        "value": "640px"
+      },
+      {
+        "name": "cabinet-desktop",
+        "value": "900px"
+      }
     ]
   },
   "components": [
     {
-      "name": "Primary Action",
+      "name": "Primary Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "One clear next action on the portal.",
-      "html": "<button class=\"ds-primary\">Открыть профиль <span aria-hidden=\"true\">→</span></button>",
-      "css": ".ds-primary{min-height:64px;padding:12px 24px;border:0;border-radius:999px;background:#246cf8;color:#fff;font:700 20px 'Segoe UI',sans-serif;box-shadow:0 18px 36px rgba(37,109,255,.24);transition:background 160ms ease,transform 160ms ease}.ds-primary:hover{background:#1f5bc9;transform:translateY(-1px)}.ds-primary:focus-visible{outline:3px solid #0b57d0;outline-offset:3px}"
+      "description": "Общее основное действие кабинета с белой подписью",
+      "html": "<button class=\"ds-primary\" type=\"button\">Добавить устройство</button>",
+      "css": ".ds-primary{display:inline-flex;min-height:48px;align-items:center;justify-content:center;max-width:100%;padding:10px 16px;border:1px solid transparent;border-radius:var(--vx-radius-control,18px);background:var(--portal-action-blue,#246cf8);color:#fff;font:750 16px ui-sans-serif,system-ui,'Segoe UI',sans-serif;white-space:normal;overflow-wrap:anywhere;cursor:pointer;transition:background-color 160ms ease,transform 160ms ease}.ds-primary:not(:disabled):hover{transform:translateY(-1px)}.ds-primary:focus-visible{outline:3px solid var(--vx-focus,#0b57d0);outline-offset:3px}.ds-primary:disabled{opacity:.48;cursor:not-allowed}@media(prefers-reduced-motion:reduce){.ds-primary{transition-duration:.01ms}}"
+    },
+    {
+      "name": "Import Action",
+      "kind": "button",
+      "refersTo": "button-import",
+      "description": "Одно действие для открытия выбранного приложения; нажатие не подтверждает подключение",
+      "html": "<button class=\"ds-import\" type=\"button\">Открыть в Happ<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M3 12h18m-6-6 6 6-6 6\"/></svg></button>",
+      "css": ".ds-import{--ds-unit:var(--cabinet-unit,.5px);display:flex;width:100%;min-height:max(44px,calc(106 * var(--ds-unit)));justify-content:center;align-items:center;gap:calc(30 * var(--ds-unit));padding:8px;border:0;border-radius:calc(36 * var(--ds-unit));background:var(--portal-action-blue,#246cf8);color:#fff;font:700 1.0287rem ui-sans-serif,system-ui,'Segoe UI',sans-serif;white-space:normal;cursor:pointer;transition:background-color 160ms ease-out,box-shadow 160ms ease-out}.ds-import svg{width:calc(35 * var(--ds-unit));height:calc(35 * var(--ds-unit));flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.ds-import:not(:disabled):hover{transform:translateY(-1px)}.ds-import:not(:disabled):active{background:var(--portal-action-blue-interactive,#1f5bc9);box-shadow:inset 0 2px 0 rgba(0,0,0,.18)}.ds-import:focus-visible{outline:3px solid var(--vx-focus,#0b57d0);outline-offset:3px}.ds-import:disabled{opacity:.65;cursor:not-allowed}@media(prefers-reduced-motion:reduce){.ds-import{transition:none}}"
+    },
+    {
+      "name": "Secondary Connection Action",
+      "kind": "button",
+      "description": "Матовая вспомогательная кнопка копирования или QR-кода",
+      "html": "<button class=\"ds-secondary\" type=\"button\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"><path d=\"m10 14 4-4M8 16l-1 1a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0m0 12a4 4 0 0 0 6 0l5-5a4 4 0 0 0-6-6l-1 1\"/></svg>Скопировать</button>",
+      "css": ".ds-secondary{--ds-unit:var(--cabinet-unit,.5px);display:inline-flex;min-height:max(44px,calc(100 * var(--ds-unit)));align-items:center;justify-content:center;gap:calc(24 * var(--ds-unit));padding:7px;border:0;border-radius:calc(34 * var(--ds-unit));background:#f0f4fb;color:var(--vx-ink,#101c2c);font:650 .8573rem ui-sans-serif,system-ui,'Segoe UI',sans-serif;white-space:normal;overflow-wrap:normal;cursor:pointer;transition:transform 160ms ease}.ds-secondary svg{width:calc(40 * var(--ds-unit));height:calc(40 * var(--ds-unit));fill:none;stroke:var(--portal-action-blue,#246cf8);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.ds-secondary:not(:disabled):hover{transform:translateY(-1px)}.ds-secondary:focus-visible{outline:3px solid var(--vx-focus,#0b57d0);outline-offset:3px}.ds-secondary:disabled{opacity:.48;cursor:not-allowed}@media(prefers-color-scheme:dark){.ds-secondary{background:#172e48;color:var(--vx-ink,#f4f8ff)}}@media(prefers-reduced-motion:reduce){.ds-secondary{transition-duration:.01ms}}"
     },
     {
       "name": "Status Chip",
       "kind": "chip",
-      "description": "Readable subscription or profile state, never color-only.",
-      "html": "<span class=\"ds-status\"><span aria-hidden=\"true\"></span>Активен</span>",
-      "css": ".ds-status{display:inline-flex;align-items:center;gap:9px;padding:7px 13px;border:1px solid rgba(255,255,255,.72);border-radius:999px;background:rgba(220,251,241,.76);color:#0d6a56;font:800 14px 'Segoe UI',sans-serif}.ds-status span{width:10px;height:10px;border-radius:50%;background:currentColor;box-shadow:0 0 0 5px color-mix(in srgb,currentColor 12%,transparent)}"
+      "description": "Текстовое состояние устройства; цвет поддерживает значение",
+      "html": "<span class=\"ds-status\">Доступ активен</span>",
+      "css": ".ds-status{display:inline-flex;min-height:32px;align-items:center;padding:5px 11px;border-radius:999px;background:color-mix(in srgb,var(--vx-mint,#72e2c0) 34%,var(--vx-surface,rgba(255,255,255,.88)));color:var(--portal-success,#0d6a56);font:780 13px ui-sans-serif,system-ui,'Segoe UI',sans-serif;white-space:nowrap}@supports not(background:color-mix(in srgb,white,black)){.ds-status{background:#dff8f0}}@media(prefers-color-scheme:dark){.ds-status{background:#153f39;color:var(--portal-success,#8ef0d3)}}"
     },
     {
       "name": "Matte Data Card",
       "kind": "card",
       "refersTo": "card-matte",
-      "description": "Subscriptions, profiles, forms and dense data use matte surfaces.",
-      "html": "<article class=\"ds-card\"><h3>Доступ Veltrix</h3><p>Профили: 2 из 3</p></article>",
-      "css": ".ds-card{padding:24px;border:1px solid rgba(16,28,44,.1);border-radius:28px;background:rgba(255,255,255,.88);color:#101c2c;box-shadow:0 18px 42px rgba(31,75,134,.08)}.ds-card h3{margin:0 0 12px;font:700 24px 'Segoe UI',sans-serif}.ds-card p{margin:0;color:#62728c;font:400 16px/1.55 'Segoe UI',sans-serif}"
+      "description": "Матовая поверхность профилей, форм и плотных данных",
+      "html": "<article class=\"ds-card\"><h3>Устройство</h3><p>Состояние доступа и действия</p></article>",
+      "css": ".ds-card{min-width:0;padding:clamp(18px,4.5vw,28px);border:1px solid var(--vx-border,rgba(16,28,44,.1));border-radius:var(--vx-radius-card,28px);background:var(--vx-surface,rgba(255,255,255,.88));color:var(--vx-ink,#101c2c);box-shadow:0 16px 38px rgba(31,75,134,.07)}.ds-card h3{margin:0;font-family:var(--vx-font-display,'Moderustic','Avenir Next','Segoe UI Variable Display','Segoe UI',sans-serif);font-size:clamp(20px,4vw,25px);letter-spacing:-.025em}.ds-card p{margin:12px 0 0;color:var(--portal-muted,#62728c);font:400 16px/1.55 ui-sans-serif,system-ui,'Segoe UI',sans-serif}@media(prefers-color-scheme:dark){.ds-card{background:var(--vx-surface,rgba(13,29,47,.92));color:var(--vx-ink,#f4f8ff);border-color:var(--vx-border,rgba(205,225,255,.14))}.ds-card p{color:var(--portal-muted,#b3c1d6)}}"
+    },
+    {
+      "name": "Compact Cabinet Card",
+      "kind": "card",
+      "refersTo": "card-cabinet",
+      "description": "Карточка главной без границы и тени, с компактным заголовком",
+      "html": "<section class=\"ds-cabinet-card\" aria-labelledby=\"ds-connect-title\"><h2 id=\"ds-connect-title\">Подключить VPN</h2></section>",
+      "css": ".ds-cabinet-card{--ds-unit:var(--cabinet-unit,.5px);min-width:0;padding:calc(40 * var(--ds-unit)) calc(40 * var(--ds-unit)) calc(12 * var(--ds-unit));border:0;border-radius:calc(47 * var(--ds-unit));background:rgba(255,255,255,.92);color:var(--vx-ink,#101c2c);box-shadow:none}.ds-cabinet-card h2{margin:0;font-family:var(--vx-font-display,'Moderustic','Avenir Next','Segoe UI Variable Display','Segoe UI',sans-serif);font-size:1.2573rem;font-weight:700;line-height:1.1;letter-spacing:-.03em}@media(prefers-color-scheme:dark){.ds-cabinet-card{background:#0d1d2f;color:var(--vx-ink,#f4f8ff)}}"
     },
     {
       "name": "Bottom Navigation",
       "kind": "nav",
-      "description": "Three equal destinations in a compact 68–80px safe-area-aware bar; the active state never resizes or shifts a cell.",
-      "html": "<nav class=\"ds-nav\" aria-label=\"Навигация\"><a class=\"ds-current\" href=\"#home\">Главная</a><a href=\"#profiles\">Профили</a><a href=\"#account\">Аккаунт</a></nav>",
-      "css": ".ds-nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:7px;border:1px solid rgba(255,255,255,.58);border-radius:30px;background:rgba(242,248,255,.78);box-shadow:0 18px 48px rgba(37,109,255,.13)}.ds-nav a{display:grid;min-height:54px;place-items:center;border-radius:23px;color:#62728c;font:700 12px 'Segoe UI',sans-serif;text-decoration:none}.ds-nav a:hover{transform:translateY(-1px)}.ds-nav a:focus-visible{outline:3px solid #0b57d0;outline-offset:3px}.ds-nav .ds-current{background:rgba(255,255,255,.78);color:#256dff}"
+      "refersTo": "navigation-cabinet",
+      "description": "Четыре равные ячейки с safe area и переносом при увеличении текста",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Разделы кабинета\"><a href=\"#home\" aria-current=\"page\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M3 10.5 12 3l9 7.5M5 9v12h5v-7h4v7h5V9\"/></svg><span>Главная</span></a><a href=\"#devices\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M4 4h16v12H4zM2 20h20M9 16v4m6-4v4\"/></svg><span>Устройства</span></a><a href=\"#help\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M9.2 8a3 3 0 1 1 4.9 2.3c-1.4.8-2.1 1.3-2.1 3M12 17h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0\"/></svg><span>Помощь</span></a><a href=\"#account\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0M3 21a9 9 0 0 1 18 0z\"/></svg><span>Аккаунт</span></a></nav>",
+      "css": ".ds-nav{--ds-unit:var(--cabinet-unit,.5px);display:flex;flex-wrap:wrap;gap:0;max-width:720px;min-height:calc(126 * var(--ds-unit) + env(safe-area-inset-bottom,0px));padding:calc(7 * var(--ds-unit)) calc(20 * var(--ds-unit)) calc(4 * var(--ds-unit) + env(safe-area-inset-bottom,0px));border:1px solid rgba(255,255,255,.58);border-bottom:0;border-radius:calc(50 * var(--ds-unit)) calc(50 * var(--ds-unit)) 0 0;background:rgba(247,251,255,.86);box-shadow:0 18px 48px rgba(37,109,255,.13);backdrop-filter:blur(24px) saturate(145%);-webkit-backdrop-filter:blur(24px) saturate(145%)}.ds-nav a{display:grid;flex:1 1 7em;min-width:min(100%,7em);min-height:max(44px,calc(115 * var(--ds-unit)));place-items:center;align-content:center;gap:3px;padding:3px;border-radius:999px;color:var(--portal-muted,#62728c);font:600 .625rem ui-sans-serif,system-ui,'Segoe UI',sans-serif;text-decoration:none;white-space:nowrap;overflow-wrap:normal}.ds-nav svg{width:calc(42 * var(--ds-unit));height:calc(42 * var(--ds-unit));fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.ds-nav a[aria-current='page']{background:rgba(255,255,255,.8);color:var(--portal-label-blue,#1557c8);box-shadow:none}.ds-nav a:hover{transform:translateY(-1px)}.ds-nav a:focus-visible{outline:3px solid var(--vx-focus,#0b57d0);outline-offset:3px}@supports not((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){.ds-nav{background:var(--vx-surface,rgba(255,255,255,.88));border-color:var(--vx-border,rgba(16,28,44,.1))}}@media(prefers-color-scheme:dark){.ds-nav{background:rgba(9,22,37,.92);border-color:var(--vx-border,rgba(205,225,255,.14));box-shadow:0 18px 48px rgba(0,0,0,.32)}.ds-nav a{color:var(--portal-muted,#b3c1d6)}.ds-nav a[aria-current='page']{background:#172e48;color:var(--portal-label-blue,#a7c7ff)}}"
     },
     {
       "name": "Text Field",
       "kind": "input",
-      "description": "Calm matte field for account and administration forms.",
-      "html": "<label class=\"ds-field\">Название профиля<input value=\"iPhone\"></label>",
-      "css": ".ds-field{display:grid;gap:8px;color:#62728c;font:600 14px 'Segoe UI',sans-serif}.ds-field input{min-height:48px;padding:10px 14px;border:1px solid rgba(16,28,44,.1);border-radius:18px;background:rgba(255,255,255,.88);color:#101c2c;font:400 16px 'Segoe UI',sans-serif}.ds-field input:focus-visible{outline:3px solid #0b57d0;outline-offset:3px}"
+      "description": "Матовый подписанный input создания устройства с доступным фокусом",
+      "html": "<label class=\"ds-field\">Название устройства<input value=\"iPhone\" autocomplete=\"off\"></label>",
+      "css": ".ds-field{display:grid;gap:7px;color:var(--vx-ink,#101c2c);font:600 16px ui-sans-serif,system-ui,'Segoe UI',sans-serif}.ds-field input{width:100%;min-width:0;min-height:44px;padding:10px 12px;border:1px solid var(--vx-border,rgba(16,28,44,.1));border-radius:12px;background:var(--vx-surface,rgba(255,255,255,.88));color:var(--vx-ink,#101c2c);font:inherit}.ds-field input:focus-visible{outline:3px solid var(--vx-focus,#0b57d0);outline-offset:3px}@media(prefers-color-scheme:dark){.ds-field{color:var(--vx-ink,#f4f8ff)}.ds-field input{background:var(--vx-surface,rgba(13,29,47,.92));color:var(--vx-ink,#f4f8ff);border-color:var(--vx-border,rgba(205,225,255,.14))}}"
+    },
+    {
+      "name": "Platform Selection",
+      "kind": "custom",
+      "description": "Две кнопки и native select сохраняют доступ ко всем пяти платформам",
+      "html": "<div class=\"ds-platforms\" role=\"group\" aria-label=\"Выберите платформу\"><button type=\"button\" aria-pressed=\"true\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M7 2h10v20H7zM10 5h4M11 19h2\"/></svg>iPhone</button><button type=\"button\" aria-pressed=\"false\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M5 9h14v10H5zM5 8a7 7 0 0 1 14 0M8 2 6 0m10 2 2-2M2 10v8m20-8v8M8 19v4m8-4v4M9 5h.01M15 5h.01\"/></svg>Android</button><label class=\"ds-desktop-platform\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"><path d=\"M3 4h8v8H3zm10-1h8v9h-8zM3 14h8v7H3zm10 0h8v8h-8z\"/></svg><select aria-label=\"Windows, macOS или Linux\"><option>Windows</option><option>macOS</option><option>Linux</option></select></label></div>",
+      "css": ".ds-platforms{--ds-unit:var(--cabinet-unit,.5px);display:flex;flex-wrap:wrap;min-height:44px;gap:0;padding:0 2px;border-radius:calc(34 * var(--ds-unit));background:#f0f4fb}.ds-platforms button,.ds-desktop-platform{display:flex;flex:1 1 30%;min-width:fit-content;min-height:44px;align-items:center;justify-content:center;gap:calc(16 * var(--ds-unit));padding:0 calc(8 * var(--ds-unit));border:0;border-radius:calc(27 * var(--ds-unit));background:none;color:var(--portal-muted,#62728c);font:650 .743rem ui-sans-serif,system-ui,'Segoe UI',sans-serif}.ds-platforms button{border-block:3px solid transparent;background-clip:padding-box;cursor:pointer}.ds-platforms button[aria-pressed='true']{background-color:var(--portal-action-blue,#246cf8);color:#fff}.ds-platforms svg{width:calc(35 * var(--ds-unit));height:calc(35 * var(--ds-unit));fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.ds-desktop-platform{min-width:8.5em}.ds-desktop-platform select{width:100%;min-width:0;min-height:44px;padding:0;border:0;appearance:none;background:transparent;color:inherit;font:inherit;cursor:pointer}.ds-desktop-platform option{background:var(--vx-surface,#fff);color:var(--vx-ink,#101c2c)}.ds-platforms button:hover{transform:translateY(-1px)}.ds-platforms button:focus-visible,.ds-platforms select:focus-visible{outline:3px solid var(--vx-focus,#0b57d0);outline-offset:3px}@media(prefers-color-scheme:dark){.ds-platforms{background:#172e48}.ds-platforms button,.ds-desktop-platform{color:var(--portal-muted,#b3c1d6)}.ds-platforms button[aria-pressed='true']{color:#fff}.ds-desktop-platform option{background:var(--vx-surface,#0d1d2f);color:var(--vx-ink,#f4f8ff)}}"
     }
   ],
   "narrative": {
     "northStar": "Оптический сигнал",
-    "overview": "A calm pearl-blue system that makes VPN readiness and the next action obvious while keeping protocol detail out of the user's way. Functional glass is reserved for navigation and control; dense information stays matte.",
-    "keyCharacteristics": ["Three-petal optical mark", "One clear blue action", "Honest tunnel wording", "Matte dense data"],
-    "rules": [
-      { "name": "One Signal", "body": "Use saturated blue for the primary action or selected state, not as decorative table fill.", "section": "colors" },
-      { "name": "Functional Glass", "body": "Use glass for navigation and controls; keep data surfaces matte.", "section": "elevation" },
-      { "name": "Native Wide Reflow", "body": "At 1200px and above use the 1120px two-column grid; never scale layout with zoom or transforms.", "section": "layout" }
+    "overview": "Veltrix переводит техническую услугу в спокойный бытовой сценарий: статус виден сразу, следующее действие очевидно, а протоколы и секретные строки не конкурируют с задачей пользователя. Утвержденный мир Liquid Glass сохраняется; кабинет использует компактную иерархию доступа, подключения и устройств\n\nСобственный мир строится на жемчужно-голубом поле, трех оптических лепестках и одном ясном синем действии. Стекло — функциональный материал навигации и управления; данные и длинный текст остаются на матовых поверхностях. Публичный сайт сохраняет просторную композицию, кабинет — компактные рабочие карточки, административная панель — плотную утилитарную подачу",
+    "keyCharacteristics": [
+      "Три взаимосвязанные линзы вместо буквального `V`",
+      "Спокойный синий с мятой и сиренью",
+      "Честные формулировки о готовности доступа",
+      "Компактные матовые данные и стеклянная навигация",
+      "Плотная утилитарная админ-панель"
     ],
-    "dos": ["Lead with status and one next action.", "Preserve safe areas, visible focus and reduced motion.", "Keep wide navigation cells equal and contained at 200% text.", "Keep one-word action labels intact while multiword labels reflow at spaces.", "Update raster provenance and hashes when assets change."],
-    "donts": ["Do not claim an active or protected tunnel without measured state.", "Do not show purchase actions before payments exist.", "Do not expose secrets in UI captures or logs."]
+    "rules": [
+      {
+        "name": "The One Signal Rule",
+        "body": "Насыщенный синий обозначает главное действие или выбранное состояние; плотные таблицы сохраняют нейтральную заливку",
+        "section": "colors"
+      },
+      {
+        "name": "The Readable Blue Rule",
+        "body": "Малый текст светлого кабинета использует текстовый синий; брендовый синий остается графическим акцентом",
+        "section": "colors"
+      },
+      {
+        "name": "The Native Reflow Rule",
+        "body": "Кабинет меняет сетку на десктопе и переносит текст при увеличении; геометрия карточек не задает фиксированную высоту текста",
+        "section": "layout"
+      },
+      {
+        "name": "The Functional Glass Rule",
+        "body": "Стекло обозначает навигацию и управление; данные, длинный текст и административные списки остаются матовыми",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do начинать кабинет с компактного состояния доступа и понятного следующего действия",
+      "Do сохранять focus ring (`3px`) с offset (`3px`), заметное выделение текста, контраст, safe areas, цели нажатия от 44 px и live regions",
+      "Do проверять мобильную и настольную сетки, все четыре раздела, темную тему, no-blur/iOS 16 fallback и 200% текста",
+      "Do подписывать область измерения трафика и отличать готовность доступа от состояния внешнего VPN-приложения",
+      "Do обновлять raster sidecar и SHA-256 при замене shipping asset; сохранять атмосферное поле без тайлинга",
+      "Do сохранять `prefers-reduced-motion`: короткие переходы отключаются или сводятся к (`0.01ms`), scroll behavior становится `auto`"
+    ],
+    "donts": [
+      "Don't заявлять «подключено», «защищено», гарантированную скорость или стабильность без реального измерения состояния",
+      "Don't добавлять оплату или создавать впечатление доступной покупки до подключения платежного сценария",
+      "Don't использовать стекло на таблицах, длинных формах или плотных карточках данных",
+      "Don't копировать generation prompts, debug contracts, токены, пароли, connection URI или синтетические секреты в browser source",
+      "Don't вводить UI-библиотеку ради существующих CSS-примитивов; сохраняйте общую brand stylesheet и минимальные React/CSS компоненты"
+    ]
   }
 }

@@ -2,7 +2,7 @@
 
 ## Current Scope
 
-The service supports manually created plans and subscriptions, automatic lifecycle maintenance, 3x-UI access keys, Telegram delivery, a public product page and a protected customer cabinet. Operators explicitly publish and order plans; unpublished plans are never returned by the anonymous catalog. The cabinet generates profile QR codes locally in the browser only after the user reveals a connection URI. Payments are intentionally disabled until the rest of the product is operational and verified.
+The service supports manually created plans and subscriptions, automatic lifecycle maintenance, 3x-UI access keys, Telegram delivery, a public product page and a protected customer cabinet. Operators explicitly publish and order plans; unpublished plans are never returned by the anonymous catalog. The cabinet generates profile QR codes locally in the browser on an explicit connection action; it does not send credentials to an external QR service. Payments are intentionally disabled until the rest of the product is operational and verified.
 
 The Telegram bot supports `/start`, `/status`, `/keys`, and `/support`. A VPN URI is a credential: only use the bot in a private chat, protect the webhook with both configured secrets, and never paste a URI into logs or public channels.
 
@@ -19,6 +19,10 @@ owner or an operator explicitly requests a lifecycle change.
 Cabinet support, a time-bounded plain-text notice and the reminder operator gate
 share the revisioned `/api/control/vpn/cabinet-settings` setting. An empty support
 contact publishes no support link; an in-app notice is not a Telegram campaign.
+Operators edit these values under VPN → Кабинет and save explicitly. Conflicts
+and unknown write outcomes preserve the draft and require an explicit reload
+before another save. Date fields show the operator device's local timezone;
+unchanged notice timestamps preserve the server's original instant and precision.
 Automatic expiry reminders start disabled. A customer's enabled preference
 alone cannot activate delivery. Reminder verification uses synthetic recipients
 and senders, never a real bot send.
@@ -27,6 +31,14 @@ The owned usage endpoint reports measured account/device traffic for 1, 7 or 30
 days. Missing measurements remain unknown, not zero. These reports are not a
 synchronized remaining-traffic balance across countries and cannot determine
 whether an external VPN application is connected.
+
+The four customer sections are home, devices, help and account. Connection
+actions use a prepared subscription, official Happ/Hiddify links and local
+copy/QR fallbacks. A bounded, authenticated-session-scoped `sessionStorage`
+journal preserves unresolved device request identities across a page reload;
+it contains no credentials or raw authentication tokens. New device mutations
+fail closed when that persistence is unavailable; read/connect actions remain
+available. Closing the tab or clearing its storage is not an operation retry.
 
 See the [customer portal runbook](vpn-customer-portal-runbook.md) for exact API
 contracts, operation recovery and generation-aware migration/rollback limits.

@@ -6,7 +6,7 @@
   "direction": "veltrix-cabinet-refresh",
   "breakpoint": "390x844",
   "artifact": null,
-  "phase": "hero",
+  "phase": "responsive",
   "phases": {
     "comps": {
       "status": "closed",
@@ -52,39 +52,382 @@
       "forced": null
     },
     "hero": {
-      "status": "open",
+      "status": "closed",
       "openedAt": "2026-10-25T22:09:07.037Z",
-      "closedAt": null,
-      "attempts": 0,
-      "notes": [],
-      "gate": null,
-      "forced": null
+      "closedAt": "2026-10-26T00:36:38.822Z",
+      "attempts": 3,
+      "notes": [
+        {
+          "at": "2026-10-25T23:51:02.983Z",
+          "text": "Approved cabinet variant 3 preserves the established Veltrix display stack. Windows font-match could not resolve a browser and catalog fallback Noto Sans Mono contradicts that pinned sans identity; keep the existing Moderustic/Avenir/Segoe stack, measure the actual rendered cap height in Chrome, and disclose the ranking limitation to the finish reviewer. Do not hand-edit a chosen face or downgrade the approved composition."
+        }
+      ],
+      "gate": {
+        "ok": true,
+        "reasons": [],
+        "summary": "hero 92% (match)",
+        "score": 0.9168,
+        "verdict": "match",
+        "report": ".impeccable/review/diff/hero/report.json",
+        "sideBySide": "D:/паразитное seo/backorder/project/.worktrees/veltrix-cabinet-refresh/.impeccable/review/diff/hero/side-by-side.png",
+        "worst": [
+          "brand-name drift 67%",
+          "connect-title drift 68%",
+          "platform-iphone drift 68%"
+        ],
+        "worstIds": [
+          "brand-name",
+          "connect-title",
+          "platform-iphone"
+        ],
+        "worstCrops": [
+          {
+            "id": "brand-name",
+            "verdict": "drift",
+            "score": {
+              "overall": 0.6702,
+              "structure": 0.6502,
+              "color": 0.7396,
+              "colorIntersection": 0.542,
+              "paletteMatch": 0.846,
+              "detail": 0.7746,
+              "detailRaw": 0.8007,
+              "detailAdded": 0.0521,
+              "bands": 0.44
+            },
+            "file": ".impeccable/review/diff/hero/regions/brand-name.png"
+          },
+          {
+            "id": "connect-title",
+            "verdict": "drift",
+            "score": {
+              "overall": 0.6757,
+              "structure": 0.7027,
+              "color": 0.8634,
+              "colorIntersection": 0.728,
+              "paletteMatch": 0.9363,
+              "detail": 0.5199,
+              "detailRaw": 0.6344,
+              "detailAdded": 0.2292,
+              "bands": 0.3048
+            },
+            "file": ".impeccable/review/diff/hero/regions/connect-title.png"
+          },
+          {
+            "id": "platform-iphone",
+            "verdict": "drift",
+            "score": {
+              "overall": 0.6764,
+              "structure": 0.7729,
+              "color": 0.689,
+              "colorIntersection": 0.2141,
+              "paletteMatch": 0.9447,
+              "detail": 0.4371,
+              "detailRaw": 0.4839,
+              "detailAdded": 0.0938,
+              "bands": 0.3314
+            },
+            "file": ".impeccable/review/diff/hero/regions/platform-iphone.png"
+          }
+        ],
+        "advisories": [
+          "(advisory, above the 72% bar) region platform-android: its ink sits in a 143x36px box in the comp and 204x35px in the build (padding, row height, or size); match the box, not only the position",
+          "(advisory, above the 72% bar; fix in the polish pass before responsive) 2 readings:",
+          "  text traffic-hint: 1 line in the build, 2 in the comp; the measure (max-width, font-size, letter-spacing) wraps it differently, so the block is a different shape",
+          "  text traffic-value: ink is #181828 in the build, #747e8a in the comp; use the comp's colour"
+        ],
+        "regionVerdicts": {
+          "atmosphere": "match",
+          "brand-mark": "match",
+          "brand-name": "drift",
+          "account-action": "drift",
+          "access-surface": "match",
+          "access-icon": "match",
+          "access-title": "drift",
+          "access-expiry": "drift",
+          "overview-rule": "match",
+          "traffic-label": "match",
+          "traffic-value": "match",
+          "traffic-hint": "drift",
+          "slot-label": "match",
+          "slot-value": "match",
+          "connection-surface": "match",
+          "connect-title": "drift",
+          "platform-iphone": "drift",
+          "platform-android": "drift",
+          "platform-windows": "drift",
+          "app-row": "match",
+          "import-action": "drift",
+          "copy-action": "match",
+          "qr-action": "match",
+          "download-action": "drift",
+          "devices-surface": "match",
+          "devices-title": "drift",
+          "add-device-action": "drift",
+          "device-row": "match",
+          "help-row": "match",
+          "navigation": "drift",
+          "nav-home": "match",
+          "nav-devices": "match",
+          "nav-help": "match",
+          "nav-account": "drift"
+        },
+        "at": "2026-10-26T00:36:38.821Z"
+      },
+      "forced": null,
+      "readingsSeen": {
+        "text traffic-hint: 1 line in the build, 2 in the comp; the measure (max-width, font-size, letter-spacing) wraps it differently, so the block is a different shape": 3,
+        "text traffic-value: ink is #181828 in the build, #747e8a in the comp; use the comp's colour": 3
+      },
+      "records": 1,
+      "history": [
+        {
+          "at": "2026-10-26T00:24:42.788Z",
+          "score": 0.8616,
+          "worstIds": [
+            "slot-label",
+            "brand-name",
+            "brand-mark"
+          ],
+          "regionVerdicts": {
+            "atmosphere": "match",
+            "brand-mark": "drift",
+            "brand-name": "drift",
+            "account-action": "drift",
+            "access-surface": "match",
+            "access-icon": "missing",
+            "access-title": "drift",
+            "access-expiry": "drift",
+            "overview-rule": "missing",
+            "traffic-label": "drift",
+            "traffic-value": "drift",
+            "traffic-hint": "match",
+            "slot-label": "missing",
+            "slot-value": "drift",
+            "connection-surface": "match",
+            "connect-title": "drift",
+            "platform-iphone": "drift",
+            "platform-android": "match",
+            "platform-windows": "drift",
+            "app-row": "match",
+            "import-action": "drift",
+            "copy-action": "drift",
+            "qr-action": "drift",
+            "download-action": "contradicted",
+            "devices-surface": "match",
+            "devices-title": "drift",
+            "add-device-action": "drift",
+            "device-row": "drift",
+            "help-row": "match",
+            "navigation": "drift",
+            "nav-home": "drift",
+            "nav-devices": "drift",
+            "nav-help": "drift",
+            "nav-account": "drift"
+          },
+          "artifactHash": null
+        },
+        {
+          "at": "2026-10-26T00:33:02.104Z",
+          "score": 0.9127,
+          "worstIds": [
+            "add-device-action",
+            "brand-name",
+            "connect-title"
+          ],
+          "regionVerdicts": {
+            "atmosphere": "match",
+            "brand-mark": "match",
+            "brand-name": "drift",
+            "account-action": "drift",
+            "access-surface": "match",
+            "access-icon": "match",
+            "access-title": "drift",
+            "access-expiry": "drift",
+            "overview-rule": "match",
+            "traffic-label": "match",
+            "traffic-value": "match",
+            "traffic-hint": "drift",
+            "slot-label": "match",
+            "slot-value": "match",
+            "connection-surface": "match",
+            "connect-title": "drift",
+            "platform-iphone": "drift",
+            "platform-android": "drift",
+            "platform-windows": "drift",
+            "app-row": "match",
+            "import-action": "drift",
+            "copy-action": "match",
+            "qr-action": "match",
+            "download-action": "drift",
+            "devices-surface": "match",
+            "devices-title": "drift",
+            "add-device-action": "drift",
+            "device-row": "drift",
+            "help-row": "match",
+            "navigation": "drift",
+            "nav-home": "match",
+            "nav-devices": "match",
+            "nav-help": "match",
+            "nav-account": "drift"
+          },
+          "artifactHash": null
+        },
+        {
+          "at": "2026-10-26T00:36:38.821Z",
+          "score": 0.9168,
+          "worstIds": [
+            "brand-name",
+            "connect-title",
+            "platform-iphone"
+          ],
+          "regionVerdicts": {
+            "atmosphere": "match",
+            "brand-mark": "match",
+            "brand-name": "drift",
+            "account-action": "drift",
+            "access-surface": "match",
+            "access-icon": "match",
+            "access-title": "drift",
+            "access-expiry": "drift",
+            "overview-rule": "match",
+            "traffic-label": "match",
+            "traffic-value": "match",
+            "traffic-hint": "drift",
+            "slot-label": "match",
+            "slot-value": "match",
+            "connection-surface": "match",
+            "connect-title": "drift",
+            "platform-iphone": "drift",
+            "platform-android": "drift",
+            "platform-windows": "drift",
+            "app-row": "match",
+            "import-action": "drift",
+            "copy-action": "match",
+            "qr-action": "match",
+            "download-action": "drift",
+            "devices-surface": "match",
+            "devices-title": "drift",
+            "add-device-action": "drift",
+            "device-row": "match",
+            "help-row": "match",
+            "navigation": "drift",
+            "nav-home": "match",
+            "nav-devices": "match",
+            "nav-help": "match",
+            "nav-account": "drift"
+          },
+          "artifactHash": null
+        }
+      ]
     },
     "sections": {
-      "status": "pending",
-      "openedAt": null,
-      "closedAt": null,
-      "attempts": 0,
-      "notes": [],
-      "gate": null,
+      "status": "closed",
+      "openedAt": "2026-10-26T00:36:38.822Z",
+      "closedAt": "2026-10-26T00:59:36.051Z",
+      "attempts": 1,
+      "notes": [
+        {
+          "at": "2026-10-26T00:37:11.250Z",
+          "text": "Hero passed at 92% after semantic header-row and card-height correction. Earlier apparent top clipping in paired crops was global band registration against drifting content, not a clipped raw asset; source flow was fixed, no image/spec edits or forced gate. Traffic hint raw crops both have two lines (comp 270x52, build 259x51); preserve real wrap over the OCR advisory. Remaining Android-icon glyph difference is within the allowed icon concession. The traffic dash will use a readable muted tone in the section finish."
+        }
+      ],
+      "gate": {
+        "ok": true,
+        "reasons": [],
+        "summary": "no mechanical gate",
+        "at": "2026-10-26T00:59:36.051Z"
+      },
       "forced": null
     },
     "motion": {
-      "status": "pending",
-      "openedAt": null,
-      "closedAt": null,
-      "attempts": 0,
+      "status": "closed",
+      "openedAt": "2026-10-26T00:59:36.051Z",
+      "closedAt": "2026-10-26T01:01:05.161Z",
+      "attempts": 1,
       "notes": [],
-      "gate": null,
+      "gate": {
+        "ok": true,
+        "reasons": [],
+        "summary": "no mechanical gate",
+        "at": "2026-10-26T01:01:05.161Z"
+      },
       "forced": null
     },
     "responsive": {
-      "status": "pending",
-      "openedAt": null,
+      "status": "open",
+      "openedAt": "2026-10-26T01:01:05.161Z",
       "closedAt": null,
-      "attempts": 0,
-      "notes": [],
-      "gate": null,
+      "attempts": 5,
+      "notes": [
+        {
+          "at": "2026-10-26T01:23:10.071Z",
+          "text": "First batched responsive inspection: functional matrix passed at 320/390 light+dark/853/1024/1280/1440/1600 and all four sections at 200 percent text, but actual screenshots show non-lite dark header white-on-light ground, short-label word fragmentation at enlarged text, and native Windows label truncation at 320. Implementer will fix these in one combined batch, preserve light approved plate and real scaling, clear keyboard-test focus before neutral captures, and add normal device/help/account evidence. Confirmation round remains; no whole-surface pass yet."
+        },
+        {
+          "at": "2026-10-26T01:36:23.433Z",
+          "text": "Confirmation matrix at572fcf8 passed and all24 actual captures opened. Same-frame portrait853x1844 comp-diff/final matches91 percent, no missing/contradicted regions. Responsive mechanical gate failed55 percent because it scales1440x900 desktop native two-column flow into portrait853x1844 and white-pads lower frame; diff/desktop/side-by-side.png shows every real semantic region present in native desktop screenshot. Approved brief explicitly requires desktop overview/connection grid, not stretched phone. Preserve real desktop.png and approved portrait comp; no forced advance or fake desktop capture. Independent finish reviewer must judge this topology mismatch and actual desktop before gate disposition. Existing four brand WebPs have verified approved repo-sidecar origin/prompt/SHA256, but metadata-only embed-prompt scan flags all four as missing; unchanged pre-existing drift reported, not repaired or deleted."
+        },
+        {
+          "at": "2026-10-26T09:13:01.783Z",
+          "text": "Independent finish review disposition fix: mobile device heading vertical flex basis, accessible light-theme small text blue, visible account traffic scope. Raw native desktop topology is accepted by reviewer as approved adaptation; desktop mechanical result remains 54.91 percent, not a numerical pass. One combined correction/recapture/verdict round follows. Detector ran once on changed UI targets, empty findings. No new raster work."
+        },
+        {
+          "at": "2026-10-26T09:32:47.434Z",
+          "text": "Independent same-reviewer verdict ship scored all three material fixes resolved after one correction round; all 28 same-path captures valid. Fresh portrait87.34 percent match retains nine missing JSON regions, all nine paired crops independently inspected and adjudicated as displaced registration windows against complete raw ink. Original desktop54.91 percent failure archived unchanged at review/diff/desktop-initial. No numerical missing-free or desktop-pass claim. See finish-review.md and finish-verdict.md; approved native desktop grid remains authoritative."
+        },
+        {
+          "at": "2026-10-26T09:38:06.166Z",
+          "text": "User separately confirmed verbatim: Да: портретный макет обязателен для телефона; для ПК допускаю отдельную двухколоночную компоновку (рекомендую). Engine still refuses this scoped exception, including an explicitly labelled faithful English translation; no further force attempts or hand-edited state. Mechanical responsive phase remains open/failed, distinct from accepted functional checks and resolved visual findings. Keep original numeric reports and reviewer adjudication; this tooling limitation is disclosed, not repaired by changing the approved desktop layout."
+        },
+        {
+          "at": "2026-10-26T09:49:23.856Z",
+          "text": "Review and documenter handoffs are complete. All three scored fixes resolved, product source/tests frozen at c21ecfc plus test-only8dd8a0; main239unit/fullportal/fulladmin/settings/public/matrix/build all pass. DESIGN.md and schema-v2 sidecar merged and validated. Official finish --disposition ship refused because responsive remains open despite exact user scope approval. Do not fake closure: code handoff is ready with this explicit tool-tracker limitation; no additional UI redesign or plugin repair is authorized."
+        }
+      ],
+      "gate": {
+        "ok": false,
+        "reasons": [
+          "the desktop capture (1440x900; the top 853x1844 rows scaled to the comp's width are compared, a full-page capture is fine) scores 55% against the comp, under 65%: the first viewport does not survive a common desktop width. The hero passed at 390x844; the layout must hold from ~1280 up, not only at the comp's exact width (grid columns in fr / minmax, not fixed px that overflow and wrap).",
+          "at desktop width, region brand-mark is missing",
+          "at desktop width, region brand-name is missing",
+          "at desktop width, region account-action is missing",
+          "at desktop width, region access-surface is missing",
+          "at desktop width, region access-icon is missing",
+          "at desktop width, region access-title is missing",
+          "at desktop width, region access-expiry is missing",
+          "at desktop width, region overview-rule is missing",
+          "at desktop width, region traffic-label is missing",
+          "at desktop width, region traffic-value is missing",
+          "at desktop width, region traffic-hint is missing",
+          "at desktop width, region slot-label is missing",
+          "at desktop width, region slot-value is missing",
+          "at desktop width, region connection-surface is missing",
+          "at desktop width, region connect-title is missing",
+          "at desktop width, region platform-iphone is missing",
+          "at desktop width, region platform-android is missing",
+          "at desktop width, region platform-windows is missing",
+          "at desktop width, region app-row is missing",
+          "at desktop width, region import-action is missing",
+          "at desktop width, region copy-action is missing",
+          "at desktop width, region qr-action is missing",
+          "at desktop width, region download-action is missing",
+          "at desktop width, region devices-surface is missing",
+          "at desktop width, region devices-title is missing",
+          "at desktop width, region add-device-action is missing",
+          "at desktop width, region device-row is missing",
+          "at desktop width, region help-row is missing",
+          "at desktop width, region navigation is missing",
+          "at desktop width, region nav-home is missing",
+          "at desktop width, region nav-devices is missing",
+          "at desktop width, region nav-help is missing",
+          "at desktop width, region nav-account is missing"
+        ],
+        "summary": "desktop 55% (missing)",
+        "score": 0.5494,
+        "sideBySide": "D:/паразитное seo/backorder/project/.worktrees/veltrix-cabinet-refresh/.impeccable/review/diff/desktop/side-by-side.png",
+        "at": "2026-10-26T09:36:11.855Z"
+      },
       "forced": null
     },
     "review": {

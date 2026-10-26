@@ -30,7 +30,7 @@ Read access and actual usage, choose platform and ready device, open Happ/Hiddif
 At 390 px: compact brand row; one access/expiry sheet with usage and occupied slots; matte connection card with platform chips, one blue app-import button and copy/QR; device list with add action; four-cell safe-area glass navigation. Progressive disclosure keeps destructive actions off the home summary. Desktop uses an overview/connection grid, not a stretched phone column.
 
 **FORM**
-User-pinned Veltrix world and Mikan task density, composition 3 `Сводка, подключение, устройства`; direction key `veltrix-cabinet-refresh`; approved comp `.impeccable/mocks/cabinet-refresh-c.png`. The user explicitly replaced the old giant-lens composition, not the brand.
+User-pinned Veltrix world and Mikan task density, composition 3 `Сводка, подключение, устройства`; direction key `veltrix-cabinet-refresh`; approved comp `.impeccable/mocks/cabinet-refresh-c.png`. The user explicitly replaced the old giant-lens composition, not the brand. On 2026-10-26 the user separately confirmed: «Да: портретный макет обязателен для телефона; для ПК допускаю отдельную двухколоночную компоновку (рекомендую)». Exact portrait placement binds the phone; desktop is the approved native two-column adaptation.
 
 **FINISH**
 unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
