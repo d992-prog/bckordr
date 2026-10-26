@@ -43,11 +43,12 @@ test("lightweight renderer removes GPU-heavy layers while preserving readable co
   assert.ok(compatStart >= 0, "lightweight compatibility rules exist");
   const compatCss = css.slice(compatStart);
   assert.match(compatCss, /\.portal-shell\s*\{[^}]*background:\s*var\(--vx-pearl\)/s);
-  assert.match(compatCss, /\.portal-status-lens\s*\{[^}]*animation:\s*none[^}]*isolation:\s*auto/s);
-  assert.match(compatCss, /\.portal-status-lens::before,[\s\S]*\.portal-status-lens::after\s*\{[^}]*display:\s*none/s);
+  assert.doesNotMatch(css, /portal-status-lens/);
+  assert.match(compatCss, /\.portal-cabinet\s*\{[^}]*background:\s*var\(--vx-pearl\)/s);
   assert.match(compatCss, /\.vx-glass\s*\{[^}]*-webkit-backdrop-filter:\s*none[^}]*backdrop-filter:\s*none/s);
-  assert.match(compatCss, /\.portal-brand-link \.vx-brand::before\s*\{[^}]*display:\s*none/s);
-  assert.match(compatCss, /\.portal-brand-link \.vx-mark\s*\{[^}]*position:\s*static[^}]*clip-path:\s*none/s);
+  assert.match(compatCss, /\.cabinet-brand-mark\s*\{[^}]*display:\s*none/s);
+  assert.match(compatCss, /\.cabinet-flat-mark\s*\{[^}]*display:\s*block/s);
+  assert.match(compatCss, /\.cabinet-navigation\s*\{[^}]*background:\s*var\(--vx-surface\)/s);
 });
 
 test("render failures have a visible Russian recovery screen", async () => {

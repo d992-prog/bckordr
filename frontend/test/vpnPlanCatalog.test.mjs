@@ -65,7 +65,9 @@ test("catalog cards expose only safe plan fields and reuse the existing trial fl
   assert.match(catalog, /role="alert"/);
   assert.match(catalog, /onRetry/);
 
-  for (const source of [catalog, types]) {
+  const planType = types.match(/export interface PortalPlan\s*\{[^}]*\}/)?.[0];
+  assert.ok(planType, "safe public plan type exists");
+  for (const source of [catalog, planType]) {
     assert.doesNotMatch(source, /\bslug\b|created_at|updated_at|is_active|is_public|display_order|secret|config_uri|external_uuid|worker_id/i);
   }
 });
@@ -95,15 +97,16 @@ test("portal loads and retries the catalog independently and rejects stale respo
   assert.match(source, /plansLoadEpoch\.current \+= 1/);
 });
 
-test("account keeps plans, support, documents, and logout in one semantic view", async () => {
+test("account keeps published plans, preferences, documents, and logout in one semantic view", async () => {
   const source = await readFile(accountUrl, "utf8");
 
   assert.match(source, /<section id="account" className="portal-account">/);
-  assert.match(source, /<p className="eyebrow">Настройки<\/p>/);
+  assert.doesNotMatch(source, /className="eyebrow"/);
   assert.match(source, /<h1>Аккаунт<\/h1>/);
   assert.match(source, /<span>Telegram<\/span>/);
   assert.match(source, /<strong>\{props\.displayName\}<\/strong>/);
-  assert.match(source, /<h2>Помощь<\/h2>/);
+  assert.match(source, /<h2>Напоминания<\/h2>/);
+  assert.match(source, /props\.plans\.length > 0/);
   assert.match(source, /aria-label="Документы"/);
   assert.match(source, /href="\/vpn\/#privacy"/);
   assert.match(source, /href="\/vpn\/#terms"/);

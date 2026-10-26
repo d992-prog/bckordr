@@ -1,20 +1,27 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { PortalError } from "./api";
+import { PortalError, portalApi } from "./api";
 import type { SessionGeneration } from "./bootstrap";
-import { copyConnectionUri, loadConnectionUri } from "./connection";
+import { ConnectDevice } from "./ConnectDevice";
 import { DataError } from "./DataError";
 import { buildPortalHomeView } from "./homeView";
 import PlanCatalog from "./PlanCatalog";
+import { PortalIcon } from "./PortalIcon";
+import { PortalUsage, type PortalUsageProps } from "./PortalUsage";
 import TrialCard from "./TrialCard";
-import type { PortalDevice, PortalPlan, PortalSubscription, PortalTrial } from "./types";
-import { portalDate, stateLabel } from "./view";
+import type { PortalDevice, PortalDeviceLocations, PortalPlan, PortalSubscription, PortalTrial } from "./types";
+import { portalDate, portalRemainingTime } from "./view";
 
 interface PortalHomeProps {
   busy: boolean;
   error: string;
   subscriptions: PortalSubscription[];
   profiles: PortalDevice[];
+  selectedDeviceId: number | null;
+  profileOperations: Record<number, { connectionVersion: number; renamePending: boolean; locationPending?: boolean }>;
+  pendingDeviceIds: number[];
+  usage: PortalUsageProps;
+  onAddDevice: () => void;
   plans: PortalPlan[];
   plansBusy: boolean;
   plansError: string;
@@ -23,270 +30,65 @@ interface PortalHomeProps {
   trialBusy: boolean;
   trialError: string;
   sessionGeneration: SessionGeneration;
+  onSelectDevice: (id: number) => void;
   onRetry: () => void;
   onRetryPlans: () => void;
   onActivateTrial: () => void;
   onRefreshTrial: () => void;
   onUnauthorized: () => void;
-}
-
-const STATUS_BADGES = {
-  ready: "Активен",
-  preparing: "Подготавливается",
-  paused: "Приостановлен",
-  expired: "Срок закончился",
-  empty: "Нет доступа",
-} as const;
-
-type CopyMessage = { kind: "success" | "error"; text: string };
-type PreparedConnection = { profileId: number; uri: string };
-
-function AccessSummary({
-  busy,
-  error,
-  subscriptions,
-  trial,
-  trialBusy,
-  trialError,
-  onRetry,
-  onActivateTrial,
-  onRefreshTrial,
-}: Pick<PortalHomeProps,
-  | "busy"
-  | "error"
-  | "subscriptions"
-  | "trial"
-  | "trialBusy"
-  | "trialError"
-  | "onRetry"
-  | "onActivateTrial"
-  | "onRefreshTrial"
->) {
-  return (
-    <section className="portal-access" aria-labelledby="access-summary-title">
-      <h2 id="access-summary-title">Доступ</h2>
-      <TrialCard
-        trial={trial}
-        busy={trialBusy || busy}
-        error={trialError}
-        onActivate={onActivateTrial}
-        onRefresh={onRefreshTrial}
-      />
-      {busy && <p className="card" role="status">Загружаем данные…</p>}
-      {error && <DataError message={error} onRetry={onRetry} />}
-      {!busy && !error && subscriptions.length === 0 && (
-        <p className="card">Подписок пока нет. Если вы ожидали доступ, напишите в поддержку</p>
-      )}
-      <div className="card-grid">
-        {subscriptions.map((subscription) => (
-          <article className="card subscription-card" key={subscription.id}>
-            <div className="card-row">
-              <h3>Доступ Veltrix</h3>
-              <span className={`status status--${subscription.state === "active" ? "good" : "quiet"}`}>
-                {stateLabel(subscription.state)}
-              </span>
-            </div>
-            <dl className="facts">
-              <div>
-                <dt>Начало</dt>
-                <dd>{subscription.starts_at === null ? "Дата начала не указана" : portalDate(subscription.starts_at)}</dd>
-              </div>
-              <div><dt>Окончание</dt><dd>{portalDate(subscription.expires_at)}</dd></div>
-              <div><dt>Профили</dt><dd>{subscription.profiles_used} из {subscription.profile_limit}</dd></div>
-              {subscription.traffic_limit_gb_per_profile !== null && (
-                <div><dt>Трафик</dt><dd>{subscription.traffic_limit_gb_per_profile} ГБ на профиль</dd></div>
-              )}
-            </dl>
-            <p className="hint">Статистика пока недоступна</p>
-          </article>
-        ))}
-      </div>
-    </section>
-  );
+  onLocationStateChange: (id: number, pending: boolean) => void;
 }
 
 export function PortalHome(props: PortalHomeProps) {
-  const view = useMemo(
-    () => buildPortalHomeView(props.subscriptions, props.profiles, props.trial),
-    [props.profiles, props.subscriptions, props.trial],
-  );
-  const [copyBusy, setCopyBusy] = useState(false);
-  const [copyPreparation, setCopyPreparation] = useState<"idle" | "preparing" | "ready" | "error">("idle");
-  const [copyMessage, setCopyMessage] = useState<CopyMessage | null>(null);
-  const copyEpoch = useRef(0);
-  const preparedConnection = useRef<PreparedConnection | null>(null);
-  const awaitingFirstLoad = props.busy
-    && props.subscriptions.length === 0
-    && props.profiles.length === 0
-    && props.trial === null;
-  const failedFirstLoad = !props.busy
-    && Boolean(props.error)
-    && props.subscriptions.length === 0
-    && props.profiles.length === 0
-    && props.trial === null;
-
-  async function prepareProfile(profileId: number): Promise<void> {
-    const generation = props.sessionGeneration.current();
-    const epoch = ++copyEpoch.current;
-    const isCurrent = () => (
-      props.sessionGeneration.isCurrent(generation) && copyEpoch.current === epoch
-    );
-    preparedConnection.current = null;
-    setCopyPreparation("preparing");
-    setCopyMessage(null);
-    try {
-      const uri = await loadConnectionUri(profileId);
-      if (!isCurrent()) {
-        return;
-      }
-      preparedConnection.current = { profileId, uri };
-      setCopyPreparation("ready");
-    } catch (error) {
-      if (!isCurrent()) {
-        return;
-      }
-      if (error instanceof PortalError && error.status === 401) {
-        props.onUnauthorized();
-        return;
-      }
-      setCopyPreparation("error");
-      setCopyMessage({ kind: "error", text: "Не удалось подготовить ссылку. Попробуйте ещё раз" });
-    }
-  }
+  const view = buildPortalHomeView(props.subscriptions, props.profiles, props.trial);
+  const readyDevices = props.profiles.filter((device) => device.state === "active" && device.can_connect
+    && props.subscriptions.some((item) => item.id === device.subscription_id && ["active", "trial"].includes(item.state)));
+  const selected = readyDevices.find(({ id }) => id === props.selectedDeviceId)
+    ?? readyDevices.find(({ id }) => id === view.profileId) ?? readyDevices[0] ?? null;
+  const subscription = props.subscriptions.find(({ id }) => id === selected?.subscription_id)
+    ?? props.subscriptions.find(({ state }) => state === "active" || state === "trial") ?? props.subscriptions[0] ?? null;
+  const [locations, setLocations] = useState<Record<number, PortalDeviceLocations | null>>({});
+  const operation = selected ? props.profileOperations[selected.id] : null;
+  const expiry = subscription?.expires_at;
+  const title = props.busy && !subscription ? "Загружаем данные" : props.error && !subscription ? "Данные недоступны" : subscription && ["active", "trial"].includes(subscription.state) ? "Доступ активен" : view.title;
 
   useEffect(() => {
-    copyEpoch.current += 1;
-    preparedConnection.current = null;
-    setCopyBusy(false);
-    setCopyPreparation(view.profileId === null ? "idle" : "preparing");
-    setCopyMessage(null);
-    if (view.profileId !== null) {
-      void prepareProfile(view.profileId);
-    }
-    return () => {
-      copyEpoch.current += 1;
-      preparedConnection.current = null;
-    };
-    // Loading before the tap keeps iOS clipboard access inside the user gesture.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view.profileId]);
-
-  async function copyProfile(profileId: number | null): Promise<void> {
-    if (profileId === null || copyBusy) {
-      return;
-    }
-    const prepared = preparedConnection.current;
-    if (prepared?.profileId !== profileId) {
-      void prepareProfile(profileId);
-      return;
-    }
+    let active = true;
     const generation = props.sessionGeneration.current();
-    const epoch = copyEpoch.current;
-    const isCurrent = () => (
-      props.sessionGeneration.isCurrent(generation) && copyEpoch.current === epoch
-    );
-    setCopyBusy(true);
-    setCopyMessage(null);
-    try {
-      await copyConnectionUri(prepared.uri);
-      if (isCurrent()) {
-        setCopyMessage({ kind: "success", text: "Ссылка скопирована" });
-      }
-    } catch (error) {
-      if (!isCurrent()) {
-        return;
-      }
-      if (error instanceof PortalError && error.status === 401) {
-        props.onUnauthorized();
-        return;
-      }
-      setCopyMessage({
-        kind: "error",
-        text: "Не удалось скопировать автоматически. Откройте профиль и скопируйте ссылку вручную",
+    setLocations({});
+    for (const device of props.profiles) {
+      void portalApi.deviceLocations(device.id).then((result) => {
+        if (active && props.sessionGeneration.isCurrent(generation)) {
+          setLocations((current) => ({ ...current, [device.id]: result }));
+          props.onLocationStateChange(device.id, ["preparing", "verification_required"].includes(result.selection_state));
+        }
+      }).catch((error) => {
+        if (active && props.sessionGeneration.isCurrent(generation) && error instanceof PortalError && error.status === 401) props.onUnauthorized();
       });
-    } finally {
-      if (isCurrent()) {
-        setCopyBusy(false);
-      }
     }
-  }
+    return () => { active = false; };
+    // Refresh locations with owned rows, and discard every completion on unmount/session change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.profiles, props.sessionGeneration]);
 
   return (
-    <section id="home" className="portal-home">
-      {awaitingFirstLoad ? (
-        <div className="portal-status-lens portal-status-lens--neutral" role="status">
-          <span className="portal-status-lens__badge">Загрузка</span>
-          <h1>Загружаем данные</h1>
-          <p>Получаем подписку и VPN‑профили</p>
-        </div>
-      ) : failedFirstLoad ? (
-        <div className="portal-status-lens portal-status-lens--error" role="alert">
-          <span className="portal-status-lens__badge">Ошибка загрузки</span>
-          <h1>Не удалось загрузить данные</h1>
-          <p>Попробуйте ещё раз</p>
-          <button className="button button--primary" onClick={props.onRetry}>Повторить</button>
-        </div>
-      ) : (
-        <>
-          <div
-            className={`portal-status-lens portal-status-lens--${view.kind}`}
-            aria-live="polite"
-          >
-            <span className="portal-status-lens__badge">{STATUS_BADGES[view.kind]}</span>
-            <h1>{view.title}</h1>
-            <p>{view.detail}</p>
-          </div>
-          {view.profileId !== null && (
-            <a className="portal-primary button button--primary vx-glass" href="#profiles">
-              Открыть профиль <span aria-hidden="true">→</span>
-            </a>
-          )}
-          <section className="portal-actions" aria-labelledby="quick-actions-title">
-            <h2 id="quick-actions-title">Быстрые действия</h2>
-            <button
-              className="button button--primary"
-              disabled={view.profileId === null || copyBusy || copyPreparation === "preparing"}
-              onClick={() => void copyProfile(view.profileId)}
-            >
-              {copyPreparation === "preparing"
-                ? "Готовим ссылку…"
-                : copyBusy
-                  ? "Копируем…"
-                  : copyPreparation === "error"
-                    ? "Повторить подготовку"
-                    : "Скопировать ссылку"}
-            </button>
-            <a className="button button--ghost" href="#connect">Инструкция</a>
-            {copyMessage && (
-              <p
-                className={`message ${copyMessage.kind === "error" ? "message--error" : ""}`}
-                role={copyMessage.kind === "error" ? "alert" : "status"}
-              >
-                {copyMessage.text}
-              </p>
-            )}
-          </section>
-          <AccessSummary
-            busy={props.busy}
-            error={props.error}
-            subscriptions={props.subscriptions}
-            trial={props.trial}
-            trialBusy={props.trialBusy}
-            trialError={props.trialError}
-            onRetry={props.onRetry}
-            onActivateTrial={props.onActivateTrial}
-            onRefreshTrial={props.onRefreshTrial}
-          />
-        </>
-      )}
-      {props.showPlans && (
-        <PlanCatalog
-          plans={props.plans}
-          busy={props.plansBusy}
-          error={props.plansError}
-          onRetry={props.onRetryPlans}
-        />
-      )}
+    <section id="home" className="cabinet-home">
+      <section id="subscription" className={`cabinet-overview vx-matte cabinet-overview--${view.kind}`} aria-labelledby="access-title">
+        <div className="cabinet-access-heading" role={props.busy && !subscription ? "status" : undefined}><span className="cabinet-access-dot" aria-hidden="true" /><div><h1 id="access-title">{title}</h1><p>{subscription ? expiry === null ? "Без срока окончания" : <>{`До ${portalDate(expiry ?? null)}`}<span className="cabinet-remaining"> · {portalRemainingTime(expiry ?? null).toLowerCase()}</span></> : view.detail}</p></div></div>
+        <div className="cabinet-overview-rule" />
+        <div className="cabinet-access-stats"><PortalUsage {...props.usage} /><div className="cabinet-slots"><span>Устройства</span><strong>{subscription ? `${subscription.profiles_used} из ${subscription.profile_limit}` : "—"}</strong></div></div>
+        {props.error && <DataError message={props.error} onRetry={props.onRetry} />}
+        {props.trial && ["available", "capacity_paused", "preparing"].includes(props.trial.state) && <TrialCard trial={props.trial} busy={props.trialBusy} error={props.trialError} onActivate={props.onActivateTrial} onRefresh={props.onRefreshTrial} />}
+        {props.plans.length > 0 && !props.showPlans && ["empty", "expired"].includes(view.kind) && <a className="button button--ghost" href="#plans">Посмотреть тарифы</a>}
+      </section>
+      <ConnectDevice devices={readyDevices} selectedDeviceId={selected?.id ?? null} connectionVersion={operation?.connectionVersion ?? 0} disabled={Boolean(operation?.renamePending || operation?.locationPending || (selected && (!locations[selected.id] || props.pendingDeviceIds.includes(selected.id))))} sessionGeneration={props.sessionGeneration} onSelectDevice={props.onSelectDevice} onUnauthorized={props.onUnauthorized} />
+      <section className="cabinet-devices-preview vx-matte" aria-labelledby="device-preview-title">
+        <header className="cabinet-preview-heading"><h2 id="device-preview-title">Устройства</h2><a href="#devices" onClick={props.onAddDevice}><span className="cabinet-add-ink"><PortalIcon name="plus" />Добавить</span></a></header>
+        {props.profiles.slice(0, 2).map((device) => <a className="cabinet-device-row" href="#devices" key={device.id}><span className="cabinet-device-icon"><PortalIcon name="devices" /></span><span><strong>{device.display_name}</strong><span>{locations[device.id]?.current?.country_code && <span className="cabinet-country-code">{locations[device.id]?.current?.country_code}</span>}{locations[device.id]?.current?.name ?? (device.can_connect ? "Страна уточняется" : "Подключение недоступно")}</span></span><PortalIcon name="chevron" /></a>)}
+        {!props.busy && props.profiles.length === 0 && <a className="cabinet-device-row" href="#devices">Устройств пока нет<PortalIcon name="chevron" /></a>}
+        <a className="cabinet-help-row" href="#help"><PortalIcon name="document" /><span>Инструкция и помощь</span><PortalIcon name="chevron" /></a>
+      </section>
+      {props.showPlans && <PlanCatalog plans={props.plans} busy={props.plansBusy} error={props.plansError} onRetry={props.onRetryPlans} />}
     </section>
   );
 }

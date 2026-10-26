@@ -62,20 +62,78 @@ test("exports only the typed portal client and safe error class", () => {
     "activateTrial",
     "config",
     "connection",
+    "createDevice",
+    "creationLocations",
     "deviceConnection",
     "deviceLocations",
+    "deviceOperation",
     "devices",
     "loginMiniApp",
     "logout",
     "me",
     "plans",
+    "preferences",
     "profiles",
     "rename",
     "renameDevice",
+    "replaceDevice",
+    "revokeDevice",
     "selectDeviceLocation",
     "subscriptions",
     "trial",
+    "updatePreferences",
+    "usage",
   ]);
+});
+
+test("device mutations preserve the request UUID and send CSRF only in headers", async () => {
+  assert.equal(typeof portalApi.createDevice, "function");
+  const request_id = "11111111-2222-4333-8444-555555555555";
+  const operation = { id: request_id, request_id, device_id: 121, action: "create", stage: "provisioning" };
+  const payload = { request_id, subscription_id: 11, endpoint_id: 7, display_name: "Ноутбук" };
+  const calls = installFetchRecorder([[], operation, operation, operation, operation]);
+  await portalApi.creationLocations(11);
+  await portalApi.createDevice(payload, "csrf-operation");
+  await portalApi.revokeDevice(121, request_id, "csrf-operation");
+  await portalApi.replaceDevice(121, request_id, "csrf-operation");
+  await portalApi.deviceOperation(request_id);
+  assert.deepEqual(calls.map(({url}) => url), ["/api/vpn-portal/v2/locations?subscription_id=11", "/api/vpn-portal/v2/devices", "/api/vpn-portal/v2/devices/121/revoke", "/api/vpn-portal/v2/devices/121/replace", `/api/vpn-portal/v2/device-operations/${request_id}`]);
+  assert.deepEqual(JSON.parse(calls[1].init.body), payload);
+  for (const index of [2, 3]) assert.deepEqual(JSON.parse(calls[index].init.body), { request_id });
+  for (const [index, call] of calls.entries()) assert.equal(headerValue(call.init.headers, "X-CSRF-Token"), [1,2,3].includes(index) ? "csrf-operation" : null);
+});
+
+test("preferences use the exact strict boolean body and safe customer namespace", async () => {
+  assert.equal(typeof portalApi.preferences, "function");
+  const calls = installFetchRecorder([{expiry_reminders:true}, {expiry_reminders:false}]);
+  assert.deepEqual(await portalApi.preferences(), {expiry_reminders:true});
+  assert.deepEqual(await portalApi.updatePreferences(false, "csrf-preference"), {expiry_reminders:false});
+  assert.deepEqual(calls.map(({url}) => url), ["/api/vpn-portal/preferences", "/api/vpn-portal/preferences"]);
+  assert.equal(calls[1].init.method, "PATCH");
+  assert.deepEqual(JSON.parse(calls[1].init.body), {expiry_reminders:false});
+  assert.equal(headerValue(calls[1].init.headers, "X-CSRF-Token"), "csrf-preference");
+  assert.throws(() => portalApi.updatePreferences("false", "csrf"), /boolean/);
+});
+
+test("only allowlisted device conflict codes become public errors", async () => {
+  assert.equal(typeof portalApi.revokeDevice, "function");
+  for (const [detail, expected] of [["customer_device_limit_reached", "customer_device_limit_reached"], ["private provider secret", null]]) {
+    globalThis.fetch = async () => ({ok:false, status:409, json:async()=>({detail})});
+    await assert.rejects(() => portalApi.revokeDevice(1, "11111111-2222-4333-8444-555555555555", "csrf"), (error) => error instanceof PortalError && error.code === expected && !error.message.includes("secret"));
+  }
+});
+
+test("owned usage selects only a supported period and has no customer or CSRF input", async () => {
+  assert.equal(typeof portalApi.usage, "function");
+  const report = { days: 7, upload_bytes: null, download_bytes: null, measured_since: null, last_sample_at: null, coverage: "none", devices: [] };
+  const calls = installFetchRecorder([report]);
+  assert.deepEqual(await portalApi.usage(7), report);
+  assert.equal(calls[0].url, "/api/vpn-portal/usage?days=7");
+  assert.equal(calls[0].init.cache, "no-store");
+  assert.equal(calls[0].init.credentials, "same-origin");
+  assert.equal(headerValue(calls[0].init.headers, "X-CSRF-Token"), null);
+  assert.throws(() => portalApi.usage(2), /period/);
+  assert.equal(calls.length, 1);
 });
 
 test("logical device routes keep ids, safe metadata, and CSRF bodies separate from legacy profiles", async () => {

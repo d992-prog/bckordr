@@ -6,12 +6,14 @@ import type { PortalDeviceLocation, PortalDeviceLocations } from "./types";
 
 interface DeviceLocationPickerProps {
   deviceId: number;
+  credentialGeneration: number;
   csrfToken: string;
   sessionGeneration: SessionGeneration;
   onUnauthorized: () => void;
   onMutationStart: () => void;
   onReady: () => void;
   disabled: boolean;
+  onStateChange?: (pending: boolean) => void;
 }
 
 const messages: Record<PortalDeviceLocations["selection_state"], string> = {
@@ -42,6 +44,7 @@ export default function DeviceLocationPicker(props: DeviceLocationPickerProps) {
     const previous = currentLocations.current;
     currentLocations.current = result;
     setLocations(result);
+    latest.current.onStateChange?.(["preparing", "verification_required"].includes(result.selection_state));
     setSelected((value) => {
       const choice = result.available.find((item) => String(item.endpoint_id) === value)
         ?? result.available.find((item) => item.endpoint_id === result.pending_endpoint_id)
@@ -82,7 +85,7 @@ export default function DeviceLocationPicker(props: DeviceLocationPickerProps) {
     void load();
     return () => { epoch.current += 1; selecting.current = false; };
     // Requests belong to this device and authenticated session, not a refreshed row object.
-  }, [props.deviceId, props.csrfToken, props.sessionGeneration]);
+  }, [props.deviceId, props.credentialGeneration, props.csrfToken, props.sessionGeneration]);
 
   useEffect(() => {
     if (locations?.selection_state !== "preparing" || busy || error || props.disabled || pollCount >= 30) return;
@@ -101,6 +104,7 @@ export default function DeviceLocationPicker(props: DeviceLocationPickerProps) {
     const generation = props.sessionGeneration.current();
     const isCurrent = () => epoch.current === requestEpoch && props.sessionGeneration.isCurrent(generation);
     latest.current.onMutationStart();
+    latest.current.onStateChange?.(true);
     setBusy(true);
     setError("");
     setPollCount(0);

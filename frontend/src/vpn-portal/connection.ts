@@ -1,12 +1,15 @@
 // @ts-expect-error Node's strip-types runner requires the source extension.
 import { PortalError, portalApi } from "./api.ts";
+// @ts-expect-error Node's strip-types runner requires the source extension.
+import { canonicalSubscriptionUrl } from "./clientApps.ts";
 
 export async function loadConnectionUri(profileId: number): Promise<string> {
   const result = await portalApi.deviceConnection(profileId);
-  if (!result.subscription_url) {
+  try {
+    return canonicalSubscriptionUrl(result.subscription_url);
+  } catch {
     throw new PortalError(0, "Ссылка подключения недоступна.");
   }
-  return result.subscription_url;
 }
 
 export async function copyConnectionUri(uri: string): Promise<void> {
