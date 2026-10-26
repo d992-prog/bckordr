@@ -297,7 +297,9 @@ async def probe_next_vpn_endpoint(
                 error_code = _INTERNAL_ERROR
 
             if error_code is None:
-                worker.vpn_runtime_status = "ready"
+                worker.vpn_runtime_status = (
+                    "awaiting_test" if endpoint.status == "staged" else "ready"
+                )
                 worker.vpn_last_checked_at = attempted_at
                 worker.vpn_last_error = None
                 endpoint.verified_at = attempted_at
