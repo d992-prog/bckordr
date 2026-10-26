@@ -28,6 +28,7 @@ import type {
   PortalTrial,
   PortalUsage,
   PortalUsageDays,
+  PortalPreferences,
 } from "./types";
 import { portalDate, portalInitials, portalNoticeVisible } from "./view";
 
@@ -185,6 +186,10 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const [usageReport, setUsageReport] = useState<PortalUsage | null>(null);
   const [usageBusy, setUsageBusy] = useState(false);
   const [usageError, setUsageError] = useState(false);
+  const [preferences, setPreferences] = useState<PortalPreferences | null>(null);
+  const [preferencesBusy, setPreferencesBusy] = useState(false);
+  const [preferencesError, setPreferencesError] = useState("");
+  const [preferencesSaved, setPreferencesSaved] = useState(false);
   const [noticeNow, setNoticeNow] = useState(Date.now);
   const [trial, setTrial] = useState<PortalTrial | null>(null);
   const [trialBusy, setTrialBusy] = useState(false);
@@ -201,6 +206,8 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
   const plansLoadEpoch = useRef(0);
   const dataLoadEpoch = useRef(0);
   const usageLoadEpoch = useRef(0);
+  const preferencesEpoch = useRef(0);
+  const preferenceRequest = useRef<"read" | "save" | null>(null);
   const operationPolls = useRef<Record<string, number>>({});
   const trialRequestInFlight = useRef(false);
 
@@ -209,6 +216,8 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     plansLoadEpoch.current += 1;
     dataLoadEpoch.current += 1;
     usageLoadEpoch.current += 1;
+    preferencesEpoch.current += 1;
+    preferenceRequest.current = null;
     operationRequests.clear();
     operationPolls.current = {};
     setBootstrapResult((current) => current === null
@@ -224,6 +233,7 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     setShowCreate(false);
     setDeviceDraft({display_name:"",subscription_id:0,endpoint_id:0});
     setUsageReport(null); setUsageBusy(false); setUsageError(false);
+    setPreferences(null); setPreferencesBusy(false); setPreferencesError(""); setPreferencesSaved(false);
     setTrial(null);
     setTrialBusy(false);
     setTrialError("");
@@ -301,6 +311,36 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     if (previous?.intent.action === "create") setDeviceDraft({display_name:previous.intent.display_name,subscription_id:previous.intent.subscription_id,endpoint_id:previous.intent.endpoint_id});
     setShowCreate(true);
     window.location.hash = "devices";
+  }
+
+  async function loadPreferences(): Promise<void> {
+    if (!me || preferenceRequest.current) return;
+    preferenceRequest.current = "read";
+    const generation = sessionGeneration.current(); const epoch = ++preferencesEpoch.current;
+    const isCurrent = () => sessionGeneration.isCurrent(generation) && preferencesEpoch.current === epoch;
+    setPreferencesBusy(true); setPreferencesError(""); setPreferencesSaved(false);
+    try {
+      const result = await portalApi.preferences();
+      if (isCurrent()) setPreferences(result);
+    } catch (cause) {
+      if (!isCurrent()) return;
+      if (isUnauthorized(cause)) handleUnauthorized(); else setPreferencesError("Не удалось загрузить настройку напоминаний");
+    } finally { if (isCurrent()) { preferenceRequest.current = null; setPreferencesBusy(false); } }
+  }
+
+  async function savePreferences(value: boolean): Promise<void> {
+    if (!me || preferenceRequest.current || !preferences) return;
+    preferenceRequest.current = "save";
+    const generation = sessionGeneration.current(); const epoch = ++preferencesEpoch.current;
+    const isCurrent = () => sessionGeneration.isCurrent(generation) && preferencesEpoch.current === epoch;
+    setPreferencesBusy(true); setPreferencesError(""); setPreferencesSaved(false);
+    try {
+      const result = await portalApi.updatePreferences(value, me.csrf_token);
+      if (isCurrent()) { setPreferences(result); setPreferencesSaved(true); }
+    } catch (cause) {
+      if (!isCurrent()) return;
+      if (isUnauthorized(cause)) handleUnauthorized(); else setPreferencesError("Не удалось сохранить настройку. Повторите попытку");
+    } finally { if (isCurrent()) { preferenceRequest.current = null; setPreferencesBusy(false); } }
   }
 
   async function loadUsage(): Promise<void> {
@@ -485,10 +525,18 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
     plansLoadEpoch.current += 1;
     dataLoadEpoch.current += 1;
     usageLoadEpoch.current += 1;
+    preferencesEpoch.current += 1;
+    preferenceRequest.current = null;
     trialRequestInFlight.current = false;
   }, [sessionGeneration]);
 
   useEffect(() => { if (me) void loadUsage(); }, [me, usageDays]);
+
+  useEffect(() => {
+    if (me && activeSection === "account" && !preferences && !preferencesError) void loadPreferences();
+    // Section changes may trigger the first read, but never reset a session-owned save.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me, activeSection]);
 
   useEffect(() => {
     const keys = Object.keys(deviceRequests).filter((key) => {
@@ -723,7 +771,9 @@ export default function Portal({ launch, bootstrap }: PortalProps) {
         />}
         {activeSection === "help" && <PortalHelp supportUrl={bootstrapResult.config?.support_url ?? null} supportText={bootstrapResult.config?.support_text ?? ""} />}
         {activeSection === "account" && <PortalAccount
-          displayName={me.display_name} csrfToken={me.csrf_token} sessionGeneration={sessionGeneration} remindersEnabled={bootstrapResult.config?.reminders_enabled ?? false} onUnauthorized={handleUnauthorized}
+          displayName={me.display_name} remindersEnabled={bootstrapResult.config?.reminders_enabled ?? false}
+          preferences={preferences} preferencesBusy={preferencesBusy} preferencesError={preferencesError} preferencesSaved={preferencesSaved}
+          onPreferenceChange={(value) => void savePreferences(value)} onPreferencesRetry={() => void loadPreferences()}
           plans={plans} plansBusy={plansBusy} plansError={plansError} onPlansRetry={() => void loadPlans()} onLogout={startLogout}
         />}
       </main>

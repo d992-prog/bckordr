@@ -1299,6 +1299,59 @@ async function verifyCabinetCreation(browser, origin) {
   await context.close();
 }
 
+async function verifyPreferenceSaveAcrossSections(browser, origin) {
+  for (const logout of [false,true]) {
+    const {context,page}=await newPortalPage(browser);
+    let preference=false,reads=0,pendingSave;
+    await installApi(page,async(route,pathname,request)=>{
+      if(pathname.endsWith("/config"))return responseJson(route,{...portalConfig,reminders_enabled:true});
+      if(pathname.endsWith("/me"))return responseJson(route,me);
+      if(pathname.endsWith("/plans"))return responseJson(route,[]);
+      if(pathname.endsWith("/subscriptions"))return responseJson(route,subscriptions.slice(0,1));
+      if(pathname.endsWith("/v2/devices"))return responseJson(route,profiles.slice(0,1));
+      if(pathname.endsWith("/logout"))return responseJson(route,{logged_out:true});
+      if(pathname.endsWith("/preferences")){
+        if(request.method()==="GET"){reads++;return responseJson(route,{expiry_reminders:preference});}
+        assert.deepEqual(request.postDataJSON(),{expiry_reminders:true});
+        assert.equal(request.headers()["x-csrf-token"],me.csrf_token);
+        pendingSave=route;return;
+      }
+      return responseJson(route,{},404);
+    },{preferences:false});
+    await page.goto(origin+"/cabinet/#account");
+    const checkbox=page.getByRole("checkbox");
+    await page.waitForFunction(()=>document.querySelector(".reminder-preference input")?.disabled===false);
+    assert.equal(await checkbox.isChecked(),false);
+    await checkbox.click();
+    await page.getByText("Сохраняем…",{exact:true}).waitFor();
+    assert.ok(pendingSave);
+    await page.locator('.portal-nav a[href="#help"]').click();
+    await page.locator('.portal-nav a[href="#account"]').click();
+    await checkbox.waitFor();
+    if(logout){
+      await page.getByRole("button",{name:"Выйти",exact:true}).click();
+      await page.getByRole("heading",{name:"Вы вышли из аккаунта",exact:true}).waitFor();
+    }
+    preference=true;
+    await responseJson(pendingSave,{expiry_reminders:true});
+    if(logout){
+      await page.waitForTimeout(50);
+      assert.equal(await checkbox.count(),0);
+      assert.equal(await page.getByText("Настройка сохранена",{exact:true}).count(),0);
+      assert.equal((await page.locator("body").innerText()).includes(me.display_name),false);
+    }else{
+      await page.waitForFunction(()=>{const input=document.querySelector(".reminder-preference input");return input?.checked===true&&input.disabled===false;},null,{timeout:1000});
+      await page.getByText("Настройка сохранена",{exact:true}).waitFor();
+      assert.equal(reads,1,"section remount must not issue a stale GET over a pending save");
+      await page.locator('.portal-nav a[href="#help"]').click();
+      await page.locator('.portal-nav a[href="#account"]').click();
+      await checkbox.waitFor();
+      assert.equal(await checkbox.isChecked(),true);
+    }
+    await context.close();
+  }
+}
+
 async function verifyCabinetPreferencesUsageNotice(browser, origin) {
   const {context,page}=await newPortalPage(browser);
   let preference=true, heldUsage;
@@ -2710,7 +2763,7 @@ const browser = await chromium.launch({
 
 try {
   const locationCases = [verifyInitialDeviceLocationStates, verifyDeviceLocations, verifyDeviceLocationEdges];
-  const cabinetCases = [verifyCabinetOperations, verifyHomeCountryPreparation, verifyCountryGenerationScope, verifyCabinetCreation, verifyCabinetPreferencesUsageNotice];
+  const cabinetCases = [verifyCabinetOperations, verifyHomeCountryPreparation, verifyCountryGenerationScope, verifyCabinetCreation, verifyCabinetPreferencesUsageNotice, verifyPreferenceSaveAcrossSections];
   const allCases = [
     ...cabinetCases, ...locationCases, verifyFullPortal, verifyInitialPortalStates,
     verifyLegacyPlansRoute, verifyPublicTrialFlow, verifyMiniAppStates, verifyIOSGestureBoundCopy,
@@ -2722,6 +2775,7 @@ try {
   let cases = process.argv.includes("--cabinet-contracts-only") ? cabinetCases
     : process.argv.includes("--country-preparation-only") ? [verifyHomeCountryPreparation]
     : process.argv.includes("--country-generation-only") ? [verifyCountryGenerationScope]
+    : process.argv.includes("--preferences-race-only") ? [verifyPreferenceSaveAcrossSections]
     : process.argv.includes("--device-locations-only") ? locationCases
     : process.argv.includes("--responsive-only") ? [captureResponsiveMatrix]
     : allCases;
