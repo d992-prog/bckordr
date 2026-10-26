@@ -3579,7 +3579,10 @@ async def preflight_vpn_node_onboarding(
     except VpnNodeTrustError as error:
         _raise_vpn_node_trust_error(error)
     view = await get_vpn_node_onboarding_view(db, worker.id)
-    needs_trust = worker.ssh_host_key_fingerprint != probe.fingerprint
+    needs_trust = (
+        not worker.ssh_host_key
+        or worker.ssh_host_key_fingerprint != probe.fingerprint
+    )
     state = "needs_trust" if needs_trust else view.state
     return _vpn_node_onboarding_response(
         VpnNodeOnboardingView(

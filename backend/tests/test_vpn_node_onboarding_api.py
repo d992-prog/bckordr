@@ -235,6 +235,58 @@ async def test_all_onboarding_routes_require_an_admin(api_env):
         assert response.status_code == 403
 
 
+@pytest.mark.parametrize(
+    ("host_key", "fingerprint"),
+    ((None, None), (HOST_KEY, None), (None, FINGERPRINT)),
+)
+@pytest.mark.asyncio
+async def test_untrusted_node_can_preflight_after_initial_load_and_reload(
+    api_env, monkeypatch, host_key, fingerprint
+):
+    client, session_factory, _app = api_env
+    worker_id = await _add_worker(
+        session_factory,
+        ssh_host_key=host_key,
+        ssh_host_key_fingerprint=fingerprint,
+    )
+    path = f"/control/workers/{worker_id}/vpn-onboarding"
+    calls = []
+
+    async def fake_probe(worker):
+        calls.append(worker.id)
+        return VpnNodeTrustProbe(
+            known_hosts_line=HOST_KEY,
+            fingerprint=FINGERPRINT,
+            architecture="x86_64",
+            xui_installed=False,
+            occupied_ports=(),
+        )
+
+    monkeypatch.setattr(control, "probe_vpn_node_trust", fake_probe)
+
+    for _ in range(2):
+        loaded = await client.get(path)
+        assert loaded.status_code == 200
+        assert loaded.json()["state"] == "needs_preflight"
+        assert loaded.json()["fingerprint"] == fingerprint
+
+        checked = await client.post(f"{path}/preflight")
+        assert checked.status_code == 200
+        assert checked.json()["state"] == "needs_trust"
+        assert checked.json()["fingerprint"] == FINGERPRINT
+
+    assert calls == [worker_id, worker_id]
+    started = await client.post(f"{path}/start")
+    assert started.status_code == 409
+    assert started.json() == {"detail": "vpn_onboarding_host_key_changed"}
+    async with session_factory() as session:
+        worker = await session.get(WorkerNode, worker_id)
+        assert worker.ssh_host_key == host_key
+        assert worker.ssh_host_key_fingerprint == fingerprint
+        assert await session.scalar(select(WorkerMaintenanceJob.id)) is None
+        assert await session.scalar(select(AdminAuditLog.id)) is None
+
+
 @pytest.mark.asyncio
 async def test_preflight_is_read_only_and_returns_only_public_identity(api_env, monkeypatch):
     client, session_factory, _app = api_env

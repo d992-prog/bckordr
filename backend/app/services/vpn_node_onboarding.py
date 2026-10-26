@@ -207,10 +207,12 @@ async def get_vpn_node_onboarding_view(
     elif job is not None and job.status == "failed":
         state = "failed"
         error_source = job.error_message
-    elif not worker.ssh_access_configured:
+    elif (
+        not worker.ssh_access_configured
+        or not worker.ssh_host_key
+        or not worker.ssh_host_key_fingerprint
+    ):
         state = "needs_preflight"
-    elif not worker.ssh_host_key or not worker.ssh_host_key_fingerprint:
-        state = "needs_trust"
     else:
         state = "ready_to_start"
     error = None

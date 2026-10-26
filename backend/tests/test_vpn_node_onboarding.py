@@ -286,7 +286,7 @@ def test_onboarding_view_is_a_safe_frozen_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_view_derives_preflight_trust_and_ready_to_start(sessions) -> None:
+async def test_view_derives_preflight_and_ready_to_start(sessions) -> None:
     async with sessions() as session:
         missing_ssh = _worker(name="missing-ssh", ssh_password=None)
         untrusted = _worker(name="untrusted")
@@ -299,10 +299,34 @@ async def test_view_derives_preflight_trust_and_ready_to_start(sessions) -> None
         await session.commit()
 
         assert (await get_vpn_node_onboarding_view(session, missing_ssh.id)).state == "needs_preflight"
-        assert (await get_vpn_node_onboarding_view(session, untrusted.id)).state == "needs_trust"
+        assert (await get_vpn_node_onboarding_view(session, untrusted.id)).state == "needs_preflight"
         view = await get_vpn_node_onboarding_view(session, trusted.id)
         assert view.state == "ready_to_start"
         assert view.fingerprint == trusted.ssh_host_key_fingerprint
+
+
+@pytest.mark.parametrize(
+    ("host_key", "fingerprint"),
+    ((None, None), (HOST_KEY, None), (None, HOST_FINGERPRINT)),
+)
+@pytest.mark.asyncio
+async def test_view_requires_preflight_for_incomplete_pin(
+    sessions, host_key, fingerprint
+) -> None:
+    async with sessions() as session:
+        worker = _worker(
+            ssh_host_key=host_key,
+            ssh_host_key_fingerprint=fingerprint,
+        )
+        session.add(worker)
+        await session.commit()
+
+        view = await get_vpn_node_onboarding_view(session, worker.id)
+
+        assert view.state == "needs_preflight"
+        assert view.job_id is None
+        assert view.endpoint_id is None
+        assert view.error_code is None
 
 
 @pytest.mark.asyncio
