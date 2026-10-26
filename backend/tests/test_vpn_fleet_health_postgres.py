@@ -10,11 +10,12 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.base import Base
 from app.db.models import VpnEndpoint, WorkerNode
-from app.services.vpn_fleet_health import probe_next_vpn_endpoint
+from app.services.vpn_fleet_health import probe_next_vpn_endpoint, probe_vpn_fleet
 from app.services.vpn_node_health import VpnNodeHealthReceipt
 
 pytest_plugins = ("test_vpn_endpoint_migrations",)
@@ -184,3 +185,57 @@ async def test_postgres_cancelled_winner_releases_lease_and_retries_oldest(
         timeout=5,
     ) is True
     assert calls == [oldest]
+
+
+@pytest.mark.asyncio
+async def test_postgres_fleet_pass_continues_after_concurrent_health_commit(
+    pg_factory,
+) -> None:
+    first, second = await seed_two(pg_factory)
+    waiting_for_worker = asyncio.Event()
+
+    class ObservedSession(AsyncSession):
+        async def scalar(self, statement, **kwargs):
+            if (
+                getattr(statement, "_for_update_arg", None) is not None
+                and statement.column_descriptions[0]["entity"] is WorkerNode
+            ):
+                waiting_for_worker.set()
+            return await super().scalar(statement, **kwargs)
+
+    observed_factory = async_sessionmaker(
+        pg_factory.kw["bind"], expire_on_commit=False, class_=ObservedSession,
+    )
+    calls: list[int] = []
+
+    async def transport(_snapshot, request, *, now_ms):
+        calls.append(request.target.endpoint_id)
+        return VpnNodeHealthReceipt("healthy", None, "running")
+
+    async with pg_factory() as concurrent:
+        worker_id = await concurrent.scalar(
+            select(VpnEndpoint.worker_id).where(VpnEndpoint.id == first),
+        )
+        await concurrent.scalar(
+            select(WorkerNode).where(WorkerNode.id == worker_id).with_for_update(),
+        )
+        task = asyncio.create_task(probe_vpn_fleet(
+            observed_factory, KNOWN_HOSTS,
+            snapshot_loader=lambda *_: object(), transport=transport, now=lambda: NOW,
+        ))
+        try:
+            await asyncio.wait_for(waiting_for_worker.wait(), timeout=5)
+            await concurrent.execute(update(VpnEndpoint).where(
+                VpnEndpoint.id == first,
+            ).values(health_checked_at=NOW))
+            await concurrent.commit()
+            assert await asyncio.wait_for(task, timeout=10) is True
+        finally:
+            await concurrent.rollback()
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    assert calls == [second]
+    async with pg_factory() as session:
+        checked = (await session.scalars(select(VpnEndpoint.health_checked_at))).all()
+        assert all(value == NOW for value in checked)

@@ -177,8 +177,29 @@ async def probe_next_vpn_endpoint(
     snapshot_loader=load_transport_snapshot,
     transport=execute_vpn_node_health_over_ssh,
     now=utcnow,
+    checked_before: datetime | None = None,
 ) -> bool:
     """Probe at most one eligible endpoint while holding worker and endpoint locks."""
+    return await _probe_next_vpn_endpoint(
+        session_factory,
+        known_hosts_path,
+        snapshot_loader=snapshot_loader,
+        transport=transport,
+        now=now,
+        checked_before=checked_before,
+    ) is True
+
+
+async def _probe_next_vpn_endpoint(
+    session_factory,
+    known_hosts_path: Path,
+    *,
+    snapshot_loader,
+    transport,
+    now,
+    checked_before: datetime | None,
+) -> bool | None:
+    """Return None to retry a lost candidate, False when idle, True after a probe."""
     async with session_factory() as session:
         local_lock = None
         local_lock_acquired = False
@@ -209,6 +230,10 @@ async def probe_next_vpn_endpoint(
                             WorkerNode.vpn_enabled.is_(True),
                             WorkerNode.vpn_role != "none",
                             VpnEndpoint.status.in_(_ENDPOINT_STATUSES),
+                            (
+                                VpnEndpoint.health_checked_at.is_(None)
+                                | (VpnEndpoint.health_checked_at < checked_before)
+                            ) if checked_before is not None else True,
                             ~_maintenance_exists(WorkerNode.id),
                             ~_control_exists(WorkerNode.id),
                         )
@@ -236,7 +261,7 @@ async def probe_next_vpn_endpoint(
                     session, worker_id
                 ):
                     await session.rollback()
-                    return False
+                    return None
 
                 endpoint = await session.scalar(
                     select(VpnEndpoint)
@@ -254,7 +279,7 @@ async def probe_next_vpn_endpoint(
                     != _as_utc(selected_health_checked_at)
                 ):
                     await session.rollback()
-                    return False
+                    return None
 
             assert worker is not None
             attempted_at = _as_utc(now())
@@ -319,3 +344,31 @@ async def probe_next_vpn_endpoint(
             if local_lock_acquired:
                 assert local_lock is not None
                 local_lock.release()
+
+
+async def probe_vpn_fleet(
+    session_factory,
+    known_hosts_path: Path,
+    *,
+    snapshot_loader=load_transport_snapshot,
+    transport=execute_vpn_node_health_over_ssh,
+    now=utcnow,
+) -> bool:
+    """Attempt every eligible endpoint once per scheduled fleet pass."""
+    checked_before = _as_utc(now())
+    if checked_before is None:
+        raise TypeError("vpn_fleet_health_time_invalid")
+    probed = False
+    while True:
+        result = await _probe_next_vpn_endpoint(
+            session_factory,
+            known_hosts_path,
+            snapshot_loader=snapshot_loader,
+            transport=transport,
+            now=now,
+            checked_before=checked_before,
+        )
+        if result is False:
+            return probed
+        if result is True:
+            probed = True
