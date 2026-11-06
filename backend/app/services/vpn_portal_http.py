@@ -35,7 +35,8 @@ def portal_capabilities(settings: Settings) -> dict[str, bool]:
         origin_valid = True
 
     access_configured = (
-        settings.vpn_public_trial_enabled
+        settings.vpn_portal_open_registration
+        or settings.vpn_public_trial_enabled
         or public_trial_release_configured(settings)
         or settings.vpn_portal_public_access
         or any(

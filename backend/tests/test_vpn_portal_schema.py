@@ -301,6 +301,7 @@ def test_portal_settings_default_disabled_and_accept_explicit_aliases(monkeypatc
         "VPN_PORTAL_PUBLIC_ORIGIN": "https://portal.example.test",
         "VPN_PORTAL_ALLOW_LOCAL_HTTP": "true",
         "VPN_PORTAL_PUBLIC_ACCESS": "true",
+        "VPN_PORTAL_OPEN_REGISTRATION": "true",
         "VPN_PORTAL_ALLOWED_TELEGRAM_IDS": "123,456",
         "VPN_PORTAL_OIDC_CLIENT_ID": "client-id",
         "VPN_PORTAL_OIDC_CLIENT_SECRET": "client-secret",
@@ -324,6 +325,7 @@ def test_portal_settings_default_disabled_and_accept_explicit_aliases(monkeypatc
     assert defaults.vpn_portal_public_origin == ""
     assert defaults.vpn_portal_allow_local_http is False
     assert defaults.vpn_portal_public_access is False
+    assert defaults.vpn_portal_open_registration is False
     assert defaults.vpn_portal_allowed_telegram_ids == ""
     assert defaults.vpn_portal_oidc_client_id == ""
     assert defaults.vpn_portal_oidc_client_secret == ""
@@ -340,6 +342,7 @@ def test_portal_settings_default_disabled_and_accept_explicit_aliases(monkeypatc
     assert configured.vpn_portal_public_origin == "https://portal.example.test"
     assert configured.vpn_portal_allow_local_http is True
     assert configured.vpn_portal_public_access is True
+    assert configured.vpn_portal_open_registration is True
     assert configured.vpn_portal_allowed_telegram_ids == "123,456"
     assert configured.vpn_portal_oidc_client_id == "client-id"
     assert configured.vpn_portal_oidc_client_secret == "client-secret"

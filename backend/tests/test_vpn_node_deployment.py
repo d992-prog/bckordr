@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import importlib
 import json
+import linecache
 import os
 import stat
 import subprocess
@@ -525,6 +526,7 @@ def test_control_trust_lock_is_secured_before_atomic_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     deployment = importlib.import_module("app.services.vpn_node_deployment")
+    monkeypatch.setattr(deployment, "os", SimpleNamespace(**vars(os)))
     target = Path("C:/etc/veltrix/known_hosts")
     ownership = []
     modes = []
@@ -602,6 +604,7 @@ def test_control_trust_lock_repairs_legacy_metadata_under_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     deployment = importlib.import_module("app.services.vpn_node_deployment")
+    monkeypatch.setattr(deployment, "os", SimpleNamespace(**vars(os)))
     target = Path("C:/etc/veltrix/known_hosts")
     ownership = []
     modes = []
@@ -650,6 +653,27 @@ def test_control_trust_lock_repairs_legacy_metadata_under_lock(
     assert ownership == [(11, 0, 0)]
     assert modes == [(11, 0o600)]
     assert locks == [(11, fcntl.LOCK_EX), (11, fcntl.LOCK_UN)]
+
+
+@pytest.mark.parametrize("lock_test", [
+    test_control_trust_lock_is_secured_before_atomic_publication,
+    test_control_trust_lock_repairs_legacy_metadata_under_lock,
+])
+def test_control_trust_lock_mocks_preserve_stdlib_source_lookup(
+    monkeypatch: pytest.MonkeyPatch, lock_test,
+) -> None:
+    source = str(Path(__file__).resolve())
+    linecache.getlines(source)
+    lookup_error = None
+    with monkeypatch.context() as patches:
+        lock_test(patches)
+        try:
+            linecache.checkcache(source)
+        except AttributeError as error:
+            lookup_error = str(error)
+
+    linecache.checkcache(source)
+    assert lookup_error is None
 
 
 def test_control_trust_appends_distinct_target_and_preserves_existing_bytes(

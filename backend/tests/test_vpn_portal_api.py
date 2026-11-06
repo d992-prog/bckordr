@@ -28,6 +28,8 @@ from app.db.models import (
     VpnControlOperation,
     VpnCustomer,
     VpnCustomerSession,
+    VpnDevice,
+    VpnDeviceOperation,
     VpnEndpoint,
     VpnFriendInvitation,
     VpnPlan,
@@ -377,6 +379,130 @@ async def portal_app(monkeypatch):
         )
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("login_method", ["mini_app", "oidc"])
+async def test_open_registration_fresh_identity_gets_only_empty_owned_cabinet(portal_app, login_method):
+    settings = portal_app.settings.model_copy(update={
+        "vpn_portal_allowed_telegram_ids": "", "vpn_portal_open_registration": True,
+    })
+    portal_app.app.state.settings = settings
+    config = (await portal_app.client.get("/api/vpn-portal/config")).json()
+    assert all(config[key] for key in ("enabled", "browser_login_enabled", "mini_app_enabled"))
+    assert settings.vpn_portal_public_access is False
+    assert settings.vpn_public_trial_enabled is False
+    oidc_client = None
+    try:
+        if login_method == "mini_app":
+            response = await portal_app.client.post(
+                "/api/vpn-portal/auth/mini-app", headers={"Origin": PORTAL_ORIGIN},
+                json={"init_data": mini_app_data(400, settings.vpn_telegram_bot_token)},
+            )
+            assert response.status_code == 200
+        else:
+            private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key()))
+            jwk.update({"kid": "open-registration", "alg": "RS256", "use": "sig"})
+            now = int(time.time())
+            token = jwt.encode({
+                "iss": TELEGRAM_ISSUER, "aud": settings.vpn_portal_oidc_client_id,
+                "sub": "subject-400", "id": 400, "iat": now, "exp": now + 300,
+            }, private_key, algorithm="RS256", headers={"kid": "open-registration"})
+
+            def provider(request):
+                if request.url == TELEGRAM_TOKEN_URL:
+                    return httpx.Response(200, json={"id_token": token})
+                assert request.url == TELEGRAM_JWKS_URL
+                return httpx.Response(200, json={"keys": [jwk]})
+
+            oidc_client = httpx.AsyncClient(transport=httpx.MockTransport(provider))
+            portal_app.app.state.vpn_portal_http_client = oidc_client
+            portal_app.app.state.vpn_portal_jwks_provider = TelegramJWKSProvider(oidc_client)
+            start = await portal_app.client.get("/api/vpn-portal/auth/telegram/start")
+            state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+            response = await portal_app.client.get(
+                "/api/vpn-portal/auth/telegram/callback", params={"state": state, "code": "verified-code"},
+            )
+            assert response.headers["location"] == "/cabinet/"
+
+        assert (await portal_app.client.get("/api/vpn-portal/me")).status_code == 200
+        for path in ("subscriptions", "profiles", "v2/devices"):
+            owned = await portal_app.client.get(f"/api/vpn-portal/{path}")
+            assert owned.status_code == 200 and owned.json() == []
+        raw_session = portal_app.client.cookies.get(SESSION_COOKIE)
+        headers = {"Origin": PORTAL_ORIGIN, "X-CSRF-Token": csrf_token(raw_session)}
+        assert (await portal_app.client.get("/api/vpn-portal/trial")).json()["state"] == "disabled"
+        assert (await portal_app.client.post("/api/vpn-portal/trial/activate", headers=headers)).status_code == 409
+        for profile_id in (portal_app.ids.own_profile, portal_app.ids.foreign_profile):
+            hidden = await portal_app.client.get(f"/api/vpn-portal/profiles/{profile_id}/connection")
+            assert hidden.status_code == 404
+        for subscription_id in (portal_app.ids.subscription, 999999):
+            denied = await portal_app.client.post("/api/vpn-portal/v2/devices", headers=headers, json={
+                "request_id": "11111111-1111-4111-8111-111111111111",
+                "subscription_id": subscription_id, "endpoint_id": 1, "display_name": "Phone",
+            })
+            assert denied.status_code == 404
+        async with portal_app.factory() as db:
+            customer = await db.scalar(select(VpnCustomer).where(VpnCustomer.telegram_user_id == "400"))
+            assert customer is not None and customer.trial_started_at is None
+            assert await db.scalar(select(func.count()).select_from(VpnSubscription)) == 2
+            assert await db.scalar(select(func.count()).select_from(VpnAccessKey)) == 2
+            for model in (VpnFriendInvitation, VpnDevice, VpnDeviceOperation, VpnControlOperation):
+                assert await db.scalar(select(func.count()).select_from(model)) == 0
+    finally:
+        if oidc_client is not None:
+            await oidc_client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expired", [False, True])
+async def test_open_registration_manual_subscription_does_not_gate_cabinet(portal_app, expired):
+    portal_app.app.state.settings = portal_app.settings.model_copy(update={
+        "vpn_portal_allowed_telegram_ids": "", "vpn_portal_open_registration": True,
+    })
+    if expired:
+        async with portal_app.factory() as db:
+            await db.execute(update(VpnSubscription).where(VpnSubscription.id == portal_app.ids.subscription).values(
+                expires_at=utcnow() - timedelta(days=1), status="expired",
+            ))
+            await db.commit()
+    login = await portal_app.client.post(
+        "/api/vpn-portal/auth/mini-app", headers={"Origin": PORTAL_ORIGIN},
+        json={"init_data": mini_app_data(100, portal_app.settings.vpn_telegram_bot_token)},
+    )
+    assert login.status_code == 200
+    assert (await portal_app.client.get("/api/vpn-portal/me")).status_code == 200
+    subscriptions = (await portal_app.client.get("/api/vpn-portal/subscriptions")).json()
+    assert [item["id"] for item in subscriptions] == [portal_app.ids.subscription]
+    connection = await portal_app.client.get(f"/api/vpn-portal/profiles/{portal_app.ids.own_profile}/connection")
+    assert connection.status_code == (409 if expired else 200)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejection", ["blocked", "archived", "tampered", "stale"])
+async def test_open_registration_keeps_identity_and_customer_guards(portal_app, rejection):
+    portal_app.app.state.settings = portal_app.settings.model_copy(update={
+        "vpn_portal_allowed_telegram_ids": "", "vpn_portal_open_registration": True,
+    })
+    if rejection in {"blocked", "archived"}:
+        async with portal_app.factory() as db:
+            await db.execute(update(VpnCustomer).where(VpnCustomer.id == portal_app.ids.alice).values(status=rejection))
+            await db.commit()
+    raw = mini_app_data(
+        100, portal_app.settings.vpn_telegram_bot_token,
+        auth_date=int(time.time()) - 3600 if rejection == "stale" else None,
+    )
+    if rejection == "tampered":
+        raw = raw.replace("hash=", "hash=0")
+    response = await portal_app.client.post(
+        "/api/vpn-portal/auth/mini-app", headers={"Origin": PORTAL_ORIGIN}, json={"init_data": raw},
+    )
+    assert response.status_code == 401
+    assert SESSION_COOKIE not in portal_app.client.cookies
+    assert (await portal_app.client.get("/api/vpn-portal/me")).status_code == 401
+    async with portal_app.factory() as db:
+        assert await db.scalar(select(func.count()).select_from(VpnCustomerSession)) == 2
 
 
 @pytest.mark.asyncio

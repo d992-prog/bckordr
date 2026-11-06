@@ -51,6 +51,7 @@ from app.services.vpn_portal_auth import (
     valid_mutation,
     lock_current_principal,
 )
+from app.services.vpn_portal_http import portal_capabilities
 
 
 NOW = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
@@ -270,6 +271,51 @@ def test_public_trial_admits_only_valid_identities_while_portal_is_enabled():
         portal_settings(VPN_PORTAL_ENABLED=False, VPN_PUBLIC_TRIAL_ENABLED=True),
         "999",
     ) is False
+
+
+def test_open_registration_admits_valid_identities_without_enabling_vpn_access():
+    settings = portal_settings(
+        VPN_PORTAL_ALLOWED_TELEGRAM_IDS="",
+        VPN_PORTAL_OPEN_REGISTRATION=True,
+        VPN_PORTAL_OIDC_CLIENT_ID="client",
+        VPN_PORTAL_OIDC_CLIENT_SECRET="secret",
+    )
+
+    assert identity_allowed(settings, "000999") is True
+    for invalid in ("invalid", "0", "-100", True, 2**52):
+        assert identity_allowed(settings, invalid) is False
+    assert portal_capabilities(settings) == {
+        "enabled": True, "browser_login_enabled": True, "mini_app_enabled": True,
+    }
+    assert settings.vpn_portal_public_access is False
+    assert settings.vpn_public_trial_enabled is False
+    settings.vpn_portal_enabled = False
+    assert identity_allowed(settings, "999") is False
+    assert not any(portal_capabilities(settings).values())
+
+
+@pytest.mark.asyncio
+async def test_open_registration_preserves_session_after_invitation_expiry_and_revoke(
+    session_factory,
+):
+    settings = portal_settings(
+        VPN_PORTAL_ALLOWED_TELEGRAM_IDS="", VPN_PORTAL_OPEN_REGISTRATION=True,
+    )
+    async with session_factory() as db:
+        customer, subscription, _key, invitation = await seed_invited_portal_identity(db)
+        raw_session = await issue_session(db, customer.id, "789", now=NOW)
+        subscription.expires_at = NOW
+        invitation.revoked_at = NOW
+        await db.commit()
+
+        assert await identity_admitted(db, settings, "789", now=NOW)
+        principal = await lookup_session(db, raw_session, settings, now=NOW)
+        assert principal is not None
+        assert await lock_current_principal(db, principal, settings, NOW) is not None
+        customer.status = "blocked"
+        await db.commit()
+        assert await lookup_session(db, raw_session, settings, now=NOW) is None
+        assert await lock_current_principal(db, principal, settings, NOW) is None
 
 
 @pytest.mark.asyncio
