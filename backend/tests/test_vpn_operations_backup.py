@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import linecache
 import os
 import shutil
 import stat
@@ -135,6 +136,7 @@ def _copy_sources_for_test(
 def _allow_test_platform(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(backup_module, "os", SimpleNamespace(**vars(os)))
     if (
         request.node.name != "test_backup_fails_before_writes_without_secure_platform"
         and not backup_module._DIR_FD_SUPPORTED
@@ -2601,3 +2603,26 @@ def test_main_catches_unexpected_secret_exception_without_output(
     output = capsys.readouterr()
     assert output == ("", "")
     assert PASSWORD not in repr(output)
+
+
+@pytest.mark.parametrize("mock_test", [
+    test_snapshot_cleanup_attempts_every_close_after_error,
+    test_bound_root_closes_unowned_child_when_fstat_fails,
+    test_bound_root_does_not_retry_failed_close_and_closes_owned_descriptors,
+    test_bound_root_cleanup_attempts_every_close_after_error,
+])
+def test_backup_filesystem_mocks_preserve_stdlib_source_lookup(
+    monkeypatch: pytest.MonkeyPatch, mock_test,
+) -> None:
+    source = str(Path(__file__).resolve())
+    linecache.getlines(source)
+    lookup_error = None
+    with monkeypatch.context() as patches:
+        mock_test(patches)
+        try:
+            linecache.checkcache(source)
+        except AttributeError as error:
+            lookup_error = str(error)
+
+    linecache.checkcache(source)
+    assert lookup_error is None
