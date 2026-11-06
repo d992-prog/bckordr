@@ -414,12 +414,80 @@ def test_telegram_reply_keyboard_never_launches_an_authenticated_mini_app():
 
     # Telegram does not supply WebAppInitData for a reply-keyboard launch.
     assert allowed["keyboard"] == [
+        [{"text": "Личный кабинет"}],
         [{"text": "Моя подписка"}, {"text": "Мои профили"}],
         [{"text": "Помощь"}],
     ]
+    assert allowed["is_persistent"] is True
+    assert disallowed["keyboard"] == allowed["keyboard"]
+    assert {"text": "Личный кабинет"} not in [button for row in group["keyboard"] for button in row]
     assert all("web_app" not in button for row in allowed["keyboard"] for button in row)
     assert all("web_app" not in button for row in disallowed["keyboard"] for button in row)
     assert all("web_app" not in button for row in group["keyboard"] for button in row)
+
+
+@pytest.mark.parametrize("text", ["/cabinet", "Личный кабинет", "  лИчНыЙ КаБиНеТ  "])
+def test_cabinet_commands_are_recognized_and_safely_persisted(text):
+    assert vpn_telegram_service.COMMANDS[text.strip().casefold()] == "cabinet"
+    assert vpn_telegram_service.sanitized_telegram_text(text) == text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expired", [False, True])
+async def test_open_registration_bot_keeps_cabinet_entry_after_every_command(
+    telegram_app, bot_api_requests, monkeypatch, expired,
+):
+    if expired:
+        async with telegram_app.session_factory() as db:
+            await seed_subscription(
+                db, telegram_user_id="60606", subscription_status="expired",
+                expires_at=utcnow() - timedelta(days=1),
+            )
+            await db.commit()
+    settings = telegram_app.settings.model_copy(update={
+        "vpn_portal_enabled": True,
+        "vpn_portal_public_origin": "https://portal.example",
+        "vpn_portal_allowed_telegram_ids": "",
+        "vpn_portal_open_registration": True,
+    })
+    monkeypatch.setattr(vpn_telegram_service, "send_telegram_message", send_telegram_message)
+    commands = ("/status", "/keys", "/support", "/cabinet", "Личный кабинет")
+    for update_id, command in enumerate(commands, 4100):
+        bot_api_requests.clear()
+        async with telegram_app.session_factory() as db:
+            result = await process_telegram_update(db, telegram_message(update_id, 60606, command), settings)
+            await db.commit()
+            stored = await db.scalar(select(VpnTelegramUpdate).where(VpnTelegramUpdate.update_id == str(update_id)))
+            assert stored.payload["message"]["text"] == command
+        assert result == {"processed": True, "duplicate": False}
+        assert len(bot_api_requests) == 2
+        reply, launcher = bot_api_requests
+        assert reply["reply_markup"]["is_persistent"] is True
+        assert reply["reply_markup"]["keyboard"][0] == [{"text": "Личный кабинет"}]
+        assert launcher["reply_markup"]["inline_keyboard"][0][0]["web_app"] == {
+            "url": "https://portal.example/cabinet/",
+        }
+        if command in {"/cabinet", "Личный кабинет"}:
+            assert reply["text"] == "Откройте личный кабинет кнопкой под сообщением"
+    async with telegram_app.session_factory() as db:
+        assert await db.scalar(select(func.count()).select_from(VpnAccessKey)) == 0
+        assert await db.scalar(select(func.count()).select_from(VpnSubscription)) == int(expired)
+        assert await db.scalar(select(func.count()).select_from(VpnControlOperation)) == 0
+
+
+@pytest.mark.asyncio
+async def test_cabinet_command_explains_unavailability_and_keeps_blocked_response(telegram_app):
+    async with telegram_app.session_factory() as db:
+        active = VpnCustomer(telegram_user_id="60606", status="active")
+        blocked = VpnCustomer(telegram_user_id="70707", status="blocked")
+        db.add_all([active, blocked])
+        await db.flush()
+        assert await vpn_telegram_service.render_customer_response(
+            db, active, "cabinet", telegram_app.settings,
+        ) == "Личный кабинет сейчас недоступен. Выберите «Помощь» для связи с администратором"
+        assert await vpn_telegram_service.render_customer_response(
+            db, blocked, "cabinet", telegram_app.settings,
+        ) == "VPN-профиль отключён. Выберите «Помощь» для связи с администратором."
 
 
 def test_telegram_reply_keyboard_shows_public_trial_only_while_enabled():
@@ -698,6 +766,7 @@ def test_telegram_keyboard_never_adds_web_app_for_zero_or_malformed_identity(cha
     keyboard = telegram_keyboard(settings, chat_id)
 
     assert all("web_app" not in button for row in keyboard["keyboard"] for button in row)
+    assert all(button["text"] != "Личный кабинет" for row in keyboard["keyboard"] for button in row)
 
 
 @pytest.mark.parametrize(

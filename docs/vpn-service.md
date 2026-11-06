@@ -4,7 +4,24 @@
 
 The service supports manually created plans and subscriptions, automatic lifecycle maintenance, 3x-UI access keys, Telegram delivery, a public product page and a protected customer cabinet. Operators explicitly publish and order plans; unpublished plans are never returned by the anonymous catalog. The cabinet generates profile QR codes locally in the browser on an explicit connection action; it does not send credentials to an external QR service. Payments are intentionally disabled until the rest of the product is operational and verified.
 
-The Telegram bot supports `/start`, `/status`, `/keys`, and `/support`. A VPN URI is a credential: only use the bot in a private chat, protect the webhook with both configured secrets, and never paste a URI into logs or public channels.
+The Telegram bot supports `/start`, `/status`, `/keys`, `/support`, and `/cabinet`. A VPN URI is a credential: only use the bot in a private chat, protect the webhook with both configured secrets, and never paste a URI into logs or public channels.
+
+## Cabinet registration (explicit opt-in)
+
+`VPN_PORTAL_OPEN_REGISTRATION=false` preserves the existing closed admission rules.
+Set it to `true` to admit any verified Telegram identity to its own cabinet,
+including accounts without an invitation or with an expired subscription.
+The portal still requires `VPN_PORTAL_ENABLED=true`, a valid public origin and
+configured Mini App or OIDC credentials. Blocked and archived customers cannot
+receive or use a session.
+
+This flag grants cabinet login only. It does not enable the public trial,
+`VPN_PORTAL_PUBLIC_ACCESS`, invitations, subscriptions, keys or provisioning.
+VPN connections and device creation still require an eligible owned subscription.
+The private-chat reply keyboard keeps a plain-text «Личный кабинет» command;
+it and `/cabinet` return the admitted user's inline Mini App launcher. Reply
+keyboard buttons never launch a WebApp because Telegram omits signed initData
+for that launch type.
 
 ## Cabinet refresh preparation (not a deployment record)
 

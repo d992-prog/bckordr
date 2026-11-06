@@ -83,6 +83,8 @@ _PERSISTED_COMMANDS = frozenset(
         "/status",
         "/keys",
         "/support",
+        "/cabinet",
+        "личный кабинет",
         "статус",
         "ключи",
         "поддержка",
@@ -115,7 +117,7 @@ def _has_start_payload(text: str) -> bool:
 def sanitized_telegram_text(text: str) -> str:
     if _has_start_payload(text):
         return _REDACTED_START_PAYLOAD
-    if text in _PERSISTED_COMMANDS:
+    if text in _PERSISTED_COMMANDS or text.strip().casefold() in {"/cabinet", "личный кабинет"}:
         return text
     return _REDACTED_MESSAGE
 
@@ -276,9 +278,17 @@ def telegram_keyboard(settings: Settings, chat_id: str) -> dict:
     ]
     if settings.vpn_public_trial_enabled:
         rows.insert(1, [{"text": "Получить 7 дней"}])
+    try:
+        telegram_user_id(chat_id)
+    except ValueError:
+        pass
+    else:
+        if portal_capabilities(settings)["mini_app_enabled"]:
+            rows.insert(0, [{"text": "Личный кабинет"}])
     return {
         "keyboard": rows,
         "resize_keyboard": True,
+        "is_persistent": True,
     }
 
 
@@ -359,6 +369,8 @@ COMMANDS = {
     "/keys": "keys",
     "ключи": "keys",
     "/support": "support",
+    "/cabinet": "cabinet",
+    "личный кабинет": "cabinet",
     "поддержка": "support",
     "моя подписка": "status",
     "мои профили": "keys",
@@ -410,6 +422,13 @@ async def render_customer_response(
         return settings.vpn_support_text + (f"\n{contact}" if contact else "")
     if customer.status != "active":
         return "VPN-профиль отключён. Выберите «Помощь» для связи с администратором."
+
+    if command == "cabinet":
+        if portal_capabilities(settings)["mini_app_enabled"] and await identity_admitted(
+            session, settings, customer.telegram_user_id,
+        ):
+            return "Откройте личный кабинет кнопкой под сообщением"
+        return "Личный кабинет сейчас недоступен. Выберите «Помощь» для связи с администратором"
 
     subscriptions = await list_customer_subscriptions(session, customer.id)
 

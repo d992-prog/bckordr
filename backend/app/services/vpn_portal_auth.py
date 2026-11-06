@@ -143,7 +143,11 @@ def identity_allowed(settings: Settings, user_id: object) -> bool:
         canonical = telegram_user_id(user_id)
     except ValueError:
         return False
-    if settings.vpn_public_trial_enabled or settings.vpn_portal_public_access:
+    if (
+        settings.vpn_portal_open_registration
+        or settings.vpn_public_trial_enabled
+        or settings.vpn_portal_public_access
+    ):
         return True
     allowed: set[str] = set()
     for candidate in settings.vpn_portal_allowed_telegram_ids.split(","):
