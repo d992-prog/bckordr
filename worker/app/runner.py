@@ -28,7 +28,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in constrained envir
     psutil = _PsutilFallback()
 
 from app.config import WorkerSettings
-from app.control_client import ControlClient, ControlTask, ControlTaskStatus, DiscoveryControlTask
+from app.control_client import (
+    ControlClient,
+    ControlTask,
+    ControlTaskStatus,
+    DiscoveryControlTask,
+)
 from app.discovery_checker import check_discovery_task
 from app.gandi import register_domain
 
@@ -36,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 RESPONSE_SAMPLE_PREVIEW_LIMIT = 2000
 SUCCESSFUL_CREATE_STATUS_CODES = {200, 202}
+_CONTROL_POLL_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
 
 
 def _add_count(counter: dict[str, int], key: str | int | None) -> None:
@@ -106,12 +112,20 @@ class WorkerRunner:
 
     async def run(self) -> None:
         discovery_loop: asyncio.Task[None] | None = None
+        retry_delay = 1.0
         if self.settings.discovery_worker_enabled:
             discovery_loop = asyncio.create_task(self._run_discovery_loop(), name="worker-discovery-loop")
         try:
             while not self._stop:
-                await self._heartbeat(status="ready")
-                task = await self.control.next_task()
+                try:
+                    await self._heartbeat(status="ready")
+                    task = await self.control.next_task()
+                except _CONTROL_POLL_ERRORS as exc:
+                    logger.warning("Control polling unavailable (%s); retrying in %.1fs", type(exc).__name__, retry_delay)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, max(1.0, self.settings.max_idle_backoff_seconds))
+                    continue
+                retry_delay = 1.0
                 if task is None:
                     await asyncio.sleep(self.settings.poll_interval_seconds)
                     continue
@@ -129,11 +143,21 @@ class WorkerRunner:
 
     async def _run_discovery_loop(self) -> None:
         active: set[asyncio.Task[None]] = set()
+        retry_delay = 1.0
         try:
             while not self._stop:
                 active = {task for task in active if not task.done()}
-                while len(active) < self.settings.discovery_worker_concurrency:
-                    discovery_task = await self.control.next_discovery_task()
+                while not self._stop and len(active) < self.settings.discovery_worker_concurrency:
+                    try:
+                        discovery_task = await self.control.next_discovery_task()
+                    except _CONTROL_POLL_ERRORS as exc:
+                        logger.warning("Discovery polling unavailable (%s); retrying in %.1fs", type(exc).__name__, retry_delay)
+                        await asyncio.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, max(1.0, self.settings.max_idle_backoff_seconds))
+                        if self._stop:
+                            return
+                        continue
+                    retry_delay = 1.0
                     if discovery_task is None:
                         break
                     await self.control.acknowledge_discovery_task(discovery_task.task_id)

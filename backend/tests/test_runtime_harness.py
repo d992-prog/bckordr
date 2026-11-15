@@ -17,7 +17,15 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.routes.worker_runtime import router as worker_runtime_router
 from app.db.base import Base
-from app.db.models import AttackEvent, AttackRun, ContactProfile, DropDomain, RegistrarAccount, WorkerNode, WorkerTask
+from app.db.models import (
+    AttackEvent,
+    AttackRun,
+    ContactProfile,
+    DropDomain,
+    RegistrarAccount,
+    WorkerNode,
+    WorkerTask,
+)
 from app.db.session import get_db
 
 
@@ -50,6 +58,169 @@ def _load_worker_runtime_classes():
 
 
 WorkerSettings, WorkerRunner = _load_worker_runtime_classes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["heartbeat", "tasks/next"])
+@pytest.mark.parametrize("error_type", [httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError])
+async def test_idle_worker_recovers_control_transport_failure(monkeypatch, caplog, endpoint, error_type):
+    settings = WorkerSettings(CONTROL_BASE_URL="http://control.test", WORKER_ID=1,
+                              CONTROL_TOKEN="worker-token", DISCOVERY_WORKER_ENABLED=False,
+                              MAX_IDLE_BACKOFF_SECONDS=3)
+    runner = WorkerRunner(settings)
+    await runner.control.client.aclose()
+    attempts = 0
+    waits = []
+    async def pause(seconds):
+        waits.append(seconds)
+    def handle(request):
+        nonlocal attempts
+        if request.url.path.endswith("/" + endpoint):
+            attempts += 1
+            if attempts <= 4:
+                raise error_type("private-worker-token", request=request)
+        if request.url.path.endswith("/tasks/next"):
+            runner._stop = True
+            return httpx.Response(200, json={"task": None})
+        return httpx.Response(200, json={})
+    runner.control.client = httpx.AsyncClient(base_url="http://control.test", transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(asyncio, "sleep", pause)
+
+    await runner.run()
+
+    assert attempts == 5
+    assert waits[:4] == [1, 2, 3, 3]
+    assert runner.control.client.is_closed
+    assert "private-worker-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["heartbeat", "ack", "execute"])
+async def test_worker_does_not_retry_auth_or_ambiguous_task_mutations(stage):
+    settings = WorkerSettings(CONTROL_BASE_URL="http://control.test", WORKER_ID=1,
+                              CONTROL_TOKEN="worker-token", DISCOVERY_WORKER_ENABLED=False)
+    runner = WorkerRunner(settings)
+    await runner.control.client.aclose()
+    calls = []
+    async def heartbeat(**kwargs):
+        calls.append("heartbeat")
+        if stage == "heartbeat":
+            request = httpx.Request("POST", "http://control.test/heartbeat")
+            raise httpx.HTTPStatusError("denied", request=request, response=httpx.Response(401, request=request))
+    async def poll():
+        calls.append("poll")
+        return SimpleNamespace(task_id=1)
+    async def acknowledge(task_id):
+        calls.append("ack")
+        if stage == "ack":
+            raise httpx.ReadTimeout("ack response lost")
+    async def execute(task):
+        calls.append("execute")
+        raise httpx.ReadTimeout("task progress response lost")
+    runner._heartbeat = heartbeat
+    runner.control.next_task = poll
+    runner.control.acknowledge_task = acknowledge
+    runner._execute_task = execute
+
+    with pytest.raises(httpx.HTTPStatusError if stage == "heartbeat" else httpx.ReadTimeout):
+        await runner.run()
+
+    assert calls == ["heartbeat"] + ([] if stage == "heartbeat" else ["poll", "ack"] + (["execute"] if stage == "execute" else []))
+    assert runner.control.client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_idle_worker_backoff_preserves_cancellation(monkeypatch):
+    runner = WorkerRunner(WorkerSettings(CONTROL_BASE_URL="http://control.test", WORKER_ID=1,
+                                        CONTROL_TOKEN="worker-token", DISCOVERY_WORKER_ENABLED=False))
+    async def fail(**kwargs):
+        raise httpx.ReadTimeout("temporary")
+    async def cancel(seconds):
+        raise asyncio.CancelledError
+    runner._heartbeat = fail
+    monkeypatch.setattr(asyncio, "sleep", cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await runner.run()
+    assert runner.control.client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_idle_worker_resets_backoff_after_successful_poll(monkeypatch):
+    runner = WorkerRunner(WorkerSettings(CONTROL_BASE_URL="http://control.test", WORKER_ID=1,
+                                        CONTROL_TOKEN="worker-token", DISCOVERY_WORKER_ENABLED=False))
+    attempts, waits = 0, []
+    async def heartbeat(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts in (1, 2, 4):
+            raise httpx.ReadTimeout("temporary")
+    async def poll():
+        if attempts == 5:
+            runner._stop = True
+    async def pause(seconds):
+        waits.append(seconds)
+    runner._heartbeat, runner.control.next_task = heartbeat, poll
+    monkeypatch.setattr(asyncio, "sleep", pause)
+    await runner.run()
+    assert waits == [1, 2, runner.settings.poll_interval_seconds, 1, runner.settings.poll_interval_seconds]
+
+
+@pytest.mark.asyncio
+async def test_discovery_poll_recovers_without_replaying_ack(monkeypatch):
+    runner = WorkerRunner(WorkerSettings(CONTROL_BASE_URL="http://control.test", WORKER_ID=1, CONTROL_TOKEN="worker-token"))
+    polls, acknowledgements, waits = [], [], []
+    async def poll():
+        polls.append(1)
+        if len(polls) <= 2:
+            raise httpx.ReadTimeout("temporary")
+        return SimpleNamespace(task_id=7)
+    async def acknowledge(task_id):
+        acknowledgements.append(task_id)
+        runner._stop = True
+    async def execute(task):
+        return None
+    async def pause(seconds):
+        waits.append(seconds)
+    runner.control.next_discovery_task = poll
+    runner.control.acknowledge_discovery_task = acknowledge
+    runner._execute_discovery_task = execute
+    monkeypatch.setattr(asyncio, "sleep", pause)
+    try:
+        await runner._run_discovery_loop()
+    finally:
+        await runner.close()
+    assert len(polls) == 3
+    assert acknowledgements == [7]
+    assert waits[:2] == [1, 2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["cancel", "ack", "auth"])
+async def test_discovery_recovery_does_not_swallow_cancellation_or_ack_failure(monkeypatch, stage):
+    runner = WorkerRunner(WorkerSettings(CONTROL_BASE_URL="http://control.test", WORKER_ID=1, CONTROL_TOKEN="worker-token"))
+    calls = []
+    async def poll():
+        calls.append("poll")
+        if stage == "cancel":
+            raise httpx.ReadTimeout("temporary")
+        if stage == "auth":
+            request = httpx.Request("GET", "http://control.test/discovery")
+            raise httpx.HTTPStatusError("denied", request=request, response=httpx.Response(403, request=request))
+        return SimpleNamespace(task_id=7)
+    async def acknowledge(task_id):
+        calls.append("ack")
+        raise httpx.ReadTimeout("ack response lost")
+    async def pause(seconds):
+        raise asyncio.CancelledError
+    runner.control.next_discovery_task, runner.control.acknowledge_discovery_task = poll, acknowledge
+    monkeypatch.setattr(asyncio, "sleep", pause)
+    error = {"cancel": asyncio.CancelledError, "ack": httpx.ReadTimeout, "auth": httpx.HTTPStatusError}[stage]
+    try:
+        with pytest.raises(error):
+            await runner._run_discovery_loop()
+    finally:
+        await runner.close()
+    assert calls == (["poll", "ack"] if stage == "ack" else ["poll"])
 
 
 async def _make_test_session_factory():
