@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import stat
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,6 +49,13 @@ HEALTH_NOW_MS = 1_700_000_000_000
 VALID_HOST_PIN = b"host " + asyncssh.generate_private_key(
     "ssh-ed25519"
 ).export_public_key("openssh")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_transport_os(monkeypatch):
+    isolated_os = SimpleNamespace(**vars(os))
+    monkeypatch.setattr(vpn_node_transport, "os", isolated_os)
+    monkeypatch.setattr(sys.modules[__name__], "os", isolated_os)
 
 
 def health_request() -> VpnNodeHealthRequest:
@@ -683,6 +691,26 @@ def test_shared_known_hosts_is_nofollow_bounded_and_identity_checked(monkeypatch
         reader(path, expected_reader_gid=33)
     if hasattr(os, "O_NOFOLLOW"):
         assert opened[0][1] & os.O_NOFOLLOW
+
+
+def test_shared_known_hosts_mocks_preserve_stdlib_descriptor_io(monkeypatch):
+    stdlib_os = sys.modules["os"]
+    original_io = (stdlib_os.fstat, stdlib_os.read, stdlib_os.close)
+    descriptor_error = None
+    with Path(__file__).open("rb") as source:
+        with monkeypatch.context() as patches:
+            test_shared_known_hosts_is_nofollow_bounded_and_identity_checked(patches)
+            unchanged_io = (stdlib_os.fstat, stdlib_os.read, stdlib_os.close) == original_io
+            try:
+                info = stdlib_os.fstat(source.fileno())
+                first_byte = stdlib_os.read(source.fileno(), 1)
+            except IndexError as error:
+                descriptor_error = str(error)
+
+        assert descriptor_error is None
+        assert unchanged_io
+        assert info.st_size > 0
+        assert len(first_byte) == 1
 
 
 def test_shared_known_hosts_validator_accepts_multi_node_trust(monkeypatch):
