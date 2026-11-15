@@ -434,9 +434,39 @@ def test_exactly_one_process_required(runtime, node, count):
     node["dirs"][node["root"]] = [node["root"] / str(123 + i) for i in range(count)]
     if count == 2:
         node["links"][node["root"] / "124/exe"] = str(node["exe"])
+        node["data"][node["root"] / "124/cmdline"] = node["data"][node["pid"] / "cmdline"]
     with pytest.raises(runtime.XrayRuntimeError):
         runtime.observe_xray_client(**inputs())
     assert not node["calls"]
+
+
+@pytest.mark.parametrize("arguments", [b"version", b"api\0statsquery\0--server=127.0.0.1:62789"])
+def test_serving_process_proof_ignores_concurrent_cli(runtime, node, arguments):
+    extra = node["root"] / "124"
+    node["dirs"][node["root"]].append(extra)
+    node["links"][extra / "exe"] = str(node["exe"])
+    node["data"][extra / "cmdline"] = str(node["exe"]).encode() + b"\0" + arguments + b"\0"
+
+    assert runtime.xray_public_listener_is_bound(port=443, listen="", executable_path=node["exe"])
+    assert runtime.observe_xray_client(**inputs()).state == "matched"
+
+
+@pytest.mark.parametrize("arguments", [b"run\0-c\0other.json\0", b"unknown\0", b"version\0run\0", b"api\0", b"api\0stats\0\0", b"version"])
+def test_ambiguous_second_process_is_not_ignored(runtime, node, arguments):
+    extra = node["root"] / "124"
+    node["dirs"][node["root"]].append(extra)
+    node["links"][extra / "exe"] = str(node["exe"])
+    node["data"][extra / "cmdline"] = str(node["exe"]).encode() + b"\0" + arguments
+
+    assert not runtime.xray_public_listener_is_bound(port=443, listen="", executable_path=node["exe"])
+    with pytest.raises(runtime.XrayRuntimeError):
+        runtime.observe_xray_client(**inputs())
+
+
+@pytest.mark.parametrize("arguments", [b"version\0", b"api\0statsquery\0"])
+def test_cli_alone_cannot_prove_a_serving_process(runtime, node, arguments):
+    node["data"][node["pid"] / "cmdline"] = str(node["exe"]).encode() + b"\0" + arguments
+    assert not runtime.xray_public_listener_is_bound(port=443, listen="", executable_path=node["exe"])
 
 
 @pytest.mark.parametrize("arguments", [

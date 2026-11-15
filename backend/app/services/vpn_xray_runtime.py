@@ -181,6 +181,15 @@ def _process(executable: Path, deadline: float) -> Path:
             continue
         try:
             if _readlink(candidate / "exe", deadline) == str(executable):
+                raw = _read(candidate / "cmdline", deadline)
+                _require(raw.endswith(b"\0"))
+                arguments = raw[:-1].split(b"\0")
+                _require(all(arguments))
+                # Stats/control CLI children use the same binary but cannot serve a listener.
+                if arguments[1:] == [b"version"] or (
+                    len(arguments) > 2 and arguments[1] == b"api"
+                ):
+                    continue
                 matches.append(candidate)
         except (FileNotFoundError, ProcessLookupError):
             continue
